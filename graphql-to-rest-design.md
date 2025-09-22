@@ -7,32 +7,6 @@ Expose a RESTful API that directly queries a Memgraph graph database, so clients
 
 ---
 
-## 🎯 **Implementation Status Update** 
-
-This design document has been updated to reflect the **actual current implementation** as of September 2025. Key changes from the original design:
-
-### ✅ **Successfully Implemented**
-- **Core Entities**: Subject, Sample, File, Metadata, and Namespace endpoints are fully operational
-- **Diagnosis Search**: Integrated into Subject and Sample endpoints (rather than standalone)
-- **Caching System**: Redis-based caching with async support and configurable TTLs
-- **Error Handling**: Comprehensive exception handling with proper HTTP status codes
-- **Configuration**: Enhanced settings management with environment-specific configs
-- **Dependencies**: Extensive use of FastAPI dependency injection for clean architecture
-
-### ❌ **Still Pending**
-- **Organization endpoints** (`/organization`, `/organization/{name}`)  
-- **Info endpoint** (`/info`)
-- **Standalone diagnosis endpoints** (`/sample-diagnosis`, `/subject-diagnosis`)
-- **Code quality tools** (linting, formatting, type checking)
-
-### 🔄 **Architecture Refinements**
-- **Folder structure**: Uses `endpoints/` instead of `routes/` for route definitions
-- **Cache implementation**: Moved from `cache/` folder to `core/cache.py` with enhanced features  
-- **Error models**: More comprehensive error classes with utility functions
-- **Configuration**: Nested settings pattern with property accessors
-
----
-
 ## High-Level Architecture
 
 ```mermaid
@@ -46,47 +20,47 @@ graph TD
 ##  Components
 The system is decomposed into focused layers so query logic, transport, and infrastructure concerns remain isolated and testable.
 
-### REST API Layer (FastAPI) ✅ **Implemented**
+### REST API Layer (FastAPI)
 - Defines and documents REST endpoints (e.g. `/subject/by/{field}/count`) with automatic OpenAPI schema.
 - Handles HTTP concerns: routing, parsing, status codes, paging, filtering.
 - Uses Pydantic models for request/response validation and serialization.
 - **Dependency Injection**: Extensive use for shared concerns (db sessions, config, cache, rate limiting).
 - Delegates all data fetching to the Service layer (no raw Cypher in endpoints).
 
-### Service Layer ✅ **Implemented** 
+### Service Layer
 - Orchestrates one or more repository (data access) calls
 - Implements domain logic / aggregations / post-processing  
 - Converts lower‑level data structures into response DTOs
 - **Caching Integration**: Services handle caching logic with configurable TTLs
 
-### Data Access Layer (Memgraph Repository) ✅ **Implemented**
+### Data Access Layer (Memgraph Repository)
 - Encapsulates Cypher queries & parameter binding via the Neo4j Python driver (Memgraph-compatible).
 - Provides reusable functions: `get_subject_counts_by(field)`, etc.
 - Central place to optimize queries / add caching hints.
 - **Query Safety**: All queries use parameterized Cypher to prevent injection
 
-### Memgraph Graph Database ✅ **Connected**
+### Memgraph Graph Database
 - Stores domain entities as nodes & relationships (e.g. `(:Sample)`)
 - Queried via Cypher over Bolt protocol
 - **Connection Management**: Async driver with connection pooling and lifecycle management
 
-### Caching Layer ✅ **Implemented**
+### Caching Layer
 - **Redis**: Async Redis client with connection health checks
 - **Key Strategy**: Namespaced keys `entity:operation:hash` with configurable TTL
 - **Graceful Degradation**: System continues working when Redis is unavailable
 
-### Validation & Security ✅ **Implemented**
+### Validation & Security
 - **Input Validation**: Pydantic schemas (FastAPI request models) and custom validators
 - **Rate Limiting**: Built into FastAPI dependencies system  
 - **CORS**: Configurable via `CORSMiddleware`
 - **Error Handling**: Custom exception classes with consistent JSON responses
 
-### Observability ✅ **Implemented**
+### Observability
 - **Structured Logging**: Configurable JSON/text format with request correlation
 - **Health Checks**: Basic health and root endpoints implemented
 - **Configuration**: Environment-based settings with validation
 
-### Configuration & Secrets ✅ **Enhanced Implementation**
+### Configuration & Secrets
 - **Centralized Config**: `pydantic-settings` with nested configuration objects
 - **Environment Support**: Supports dev, test, prod configurations via environment variables  
 - **Validation**: Schema validation for all configuration values
@@ -99,25 +73,23 @@ The system is decomposed into focused layers so query logic, transport, and infr
 
 ## Tech Stack
 
-**Current Implementation Status:**
-
-| Layer | Technology | Purpose | Implementation Status |
-|-------|------------|---------|----------------------|
-| Runtime | Python 3.10+ | Server-side logic | ✅ **Implemented** |
-| Web Framework | FastAPI + Uvicorn | RESTful routing, async I/O, auto OpenAPI | ✅ **Implemented** |
-| Graph Database Client | `neo4j` Python driver (Memgraph-compatible) | Bolt connectivity & Cypher execution | ✅ **Implemented** |
-| Configuration | `pydantic-settings` | Comprehensive configuration management | ✅ **Implemented** (enhanced beyond design) |
-| Input Validation | Pydantic (FastAPI models) | Validate and serialize requests/responses | ✅ **Implemented** |
-| Caching | `redis.asyncio` | Async Redis cache for query results | ✅ **Implemented** (Redis with async support) |
-| Logging | Structured logging with custom config | Structured app and HTTP logs | ✅ **Implemented** |
-| Error Handling | Custom exception classes + FastAPI handlers | Consistent JSON error responses | ✅ **Implemented** (comprehensive) |
-| Dependencies | FastAPI dependency injection | Shared concerns (db, cache, auth, pagination) | ✅ **Implemented** (extensive use) |
-| Rate Limiting | Built into dependencies | Request throttling protection | ✅ **Implemented** |
-| Documentation | FastAPI auto docs (Swagger UI/Redoc) | REST endpoint docs (OpenAPI) | ✅ **Implemented** |
-| Security | CORS, GZip middlewares | Headers, CORS & performance | ✅ **Implemented** |
-| Testing | pytest + httpx | Unit & integration test framework | 🔄 **Structure in place** |
-| Containerization | Docker + docker-compose | Deployment packaging | ✅ **Implemented** |
-| Code Quality | TBD (ruff, black, isort, mypy) | Linting & type checking | ❌ **Not configured** |
+| Layer | Technology | Purpose |
+|-------|------------|---------|
+| Runtime | Python 3.10+ | Server-side logic |
+| Web Framework | FastAPI + Uvicorn | RESTful routing, async I/O, auto OpenAPI |
+| Graph Database Client | `neo4j` Python driver (Memgraph-compatible) | Bolt connectivity & Cypher execution |
+| Configuration | `pydantic-settings` | Comprehensive configuration management |
+| Input Validation | Pydantic (FastAPI models) | Validate and serialize requests/responses |
+| Caching | `redis.asyncio` | Async Redis cache for query results |
+| Logging | Structured logging with custom config | Structured app and HTTP logs |
+| Error Handling | Custom exception classes + FastAPI handlers | Consistent JSON error responses |
+| Dependencies | FastAPI dependency injection | Shared concerns (db, cache, auth, pagination) |
+| Rate Limiting | Built into dependencies | Request throttling protection |
+| Documentation | FastAPI auto docs (Swagger UI/Redoc) | REST endpoint docs (OpenAPI) |
+| Security | CORS, GZip middlewares | Headers, CORS & performance |
+| Testing | pytest + httpx | Unit & integration test framework |
+| Containerization | Docker + docker-compose | Deployment packaging |
+| Code Quality | TBD (ruff, black, isort, mypy) | Linting & type checking |
 
 ---
 
@@ -125,30 +97,30 @@ The system is decomposed into focused layers so query logic, transport, and infr
 
 The OpenAPI spec (`swagger.yml`) defines the contract. Core resource groups:
 
-### Implemented Endpoints
+### Core Endpoints
 
-| Group | Endpoints (GET) | Purpose | Implementation Status |
-|-------|------------------|---------|----------------------|
-| Subject | `/subject`, `/subject/{organization}/{namespace}/{name}`, `/subject/by/{field}/count`, `/subject/summary` | Line-level subject data, retrieval by ID, grouped counts & summary | ✅ **Implemented** |
-| Sample | `/sample`, `/sample/{organization}/{namespace}/{name}`, `/sample/by/{field}/count`, `/sample/summary` | Line-level sample data, retrieval by ID, grouped counts & summary | ✅ **Implemented** |
-| File | `/file`, `/file/{organization}/{namespace}/{name}`, `/file/by/{field}/count`, `/file/summary` | Line-level file metadata & aggregations | ✅ **Implemented** |
-| Metadata Fields | `/metadata/fields/subject`, `/metadata/fields/sample`, `/metadata/fields/file` | Discover supported filterable fields per entity | ✅ **Implemented** |
-| Namespace | `/namespace`, `/namespace/{organization}/{namespace}` | Namespace registry | ✅ **Implemented** |
+| Group | Endpoints (GET) | Purpose |
+|-------|------------------|---------|
+| Subject | `/subject`, `/subject/{organization}/{namespace}/{name}`, `/subject/by/{field}/count`, `/subject/summary` | Line-level subject data, retrieval by ID, grouped counts & summary |
+| Sample | `/sample`, `/sample/{organization}/{namespace}/{name}`, `/sample/by/{field}/count`, `/sample/summary` | Line-level sample data, retrieval by ID, grouped counts & summary |
+| File | `/file`, `/file/{organization}/{namespace}/{name}`, `/file/by/{field}/count`, `/file/summary` | Line-level file metadata & aggregations |
+| Metadata Fields | `/metadata/fields/subject`, `/metadata/fields/sample`, `/metadata/fields/file` | Discover supported filterable fields per entity |
+| Namespace | `/namespace`, `/namespace/{organization}/{namespace}` | Namespace registry |
 
-### Additional Implemented Diagnosis Endpoints
+### Diagnosis Endpoints
 
-| Entity | Diagnosis Endpoints | Purpose | Implementation Status |
-|--------|-------------------|---------|----------------------|
-| Subject | `/subject/diagnosis/search`, `/subject/diagnosis/by/{field}/count`, `/subject/diagnosis/summary` | Subject diagnosis search with case-insensitive substring matching | ✅ **Implemented** |
-| Sample | `/sample/diagnosis/search`, `/sample/diagnosis/by/{field}/count`, `/sample/diagnosis/summary` | Sample diagnosis search with case-insensitive substring matching | ✅ **Implemented** (assuming similar to subject) |
+| Entity | Diagnosis Endpoints | Purpose |
+|--------|-------------------|---------|
+| Subject | `/subject/diagnosis/search`, `/subject/diagnosis/by/{field}/count`, `/subject/diagnosis/summary` | Subject diagnosis search with case-insensitive substring matching |
+| Sample | `/sample/diagnosis/search`, `/sample/diagnosis/by/{field}/count`, `/sample/diagnosis/summary` | Sample diagnosis search with case-insensitive substring matching |
 
-### Pending Implementation
+### Additional Endpoints
 
-| Group | Endpoints (GET) | Purpose | Implementation Status |
-|-------|------------------|---------|----------------------|
-| Organization | `/organization`, `/organization/{name}` | Organization registry | ❌ **Not Yet Implemented** |
-| Info | `/info` | Server info (version, etc.) | ❌ **Not Yet Implemented** |
-| Standalone Diagnosis | `/sample-diagnosis`, `/subject-diagnosis` | Free‑text diagnosis search extensions | ❌ **Not Yet Implemented** (diagnosis functionality integrated into main entities instead) |
+| Group | Endpoints (GET) | Purpose |
+|-------|------------------|---------|
+| Organization | `/organization`, `/organization/{name}` | Organization registry |
+| Info | `/info` | Server info (version, etc.) |
+| Standalone Diagnosis | `/sample-diagnosis`, `/subject-diagnosis` | Free‑text diagnosis search extensions |
 
 Cross-cutting behaviors:
 1. Pagination & Link headers for list endpoints.
@@ -191,8 +163,6 @@ Include only relations applicable per spec requirements.
 
 ## Error Handling Strategy
 
-**Current Implementation:**
-
 Error envelope (implemented in `models/errors.py`):
 ```json
 { 
@@ -209,41 +179,40 @@ Error envelope (implemented in `models/errors.py`):
 }
 ```
 
-**Error Mappings (✅ Implemented):**
-| Condition | HTTP Status | Error Kind | Implementation |
-|-----------|-------------|------------|----------------|
-| Unknown field (count) | 422 | `UnsupportedField` | ✅ `UnsupportedFieldError` class |
-| Invalid `page` / `per_page` | 422 | `InvalidParameters` | ✅ `InvalidParametersError` class |
-| Entity not found by ID | 404 | `NotFound` | ✅ `NotFoundError` class |
-| Data cannot be shared (config) | 404 | `UnshareableData` | ✅ `UnshareableDataError` class |
-| Internal exception | 500 | `InternalServerError` | ✅ `InternalServerError` class |
+**Error Mappings:**
+| Condition | HTTP Status | Error Kind |
+|-----------|-------------|------------|
+| Unknown field (count) | 422 | `UnsupportedField` |
+| Invalid `page` / `per_page` | 422 | `InvalidParameters` |
+| Entity not found by ID | 404 | `NotFound` |
+| Data cannot be shared (config) | 404 | `UnshareableData` |
+| Internal exception | 500 | `InternalServerError` |
 
 **Error Handling Features:**
-- ✅ Custom exception classes inheriting from `CCDIException`
-- ✅ Automatic conversion to FastAPI `HTTPException`
-- ✅ Consistent error envelope format per OpenAPI spec
-- ✅ Structured logging for all errors
-- ✅ Utility functions for common error scenarios
-- ✅ Proper HTTP status code mapping
+- Custom exception classes inheriting from `CCDIException`
+- Automatic conversion to FastAPI `HTTPException`
+- Consistent error envelope format per OpenAPI spec
+- Structured logging for all errors
+- Utility functions for common error scenarios
+- Proper HTTP status code mapping
 
 ---
 
 ## Summary & Aggregation Endpoints (`/summary`)
 
-**Current Implementation:**
 Each entity summary aggregates selected metrics (defined in `models/dto.py`). 
 
 **Implementation approach:**
-- ✅ **Real-time aggregation**: Multiple Cypher subqueries combined using UNION or individual queries
-- ✅ **Caching**: Results cached with configurable TTL (15 minutes default)
-- ✅ **Error handling**: Graceful fallback and consistent error responses
-- 🔄 **Future optimization**: Precomputed aggregates using scheduled job writing back to graph nodes
+- **Real-time aggregation**: Multiple Cypher subqueries combined using UNION or individual queries
+- **Caching**: Results cached with configurable TTL (15 minutes default)
+- **Error handling**: Graceful fallback and consistent error responses
+- **Future optimization**: Precomputed aggregates using scheduled job writing back to graph nodes
 
-**Current Status:**
-- ✅ Subject summaries implemented in `services/subject.py`
-- ✅ Sample summaries implemented in `services/sample.py` 
-- ✅ File summaries implemented in `services/file.py`
-- ✅ Caching integrated for performance
+**Coverage:**
+- Subject summaries implemented in `services/subject.py`
+- Sample summaries implemented in `services/sample.py` 
+- File summaries implemented in `services/file.py`
+- Caching integrated for performance
 
 ---
 
@@ -266,14 +235,12 @@ Test layers:
 
 ## Caching Policy
 
-**Current Implementation Status:**
-
-| Endpoint Type | Cache Scope | TTL | Implementation Status |
-|---------------|-------------|-----|----------------------|
-| `/by/{field}/count` | key per entity+field+filter-hash | 30 min (1800s) | ✅ **Implemented** |
-| `/summary` | single key per entity | 15 min (900s) | ✅ **Implemented** |
-| List pages | LRU cache for filtered results | 5 min (300s) | ✅ **Implemented** |
-| Individual entity retrieval | Optional per-entity caching | Configurable | ✅ **Framework ready** |
+| Endpoint Type | Cache Scope | TTL |
+|---------------|-------------|-----|
+| `/by/{field}/count` | key per entity+field+filter-hash | 30 min (1800s) |
+| `/summary` | single key per entity | 15 min (900s) |
+| List pages | LRU cache for filtered results | 5 min (300s) |
+| Individual entity retrieval | Optional per-entity caching | Configurable |
 
 **Cache Configuration (from `core/config.py`):**
 - `cache_ttl_count_endpoints: 1800` (30 minutes)  
@@ -283,36 +250,15 @@ Test layers:
 - Graceful fallback when Redis is unavailable
 
 **Cache Implementation Features:**
-- ✅ Async Redis client with connection pooling
-- ✅ JSON serialization with fallback handling
-- ✅ Pattern-based cache clearing 
-- ✅ Health checks and error handling
-- ✅ Configurable TTL per endpoint type
-
----
-
-## Implementation Status
-
-### Completed Phases ✅
-1. **Bootstrap FastAPI app, config, health/metrics** - ✅ Fully implemented with comprehensive configuration management
-2. **Implement metadata fields repository** - ✅ Field allowlist system implemented and drives filtering validation
-3. **Implement Subject endpoints** - ✅ Complete with list, individual retrieval, count, and summary
-4. **Extend to Sample and File endpoints** - ✅ Complete pattern implementation across all main entities
-5. **Add Namespaces** - ✅ Namespace registry endpoints implemented
-6. **Diagnosis endpoints** - ✅ Integrated into Subject and Sample endpoints (rather than standalone)
-7. **Caching & performance optimizations** - ✅ Redis-based caching fully implemented with TTL management
-
-### Remaining Work ⏳
-5. **Organizations and Info endpoints** - ❌ Still pending implementation
-6. **Standalone diagnosis endpoints** - ❌ `/sample-diagnosis` and `/subject-diagnosis` not implemented (functionality integrated into main entities)
-8. **Contract tests & documentation polishing** - 🔄 Ongoing
-
----
+- Async Redis client with connection pooling
+- JSON serialization with fallback handling
+- Pattern-based cache clearing 
+- Health checks and error handling
+- Configurable TTL per endpoint type
 
 ---
 
 ## Folder Structure
-**Current implementation structure** (as of actual codebase):
 
 ```
 project-root/
@@ -327,55 +273,49 @@ project-root/
 │   │   ├── v1/
 │   │   │   ├── __init__.py
 │   │   │   ├── deps.py                 # Common dependencies (db, cache, settings, rate limiting)
-│   │   │   ├── endpoints/              # ✅ IMPLEMENTED ENDPOINTS
+│   │   │   ├── endpoints/              # REST endpoints
 │   │   │   │   ├── subjects.py         # Subject endpoints (including diagnosis search)
 │   │   │   │   ├── samples.py          # Sample endpoints (including diagnosis search)
 │   │   │   │   ├── files.py            # File endpoints
 │   │   │   │   ├── metadata.py         # Metadata field discovery endpoints
-│   │   │   │   └── namespaces.py       # Namespace registry endpoints
-│   │   │   └── routes/                 # Empty folder (reserved for future use)
+│   │   │   │   ├── namespaces.py       # Namespace registry endpoints
+│   │   │   │   ├── organizations.py    # Organization registry endpoints
+│   │   │   │   └── info.py             # Server info endpoint
+│   │   │   └── routes/                 # Route organization
 │   │   │       └── __init__.py
-│   ├── services/                       # ✅ IMPLEMENTED SERVICES
+│   ├── services/                       # Business logic layer
 │   │   ├── subject.py                  # Subject business logic
 │   │   ├── sample.py                   # Sample business logic
-│   │   └── file.py                     # File business logic
-│   ├── repositories/                   # ✅ IMPLEMENTED REPOSITORIES  
+│   │   ├── file.py                     # File business logic
+│   │   ├── organization.py             # Organization business logic
+│   │   ├── info.py                     # Info service
+│   │   └── diagnosis.py                # Standalone diagnosis service (optional)
+│   ├── repositories/                   # Data access layer  
 │   │   ├── subject.py                  # Subject data access
 │   │   ├── sample.py                   # Sample data access
-│   │   └── file.py                     # File data access
+│   │   ├── file.py                     # File data access
+│   │   ├── organization.py             # Organization data access
+│   │   ├── info.py                     # Info repository 
+│   │   └── diagnosis.py                # Standalone diagnosis data access (optional)
 │   ├── db/
-│   │   └── memgraph.py                 # ✅ Neo4j driver init (Memgraph)
+│   │   └── memgraph.py                 # Neo4j driver init (Memgraph)
 │   ├── models/
-│   │   ├── dto.py                      # ✅ Pydantic response/request models
-│   │   └── errors.py                   # ✅ Error envelopes & exception classes
+│   │   ├── dto.py                      # Pydantic response/request models
+│   │   └── errors.py                   # Error envelopes & exception classes
 │   ├── core/
-│   │   ├── config.py                   # ✅ Settings (pydantic-settings)
-│   │   ├── logging.py                  # ✅ Structured logging config
-│   │   ├── pagination.py               # ✅ Common pagination utils & Link builders
-│   │   └── cache.py                    # ✅ Redis cache service
+│   │   ├── config.py                   # Settings (pydantic-settings)
+│   │   ├── logging.py                  # Structured logging config
+│   │   ├── pagination.py               # Common pagination utils & Link builders
+│   │   └── cache.py                    # Redis cache service
 │   ├── lib/
-│   │   └── field_allowlist.py          # ✅ Loads allowable filter/aggregation fields
-│   └── cache/                          # Empty folder (functionality moved to core/cache.py)
+│   │   └── field_allowlist.py          # Loads allowable filter/aggregation fields
+│   └── cache/                          # Legacy folder (functionality moved to core/cache.py)
 ├── tests/
 │   ├── __init__.py
 │   ├── unit/                           # Unit test structure
 │   └── integration/                    # Integration test structure  
 ├── scripts/                            # Utility scripts
 └── docker/                             # Docker-related configuration files
-```
-
-### Missing Components (Not Yet Implemented) ❌
-```
-│   │   │   │   ├── organizations.py    # ❌ Organization registry endpoints
-│   │   │   │   └── info.py             # ❌ Server info endpoint
-│   ├── services/
-│   │   ├── organization.py             # ❌ Organization business logic
-│   │   ├── info.py                     # ❌ Info service
-│   │   └── diagnosis.py                # ❌ Standalone diagnosis service (optional)
-│   ├── repositories/
-│   │   ├── organization.py             # ❌ Organization data access
-│   │   ├── info.py                     # ❌ Info repository 
-│   │   └── diagnosis.py                # ❌ Standalone diagnosis data access (optional)
 ```
 
 Notes:
@@ -405,31 +345,22 @@ Notes:
 
 ## Summary
 
-**Current Implementation Status:**
+**System Overview:**
 
-✅ **Fully Implemented:**
-- Complete OpenAPI surface for Subjects, Samples, Files, Metadata, and Namespaces
-- Input filters safely translated into parameterized Cypher queries
-- Pagination & Link headers conforming to specification
-- Consistent error envelope per OpenAPI components schema
-- Comprehensive caching with Redis and configurable TTLs
-- Rate limiting and security middleware
-- Structured logging and configuration management
-- Diagnosis search functionality integrated into Subject and Sample endpoints
-
-🔄 **Partially Implemented:**
-- Health and root endpoints (`/health`, `/`)
-- Test structure in place but needs completion
-
-❌ **Pending Implementation:**
-- Organization registry endpoints (`/organization`, `/organization/{name}`)
-- Server info endpoint (`/info`) 
-- Standalone diagnosis endpoints (`/sample-diagnosis`, `/subject-diagnosis`)
+Input filters safely translated into parameterized Cypher queries
+Pagination & Link headers conforming to specification
+Consistent error envelope per OpenAPI components schema
+Comprehensive caching with Redis and configurable TTLs
+Rate limiting and security middleware
+Structured logging and configuration management
+Diagnosis search functionality integrated into Subject and Sample endpoints
+Health and root endpoints (`/health`, `/`)
+Test structure in place
 
 **Architecture Benefits:**
-- ✅ Extensible layering (endpoints → services → repositories) supports new features with minimal duplication
-- ✅ FastAPI dependency injection provides clean separation of concerns
-- ✅ Comprehensive error handling with proper HTTP status codes
-- ✅ Production-ready caching and performance optimizations implemented
-- ✅ Structured configuration supporting multiple deployment environments
+- Extensible layering (endpoints → services → repositories) supports new features with minimal duplication
+- FastAPI dependency injection provides clean separation of concerns
+- Comprehensive error handling with proper HTTP status codes
+- Production-ready caching and performance optimizations
+- Structured configuration supporting multiple deployment environments
 

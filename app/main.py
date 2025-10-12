@@ -77,16 +77,16 @@ def create_app() -> FastAPI:
 def setup_middleware(app: FastAPI, settings) -> None:
     """Set up application middleware."""
     
-    # CORS middleware
-    if settings.cors.enabled:
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=settings.cors.allowed_origins,
-            allow_credentials=settings.cors.allow_credentials,
-            allow_methods=settings.cors.allowed_methods,
-            allow_headers=settings.cors.allowed_headers,
-        )
-        logger.info("CORS middleware enabled")
+    # # CORS middleware
+    # if settings.cors.enabled:
+    #     app.add_middleware(
+    #         CORSMiddleware,
+    #         allow_origins=settings.cors.allowed_origins,
+    #         allow_credentials=settings.cors.allow_credentials,
+    #         allow_methods=settings.cors.allowed_methods,
+    #         allow_headers=settings.cors.allowed_headers,
+    #     )
+    #     logger.info("CORS middleware enabled")
     
     # GZip compression middleware
     app.add_middleware(GZipMiddleware, minimum_size=1000)

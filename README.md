@@ -124,28 +124,19 @@ A REST API service for querying the CCDI (Childhood Cancer Data Initiative) grap
 
 #### Option 1: Using Poetry (Recommended)
 
-1. **Install dependencies**:
+ **Install dependencies**:
    ```bash
    pip install poetry
    poetry install
    ```
-
-2. **Set up environment**:
+ **Set up environment**:
    ```bash
    cp .env.example .env
    # Edit .env with your configuration
    ```
 
-3. **Start external services**:
-   ```bash
-   # Start Memgraph
-   docker run -p 7687:7687 -p 7444:7444 memgraph/memgraph:2.11.1
 
-   # Start Redis (optional, for caching)
-   docker run -p 6379:6379 redis:7.2-alpine
-   ```
-
-4. **Run the application**:
+ **Run the application**:
    ```bash
    poetry run uvicorn app.main:app --reload
    ```
@@ -169,21 +160,12 @@ A REST API service for querying the CCDI (Childhood Cancer Data Initiative) grap
    # Edit .env with your configuration
    ```
 
-4. **Start external services**:
-   ```bash
-   # Start Memgraph
-   docker run -p 7687:7687 -p 7444:7444 memgraph/memgraph:2.11.1
-
-   # Start Redis (optional, for caching)
-   docker run -p 6379:6379 redis:7.2-alpine
-   ```
-
-5. **Run the application**:
+4. **Run the application**:
    ```bash
    uvicorn app.main:app --reload
    ```
 
-6. **Deactivate virtual environment when done**:
+5. **Deactivate virtual environment when done**:
    ```bash
    deactivate
    ```
@@ -211,18 +193,6 @@ MEMGRAPH_PASSWORD=
 MEMGRAPH_DATABASE=memgraph
 MEMGRAPH_MAX_CONNECTION_LIFETIME=3600
 MEMGRAPH_MAX_CONNECTION_POOL_SIZE=50
-```
-
-#### Cache (Redis)
-```bash
-CACHE_ENABLED=true
-CACHE_REDIS_HOST=localhost
-CACHE_REDIS_PORT=6379
-CACHE_REDIS_DB=0
-CACHE_REDIS_PASSWORD=
-CACHE_TTL_COUNT_ENDPOINTS=1800      # 30 minutes
-CACHE_TTL_SUMMARY_ENDPOINTS=900     # 15 minutes  
-CACHE_TTL_LIST_ENDPOINTS=300        # 5 minutes
 ```
 
 #### CORS
@@ -467,13 +437,7 @@ The service provides structured logging with configurable format:
 - Configurable log levels (DEBUG, INFO, WARNING, ERROR)
 - JSON or text format options
 
-### Caching Metrics
 
-Cache operations are logged for monitoring:
-- Cache hits/misses
-- Cache set/delete operations  
-- Redis connection health
-- TTL expiration tracking
 
 ## Deployment
 
@@ -493,36 +457,3 @@ Cache operations are logged for monitoring:
      -e CACHE_REDIS_HOST=your-redis \
      ccdi-federation-service
    ```
-
-### Docker Compose (Development)
-
-The included `docker-compose.yml` sets up:
-- FastAPI application
-- Memgraph database  
-- Redis cache
-- Development environment configuration
-
-### Kubernetes
-
-Example deployment configuration available in `k8s/` directory (if present).
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests for new functionality
-5. Ensure all tests pass
-6. Submit a pull request
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Support
-
-For questions and support:
-
-- Create an issue in the repository
-- Contact the CCDI team
-- Check the API documentation at `/docs`

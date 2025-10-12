@@ -21,8 +21,10 @@ class AppSettings(BaseModel):
 
 class DatabaseSettings(BaseModel):
     """Database connection settings."""
-    uri: str = "bolt://127.0.0.1:7687"
-    user: str = ""
+    # NOTE: Defaults intentionally point to localhost with no password.
+    # Real values should be injected via environment variables consumed by `Settings`.
+    uri: str = "bolt://localhost:7687"
+    user: str = "memgraph"
     password: str = ""
     database: str = "memgraph"
     max_connection_lifetime: int = 3600
@@ -78,10 +80,11 @@ class Settings(BaseSettings):
     
     # Database (Memgraph)
     memgraph_uri: str = Field(
+        # Default kept generic; override with MEMGRAPH_URI in env (.env, container secrets, etc.)
         default="bolt://localhost:7687", 
         alias="MEMGRAPH_URI"
     )
-    memgraph_user: str = Field(default="", alias="MEMGRAPH_USER")
+    memgraph_user: str = Field(default="memgraph", alias="MEMGRAPH_USER")
     memgraph_password: str = Field(default="", alias="MEMGRAPH_PASSWORD")
     memgraph_database: str = Field(default="memgraph", alias="MEMGRAPH_DATABASE")
     memgraph_max_connection_lifetime: int = Field(
@@ -165,7 +168,7 @@ class Settings(BaseSettings):
     )
     
     # Database settings
-    database_url: str = Field(default="bolt://127.0.0.1:7687", description="Database connection URL")
+    database_url: str = Field(default="bolt://localhost:7687", description="Database connection URL")
 
     # Cache/Redis settings
     cache_redis_host: Optional[str] = Field(default="localhost", description="Redis host")

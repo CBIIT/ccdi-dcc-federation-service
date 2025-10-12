@@ -28,16 +28,20 @@ class MemgraphConnection:
     async def connect(self) -> None:
         """Establish connection to Memgraph."""
         try:
+            # Prepare authentication only if both user and password are provided (password may be blank in some deployments)
+            auth = None
+            if self._settings.memgraph_user and self._settings.memgraph_password:
+                auth = (
+                    self._settings.memgraph_user,
+                    self._settings.memgraph_password,
+                )
+            # Use environment-configured URI & pool settings from `Settings`
             self._driver = AsyncGraphDatabase.driver(
                 self._settings.memgraph_uri,
-                auth=(
-                    self._settings.memgraph_user, 
-                    self._settings.memgraph_password
-                ) if self._settings.memgraph_user else None,
+                auth=auth,
                 max_connection_lifetime=self._settings.memgraph_max_connection_lifetime,
                 max_connection_pool_size=self._settings.memgraph_max_connection_pool_size,
             )
-            
             # Test the connection
             await self.verify_connectivity()
             

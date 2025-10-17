@@ -1,0 +1,131 @@
+[
+  {
+    "source": "PCDC",
+    "summary": {
+      "counts": {
+        "all": 23804,
+        "current": 100
+      }
+    },
+    "data": [
+      {
+        "id": {
+          "namespace": {
+            "organization": "pcdc",
+            "name": "COG"
+          },
+          "name": "PBDFZX"
+        },
+        "kind": "Participant",
+        "metadata": {
+          "sex": {
+            "value": "M",
+            "ancestors": [
+              "unharmonized.sex"
+            ]
+          },
+          "race": [
+            {
+              "value": "Unknown",
+              "ancestors": [
+                "unharmonized.race"
+              ]
+            }
+          ],
+          "ethnicity": {
+            "value": "Not Hispanic or Latino",
+            "ancestors": [
+              "unharmonized.ethnicity"
+            ]
+          },
+          "identifiers": [
+            {
+              "value": {
+                "namespace": {
+                  "organization": "pcdc",
+                  "name": "COG"
+                },
+                "name": "PBDFZX",
+                "server": "https://ccdifederation.pedscommons.org/api/v1",
+                "type": "Linked"
+              },
+              "ancestors": [
+                "unharmonized.honest_broker_subject_id"
+              ]
+            }
+          ],
+          "associated_diagnoses": [
+            {
+              "value": "Unknown",
+              "ancestors": [
+                "unharmonized.associated_diagnoses"
+              ]
+            }
+          ],
+          "unharmonized": {
+            "honest_broker_subject_id": {
+              "value": "PBDFZX",
+              "ancestors": null,
+              "owned": false,
+              "comment": null,
+              "details": null
+            },
+            "sex": {
+              "value": "Male",
+              "ancestors": null,
+              "owned": true,
+              "comment": null,
+              "details": {
+                "method": null,
+                "harmonizer": null,
+                "url": "https://portal.pedscommons.org/DD?view=table"
+              }
+            },
+            "ethnicity": {
+              "value": "Not Hispanic or Latino",
+              "ancestors": null,
+              "owned": true,
+              "comment": null,
+              "details": {
+                "method": null,
+                "harmonizer": null,
+                "url": "https://portal.pedscommons.org/DD?view=table"
+              }
+            },
+            "race": {
+              "value": "Unknown",
+              "ancestors": null,
+              "owned": true,
+              "comment": null,
+              "details": {
+                "method": null,
+                "harmonizer": null,
+                "url": "https://portal.pedscommons.org/DD?view=table"
+              }
+            },
+            "associated_diagnoses": {
+              "value": "Unknown",
+              "ancestors": null,
+              "owned": true,
+              "comment": null,
+              "details": {
+                "method": null,
+                "harmonizer": null,
+                "url": "https://portal.pedscommons.org/DD?view=table"
+              }
+            }
+          },
+          "vital_status": null,
+          "age_at_vital_status": null,
+          "depositions": null
+        },
+        "gateways": [
+          {
+            "gateway": "same_filters_cohort",
+            "kind": "Reference"
+          }
+        ]
+      }
+    ]
+}
+]

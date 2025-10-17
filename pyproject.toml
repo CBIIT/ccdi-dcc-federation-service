@@ -1,6 +1,43 @@
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+[project]
+name = "ccdi-dcc-federation-service"
+version = "0.1.0"
+description = "CCDI Data Federation Service - REST to Memgraph Adapter"
+readme = "README.md"
+requires-python = ">=3.10"
+
+dependencies = [
+  "fastapi~=0.104.1",
+  "uvicorn[standard]~=0.24.0",
+  "neo4j~=5.15.0",
+  "pydantic~=2.5.0",
+  "pydantic-settings~=2.1.0",
+  "python-dotenv~=1.0.0",
+  "python-multipart~=0.0.6",
+  "redis[hiredis]~=5.0.1",
+  "structlog~=23.2.0",
+  "prometheus-client~=0.19.0",
+  "slowapi~=0.1.9",
+  "starlette-exporter~=0.17.1",
+]
+
+[dependency-groups]
+dev = [
+  "pytest~=7.4.3",
+  "pytest-asyncio~=0.21.1",
+  "httpx~=0.25.2",
+  "ruff~=0.1.7",
+  "black~=23.11.0",
+  "isort~=5.12.0",
+  "mypy~=1.7.1",
+  "coverage~=7.3.2",
+]
+test = [
+  "pytest-mock~=3.12.0",
+  "testcontainers~=3.7.1",
+]
 
 [tool.poetry]
 name = "ccdi-dcc-federation-service"

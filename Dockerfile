@@ -1,7 +1,7 @@
 ############################
 # Builder stage
 ############################
-FROM python:3.10-slim AS builder
+FROM python:3.12-slim AS builder
 
 ARG POETRY_VERSION=1.6.1
 
@@ -36,7 +36,7 @@ RUN poetry install --only-root \
 ############################
 # Runtime stage
 ############################
-FROM python:3.10-slim AS runtime
+FROM python:3.12-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1

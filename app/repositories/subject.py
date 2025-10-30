@@ -640,16 +640,17 @@ class SubjectRepository:
                 "name": participant_id
             },
             "kind": "Participant",
+            # Note: All "ancestors" fields are excluded from results but kept as optional placeholders in DTO models
             "metadata": {
-                "sex": {"value": sex_value, "ancestors": None} if sex_value else None,
+                "sex": {"value": sex_value} if sex_value else None,
                 # Race reporting rule: remove 'Hispanic or Latino'. If only that term was present,
                 # return an empty list []; if race was entirely missing, keep it as None.
                 "race": (
-                    [{"value": race, "ancestors": None} for race in race_list]
+                    [{"value": race} for race in race_list]
                     if race_value is not None
                     else None
                 ),
-                "ethnicity": {"value": ethnicity_value, "ancestors": None} if ethnicity_value else None,
+                "ethnicity": {"value": ethnicity_value} if ethnicity_value else None,
                 "identifiers": [
                     {
                         "value": {
@@ -658,14 +659,12 @@ class SubjectRepository:
                                 "name": study_id
                             },
                             "name": participant_id
-                        },
-                        "ancestors": None
+                        }
                     }
                 ] if participant_id and study_id else None,
                 "associated_diagnoses": [
                     {
                         "value": diag,
-                        "ancestors": None,
                         "owned": True,
                         "comment": None,
                         "details": {
@@ -677,8 +676,8 @@ class SubjectRepository:
                     for diag in associated_diagnoses
                 ] if associated_diagnoses else None,
                 "unharmonized": None,
-                "vital_status": {"value": vital_status, "ancestors": None} if vital_status else None,
-                "age_at_vital_status": {"value": int(age_at_vital_status), "ancestors": None} if age_at_vital_status is not None else None,
+                "vital_status": {"value": vital_status} if vital_status else None,
+                "age_at_vital_status": {"value": int(age_at_vital_status)} if age_at_vital_status is not None else None,
                 "depositions": ["db_gap"]
             },
             "gateways": []

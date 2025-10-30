@@ -71,11 +71,12 @@ paths:
     get:
       summary: Get subject by identifier
       description: Get a specific subject by organization, namespace, and name. For
-        CCDI-DCC/CCDI-DCC, supports participant ID search with multiple IDs (comma-separated).
+        CCDI-DCC/phs (case-insensitive), supports participant ID search with multiple
+        IDs (comma-separated).
       parameters:
       - name: org
         in: path
-        description: Organization name
+        description: Organization name (must be 'CCDI-DCC')
         required: true
         schema:
           type: string
@@ -83,15 +84,15 @@ paths:
         example: CCDI-DCC
       - name: ns
         in: path
-        description: Namespace name
+        description: Namespace name (must be 'phs', case-insensitive)
         required: true
         schema:
           type: string
-          default: CCDI-DCC
-        example: CCDI-DCC
+          default: phs
+        example: phs
       - name: name
         in: path
-        description: Subject name or participant ID(s). For CCDI-DCC/CCDI-DCC, multiple
+        description: Subject name or participant ID(s). For CCDI-DCC/phs, multiple
           IDs can be comma-separated.
         required: true
         schema:
@@ -116,9 +117,9 @@ paths:
   /subject/summary:
     get:
       summary: Get subject summary (counts)
-      description: Returns high-level counts for subjects. The total_count is the
-        number of unique participants that match the current filters (if any). This
-        endpoint is optimized for dashboards and headers where only counts are needed.
+      description: Returns high-level counts for subjects. The total is the number
+        of unique participants that match the current filters (if any). This endpoint
+        is optimized for dashboards and headers where only counts are needed.
       responses:
         '200':
           description: Summary counts successfully returned
@@ -127,8 +128,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/SummaryResponse'
               example:
-                total_count: 104496
-                field_counts: {}
+                counts:
+                  total: 104496
 components:
   schemas:
     Subject:
@@ -411,14 +412,23 @@ components:
         has_prev:
           type: boolean
           example: false
+    SummaryCounts:
+      type: object
+      description: Summary counts structure.
+      properties:
+        total:
+          type: integer
+          description: Total entity count
+      required:
+      - total
     SummaryResponse:
       type: object
       description: Summary-only response for endpoints that return aggregate counts.
       properties:
-        total_count:
-          type: integer
-        field_counts:
-          type: object
+        counts:
+          $ref: '#/components/schemas/SummaryCounts'
+      required:
+      - counts
     Error:
       type: object
       description: Standard error envelope.

@@ -48,7 +48,7 @@ class FieldDetails(BaseModel):
 class UnharmonizedField(BaseModel):
     """Unharmonized metadata field."""
     value: Any = Field(..., description="Field value")
-    ancestors: Optional[List[str]] = None
+    ancestors: Optional[List[str]] = Field(default=None, exclude=True)
     details: Optional[FieldDetails] = None
     comment: Optional[str] = None
 
@@ -334,12 +334,12 @@ class SubjectId(BaseModel):
 class MetadataField(BaseModel):
     """Metadata field with value and ancestors."""
     value: Any = Field(..., description="Field value")
-    ancestors: Optional[Any] = Field(default=None, description="Ancestor entities")
+    ancestors: Optional[Any] = Field(default=None, description="Ancestor entities", exclude=True)
 
 class AssociatedDiagnosisField(BaseModel):
     """Associated diagnosis field with detailed structure."""
     value: str = Field(..., description="Diagnosis ID")
-    ancestors: Optional[Any] = Field(default=None, description="Ancestor entities")
+    ancestors: Optional[Any] = Field(default=None, description="Ancestor entities", exclude=True)
     owned: bool = Field(default=True, description="Ownership status")
     comment: Optional[str] = Field(default=None, description="Comment")
     details: Optional[Dict[str, Any]] = Field(default=None, description="Additional details")
@@ -354,7 +354,7 @@ class IdentifierValue(BaseModel):
 class IdentifierField(BaseModel):
     """Identifier field with nested value."""
     value: IdentifierValue = Field(..., description="Identifier value")
-    ancestors: Optional[Any] = Field(default=None, description="Ancestor entities")
+    ancestors: Optional[Any] = Field(default=None, description="Ancestor entities", exclude=True)
 
 class SubjectMetadata(BaseModel):
     """Subject metadata with nested field structure."""

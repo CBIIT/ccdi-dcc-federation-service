@@ -26,12 +26,8 @@
       "description": "Production server"
     },
     {
-      "url": "https://ccdi-federation-test.herokuapp.com/api/v1",
-      "description": "Test server (Heroku) - For online testing"
-    },
-    {
-      "url": "https://ccdi-api-test.up.railway.app/api/v1",
-      "description": "Test server (Railway) - For online testing"
+      "url": "https://ccdi-federation-test.test.com/api/v1",
+      "description": "Test server - For online testing"
     }
   ],
   "paths": {

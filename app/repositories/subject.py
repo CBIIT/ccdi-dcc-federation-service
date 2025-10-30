@@ -626,7 +626,7 @@ class SubjectRepository:
             else:
                 sex_value = "U"
 
-        # Namespace policy: keep study_id as "phsXXXX" and set organization to 'phs'.
+        # Namespace policy: keep study_id as "phsXXXX" and set organization to default 'CCDI-DCC'.
         # We still keep a simple prefix value for depositions.
         prefix = "phs"
         
@@ -634,7 +634,7 @@ class SubjectRepository:
         subject_data = {
             "id": {
                 "namespace": {
-                    "organization": "phs",
+                    "organization": "CCDI-DCC",
                     "name": study_id
                 },
                 "name": participant_id
@@ -654,7 +654,7 @@ class SubjectRepository:
                     {
                         "value": {
                             "namespace": {
-                                "organization": "phs",
+                                "organization": "CCDI-DCC",
                                 "name": study_id
                             },
                             "name": participant_id

@@ -203,13 +203,24 @@ class SubjectService:
             cached_result = await self.cache_service.get(cache_key)
             if cached_result:
                 logger.debug("Returning cached subjects summary")
-                return SummaryResponse(**cached_result)
+                # Handle both old and new cache formats
+                if "counts" in cached_result:
+                    return SummaryResponse(**cached_result)
+                else:
+                    # Transform old format to new format
+                    from app.models.dto import SummaryCounts
+                    return SummaryResponse(
+                        counts=SummaryCounts(total=cached_result.get("total_count", 0))
+                    )
         
         # Get summary from repository
         summary_data = await self.repository.get_subjects_summary(filters)
         
-        # Build response
-        response = SummaryResponse(**summary_data)
+        # Transform repository format to response format
+        from app.models.dto import SummaryResponse, SummaryCounts
+        response = SummaryResponse(
+            counts=SummaryCounts(total=summary_data.get("total_count", 0))
+        )
         
         # Cache result
         if self.cache_service and cache_key:
@@ -221,7 +232,7 @@ class SubjectService:
         
         logger.info(
             "Completed subjects summary",
-            total_count=response.total_count
+            total_count=response.counts.total
         )
         
         return response

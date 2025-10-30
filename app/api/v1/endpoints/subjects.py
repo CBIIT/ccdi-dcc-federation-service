@@ -81,7 +81,7 @@ async def list_subjects(
         
         # Get total count for summary
         summary_result = await service.get_subjects_summary(filters)
-        total_count = summary_result.total_count
+        total_count = summary_result.counts.total
         
         # Calculate pagination info using the utility function
         pagination_info = calculate_pagination_info(
@@ -134,7 +134,7 @@ async def list_subjects(
     "/{org}/{ns}/{name}",
     response_model=None,  # Will return different types based on input
     summary="Get subject by identifier",
-    description="Get a specific subject by organization, namespace, and name. For CCDI-DCC/CCDI-DCC with multiple participant IDs, returns SubjectResponse format."
+    description="Get a specific subject by organization, namespace, and name. For CCDI-DCC/phs (case-insensitive) with multiple participant IDs, returns SubjectResponse format."
 )
 async def get_subject(
     org: str,
@@ -160,10 +160,10 @@ async def get_subject(
         cache_service = get_cache_service()
         service = SubjectService(session, allowlist, settings, cache_service)
         
-        # Check if this is a participant ID search (org and ns are CCDI-DCC)
-        if org == "CCDI-DCC" and ns == "CCDI-DCC":
+        # Check if this is a participant ID search (org must be CCDI-DCC, ns must be phs case-insensitive)
+        if org == "CCDI-DCC" and ns.lower() == "phs":
             # Use participant ID search logic
-            logger.info("Using participant ID search for CCDI-DCC/CCDI-DCC")
+            logger.info("Using participant ID search for CCDI-DCC/phs")
             
             # Parse participant IDs (split by comma and clean up)
             participant_id_list = [pid.strip() for pid in name.split(',') if pid.strip()]
@@ -341,7 +341,7 @@ async def get_subjects_summary(
         
         logger.info(
             "Get subjects summary response",
-            total_count=result.total_count
+            total_count=result.counts.total
         )
         
         return result
@@ -590,7 +590,7 @@ async def search_by_participant_id(
         
         # Get total count for summary
         summary_result = await service.get_subjects_summary(filters)
-        total_count = summary_result.total_count
+        total_count = summary_result.counts.total
         
         # Calculate pagination info using the utility function
         pagination_info = calculate_pagination_info(

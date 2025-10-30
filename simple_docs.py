@@ -96,12 +96,12 @@ def create_basic_openapi_spec():
             "/subject/{org}/{ns}/{name}": {
                 "get": {
                     "summary": "Get subject by identifier",
-                    "description": "Get a specific subject by organization, namespace, and name. For CCDI-DCC/CCDI-DCC, supports participant ID search with multiple IDs (comma-separated).",
+                    "description": "Get a specific subject by organization, namespace, and name. For CCDI-DCC/phs (case-insensitive), supports participant ID search with multiple IDs (comma-separated).",
                     "parameters": [
                         {
                             "name": "org",
                             "in": "path",
-                            "description": "Organization name",
+                            "description": "Organization name (must be 'CCDI-DCC')",
                             "required": True,
                             "schema": {"type": "string", "default": "CCDI-DCC"},
                             "example": "CCDI-DCC"
@@ -109,15 +109,15 @@ def create_basic_openapi_spec():
                         {
                             "name": "ns",
                             "in": "path",
-                            "description": "Namespace name",
+                            "description": "Namespace name (must be 'phs', case-insensitive)",
                             "required": True,
-                            "schema": {"type": "string", "default": "CCDI-DCC"},
-                            "example": "CCDI-DCC"
+                            "schema": {"type": "string", "default": "phs"},
+                            "example": "phs"
                         },
                         {
                             "name": "name",
                             "in": "path",
-                            "description": "Subject name or participant ID(s). For CCDI-DCC/CCDI-DCC, multiple IDs can be comma-separated.",
+                            "description": "Subject name or participant ID(s). For CCDI-DCC/phs, multiple IDs can be comma-separated.",
                             "required": True,
                             "schema": {"type": "string", "default": "TARGET-10-PAKKMW"},
                             "example": "TARGET-10-PAKKMW"
@@ -151,7 +151,7 @@ def create_basic_openapi_spec():
             "/subject/summary": {
                 "get": {
                     "summary": "Get subject summary (counts)",
-                    "description": "Returns high-level counts for subjects. The total_count is the number of unique participants that match the current filters (if any). This endpoint is optimized for dashboards and headers where only counts are needed.",
+                    "description": "Returns high-level counts for subjects. The total is the number of unique participants that match the current filters (if any). This endpoint is optimized for dashboards and headers where only counts are needed.",
                     "responses": {
                         "200": {
                             "description": "Summary counts successfully returned",
@@ -159,8 +159,9 @@ def create_basic_openapi_spec():
                                 "application/json": {
                                     "schema": {"$ref": "#/components/schemas/SummaryResponse"},
                                     "example": {
-                                        "total_count": 104496,
-                                        "field_counts": {}
+                                        "counts": {
+                                            "total": 104496
+                                        }
                                     }
                                 }
                             }
@@ -343,13 +344,21 @@ def create_basic_openapi_spec():
                         "has_prev": {"type": "boolean", "example": False}
                     }
                 },
+                "SummaryCounts": {
+                    "type": "object",
+                    "description": "Summary counts structure.",
+                    "properties": {
+                        "total": {"type": "integer", "description": "Total entity count"}
+                    },
+                    "required": ["total"]
+                },
                 "SummaryResponse": {
                     "type": "object",
                     "description": "Summary-only response for endpoints that return aggregate counts.",
                     "properties": {
-                        "total_count": {"type": "integer"},
-                        "field_counts": {"type": "object"}
-                    }
+                        "counts": {"$ref": "#/components/schemas/SummaryCounts"}
+                    },
+                    "required": ["counts"]
                 },
                 "Error": {
                     "type": "object",

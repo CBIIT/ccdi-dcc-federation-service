@@ -456,10 +456,13 @@ class CountResponse(BaseModel):
     counts: List[CountResult] = Field(..., description="Count results for field values")
 
 
+class SummaryCounts(BaseModel):
+    """Summary counts structure."""
+    total: int = Field(..., description="Total entity count")
+
 class SummaryResponse(BaseModel):
     """Generic summary response model."""
-    total_count: int = Field(..., description="Total entity count")
-    # Add other summary fields as needed based on the summary data structure
+    counts: SummaryCounts = Field(..., description="Summary counts")
 
 
 class SubjectsResponse(BaseModel):

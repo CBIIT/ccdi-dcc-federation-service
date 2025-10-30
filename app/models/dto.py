@@ -317,12 +317,74 @@ class FileMetadata(CommonMetadata):
 # Entity Models
 # ============================================================================
 
+# ============================================================================
+# Nested Structure Models for CCDI-DCC Format
+# ============================================================================
+
+class NamespaceIdentifier(BaseModel):
+    """Namespace identifier for nested structure."""
+    organization: str = Field(default="CCDI-DCC", description="Organization identifier")
+    name: str = Field(..., description="Namespace name (study ID)")
+
+class SubjectId(BaseModel):
+    """Subject identifier with nested namespace."""
+    namespace: NamespaceIdentifier = Field(..., description="Namespace identifier")
+    name: str = Field(..., description="Subject name (participant ID)")
+
+class MetadataField(BaseModel):
+    """Metadata field with value and ancestors."""
+    value: Any = Field(..., description="Field value")
+    ancestors: Optional[Any] = Field(default=None, description="Ancestor entities")
+
+class AssociatedDiagnosisField(BaseModel):
+    """Associated diagnosis field with detailed structure."""
+    value: str = Field(..., description="Diagnosis ID")
+    ancestors: Optional[Any] = Field(default=None, description="Ancestor entities")
+    owned: bool = Field(default=True, description="Ownership status")
+    comment: Optional[str] = Field(default=None, description="Comment")
+    details: Optional[Dict[str, Any]] = Field(default=None, description="Additional details")
+
+class IdentifierValue(BaseModel):
+    """Identifier value with nested structure."""
+    namespace: NamespaceIdentifier = Field(..., description="Namespace identifier")
+    name: str = Field(..., description="Identifier name")
+    server: Optional[str] = Field(default=None, description="Server URL", exclude=True)
+    type: Optional[str] = Field(default=None, description="Identifier type", exclude=True)
+
+class IdentifierField(BaseModel):
+    """Identifier field with nested value."""
+    value: IdentifierValue = Field(..., description="Identifier value")
+    ancestors: Optional[Any] = Field(default=None, description="Ancestor entities")
+
+class SubjectMetadata(BaseModel):
+    """Subject metadata with nested field structure."""
+    sex: Optional[MetadataField] = None
+    race: Optional[List[MetadataField]] = None
+    ethnicity: Optional[MetadataField] = None
+    identifiers: Optional[List[IdentifierField]] = None
+    associated_diagnoses: Optional[List[AssociatedDiagnosisField]] = None
+    unharmonized: Optional[Any] = None
+    vital_status: Optional[MetadataField] = None
+    age_at_vital_status: Optional[MetadataField] = None
+    depositions: Optional[List[str]] = None
+
 class Subject(BaseModel):
-    """Flexible subject model that can contain any fields."""
+    """Subject model with nested CCDI-DCC structure."""
     model_config = ConfigDict(extra="allow")
+    
+    # Required fields for CCDI-DCC format
+    id: SubjectId = Field(..., description="Subject identifier with nested namespace")
+    kind: str = Field(default="Participant", description="Entity kind")
+    metadata: SubjectMetadata = Field(..., description="Subject metadata")
+    gateways: List[Any] = Field(default_factory=list, description="Gateway access information")
     
     # Allow any additional fields to be added dynamically
     def __init__(self, **data):
+        # Set defaults if not provided
+        if 'kind' not in data:
+            data['kind'] = "Participant"
+        if 'gateways' not in data:
+            data['gateways'] = []
         super().__init__(**data)
 
 
@@ -434,20 +496,12 @@ class FilesResponse(BaseModel):
 
 
 class SubjectResponse(BaseModel):
-    """Flexible subject response that can handle both single subjects and lists with pagination."""
+    """Subject response with nested structure matching CCDI-DCC format."""
     model_config = ConfigDict(extra="allow")
     
-    # For single subject responses
-    # subject: Optional[Subject] = Field(None, description="Single subject details")
-    
-    # For multiple subject responses  
-    subjects: Optional[List[Subject]] = Field(None, description="List of subjects")
-    
-    # Common fields
-    gateways: Optional[Dict[str, NamedGateway]] = Field(
-        None,
-        description="Named gateways referenced by subjects"
-    )
+    # Top-level response structure
+    summary: Optional[Dict[str, Any]] = Field(None, description="Summary statistics")
+    data: List[Subject] = Field(..., description="List of subjects with nested structure")
     
     # For paginated responses
     pagination: Optional[Any] = Field(None, description="Pagination information")

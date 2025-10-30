@@ -31,7 +31,7 @@ class SubjectService:
         cache_service: Optional[CacheService] = None
     ):
         """Initialize service with dependencies."""
-        self.repository = SubjectRepository(session, allowlist)
+        self.repository = SubjectRepository(session, allowlist, settings)
         self.settings = settings
         self.cache_service = cache_service
         

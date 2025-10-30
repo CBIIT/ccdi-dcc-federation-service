@@ -2,7 +2,7 @@
 CCDI Federation Service - Main Application
 
 This is the main FastAPI application that provides REST endpoints
-for querying the CCDI graph database.
+for querying the CCDI-DCC  graph database.
 """
 
 from contextlib import asynccontextmanager
@@ -53,7 +53,7 @@ def create_app() -> FastAPI:
     # Create FastAPI app
     app = FastAPI(
         title="CCDI Federation Service",
-        description="REST API for querying CCDI graph database",
+        description="REST API for querying CCDI-DCC  graph database",
         version="1.0.0",
         openapi_url="/openapi.json",
         docs_url="/docs" if settings.app.debug else None,

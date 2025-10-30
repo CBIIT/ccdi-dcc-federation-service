@@ -1,0 +1,612 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "CCDI Federation Service API",
+    "description": "REST API for querying CCDI-DCC  graph database",
+    "version": "1.0.0",
+    "summary": "Childhood Cancer Data Initiative Federation Service",
+    "contact": {
+      "name": "CCDI Development Team",
+      "email": "support@ccdi.org",
+      "url": "https://github.com/CBIIT/ccdi-dcc-federation-service"
+    },
+    "license": {
+      "name": "MIT",
+      "url": "https://opensource.org/licenses/MIT"
+    },
+    "termsOfService": "https://your-server.com/terms"
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8000/api/v1",
+      "description": "Local development server (default)"
+    },
+    {
+      "url": "https://your-server.com/api/v1",
+      "description": "Production server"
+    },
+    {
+      "url": "https://ccdi-federation-test.herokuapp.com/api/v1",
+      "description": "Test server (Heroku) - For online testing"
+    },
+    {
+      "url": "https://ccdi-api-test.up.railway.app/api/v1",
+      "description": "Test server (Railway) - For online testing"
+    }
+  ],
+  "paths": {
+    "/subject": {
+      "get": {
+        "summary": "List subjects",
+        "description": "Get paginated list of subjects with optional filtering",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 1,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "per_page",
+            "in": "query",
+            "description": "Items per page",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          {
+            "name": "sex",
+            "in": "query",
+            "description": "Filter by sex",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "Male",
+                "Female",
+                "Unknown"
+              ]
+            }
+          },
+          {
+            "name": "race",
+            "in": "query",
+            "description": "Filter by race",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubjectResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/subject/{org}/{ns}/{name}": {
+      "get": {
+        "summary": "Get subject by identifier",
+        "description": "Get a specific subject by organization, namespace, and name. For CCDI-DCC/CCDI-DCC, supports participant ID search with multiple IDs (comma-separated).",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "description": "Organization name",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "default": "CCDI-DCC"
+            },
+            "example": "CCDI-DCC"
+          },
+          {
+            "name": "ns",
+            "in": "path",
+            "description": "Namespace name",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "default": "CCDI-DCC"
+            },
+            "example": "CCDI-DCC"
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Subject name or participant ID(s). For CCDI-DCC/CCDI-DCC, multiple IDs can be comma-separated.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "default": "TARGET-10-PAKKMW"
+            },
+            "example": "TARGET-10-PAKKMW"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/Subject"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SubjectResponse"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Subject not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/subject/summary": {
+      "get": {
+        "summary": "Get subject summary (counts)",
+        "description": "Returns high-level counts for subjects. The total_count is the number of unique participants that match the current filters (if any). This endpoint is optimized for dashboards and headers where only counts are needed.",
+        "responses": {
+          "200": {
+            "description": "Summary counts successfully returned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SummaryResponse"
+                },
+                "example": {
+                  "total_count": 104496,
+                  "field_counts": {}
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Subject": {
+        "type": "object",
+        "description": "Normalized participant entity returned by this service.",
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/SubjectId"
+          },
+          "kind": {
+            "type": "string",
+            "example": "Participant",
+            "const": "Participant"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/SubjectMetadata"
+          },
+          "gateways": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": []
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "metadata",
+          "gateways"
+        ],
+        "examples": [
+          {
+            "id": {
+              "namespace": {
+                "organization": "CCDI-DCC",
+                "name": "dbGaP_phs000465"
+              },
+              "name": "TARGET-10-PAKKMW"
+            },
+            "kind": "Participant",
+            "metadata": {
+              "sex": {
+                "value": "Female",
+                "ancestors": null
+              },
+              "race": [
+                {
+                  "value": "White",
+                  "ancestors": null
+                }
+              ],
+              "ethnicity": {
+                "value": "Not reported",
+                "ancestors": null
+              },
+              "identifiers": [
+                {
+                  "value": {
+                    "namespace": {
+                      "organization": "CCDI-DCC",
+                      "name": "dbGaP_phs000465"
+                    },
+                    "name": "TARGET-10-PAKKMW",
+                    "type": "Linked"
+                  },
+                  "ancestors": null
+                }
+              ],
+              "associated_diagnoses": [
+                {
+                  "value": "Acute Lymphoblastic Leukemia, NOS",
+                  "ancestors": null,
+                  "owned": true,
+                  "comment": null,
+                  "details": {
+                    "method": null,
+                    "harmonizer": null,
+                    "url": "https://portal.pedscommons.org/DD?view=table"
+                  }
+                }
+              ],
+              "vital_status": {
+                "value": "Alive",
+                "ancestors": null
+              },
+              "age_at_vital_status": {
+                "value": 15,
+                "ancestors": null
+              },
+              "depositions": [
+                "db_gap"
+              ]
+            },
+            "gateways": []
+          }
+        ]
+      },
+      "SubjectId": {
+        "type": "object",
+        "description": "Compound identifier composed of namespace and local name.",
+        "properties": {
+          "namespace": {
+            "$ref": "#/components/schemas/Namespace"
+          },
+          "name": {
+            "type": "string",
+            "example": "TARGET-10-PAKKMW",
+            "pattern": "^[A-Z0-9-]+$"
+          }
+        },
+        "required": [
+          "namespace",
+          "name"
+        ]
+      },
+      "Namespace": {
+        "type": "object",
+        "description": "Authority issuing the identifier (organization plus prefixed study name).",
+        "properties": {
+          "organization": {
+            "type": "string",
+            "example": "CCDI-DCC",
+            "const": "CCDI-DCC"
+          },
+          "name": {
+            "type": "string",
+            "example": "dbGaP_phs000465",
+            "pattern": "^dbGaP_phs[0-9]+$"
+          }
+        },
+        "required": [
+          "organization",
+          "name"
+        ]
+      },
+      "SubjectMetadata": {
+        "type": "object",
+        "description": "Harmonized and unharmonized attributes associated with the participant.",
+        "properties": {
+          "sex": {
+            "$ref": "#/components/schemas/MetadataField"
+          },
+          "race": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MetadataField"
+            },
+            "minItems": 0
+          },
+          "ethnicity": {
+            "$ref": "#/components/schemas/MetadataField"
+          },
+          "identifiers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IdentifierField"
+            },
+            "minItems": 1
+          },
+          "associated_diagnoses": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AssociatedDiagnosisField"
+            },
+            "minItems": 0
+          },
+          "vital_status": {
+            "$ref": "#/components/schemas/MetadataField"
+          },
+          "age_at_vital_status": {
+            "$ref": "#/components/schemas/MetadataField"
+          },
+          "depositions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [
+              "db_gap"
+            ]
+          }
+        },
+        "required": [
+          "sex",
+          "race",
+          "ethnicity",
+          "identifiers",
+          "associated_diagnoses",
+          "vital_status",
+          "age_at_vital_status",
+          "depositions"
+        ]
+      },
+      "MetadataField": {
+        "type": "object",
+        "description": "Scalar metadata value with optional ancestry/provenance.",
+        "properties": {
+          "value": {
+            "type": "string",
+            "minLength": 1
+          },
+          "ancestors": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "value",
+          "ancestors"
+        ]
+      },
+      "IdentifierField": {
+        "type": "object",
+        "description": "External identifier binding for the participant.",
+        "properties": {
+          "value": {
+            "$ref": "#/components/schemas/IdentifierValue"
+          },
+          "ancestors": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "value",
+          "ancestors"
+        ]
+      },
+      "IdentifierValue": {
+        "type": "object",
+        "description": "Concrete identifier value including namespace and local name.",
+        "properties": {
+          "namespace": {
+            "$ref": "#/components/schemas/Namespace"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "namespace",
+          "name"
+        ]
+      },
+      "AssociatedDiagnosisField": {
+        "type": "object",
+        "description": "Diagnosis term assigned to the participant with optional metadata.",
+        "properties": {
+          "value": {
+            "type": "string",
+            "minLength": 1
+          },
+          "ancestors": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "owned": {
+            "type": "boolean",
+            "default": true
+          },
+          "comment": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "details": {
+            "$ref": "#/components/schemas/DiagnosisDetails"
+          }
+        },
+        "required": [
+          "value",
+          "ancestors",
+          "owned",
+          "comment",
+          "details"
+        ]
+      },
+      "DiagnosisDetails": {
+        "type": "object",
+        "description": "Additional details for a diagnosis value (optional metadata).",
+        "properties": {
+          "method": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "harmonizer": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "url": {
+            "type": "string",
+            "example": "https://portal.pedscommons.org/DD?view=table",
+            "format": "uri"
+          }
+        },
+        "required": [
+          "method",
+          "harmonizer",
+          "url"
+        ]
+      },
+      "SubjectResponse": {
+        "type": "object",
+        "description": "Envelope containing source metadata, result list, and pagination info.",
+        "properties": {
+          "summary": {
+            "$ref": "#/components/schemas/Summary"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Subject"
+            }
+          },
+          "pagination": {
+            "$ref": "#/components/schemas/PaginationInfo"
+          }
+        }
+      },
+      "Summary": {
+        "type": "object",
+        "description": "Top-level counts related to the current result set and overall corpus.",
+        "properties": {
+          "counts": {
+            "$ref": "#/components/schemas/Counts"
+          }
+        }
+      },
+      "Counts": {
+        "type": "object",
+        "description": "Count metrics: all = total unique participants; current = items returned in this page.",
+        "properties": {
+          "all": {
+            "type": "integer",
+            "example": 104496
+          },
+          "current": {
+            "type": "integer",
+            "example": 20
+          }
+        }
+      },
+      "PaginationInfo": {
+        "type": "object",
+        "description": "Pagination metadata for client navigation.",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "example": 1
+          },
+          "per_page": {
+            "type": "integer",
+            "example": 20
+          },
+          "total_pages": {
+            "type": "integer",
+            "example": 5225
+          },
+          "total_items": {
+            "type": "integer",
+            "example": 104496
+          },
+          "has_next": {
+            "type": "boolean",
+            "example": true
+          },
+          "has_prev": {
+            "type": "boolean",
+            "example": false
+          }
+        }
+      },
+      "SummaryResponse": {
+        "type": "object",
+        "description": "Summary-only response for endpoints that return aggregate counts.",
+        "properties": {
+          "total_count": {
+            "type": "integer"
+          },
+          "field_counts": {
+            "type": "object"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "description": "Standard error envelope.",
+        "properties": {
+          "detail": {
+            "type": "string",
+            "example": "Subject not found"
+          }
+        }
+      }
+    }
+  }
+}

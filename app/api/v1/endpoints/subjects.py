@@ -20,7 +20,7 @@ from app.api.v1.deps import (
     check_rate_limit
 )
 from app.core.config import Settings
-from app.core.pagination import PaginationParams, PaginationInfo, build_link_header
+from app.core.pagination import PaginationParams, PaginationInfo, build_link_header, calculate_pagination_info
 from app.core.cache import get_cache_service
 from app.core.logging import get_logger
 from app.lib.field_allowlist import FieldAllowlist
@@ -79,13 +79,15 @@ async def list_subjects(
             limit=pagination.per_page
         )
         
-        # Build pagination info (we'd need total count for complete pagination)
-        # For now, we'll provide basic pagination info
-        pagination_info = PaginationInfo(
+        # Get total count for summary
+        summary_result = await service.get_subjects_summary(filters)
+        total_count = summary_result.total_count
+        
+        # Calculate pagination info using the utility function
+        pagination_info = calculate_pagination_info(
             page=pagination.page,
             per_page=pagination.per_page,
-            total_pages=None,  # Would require additional count query
-            total_count=None   # Would require additional count query
+            total_items=total_count
         )
         
         # Add Link header for pagination
@@ -97,9 +99,15 @@ async def list_subjects(
         if link_header:
             response.headers["Link"] = link_header
         
-        # Build response
+        # Build nested response structure
         result = SubjectResponse(
-            subjects=subjects,
+            summary={
+                "counts": {
+                    "all": total_count,  # Total number of unique participants
+                    "current": len(subjects)
+                }
+            },
+            data=subjects,
             pagination=pagination_info
         )
         
@@ -124,9 +132,9 @@ async def list_subjects(
 
 @router.get(
     "/{org}/{ns}/{name}",
-    response_model=Subject,
+    response_model=None,  # Will return different types based on input
     summary="Get subject by identifier",
-    description="Get a specific subject by organization, namespace, and name"
+    description="Get a specific subject by organization, namespace, and name. For CCDI-DCC/CCDI-DCC with multiple participant IDs, returns SubjectResponse format."
 )
 async def get_subject(
     org: str,
@@ -152,18 +160,91 @@ async def get_subject(
         cache_service = get_cache_service()
         service = SubjectService(session, allowlist, settings, cache_service)
         
-        # Get subject
-        subject = await service.get_subject_by_identifier(org, ns, name)
-        
-        logger.info(
-            "Get subject response",
-            org=org,
-            ns=ns,
-            name=name,
-            subject_data=getattr(subject, 'id', str(subject)[:50])  # Flexible logging
-        )
-        
-        return subject
+        # Check if this is a participant ID search (org and ns are CCDI-DCC)
+        if org == "CCDI-DCC" and ns == "CCDI-DCC":
+            # Use participant ID search logic
+            logger.info("Using participant ID search for CCDI-DCC/CCDI-DCC")
+            
+            # Parse participant IDs (split by comma and clean up)
+            participant_id_list = [pid.strip() for pid in name.split(',') if pid.strip()]
+            
+            if not participant_id_list:
+                raise HTTPException(status_code=400, detail="At least one participant ID must be provided")
+            
+            # Create filters for participant IDs
+            filters = {"identifiers": participant_id_list}
+            
+            # Get subjects using the search method
+            subjects = await service.get_subjects(
+                filters=filters,
+                offset=0,
+                limit=100  # Allow multiple results
+            )
+            
+            if not subjects:
+                raise NotFoundError(f"Subject not found: {org}.{ns}.{name}")
+            
+            # If only one participant ID, return single Subject
+            if len(participant_id_list) == 1:
+                subject = subjects[0]
+                logger.info(
+                    "Get subject response (single participant ID)",
+                    org=org,
+                    ns=ns,
+                    name=name,
+                    subject_data=getattr(subject, 'id', str(subject)[:50])
+                )
+                return subject
+            else:
+                # If multiple participant IDs, return SubjectResponse format
+                from app.core.pagination import calculate_pagination_info
+                from app.models.dto import SubjectResponse
+                
+                # Build pagination based on matched subjects (single page)
+                matched_count = len(subjects)
+                pagination_info = calculate_pagination_info(
+                    page=1,
+                    per_page=matched_count if matched_count > 0 else 0,
+                    total_items=matched_count
+                )
+                
+                # Build nested response structure
+                result = SubjectResponse(
+                    summary={
+                        "counts": {
+                            "all": matched_count,
+                            "current": matched_count
+                        }
+                    },
+                    data=subjects,
+                    pagination=pagination_info
+                )
+                
+                logger.info(
+                    "Get subject response (multiple participant IDs)",
+                    org=org,
+                    ns=ns,
+                    name=name,
+                    subject_count=len(subjects)
+                )
+                
+                return result
+        else:
+            # Use original identifier search logic
+            logger.info("Using identifier search for non-CCDI-DCC")
+            
+            # Get subject
+            subject = await service.get_subject_by_identifier(org, ns, name)
+            
+            logger.info(
+                "Get subject response",
+                org=org,
+                ns=ns,
+                name=name,
+                subject_data=getattr(subject, 'id', str(subject)[:50])  # Flexible logging
+            )
+            
+            return subject
         
     except NotFoundError as e:
         logger.warning("Subject not found", org=org, ns=ns, name=name)
@@ -435,6 +516,126 @@ async def get_subjects_summary_with_diagnosis(
         
     except Exception as e:
         logger.error("Error getting subjects summary with diagnosis", error=str(e), exc_info=True)
+        if hasattr(e, 'to_http_exception'):
+            raise e.to_http_exception()
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get(
+    "/search/{org}/{ns}/{name}",
+    response_model=SubjectResponse,
+    summary="Search subjects by participant ID(s)",
+    description="Search for subjects by one or more participant IDs. Multiple IDs can be separated by commas (,). Organization and namespace are hardcoded to CCDI-DCC."
+)
+async def search_by_participant_id(
+    org: str,
+    ns: str,
+    name: str,
+    pagination: PaginationParams = Depends(get_pagination_params),
+    session: AsyncSession = Depends(get_database_session),
+    settings: Settings = Depends(get_app_settings),
+    allowlist: FieldAllowlist = Depends(get_allowlist),
+    request: Request = None,
+    response: Response = None
+) -> SubjectResponse:
+    """
+    Search subjects by participant ID(s).
+    
+    Args:
+        org: Organization name
+        ns: Namespace name
+        participant_ids: Participant ID(s) to search for, separated by commas (,)
+        pagination: Pagination parameters
+        session: Database session
+        settings: Application settings
+        allowlist: Field allowlist
+        request: HTTP request
+        response: HTTP response
+        
+    Returns:
+        SubjectResponse with matching subjects
+    """
+    try:
+        # Check rate limit
+        await check_rate_limit(request)
+        
+        # Validate hardcoded values
+        if org != "CCDI-DCC":
+            raise HTTPException(status_code=400, detail="Organization must be CCDI-DCC")
+        if ns != "CCDI-DCC":
+            raise HTTPException(status_code=400, detail="Namespace must be CCDI-DCC")
+        
+        # Create service
+        cache_service = get_cache_service()
+        service = SubjectService(session, allowlist, settings, cache_service)
+        
+        # Log the search request
+        logger.info(f"Searching subjects by participant IDs: org={org}, ns={ns}, participant_ids={name}, page={pagination.page}, per_page={pagination.per_page}")
+        
+        # Parse participant IDs (split by comma and clean up)
+        participant_id_list = [pid.strip() for pid in name.split(',') if pid.strip()]
+        
+        if not participant_id_list:
+            raise HTTPException(status_code=400, detail="At least one participant ID must be provided")
+        
+        # Create filters for participant IDs (use identifiers filter which maps to participant_id)
+        filters = {"identifiers": participant_id_list}
+        
+        # Get subjects
+        subjects = await service.get_subjects(
+            filters=filters,
+            offset=pagination.offset,
+            limit=pagination.per_page
+        )
+        
+        # Get total count for summary
+        summary_result = await service.get_subjects_summary(filters)
+        total_count = summary_result.total_count
+        
+        # Calculate pagination info using the utility function
+        pagination_info = calculate_pagination_info(
+            page=pagination.page,
+            per_page=pagination.per_page,
+            total_items=total_count
+        )
+        
+        # Add Link header for pagination
+        link_header = build_link_header(
+            request=request,
+            pagination=pagination_info
+        )
+        
+        if link_header:
+            response.headers["Link"] = link_header
+        
+        # Build nested response structure
+        result = SubjectResponse(
+            source="CCDI-DCC",
+            summary={
+                "counts": {
+                    "all": total_count,  # Total number of unique participants
+                    "current": len(subjects)
+                }
+            },
+            data=subjects,
+            pagination=pagination_info
+        )
+        
+        logger.info(
+            "Search by participant ID response",
+            org=org,
+            ns=ns,
+            participant_ids=participant_id_list,
+            subject_count=len(subjects),
+            page=pagination.page
+        )
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error searching by participant ID", error=str(e), exc_info=True)
         if hasattr(e, 'to_http_exception'):
             raise e.to_http_exception()
         raise HTTPException(status_code=500, detail="Internal server error")

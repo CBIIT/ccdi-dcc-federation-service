@@ -150,6 +150,12 @@ class Settings(BaseSettings):
         alias="SHARE_LINE_LEVEL_DATA"
     )
     
+    # Namespace prefix
+    namespace_prefix: str = Field(
+        default="dbGaP_",
+        alias="NAMESPACE_PREFIX"
+    )
+    
     # Organization and server info
     organization_name: str = Field(
         default="Example Organization",

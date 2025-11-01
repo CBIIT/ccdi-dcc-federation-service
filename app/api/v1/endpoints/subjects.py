@@ -24,13 +24,14 @@ from app.core.pagination import PaginationParams, PaginationInfo, build_link_hea
 from app.core.cache import get_cache_service
 from app.core.logging import get_logger
 from app.lib.field_allowlist import FieldAllowlist
+from app.models.errors import ErrorsResponse
 from app.models.dto import (
     Subject,
     SubjectResponse,
     CountResponse,
     SummaryResponse
 )
-from app.models.errors import NotFoundError
+from app.models.errors import NotFoundError, InvalidParametersError, InvalidRouteError
 from app.services.subject import SubjectService
 
 logger = get_logger(__name__)
@@ -68,18 +69,93 @@ async def list_subjects(
     )
     
     try:
+        # Check for invalid parameter values
+        route_with_query = str(request.url.path) + (f"?{request.url.query}" if request.url.query else "")
+        
+        # Check if invalid ethnicity value was provided
+        invalid_ethnicity_value = filters.get("_invalid_ethnicity")
+        if invalid_ethnicity_value:
+            error = InvalidParametersError(
+                parameters=["ethnicity"],
+                reason="Value not allowed.",
+                method=request.method,
+                route=route_with_query,
+                message=f"Invalid value for parameter ethnicity: Value not allowed."
+            )
+            raise error.to_http_exception()
+        
+        # Check if invalid sex value was provided
+        invalid_sex_value = filters.get("_invalid_sex")
+        if invalid_sex_value:
+            error = InvalidParametersError(
+                parameters=["sex"],
+                reason="Value not allowed.",
+                method=request.method,
+                route=route_with_query,
+                message=f"Invalid value for parameter sex: Value not allowed."
+            )
+            raise error.to_http_exception()
+        
+        # Check if invalid race value was provided
+        invalid_race_value = filters.get("_invalid_race")
+        if invalid_race_value:
+            error = InvalidParametersError(
+                parameters=["race"],
+                reason="Value not allowed.",
+                method=request.method,
+                route=route_with_query,
+                message=f"Invalid value for parameter race: Value not allowed."
+            )
+            raise error.to_http_exception()
+        
+        # Check if invalid vital_status value was provided
+        invalid_vital_status_value = filters.get("_invalid_vital_status")
+        if invalid_vital_status_value:
+            error = InvalidParametersError(
+                parameters=["vital_status"],
+                reason="Value not allowed.",
+                method=request.method,
+                route=route_with_query,
+                message=f"Invalid value for parameter vital_status: Value not allowed."
+            )
+            raise error.to_http_exception()
+        
+        # Check if invalid age_at_vital_status value was provided
+        invalid_age_value = filters.get("_invalid_age_at_vital_status")
+        if invalid_age_value:
+            reason = filters.get("_age_at_vital_status_reason", "Value not allowed.")
+            error = InvalidParametersError(
+                parameters=["age_at_vital_status"],
+                reason=reason,
+                method=request.method,
+                route=route_with_query,
+                message=f"Invalid value for parameter age_at_vital_status: {reason}"
+            )
+            raise error.to_http_exception()
+        
+        # Remove the markers if present
+        filters.pop("_invalid_ethnicity", None)
+        filters.pop("_invalid_sex", None)
+        filters.pop("_invalid_race", None)
+        filters.pop("_invalid_vital_status", None)
+        filters.pop("_invalid_age_at_vital_status", None)
+        filters.pop("_age_at_vital_status_reason", None)
+        
         # Create service
         cache_service = get_cache_service()
         service = SubjectService(session, allowlist, settings, cache_service)
         
+        # Make a copy of filters for get_subjects (it modifies the dict by popping race/identifiers)
+        filters_copy = filters.copy()
+        
         # Get subjects
         subjects = await service.get_subjects(
-            filters=filters,
+            filters=filters_copy,
             offset=pagination.offset,
             limit=pagination.per_page
         )
         
-        # Get total count for summary
+        # Get total count for summary (use original filters, not the modified copy)
         summary_result = await service.get_subjects_summary(filters)
         total_count = summary_result.counts.total
         
@@ -119,8 +195,66 @@ async def list_subjects(
         
         return result
         
+    except HTTPException:
+        # Re-raise HTTPException as-is (already properly formatted)
+        raise
+    except InvalidParametersError as e:
+        # Re-raise InvalidParametersError to let the exception handler process it
+        raise e.to_http_exception()
     except Exception as e:
         logger.error("Error listing subjects", error=str(e), exc_info=True)
+        if hasattr(e, 'to_http_exception'):
+            raise e.to_http_exception()
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# ============================================================================
+# Subject Counting by Field
+# ============================================================================
+
+@router.get(
+    "/by/{field}/count",
+    response_model=CountResponse,
+    summary="Count subjects by field",
+    description="Get counts of subjects grouped by a specific field value"
+)
+async def count_subjects_by_field(
+    field: str,
+    request: Request,
+    filters: Dict[str, Any] = Depends(get_subject_filters),
+    session: AsyncSession = Depends(get_database_session),
+    settings: Settings = Depends(get_app_settings),
+    allowlist: FieldAllowlist = Depends(get_allowlist),
+    _rate_limit: None = Depends(check_rate_limit)
+):
+    """Count subjects grouped by a specific field."""
+    logger.info(
+        "Count subjects by field request",
+        field=field,
+        filters=filters,
+        path=request.url.path
+    )
+    
+    try:
+        # Create service
+        cache_service = get_cache_service()
+        service = SubjectService(session, allowlist, settings, cache_service)
+        
+        # Get counts
+        result = await service.count_subjects_by_field(field, filters)
+        
+        logger.info(
+            "Count subjects by field response",
+            field=field,
+            total=result.total,
+            missing=result.missing,
+            values_count=len(result.values)
+        )
+        
+        return result
+        
+    except Exception as e:
+        logger.error("Error counting subjects by field", error=str(e), exc_info=True)
         if hasattr(e, 'to_http_exception'):
             raise e.to_http_exception()
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -156,6 +290,35 @@ async def get_subject(
     )
     
     try:
+        # Check if this path matches /{org}/{ns}/count pattern (likely a typo for /by/{field}/count)
+        path = request.url.path
+        if name == "count" and path.endswith("/count"):
+            from app.main import _suggest_correct_path
+            suggested_path = _suggest_correct_path(path)
+            if suggested_path:
+                raise InvalidRouteError(
+                    method=request.method,
+                    route=path
+                )
+        
+        # Validate org and ns parameters
+        invalid_params = []
+        if org != "CCDI-DCC":
+            invalid_params.append("org")
+        if ns.lower() != "phs":
+            invalid_params.append("ns")
+        
+        if invalid_params:
+            param_reasons = {
+                "org": "Organization accepted is 'CCDI-DCC'",
+                "ns": "Namespace accepted is 'phs' "
+            }
+            reasons = [param_reasons[param] for param in invalid_params]
+            raise InvalidParametersError(
+                parameters=invalid_params,
+                reason="; ".join(reasons)
+            )
+        
         # Create service
         cache_service = get_cache_service()
         service = SubjectService(session, allowlist, settings, cache_service)
@@ -169,7 +332,10 @@ async def get_subject(
             participant_id_list = [pid.strip() for pid in name.split(',') if pid.strip()]
             
             if not participant_id_list:
-                raise HTTPException(status_code=400, detail="At least one participant ID must be provided")
+                raise InvalidParametersError(
+                    parameters=["name"],
+                    reason="At least one participant ID must be provided"
+                )
             
             # Create filters for participant IDs
             filters = {"identifiers": participant_id_list}
@@ -182,7 +348,7 @@ async def get_subject(
             )
             
             if not subjects:
-                raise NotFoundError(f"Subject not found: {org}.{ns}.{name}")
+                raise NotFoundError("Subject")
             
             # If only one participant ID, return single Subject
             if len(participant_id_list) == 1:
@@ -197,8 +363,6 @@ async def get_subject(
                 return subject
             else:
                 # If multiple participant IDs, return SubjectResponse format
-                from app.core.pagination import calculate_pagination_info
-                from app.models.dto import SubjectResponse
                 
                 # Build pagination based on matched subjects (single page)
                 matched_count = len(subjects)
@@ -246,61 +410,14 @@ async def get_subject(
             
             return subject
         
-    except NotFoundError as e:
-        logger.warning("Subject not found", org=org, ns=ns, name=name)
-        raise HTTPException(status_code=404, detail=str(e))
+    except (NotFoundError, InvalidParametersError) as e:
+        if isinstance(e, NotFoundError):
+            logger.warning("Subject not found", org=org, ns=ns, name=name)
+        else:
+            logger.warning("Invalid parameters", org=org, ns=ns, name=name)
+        raise e.to_http_exception()
     except Exception as e:
         logger.error("Error getting subject", error=str(e), exc_info=True)
-        if hasattr(e, 'to_http_exception'):
-            raise e.to_http_exception()
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
-# ============================================================================
-# Subject Counting by Field
-# ============================================================================
-
-@router.get(
-    "/by/{field}/count",
-    response_model=CountResponse,
-    summary="Count subjects by field",
-    description="Get counts of subjects grouped by a specific field value"
-)
-async def count_subjects_by_field(
-    field: str,
-    request: Request,
-    filters: Dict[str, Any] = Depends(get_subject_filters),
-    session: AsyncSession = Depends(get_database_session),
-    settings: Settings = Depends(get_app_settings),
-    allowlist: FieldAllowlist = Depends(get_allowlist),
-    _rate_limit: None = Depends(check_rate_limit)
-):
-    """Count subjects grouped by a specific field."""
-    logger.info(
-        "Count subjects by field request",
-        field=field,
-        filters=filters,
-        path=request.url.path
-    )
-    
-    try:
-        # Create service
-        cache_service = get_cache_service()
-        service = SubjectService(session, allowlist, settings, cache_service)
-        
-        # Get counts
-        result = await service.count_subjects_by_field(field, filters)
-        
-        logger.info(
-            "Count subjects by field response",
-            field=field,
-            count_items=len(result.counts)
-        )
-        
-        return result
-        
-    except Exception as e:
-        logger.error("Error counting subjects by field", error=str(e), exc_info=True)
         if hasattr(e, 'to_http_exception'):
             raise e.to_http_exception()
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -561,9 +678,15 @@ async def search_by_participant_id(
         
         # Validate hardcoded values
         if org != "CCDI-DCC":
-            raise HTTPException(status_code=400, detail="Organization must be CCDI-DCC")
+            raise InvalidParametersError(
+                parameters=["org"],
+                reason="Organization must be CCDI-DCC"
+            )
         if ns != "CCDI-DCC":
-            raise HTTPException(status_code=400, detail="Namespace must be CCDI-DCC")
+            raise InvalidParametersError(
+                parameters=["ns"],
+                reason="Namespace must be CCDI-DCC"
+            )
         
         # Create service
         cache_service = get_cache_service()
@@ -576,7 +699,10 @@ async def search_by_participant_id(
         participant_id_list = [pid.strip() for pid in name.split(',') if pid.strip()]
         
         if not participant_id_list:
-            raise HTTPException(status_code=400, detail="At least one participant ID must be provided")
+            raise InvalidParametersError(
+                parameters=["name"],
+                reason="At least one participant ID must be provided"
+            )
         
         # Create filters for participant IDs (use identifiers filter which maps to participant_id)
         filters = {"identifiers": participant_id_list}

@@ -157,12 +157,13 @@ class SubjectService:
                 return CountResponse(**cached_result)
         
         # Get counts from repository
-        counts = await self.repository.count_subjects_by_field(field, filters)
+        result = await self.repository.count_subjects_by_field(field, filters)
         
         # Build response
         response = CountResponse(
-            field=field,
-            counts=counts
+            total=result.get("total", 0),
+            missing=result.get("missing", 0),
+            values=result.get("values", [])
         )
         
         # Cache result
@@ -176,7 +177,9 @@ class SubjectService:
         logger.info(
             "Completed subject count by field",
             field=field,
-            result_count=len(counts)
+            total=response.total,
+            missing=response.missing,
+            values_count=len(response.values)
         )
         
         return response
@@ -194,15 +197,24 @@ class SubjectService:
         Returns:
             SummaryResponse with summary statistics
         """
-        logger.debug("Getting subjects summary", filters=filters)
+        logger.debug(
+            "Getting subjects summary",
+            filters=filters,
+            race_filter_type=type(filters.get("race")).__name__ if "race" in filters else None,
+            race_filter_value=filters.get("race")
+        )
         
         # Check cache first
         cache_key = None
         if self.cache_service:
             cache_key = self._build_cache_key("subject_summary", None, filters)
+            logger.debug("Cache key", cache_key=cache_key, filters=filters)
             cached_result = await self.cache_service.get(cache_key)
             if cached_result:
-                logger.debug("Returning cached subjects summary")
+                logger.debug(
+                    "Returning cached subjects summary",
+                    cached_total=cached_result.get("counts", {}).get("total") if isinstance(cached_result, dict) and "counts" in cached_result else cached_result.get("total_count")
+                )
                 # Handle both old and new cache formats
                 if "counts" in cached_result:
                     return SummaryResponse(**cached_result)
@@ -214,7 +226,9 @@ class SubjectService:
                     )
         
         # Get summary from repository
+        logger.debug("Calling repository.get_subjects_summary", filters=filters)
         summary_data = await self.repository.get_subjects_summary(filters)
+        logger.debug("Repository returned", total_count=summary_data.get("total_count"))
         
         # Transform repository format to response format
         from app.models.dto import SummaryResponse, SummaryCounts
@@ -224,6 +238,7 @@ class SubjectService:
         
         # Cache result
         if self.cache_service and cache_key:
+            logger.debug("Caching summary result", cache_key=cache_key, total=response.counts.total)
             await self.cache_service.set(
                 cache_key,
                 response.dict(),
@@ -281,7 +296,17 @@ class SubjectService:
             Cache key string
         """
         # Sort filters for consistent cache keys
-        filter_items = sorted(filters.items()) if filters else []
+        # Normalize list values to strings for consistent cache keys
+        normalized_filters = {}
+        for k, v in filters.items():
+            if isinstance(v, list):
+                # Sort list and join with comma for consistent cache key
+                sorted_items = sorted([str(item).strip() for item in v if item])
+                normalized_filters[k] = ",".join(sorted_items) if sorted_items else ""
+            else:
+                normalized_filters[k] = str(v) if v is not None else ""
+        
+        filter_items = sorted(normalized_filters.items()) if normalized_filters else []
         filter_str = "|".join([f"{k}:{v}" for k, v in filter_items])
         
         if field:

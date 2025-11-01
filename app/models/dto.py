@@ -452,8 +452,9 @@ class CountResult(BaseModel):
 
 class CountResponse(BaseModel):
     """Generic count response for field counting."""
-    field: str = Field(..., description="Field name that was counted")
-    counts: List[CountResult] = Field(..., description="Count results for field values")
+    total: int = Field(default=0, description="Total counts of all unique participants")
+    missing: int = Field(default=0, description="Count of unique participants with null value in the field")
+    values: List[CountResult] = Field(default_factory=list, description="Count results for field values")
 
 
 class SummaryCounts(BaseModel):

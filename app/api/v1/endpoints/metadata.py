@@ -23,7 +23,7 @@ from app.models.dto import MetadataFieldsResponse
 
 logger = get_logger(__name__)
 
-router = APIRouter(prefix="/metadata", tags=["metadata"])
+# router = APIRouter(prefix="/metadata", tags=["metadata"])
 
 
 # ============================================================================
@@ -106,126 +106,126 @@ class MetadataService:
 # Subject Metadata Fields
 # ============================================================================
 
-@router.get(
-    "/fields/subject",
-    response_model=MetadataFieldsResponse,
-    summary="Get subject metadata fields",
-    description="Get available metadata fields for subjects"
-)
-async def get_subject_fields(
-    request: Request,
-    session: AsyncSession = Depends(get_database_session),
-    settings: Settings = Depends(get_app_settings),
-    allowlist: FieldAllowlist = Depends(get_allowlist),
-    _rate_limit: None = Depends(check_rate_limit)
-):
-    """Get available metadata fields for subjects."""
-    logger.info(
-        "Get subject metadata fields request",
-        path=request.url.path
-    )
-    
-    try:
-        # Create service
-        service = MetadataService(session, allowlist, settings)
-        
-        # Get fields
-        result = await service.get_fields_for_entity("subject")
-        
-        logger.info(
-            "Get subject metadata fields response",
-            harmonized_count=len(result.harmonized),
-            unharmonized_count=len(result.unharmonized)
-        )
-        
-        return result
-        
-    except Exception as e:
-        logger.error("Error getting subject metadata fields", error=str(e), exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+# @router.get(
+#     "/fields/subject",
+#     response_model=MetadataFieldsResponse,
+#     summary="Get subject metadata fields",
+#     description="Get available metadata fields for subjects"
+# )
+# async def get_subject_fields(
+#     request: Request,
+#     session: AsyncSession = Depends(get_database_session),
+#     settings: Settings = Depends(get_app_settings),
+#     allowlist: FieldAllowlist = Depends(get_allowlist),
+#     _rate_limit: None = Depends(check_rate_limit)
+# ):
+#     """Get available metadata fields for subjects."""
+#     logger.info(
+#         "Get subject metadata fields request",
+#         path=request.url.path
+#     )
+#     
+#     try:
+#         # Create service
+#         service = MetadataService(session, allowlist, settings)
+#         
+#         # Get fields
+#         result = await service.get_fields_for_entity("subject")
+#         
+#         logger.info(
+#             "Get subject metadata fields response",
+#             harmonized_count=len(result.harmonized),
+#             unharmonized_count=len(result.unharmonized)
+#         )
+#         
+#         return result
+#         
+#     except Exception as e:
+#         logger.error("Error getting subject metadata fields", error=str(e), exc_info=True)
+#         raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # ============================================================================
 # Sample Metadata Fields
 # ============================================================================
 
-@router.get(
-    "/fields/sample",
-    response_model=MetadataFieldsResponse,
-    summary="Get sample metadata fields",
-    description="Get available metadata fields for samples"
-)
-async def get_sample_fields(
-    request: Request,
-    session: AsyncSession = Depends(get_database_session),
-    settings: Settings = Depends(get_app_settings),
-    allowlist: FieldAllowlist = Depends(get_allowlist),
-    _rate_limit: None = Depends(check_rate_limit)
-):
-    """Get available metadata fields for samples."""
-    logger.info(
-        "Get sample metadata fields request",
-        path=request.url.path
-    )
-    
-    try:
-        # Create service
-        service = MetadataService(session, allowlist, settings)
-        
-        # Get fields
-        result = await service.get_fields_for_entity("sample")
-        
-        logger.info(
-            "Get sample metadata fields response",
-            harmonized_count=len(result.harmonized),
-            unharmonized_count=len(result.unharmonized)
-        )
-        
-        return result
-        
-    except Exception as e:
-        logger.error("Error getting sample metadata fields", error=str(e), exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+# @router.get(
+#     "/fields/sample",
+#     response_model=MetadataFieldsResponse,
+#     summary="Get sample metadata fields",
+#     description="Get available metadata fields for samples"
+# )
+# async def get_sample_fields(
+#     request: Request,
+#     session: AsyncSession = Depends(get_database_session),
+#     settings: Settings = Depends(get_app_settings),
+#     allowlist: FieldAllowlist = Depends(get_allowlist),
+#     _rate_limit: None = Depends(check_rate_limit)
+# ):
+#     """Get available metadata fields for samples."""
+#     logger.info(
+#         "Get sample metadata fields request",
+#         path=request.url.path
+#     )
+#     
+#     try:
+#         # Create service
+#         service = MetadataService(session, allowlist, settings)
+#         
+#         # Get fields
+#         result = await service.get_fields_for_entity("sample")
+#         
+#         logger.info(
+#             "Get sample metadata fields response",
+#             harmonized_count=len(result.harmonized),
+#             unharmonized_count=len(result.unharmonized)
+#         )
+#         
+#         return result
+#         
+#     except Exception as e:
+#         logger.error("Error getting sample metadata fields", error=str(e), exc_info=True)
+#         raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # ============================================================================
 # File Metadata Fields
 # ============================================================================
 
-@router.get(
-    "/fields/file",
-    response_model=MetadataFieldsResponse,
-    summary="Get file metadata fields",
-    description="Get available metadata fields for files"
-)
-async def get_file_fields(
-    request: Request,
-    session: AsyncSession = Depends(get_database_session),
-    settings: Settings = Depends(get_app_settings),
-    allowlist: FieldAllowlist = Depends(get_allowlist),
-    _rate_limit: None = Depends(check_rate_limit)
-):
-    """Get available metadata fields for files."""
-    logger.info(
-        "Get file metadata fields request",
-        path=request.url.path
-    )
-    
-    try:
-        # Create service
-        service = MetadataService(session, allowlist, settings)
-        
-        # Get fields
-        result = await service.get_fields_for_entity("file")
-        
-        logger.info(
-            "Get file metadata fields response",
-            harmonized_count=len(result.harmonized),
-            unharmonized_count=len(result.unharmonized)
-        )
-        
-        return result
-        
-    except Exception as e:
-        logger.error("Error getting file metadata fields", error=str(e), exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+# @router.get(
+#     "/fields/file",
+#     response_model=MetadataFieldsResponse,
+#     summary="Get file metadata fields",
+#     description="Get available metadata fields for files"
+# )
+# async def get_file_fields(
+#     request: Request,
+#     session: AsyncSession = Depends(get_database_session),
+#     settings: Settings = Depends(get_app_settings),
+#     allowlist: FieldAllowlist = Depends(get_allowlist),
+#     _rate_limit: None = Depends(check_rate_limit)
+# ):
+#     """Get available metadata fields for files."""
+#     logger.info(
+#         "Get file metadata fields request",
+#         path=request.url.path
+#     )
+#     
+#     try:
+#         # Create service
+#         service = MetadataService(session, allowlist, settings)
+#         
+#         # Get fields
+#         result = await service.get_fields_for_entity("file")
+#         
+#         logger.info(
+#             "Get file metadata fields response",
+#             harmonized_count=len(result.harmonized),
+#             unharmonized_count=len(result.unharmonized)
+#         )
+#         
+#         return result
+#         
+#     except Exception as e:
+#         logger.error("Error getting file metadata fields", error=str(e), exc_info=True)
+#         raise HTTPException(status_code=500, detail="Internal server error")

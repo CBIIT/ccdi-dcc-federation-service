@@ -23,26 +23,45 @@ servers:
 paths:
   /subject:
     get:
-      summary: List subjects
-      description: Get paginated list of subjects with optional filtering
+      tags:
+      - Subject
+      summary: Gets the subjects known by this server.
+      description: |-
+        Gets the subjects known by this server.
+
+        ### Pagination
+
+        This endpoint is paginated. Users may override the default pagination
+        parameters by providing one or more of the pagination-related query
+        parameters below.
+
+        ### Filtering
+
+        All harmonized (top-level) and unharmonized (nested under the
+        `metadata.unharmonized` key) metadata fields are filterable. To achieve
+        this, you can provide the field name as a [`String`]. Filtering follows the
+        following rules:
+
+        * For single-value metadata field, the subject is included in the results if
+        its value _exactly_ matches the query string. Matches are case-sensitive.
+        * For multiple-value metadata fields, the subject is included in the results
+        if any of its values for the field _exactly_ match the query string (a
+        logical OR (`||`)). Matches are case-sensitive.
+        * When the metadata field is `null` (in the case of singular or
+        multiple-valued metadata fields) or empty, the subject is not included.
+        * When multiple fields are provided as filters, a logical AND (`&&`) strings
+        together the predicates. In other words, all filters must match for a
+        subject to be returned. Note that this means that servers do not natively
+        support logical OR (`||`) across multiple fields: that must be done by
+        calling this endpoint with each of your desired queries and performing a
+        set union of those subjects out of band.
+
+        ### Ordering
+
+        This endpoint has default ordering requirements—those details are documented
+        in the `SubjectResponse` schema.
+      operationId: subject_index
       parameters:
-      - name: page
-        in: query
-        description: Page number
-        required: false
-        schema:
-          type: integer
-          default: 1
-          minimum: 1
-      - name: per_page
-        in: query
-        description: Items per page
-        required: false
-        schema:
-          type: integer
-          default: 20
-          minimum: 1
-          maximum: 100
       - name: sex
         in: query
         description: Matches any subject where the `sex` field matches the string provided.
@@ -53,19 +72,20 @@ paths:
           - F
           - M
           - U
-          default: M
-        example: M
       - name: race
         in: query
         description: |-
-          Matches any subject where any member of the `race` field matches the
-          provided value. The race field in the database may contain semicolon-separated
-          values (e.g., 'Asian;White'), and the filter will match if the provided
-          value is found within those values.
-        required: false
-        schema:
-          type: string
-          enum:
+          Matches any subject where any member of the `race` field matches any
+          of the provided values. Multiple race values can be provided separated
+          by `||` (double pipe) as delimiter. The race field in the database may
+          contain semicolon-separated values (e.g., 'Asian;White'), and the filter
+          will match if any of the provided values is found within those values.
+          
+          **Delimiter:** Only `||` (double pipe) is accepted as a delimiter for
+          multiple values. All other characters (comma, ampersand, etc.) are treated
+          as part of a single race value and will fail validation.
+          
+          **Valid race values:**
           - Not allowed to collect
           - Native Hawaiian or other Pacific Islander
           - Not Reported
@@ -74,6 +94,14 @@ paths:
           - Asian
           - Black or African American
           - White
+          
+          **Examples:**
+          - Single value: `?race=White`
+          - Multiple values: `?race=White||Black%20or%20African%20American`
+          - Invalid (comma): `?race=White,Black` - treated as single invalid value
+        required: false
+        schema:
+          type: string
         example: White
       - name: ethnicity
         in: query
@@ -88,7 +116,6 @@ paths:
           enum:
           - Hispanic or Latino
           - Not reported
-        example: Hispanic or Latino
       - name: identifiers
         in: query
         description: |-
@@ -113,7 +140,6 @@ paths:
           - Dead
           - Not Reported
           - Unknown
-        example: Alive
       - name: age_at_vital_status
         in: query
         description: |-
@@ -124,49 +150,197 @@ paths:
         schema:
           type: integer
           minimum: 0
-        example: 3650
+      # - name: depositions
+      #   in: query
+      #   description: |-
+      #     Matches any subject where any member of the `depositions` fields match
+      #     the string provided.
+      #   required: false
+      #   schema:
+      #     type: string
+      #     default: phs
+      #   example: phs
+      # - name: metadata.unharmonized.<field>
+      #   in: query
+      #   description: |-
+      #     All unharmonized fields should be filterable in the same manner as harmonized fields:
+      #
+      #     * Filtering on a singular field should include the `Subject` in the results if the query exactly matches the value of that field for the `Subject` (case-sensitive).
+      #     * Filtering on field with multiple values should include the `Subject` in the results if the query exactly matches any of the values of the field for that `Subject` (case-sensitive).
+      #     * Unlike harmonized fields, unharmonized fields must be prefixed with `metadata.unharmonized`.
+      #
+      #     **Note:** this query parameter is intended to be symbolic of any unharmonized field. Because of limitations within Swagger UI, it will show up as a query parameter that can be optionally be submitted as part of a request within Swagger UI. Please keep in mind that the literal query parameter `?metadata.unharmonized.<field>=value` is not supported, so attempting to use it within Swagger UI will not work!
+      #   required: false
+      #   schema:
+      #     type: string
+      - name: page
+        in: query
+        description: |-
+          The page to retrieve.
+
+          This is a 1-based index of a page within a page set. The value of `page`
+          **must** default to `1` when this parameter is not provided.
+        required: false
+        schema:
+          type: integer
+          default: 1
+          minimum: 1
+      - name: per_page
+        in: query
+        description: |-
+          The number of results per page.
+
+          Each server can select its own default value for `per_page` when this
+          parameter is not provided. That said, the convention within the
+          community is to use `100` as a default value if any value is equally
+          reasonable. This server uses `20` as the default value.
+        required: false
+        schema:
+          type: integer
+          default: 20
+          minimum: 1
+          maximum: 100
       responses:
         '200':
-          description: Successful response
+          description: Successful operation.
+          headers:
+            link:
+              schema:
+                type: string
+              description: |-
+                Links to URLs that may be of interest when paging through paginated responses. This header contains two or more links of interest. The format of the field is as follows:
+
+                `Link: <URL>; rel="REL"`
+
+                ### Relationships
+
+                In the format above, `URL` represents a valid URL for the link of interest and `REL` is one of four values:
+                - `first` (_Required_). A link to the first page in the results (can be the same as `last` if there is only one page).
+                - `last` (_Required_). A link to the last page in the results (can be the same as `first` if there is only one page).
+                - `next` (_Optional_). A link to the next page (if it exists).
+                - `prev` (_Optional_). A link to the previous page (if it exists).
+
+                ### Requirements
+
+                - This header _must_ provide links for at least the `first` and `last` rels.
+                - The `prev` and `next` links must exist only (a) when there are multiple pages in the result page set and (b) when the current page is not the first or last page, respectively.
+                - This list of links is unordered.
+
+                ### Notes
+
+                - HTTP 1.1 and HTTP 2.0 dictate that response headers are case insensitive. Though not required, we recommend an all lowercase name of `link` for this response header.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SubjectResponse'
-  /subject/{org}/{ns}/{name}:
+              example:
+                summary:
+                  counts:
+                    all: 25696
+                    current: 20
+                data:
+                - id:
+                    namespace:
+                      organization: CCDI-DCC
+                      name: phs
+                    name: TARGET-10-PAKKMW
+                  kind: Participant
+                  metadata:
+                    sex:
+                      value: F
+                    race:
+                    - value: White
+                    ethnicity:
+                      value: Not reported
+                    identifiers:
+                    - value:
+                        namespace:
+                          organization: CCDI-DCC
+                          name: phs
+                        name: TARGET-10-PAKKMW
+                        type: Linked
+                    associated_diagnoses:
+                    - value: Acute Lymphoblastic Leukemia, NOS
+                      owned: true
+                      comment: null
+                      details:
+                        method: null
+                        harmonizer: null
+                        url: https://portal.pedscommons.org/DD?view=table
+                    vital_status:
+                      value: Alive
+                    age_at_vital_status:
+                      value: 5475
+                    depositions:
+                    - db_gap
+                  gateways: []
+                pagination:
+                  page: 1
+                  per_page: 20
+                  total_pages: 1285
+                  total_items: 25696
+                  has_next: true
+                  has_prev: false
+        '404':
+          description: |-
+            Not found.
+            Servers that cannot provide line-level data should use this response rather than Forbidden (403), as there is no level of authorization that would allow one to access the information included in the API.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorsResponse'
+              example:
+                errors:
+                - kind: UnshareableData
+                  entity: Subjects
+                  reason: Our agreement with data providers prohibits us from sharing line-level data.
+        '422':
+          description: Invalid query or path parameters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorsResponse'
+              example:
+                errors:
+                - kind: InvalidParameters
+                  parameters:
+                  - page
+                  - per_page
+                  reason: Unable to calculate offset.
+                  message: 'Invalid value for parameters ''page'' and ''per_page'': unable to calculate offset.'
+  /subject/{organization}/{namespace}/{name}:
     get:
-      summary: Get subject by identifier
-      description: Get a specific subject by organization, namespace, and name. For
-        CCDI-DCC/phs (case-insensitive), supports participant ID search with multiple
-        IDs (comma-separated).
+      tags:
+      - Subject
+      summary: Gets the subject matching the provided id (if the subject exists).
+      description: Gets the subject matching the provided id (if the subject exists).
+      operationId: subject_show
       parameters:
-      - name: org
+      - name: organization
         in: path
-        description: Organization name (must be 'CCDI-DCC')
+        description: The organization identifier of the namespace to which the subject belongs. Defaults to 'CCDI-DCC'.
         required: true
         schema:
           type: string
+          example: CCDI-DCC
           default: CCDI-DCC
-        example: CCDI-DCC
-      - name: ns
+      - name: namespace
         in: path
-        description: Namespace name (must be 'phs', case-insensitive)
+        description: The namespace identifier (study_id value) to which the subject belongs. This is the value of the study_id field from the database.
         required: true
         schema:
           type: string
-          default: phs
-        example: phs
+          example: phs000465
       - name: name
         in: path
-        description: Subject name or participant ID(s). For CCDI-DCC/phs, multiple
-          IDs can be comma-separated.
+        description: The name portion of the subject identifier (participant ID).
         required: true
         schema:
           type: string
-          default: TARGET-10-PAKKMW
-        example: TARGET-10-PAKKMW
+          example: TARGET-10-PAKKMW
       responses:
         '200':
-          description: Successful response
+          description: Successful operation.
           content:
             application/json:
               schema:
@@ -174,23 +348,25 @@ paths:
                 - $ref: '#/components/schemas/Subject'
                 - $ref: '#/components/schemas/SubjectResponse'
         '404':
-          description: Subject not found
+          description: |-
+            Not found.
+            Servers that cannot provide line-level data should use this response rather than Forbidden (403), as there is no level of authorization that would allow one to access the information included in the API.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorsResponse'
-              examples:
-                notFound:
-                  value:
-                    errors:
-                    - kind: NotFound
-                      entity: Subject
+              example:
+                errors:
+                - kind: NotFound
+                  entity: Subjects
+                  message: Subjects not found.
   /subject/summary:
     get:
-      summary: Get subject summary (counts)
-      description: Returns high-level counts for subjects. The total is the number
-        of unique participants that match the current filters (if any). This endpoint
-        is optimized for dashboards and headers where only counts are needed.
+      tags:
+      - Subject
+      summary: Reports summary information for the subjects known by this server.
+      description: Reports summary information for the subjects known by this server.
+      operationId: subject_summary
       responses:
         '200':
           description: Summary counts successfully returned
@@ -203,15 +379,15 @@ paths:
                   total: 104496
   /subject/by/{field}/count:
     get:
-      summary: Count subjects by field value
-      description: Returns counts of unique participants grouped by a specific field
-        value. The response includes total count, missing count (participants with
-        null values), and counts for each distinct field value. Valid fields include
-        sex, race, ethnicity, vital_status, age_at_vital_status, and associated_diagnoses.
+      tags:
+      - Subject
+      summary: Groups the subjects by the specified metadata field and returns counts.
+      description: Groups the subjects by the specified metadata field and returns counts.
+      operationId: subjects_by_count
       parameters:
       - name: field
         in: path
-        description: Field name to count by. Case-sensitive.
+        description: The field to group by and count with.
         required: true
         schema:
           type: string
@@ -222,7 +398,6 @@ paths:
           - vital_status
           - age_at_vital_status
           - associated_diagnoses
-          default: sex
         examples:
           sex:
             value: sex
@@ -244,59 +419,23 @@ paths:
             summary: Count by associated diagnoses
       responses:
         '200':
-          description: Count results successfully returned
+          description: Successful operation.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/CountResponse'
+        '422':
+          description: Unsupported field.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorsResponse'
               example:
-                total: 25696
-                missing: 1069
-                values:
-                - value: M
-                  count: 15234
-                - value: F
-                  count: 9393
-                - value: U
-                  count: 0
-        '400':
-          description: Invalid field name or parameters
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorsResponse'
-              examples:
-                invalidField:
-                  value:
-                    errors:
-                    - kind: UnsupportedField
-                      field: invalid_field
-                      reason: The field was not found in the metadata object.
-                invalidParameters:
-                  value:
-                    errors:
-                    - kind: InvalidParameters
-                      parameters:
-                      - id
-                      reason: The parameter was a non-integer value.
-        '404':
-          description: Resource not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorsResponse'
-              examples:
-                notFound:
-                  value:
-                    errors:
-                    - kind: NotFound
-                      entity: Subject
-        '500':
-          description: Internal server error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorsResponse'
+                errors:
+                - kind: UnsupportedField
+                  field: handedness
+                  reason: This field is not present for subjects.
+                  message: 'Field ''handedness'' is not supported: this field is not present for subjects.'
   /errors/examples:
     get:
       summary: Error response examples
@@ -413,6 +552,127 @@ paths:
                     - kind: UnsupportedField
                       field: field
                       reason: The field was not found in the metadata object.
+  /namespace:
+    get:
+      tags:
+      - Namespace
+      summary: Gets the namespaces known by this server.
+      description: Gets the namespaces known by this server.
+      operationId: namespace_index
+      responses:
+        '200':
+          description: Successful operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NamespacesResponse'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorsResponse'
+  /namespace/{organization}/{namespace}:
+    get:
+      tags:
+      - Namespace
+      summary: Gets the namespace matching the provided name (if it exists).
+      description: Gets the namespace matching the provided name (if it exists).
+      operationId: namespace_show
+      parameters:
+      - name: organization
+        in: path
+        description: The organization of the namespace.
+        required: true
+        schema:
+          type: string
+      - name: namespace
+        in: path
+        description: The name of the namespace.
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Successful operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NamespaceResponse'
+        '404':
+          description: Namespace not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorsResponse'
+              example:
+                errors:
+                - kind: NotFound
+                  entity: Namespaces
+                  message: Namespaces not found.
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorsResponse'
+  /organization:
+    get:
+      tags:
+      - Organization
+      summary: Gets the organizations known by this server.
+      description: Gets the organizations known by this server.
+      operationId: organization_index
+      responses:
+        '200':
+          description: Successful operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationsResponse'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorsResponse'
+  /organization/{name}:
+    get:
+      tags:
+      - Organization
+      summary: Gets the organization matching the provided name (if it exists).
+      description: Gets the organization matching the provided name (if it exists).
+      operationId: organization_show
+      parameters:
+      - name: name
+        in: path
+        description: The name of the organization.
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Successful operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationResponse'
+        '404':
+          description: Organization not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorsResponse'
+              example:
+                errors:
+                - kind: NotFound
+                  entity: Organization
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorsResponse'
 components:
   schemas:
     Subject:
@@ -441,30 +701,25 @@ components:
       - id:
           namespace:
             organization: CCDI-DCC
-            name: dbGaP_phs000465
+            name: phs
           name: TARGET-10-PAKKMW
         kind: Participant
         metadata:
           sex:
-            value: Female
-            ancestors: null
+            value: F
           race:
           - value: White
-            ancestors: null
           ethnicity:
             value: Not reported
-            ancestors: null
           identifiers:
           - value:
               namespace:
                 organization: CCDI-DCC
-                name: dbGaP_phs000465
+                name: phs
               name: TARGET-10-PAKKMW
               type: Linked
-            ancestors: null
           associated_diagnoses:
           - value: Acute Lymphoblastic Leukemia, NOS
-            ancestors: null
             owned: true
             comment: null
             details:
@@ -473,10 +728,8 @@ components:
               url: https://portal.pedscommons.org/DD?view=table
           vital_status:
             value: Alive
-            ancestors: null
           age_at_vital_status:
-            value: 15
-            ancestors: null
+            value: 5475
           depositions:
           - db_gap
         gateways: []
@@ -504,8 +757,8 @@ components:
           const: CCDI-DCC
         name:
           type: string
-          example: dbGaP_phs000465
-          pattern: ^dbGaP_phs[0-9]+$
+          example: phs
+          pattern: ^phs$
       required:
       - organization
       - name
@@ -824,6 +1077,101 @@ components:
         - kind
         - field
         - reason
+    NamespaceEntity:
+      type: object
+      description: Namespace entity with identifier, description, and metadata.
+      properties:
+        id:
+          $ref: '#/components/schemas/NamespaceIdentifier'
+        description:
+          type: string
+          description: Human-readable description of the namespace
+          example: Namespace for CCDI-DCC phs studies
+        contact_email:
+          type: string
+          format: email
+          description: Contact email for namespace support
+          example: support@ccdi.org
+        metadata:
+          type: object
+          description: Additional namespace metadata
+          nullable: true
+      required:
+      - id
+      - description
+      - contact_email
+    NamespaceIdentifier:
+      type: object
+      description: Namespace identifier composed of organization and name.
+      properties:
+        organization:
+          type: string
+          description: Organization identifier
+          example: CCDI-DCC
+          const: CCDI-DCC
+        name:
+          type: string
+          description: Namespace name (study identifier)
+          example: phs
+      required:
+      - organization
+      - name
+    OrganizationEntity:
+      type: object
+      description: Organization entity with identifier, name, and metadata.
+      properties:
+        identifier:
+          type: string
+          description: Organization identifier
+          example: CCDI-DCC
+          const: CCDI-DCC
+        name:
+          type: string
+          description: Human-readable organization name
+          example: Childhood Cancer Data Initiative Data Coordinating Center
+        metadata:
+          type: object
+          description: Additional organization metadata
+          nullable: true
+      required:
+      - identifier
+      - name
+    NamespacesResponse:
+      type: object
+      description: Response containing a list of namespaces.
+      properties:
+        namespaces:
+          type: array
+          items:
+            $ref: '#/components/schemas/NamespaceEntity'
+      required:
+      - namespaces
+    NamespaceResponse:
+      type: object
+      description: Response containing a single namespace.
+      properties:
+        namespace:
+          $ref: '#/components/schemas/NamespaceEntity'
+      required:
+      - namespace
+    OrganizationsResponse:
+      type: object
+      description: Response containing a list of organizations.
+      properties:
+        organizations:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrganizationEntity'
+      required:
+      - organizations
+    OrganizationResponse:
+      type: object
+      description: Response containing a single organization.
+      properties:
+        organization:
+          $ref: '#/components/schemas/OrganizationEntity'
+      required:
+      - organization
     Error:
       type: object
       description: Standard error envelope (legacy - use ErrorsResponse).
@@ -831,3 +1179,14 @@ components:
         detail:
           type: string
           example: Subject not found
+tags:
+- name: Subject
+  description: Subjects within the CCDI federated ecosystem.
+- name: Namespace
+  description: List and describe namespaces known by this server.
+- name: Organization
+  description: List and describe organizations known by this server.
+# - name: Metadata
+#   description: Metadata field descriptions for subjects, samples, and files.
+- name: Errors
+  description: Error response examples and documentation.

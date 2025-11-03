@@ -22,7 +22,7 @@ from app.db.memgraph import memgraph_lifespan
 from app.api.v1.endpoints.subjects import router as subjects_router
 from app.api.v1.endpoints.samples import router as samples_router
 from app.api.v1.endpoints.files import router as files_router
-from app.api.v1.endpoints.metadata import router as metadata_router
+# from app.api.v1.endpoints.metadata import router as metadata_router
 from app.api.v1.endpoints.namespaces import router as namespaces_router
 from app.api.v1.endpoints.errors import router as errors_router
 from app.models.errors import ErrorsResponse, ErrorDetail, ErrorKind, CCDIException
@@ -142,14 +142,14 @@ def setup_routers(app: FastAPI) -> None:
     # Add subject routes
     app.include_router(subjects_router, prefix="/api/v1")
     
-    # Add sample routes
-    app.include_router(samples_router, prefix="/api/v1")
+    # Add sample routes (commented out - not shown in Swagger docs)
+    # app.include_router(samples_router, prefix="/api/v1")
     
-    # Add file routes
-    app.include_router(files_router, prefix="/api/v1")
+    # Add file routes (commented out - not shown in Swagger docs)
+    # app.include_router(files_router, prefix="/api/v1")
     
     # Add metadata routes
-    app.include_router(metadata_router, prefix="/api/v1")
+    # app.include_router(metadata_router, prefix="/api/v1")
     
     # Add namespace routes
     app.include_router(namespaces_router, prefix="/api/v1")
@@ -301,15 +301,15 @@ def setup_exception_handlers(app: FastAPI) -> None:
                     content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
                 )
             
-            # Check if error detail suggests org/ns validation (path typo pattern)
+            # Check if error detail suggests organization/namespace validation (path typo pattern)
             error_detail_dict = exc.detail if isinstance(exc.detail, dict) else {}
             if isinstance(error_detail_dict, dict) and "errors" in error_detail_dict:
                 errors_list = error_detail_dict.get("errors", [])
-                # Check if any error mentions org/ns parameters
+                # Check if any error mentions organization/namespace parameters
                 for err in errors_list:
                     if isinstance(err, dict):
                         params = err.get("parameters", [])
-                        if "org" in params or "ns" in params:
+                        if "organization" in params or "namespace" in params:
                             # Check again with the path
                             suggested_path = _suggest_correct_path(path)
                             if suggested_path:

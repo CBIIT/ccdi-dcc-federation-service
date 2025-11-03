@@ -106,16 +106,16 @@ class FileRepository:
     
     async def get_file_by_identifier(
         self,
-        org: str,
-        ns: str,
+        organization: str,
+        namespace: str,
         name: str
     ) -> Optional[File]:
         """
         Get a specific file by organization, namespace, and name.
         
         Args:
-            org: Organization identifier
-            ns: Namespace identifier
+            organization: Organization identifier
+            namespace: Namespace identifier
             name: File name/identifier
             
         Returns:
@@ -123,8 +123,8 @@ class FileRepository:
         """
         logger.debug(
             "Fetching file by identifier",
-            org=org,
-            ns=ns,
+            organization=organization,
+            namespace=namespace,
             name=name
         )
         
@@ -136,7 +136,7 @@ class FileRepository:
         """
         
         # Build the full identifier
-        identifier = f"{org}.{ns}.{name}"
+        identifier = f"{organization}.{namespace}.{name}"
         params = {"identifier": identifier}
         
         logger.info(

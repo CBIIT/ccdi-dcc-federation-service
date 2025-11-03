@@ -17,7 +17,7 @@ from app.api.v1.deps import (
 )
 from app.core.config import Settings
 from app.core.logging import get_logger
-from app.models.dto import Namespace, Organization
+from app.models.dto import Namespace, Organization, NamespacesResponse, NamespaceResponse
 
 logger = get_logger(__name__)
 
@@ -45,53 +45,44 @@ class NamespaceService:
         """
         logger.debug("Getting all namespaces")
         
-        # Query to get distinct organizations and namespaces
+        # Query to get distinct Study_ID values from participant nodes
+        # For CCDI-DCC, organization is always "CCDI-DCC" and namespace is "phs"
         cypher = """
-        MATCH (n)
-        WHERE n.identifiers IS NOT NULL
-        WITH n.identifiers AS identifiers
-        UNWIND identifiers AS identifier
-        WITH split(identifier, '.') AS parts
-        WHERE size(parts) >= 3
-        WITH parts[0] AS org, parts[1] AS ns
-        RETURN DISTINCT org, ns
-        ORDER BY org, ns
+        MATCH (p:participant)
+        WHERE p.Study_ID IS NOT NULL AND p.Study_ID <> ''
+        WITH DISTINCT p.Study_ID AS study_id
+        RETURN study_id
+        ORDER BY study_id
         """
         
         # Execute query
         result = await self.session.run(cypher)
         records = await result.data()
         
-        # Group by organization
-        org_namespaces: Dict[str, List[str]] = {}
-        for record in records:
-            org = record.get("org")
-            ns = record.get("ns")
-            if org and ns:
-                if org not in org_namespaces:
-                    org_namespaces[org] = []
-                org_namespaces[org].append(ns)
-        
         # Build namespace objects
+        # For CCDI-DCC, we return a single namespace "phs" regardless of Study_ID values
+        # since all Study_IDs belong to the same namespace
         namespaces = []
-        for org, ns_list in org_namespaces.items():
-            for ns in ns_list:
-                namespaces.append(Namespace(
-                    organization=org,
-                    name=ns
-                ))
+        if records:
+            # Return one namespace entry: CCDI-DCC/phs
+            namespaces.append(Namespace(
+                organization="CCDI-DCC",
+                name="phs",
+                description="Namespace for CCDI-DCC phs studies (dbGaP study identifiers)",
+                contact_email="support@ccdi.org"
+            ))
         
         logger.info("Retrieved namespaces", count=len(namespaces))
         
         return namespaces
     
-    async def get_namespace_detail(self, org: str, ns: str) -> Namespace:
+    async def get_namespace_detail(self, organization: str, namespace: str) -> Namespace:
         """
         Get details for a specific namespace.
         
         Args:
-            org: Organization identifier
-            ns: Namespace identifier
+            organization: Organization identifier
+            namespace: Namespace identifier
             
         Returns:
             Namespace object with details
@@ -99,47 +90,50 @@ class NamespaceService:
         Raises:
             NotFoundError: If namespace is not found
         """
-        logger.debug("Getting namespace detail", org=org, ns=ns)
+        logger.debug("Getting namespace detail", organization=organization, namespace=namespace)
         
-        # Query to check if namespace exists and get some statistics
+        # Validate that organization is CCDI-DCC and namespace is phs (case-insensitive)
+        if organization.upper() != "CCDI-DCC":
+            from app.models.errors import NotFoundError
+            raise NotFoundError(entity="Namespace", reason=f"Organization '{organization}' not found")
+        
+        if namespace.lower() != "phs":
+            from app.models.errors import NotFoundError
+            raise NotFoundError(entity="Namespace", reason=f"Namespace '{namespace}' not found")
+        
+        # Query to check if namespace exists and get participant count
         cypher = """
-        MATCH (n)
-        WHERE n.identifiers IS NOT NULL
-        WITH n.identifiers AS identifiers
-        UNWIND identifiers AS identifier
-        WITH split(identifier, '.') AS parts, n
-        WHERE size(parts) >= 3 AND parts[0] = $org AND parts[1] = $ns
-        RETURN COUNT(n) AS entity_count, COLLECT(DISTINCT labels(n)) AS entity_types
+        MATCH (p:participant)
+        WHERE p.Study_ID IS NOT NULL AND p.Study_ID <> ''
+        RETURN COUNT(DISTINCT p) AS participant_count
         """
         
-        params = {"org": org, "ns": ns}
-        
         # Execute query
-        result = await self.session.run(cypher, params)
+        result = await self.session.run(cypher)
         records = await result.data()
         
-        if not records or records[0]["entity_count"] == 0:
+        participant_count = records[0]["participant_count"] if records else 0
+        
+        if participant_count == 0:
             from app.models.errors import NotFoundError
-            raise NotFoundError(f"Namespace not found: {org}.{ns}")
+            raise NotFoundError(entity="Namespace", reason=f"Namespace '{organization}/{namespace}' not found")
         
         # Build namespace with details
-        record = records[0]
-        namespace = Namespace(
-            organization=org,
-            name=ns,
-            description=f"Namespace {ns} in organization {org}",
-            entity_count=record["entity_count"],
-            entity_types=[label for labels in record["entity_types"] for label in labels]
+        namespace_obj = Namespace(
+            organization="CCDI-DCC",
+            name="phs",
+            description="Namespace for CCDI-DCC phs studies (dbGaP study identifiers)",
+            contact_email="support@ccdi.org"
         )
         
         logger.info(
             "Retrieved namespace detail",
-            org=org,
-            ns=ns,
-            entity_count=namespace.entity_count
+            organization=organization,
+            namespace=namespace,
+            participant_count=participant_count
         )
         
-        return namespace
+        return namespace_obj
 
 
 # ============================================================================
@@ -148,7 +142,7 @@ class NamespaceService:
 
 @router.get(
     "",
-    response_model=List[Namespace],
+    response_model=NamespacesResponse,
     summary="List namespaces",
     description="Get all available namespaces"
 )
@@ -176,7 +170,8 @@ async def list_namespaces(
             namespace_count=len(namespaces)
         )
         
-        return namespaces
+        # Return NamespacesResponse with namespaces array
+        return NamespacesResponse(namespaces=namespaces)
         
     except Exception as e:
         logger.error("Error listing namespaces", error=str(e), exc_info=True)
@@ -189,7 +184,7 @@ async def list_namespaces(
 
 @router.get(
     "/{organization}/{namespace}",
-    response_model=Namespace,
+    response_model=NamespaceResponse,
     summary="Get namespace details",
     description="Get details for a specific namespace"
 )
@@ -219,11 +214,11 @@ async def get_namespace(
         logger.info(
             "Get namespace response",
             organization=organization,
-            namespace=namespace,
-            entity_count=result.entity_count
+            namespace=namespace
         )
         
-        return result
+        # Return NamespaceResponse with namespace object
+        return NamespaceResponse(namespace=result)
         
     except Exception as e:
         logger.error("Error getting namespace", error=str(e), exc_info=True)

@@ -125,14 +125,14 @@ async def list_samples(
 # ============================================================================
 
 @router.get(
-    "/{org}/{ns}/{name}",
+    "/{organization}/{namespace}/{name}",
     response_model=Sample,
     summary="Get sample by identifier",
     description="Get a specific sample by organization, namespace, and name"
 )
 async def get_sample(
-    org: str,
-    ns: str,
+    organization: str,
+    namespace: str,
     name: str,
     request: Request,
     session: AsyncSession = Depends(get_database_session),
@@ -143,8 +143,8 @@ async def get_sample(
     """Get a specific sample by identifier."""
     logger.info(
         "Get sample request",
-        org=org,
-        ns=ns,
+        organization=organization,
+        namespace=namespace,
         name=name,
         path=request.url.path
     )
@@ -155,12 +155,12 @@ async def get_sample(
         service = SampleService(session, allowlist, settings, cache_service)
         
         # Get sample
-        sample = await service.get_sample_by_identifier(org, ns, name)
+        sample = await service.get_sample_by_identifier(organization, namespace, name)
         
         logger.info(
             "Get sample response",
-            org=org,
-            ns=ns,
+            organization=organization,
+            namespace=namespace,
             name=name,
             sample_data=getattr(sample, 'id', str(sample)[:50])  # Flexible logging
         )
@@ -168,7 +168,7 @@ async def get_sample(
         return sample
         
     except NotFoundError as e:
-        logger.warning("Sample not found", org=org, ns=ns, name=name)
+        logger.warning("Sample not found", organization=organization, namespace=namespace, name=name)
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.error("Error getting sample", error=str(e), exc_info=True)

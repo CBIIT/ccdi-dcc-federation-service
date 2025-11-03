@@ -93,7 +93,7 @@ def create_basic_openapi_spec():
                     }
                 }
             },
-            "/subject/{org}/{ns}/{name}": {
+            "/subject/{organization}/{namespace}/{name}": {
                 "get": {
                     "summary": "Get subject by identifier",
                     "description": "Get a specific subject by organization, namespace, and name. For CCDI-DCC/phs (case-insensitive), supports participant ID search with multiple IDs (comma-separated).",
@@ -107,7 +107,7 @@ def create_basic_openapi_spec():
                             "example": "CCDI-DCC"
                         },
                         {
-                            "name": "ns",
+                            "name": "namespace",
                             "in": "path",
                             "description": "Namespace name (must be 'phs', case-insensitive)",
                             "required": True,

@@ -29,19 +29,19 @@ curl "https://your-server.com/api/v1/subject/search/CCDI-DCC/CCDI-DCC/TARGET-10-
 
 ### Subject Endpoints
 - `GET /api/v1/subject` - List all subjects with pagination
-- `GET /api/v1/subject/{org}/{ns}/{name}` - Get subject by identifier
-- `GET /api/v1/subject/search/{org}/{ns}/{name}` - Search subjects by participant IDs
+- `GET /api/v1/subject/{organization}/{namespace}/{name}` - Get subject by identifier
+- `GET /api/v1/subject/search/{organization}/{namespace}/{name}` - Search subjects by participant IDs
 - `GET /api/v1/subject/summary` - Get subject summary statistics
 - `GET /api/v1/subject/by/{field}/count` - Count subjects by field
 
 ### Sample Endpoints
 - `GET /api/v1/sample` - List all samples
-- `GET /api/v1/sample/{org}/{ns}/{name}` - Get sample by identifier
+- `GET /api/v1/sample/{organization}/{namespace}/{name}` - Get sample by identifier
 - `GET /api/v1/sample/summary` - Get sample summary statistics
 
 ### File Endpoints
 - `GET /api/v1/file` - List all files
-- `GET /api/v1/file/{org}/{ns}/{name}` - Get file by identifier
+- `GET /api/v1/file/{organization}/{namespace}/{name}` - Get file by identifier
 - `GET /api/v1/file/summary` - Get file summary statistics
 
 ## 🔧 Configuration

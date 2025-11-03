@@ -59,13 +59,13 @@ class SubjectRepository:
         param_counter = 0
         
         # Handle race parameter normalization
-        # Race needs special handling - filter must be applied after WITH clause defines variables
+        # Race filter must be applied after WITH clause defines variables
         race_condition = ""
         race_filter_condition = ""
         if "race" in filters:
             race_value = filters.pop("race")
             if race_value is not None:
-                # Normalize race value to a list in Python (handle both string and list inputs)
+                # Normalize race value to a list (handle both string and list inputs)
                 if isinstance(race_value, str):
                     race_list = [race_value.strip()] if race_value.strip() else []
                 elif isinstance(race_value, list):
@@ -78,11 +78,8 @@ class SubjectRepository:
                     race_param = f"param_{param_counter}"
                     params[race_param] = race_list
                     race_condition = f""",
-                    // race tokens (already normalized to list in Python)
                     ${race_param} AS race_tokens,
-                    // tokenize stored semicolon-separated race string
                     [pt IN SPLIT(COALESCE(p.race, ''), ';') | trim(pt)] AS pr_tokens"""
-                    # Store the filter condition to apply after WITH clause
                     race_filter_condition = "ANY(tok IN race_tokens WHERE tok IN pr_tokens)"
         
         # Handle identifiers parameter normalization
@@ -295,39 +292,45 @@ class SubjectRepository:
     
     async def get_subject_by_identifier(
         self,
-        org: str,
-        ns: str,
+        organization: str,
+        namespace: Optional[str],
         name: str
     ) -> Optional[Subject]:
         """
         Get a specific subject by organization, namespace, and name.
         
         Args:
-            org: Organization identifier
-            ns: Namespace identifier
-            name: Subject name/identifier
+            organization: Organization identifier (defaults to CCDI-DCC)
+            namespace: Namespace identifier (study_id value, optional)
+            name: Subject name/participant ID
             
         Returns:
             Subject object or None if not found
         """
         logger.debug(
             "Fetching subject by identifier",
-            org=org,
-            ns=ns,
+            organization=organization,
+            namespace=namespace,
             name=name
         )
         
-        # Build the full identifier
-        identifier = f"{org}.{ns}.{name}"
-        params = {"identifier": identifier}
+        # Build query parameters
+        params = {"participant_id": name}
+        
+        # If namespace (study_id) is provided, filter by it
+        namespace_filter = ""
+        if namespace:
+            namespace_filter = " AND st.study_id = $namespace"
+            params["namespace"] = namespace
         
         # Build query to find subject by identifier with relationships
-        cypher = """
+        cypher = f"""
         MATCH (p:participant)
-        WHERE p.participant_id = $identifier
+        WHERE p.participant_id = $participant_id
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
+        WITH p, d, c, st{namespace_filter if namespace_filter else ""}
         WITH p, d, c, st, 
              // Collect all survival records for this participant
              collect(s) AS survival_records
@@ -385,7 +388,8 @@ class SubjectRepository:
         
         logger.info(
             "Executing get_subject_by_identifier Cypher query",
-            cypher=cypher,
+            participant_id=name,
+            namespace=namespace,
             params=params
         )
 
@@ -394,13 +398,13 @@ class SubjectRepository:
         records = await result.data()
         
         if not records:
-            logger.debug("Subject not found", identifier=identifier)
+            logger.debug("Subject not found", participant_id=name, namespace=namespace)
             return None
         
         # Convert to Subject object
         subject = self._record_to_subject(records[0])
         
-        logger.debug("Found subject", identifier=identifier, subject_data=getattr(subject, 'name', str(subject)[:50]))
+        logger.debug("Found subject", participant_id=name, namespace=namespace, subject_data=getattr(subject, 'name', str(subject)[:50]))
         
         return subject
     
@@ -1302,13 +1306,13 @@ WITH p, d, c, st,
         param_counter = 0
         
         # Handle race parameter normalization
-        # Race needs special handling - filter must be applied after WITH clause defines variables
+        # Race filter must be applied after WITH clause defines variables
         race_condition = ""
         race_filter_condition = ""
         if "race" in filters:
             race_value = filters.pop("race")
             if race_value is not None:
-                # Normalize race value to a list in Python (handle both string and list inputs)
+                # Normalize race value to a list (handle both string and list inputs)
                 if isinstance(race_value, str):
                     race_list = [race_value.strip()] if race_value.strip() else []
                 elif isinstance(race_value, list):
@@ -1321,11 +1325,8 @@ WITH p, d, c, st,
                     race_param = f"param_{param_counter}"
                     params[race_param] = race_list
                     race_condition = f""",
-                    // race tokens (already normalized to list in Python)
                     ${race_param} AS race_tokens,
-                    // tokenize stored semicolon-separated race string
                     [pt IN SPLIT(COALESCE(p.race, ''), ';') | trim(pt)] AS pr_tokens"""
-                    # Store the filter condition to apply after WITH clause
                     race_filter_condition = "ANY(tok IN race_tokens WHERE tok IN pr_tokens)"
         
         # Handle identifiers parameter normalization
@@ -1437,19 +1438,19 @@ WITH p, d, c, st,
         
         # Build query - if we have derived filters, we need to calculate them first
         if derived_filters and ("vital_status" in derived_filters or "age_at_vital_status" in derived_filters):
-            # Need to calculate survival records for vital_status and age_at_vital_status
+            # Calculate survival records for vital_status and age_at_vital_status filters
             cypher = f"""
         MATCH (p:participant)
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
-        WITH p, s, d, c, st{race_condition}{identifiers_condition}
+        WITH DISTINCT p.participant_id AS participant_id, p, s, d, c, st{race_condition}{identifiers_condition}
         {where_clause}
-        WITH p, d, c, st,
+        WITH participant_id, p, d, c, st,
              collect(s) AS survival_records
-        WITH p, d, c, st,
+        WITH participant_id, p, d, c, st,
              [sr IN survival_records WHERE sr.last_known_survival_status IS NOT NULL] AS survs
-        WITH p, d, c, st, survs,
+        WITH participant_id, p, d, c, st, survs,
              any(sr IN survs WHERE sr.last_known_survival_status = 'Dead') AS has_dead,
              reduce(dead_max_age = 0, sr IN survs |
                     CASE 
@@ -1466,7 +1467,7 @@ WITH p, d, c, st,
                       THEN sr.age_at_last_known_survival_status 
                       ELSE max_age 
                     END) AS max_age
-        WITH p, d, c, st,
+        WITH participant_id, p, d, c, st,
              CASE 
                WHEN has_dead THEN 'Dead'
                ELSE head([sr IN survs 
@@ -1482,18 +1483,25 @@ WITH p, d, c, st,
                ELSE 'Not reported'
              END AS ethnicity_value
         {derived_where_clause}
-        RETURN count(DISTINCT p.participant_id) as total_count
+        RETURN count(participant_id) as total_count
         """.strip()
         else:
             # Simple query without survival processing
-            cypher = f"""
+            # Deduplicate by participant_id only to avoid duplicates from OPTIONAL MATCH relationships
+            if where_clause or race_condition or identifiers_condition or derived_where_clause:
+                cypher = f"""
         MATCH (p:participant)
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
-        WITH p, s, d, c, st{race_condition}{identifiers_condition}
+        WITH p{race_condition}{identifiers_condition}
         {where_clause}
-        {derived_where_clause if derived_where_clause and not ("vital_status" in derived_filters or "age_at_vital_status" in derived_filters) else ""}
+        WITH DISTINCT p.participant_id AS participant_id
+        RETURN count(participant_id) as total_count
+        """.strip()
+            else:
+                cypher = """
+        MATCH (p:participant)
         RETURN count(DISTINCT p.participant_id) as total_count
         """.strip()
         
@@ -1667,7 +1675,7 @@ WITH p, d, c, st,
                         "details": {
                             "method": None,
                             "harmonizer": None,
-                            "url": "https://portal.pedscommons.org/DD?view=table"
+                            "url": "https://portal.pedscommons.organization/DD?view=table"
                         }
                     }
                     for diag in associated_diagnoses

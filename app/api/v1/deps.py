@@ -75,7 +75,7 @@ def get_pagination_params(
 
 def get_subject_filters(
     sex: Optional[str] = Query(None, description="Matches any subject where the `sex` field matches the string provided."),
-    race: Optional[str] = Query(None, description="Matches any subject where any member of the `race` field matches the provided value. The race field in the database may contain semicolon-separated values (e.g., 'Asian;White'), and the filter will match if the provided value is found within those values."),
+    race: Optional[str] = Query(None, description="Matches any subject where any member of the `race` field matches any of the provided values. Multiple race values can be provided separated by `||` (double pipe). The race field in the database may contain semicolon-separated values (e.g., 'Asian;White'), and the filter will match if any of the provided values is found within those values. Only `||` is accepted as a delimiter; all other characters are treated as part of a single value."),
     ethnicity: Optional[str] = Query(None, description="Matches any subject where the `ethnicity` field matches the string provided. Ethnicity is derived from race values: if race contains 'Hispanic or Latino', ethnicity is 'Hispanic or Latino'; otherwise 'Not reported'. Only these two values are accepted."),
     identifiers: Optional[str] = Query(None, description="Matches any subject where any member of the `identifiers` field matches the string provided. **Note:** a logical OR (`||`) is performed across the values when determining whether the subject should be included in the results."),
     vital_status: Optional[str] = Query(None, description="Matches any subject where the `vital_status` field matches the string provided."),
@@ -108,18 +108,55 @@ def get_subject_filters(
     
     # Validate race if provided
     if race is not None:
-        # Treat race as a string value
+        # Handle race as string input with || delimiter
+        from app.core.constants import Race
+        valid_race_values = Race.values()
+        
         race_str = str(race).strip() if race else None
+        race_list = []
+        
         if race_str:
-            # Validate race value against enum
-            from app.core.constants import Race
-            if race_str not in Race.values():
-                # Invalid race value - store for error handling in endpoint
-                filters["_invalid_race"] = race_str
+            # Handle URL-encoded version (%7C%7C = double pipe encoded)
+            if '%7C%7C' in race_str:
+                race_str = race_str.replace('%7C%7C', '||')
+            
+            # Split ONLY on || delimiter - comma, ampersand, etc. are treated as part of the value
+            if '||' in race_str:
+                race_list = [r.strip() for r in race_str.split('||') if r.strip()]
+            else:
+                # No || delimiter found - treat entire value as single race value
+                race_list = [race_str]
+        
+        # Filter out invalid race values - keep only valid ones
+        if race_list:
+            valid_race_list = [r for r in race_list if r in valid_race_values]
+            invalid_races = [r for r in race_list if r not in valid_race_values]
+            
+            if valid_race_list:
+                # Use list if multiple, single string if one
+                if len(valid_race_list) > 1:
+                    filters["race"] = valid_race_list
+                elif len(valid_race_list) == 1:
+                    filters["race"] = valid_race_list[0]
+            else:
+                # All values were invalid - return error
+                filters["_invalid_race"] = invalid_races[0] if len(invalid_races) == 1 else invalid_races
                 return filters
-            filters["race"] = race_str
     if identifiers is not None:
-        filters["identifiers"] = identifiers
+        # Handle identifiers: only '||' is allowed as delimiter for multiple values
+        # If no '||' found, treat as single identifier value
+        identifiers_str = str(identifiers).strip()
+        if identifiers_str:
+            if '||' in identifiers_str:
+                # Split by '||' delimiter
+                identifiers_list = [id.strip() for id in identifiers_str.split('||') if id.strip()]
+                if len(identifiers_list) > 1:
+                    filters["identifiers"] = identifiers_list
+                elif len(identifiers_list) == 1:
+                    filters["identifiers"] = identifiers_list[0]
+            else:
+                # No '||' delimiter found - treat as single identifier value
+                filters["identifiers"] = identifiers_str
     
     # Validate vital_status if provided
     if vital_status is not None:

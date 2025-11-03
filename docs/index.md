@@ -31,18 +31,18 @@ Currently, the API does not require authentication. Rate limiting is applied to 
 
 ### Subject Endpoints
 - `GET /subject` - List all subjects with pagination
-- `GET /subject/{org}/{ns}/{name}` - Get subject by identifier
-- `GET /subject/search/{org}/{ns}/{name}` - Search subjects by participant IDs
+- `GET /subject/{organization}/{namespace}/{name}` - Get subject by identifier
+- `GET /subject/search/{organization}/{namespace}/{name}` - Search subjects by participant IDs
 - `GET /subject/summary` - Get subject summary statistics
 
 ### Sample Endpoints
 - `GET /sample` - List all samples
-- `GET /sample/{org}/{ns}/{name}` - Get sample by identifier
+- `GET /sample/{organization}/{namespace}/{name}` - Get sample by identifier
 - `GET /sample/summary` - Get sample summary statistics
 
 ### File Endpoints
 - `GET /file` - List all files
-- `GET /file/{org}/{ns}/{name}` - Get file by identifier
+- `GET /file/{organization}/{namespace}/{name}` - Get file by identifier
 - `GET /file/summary` - Get file summary statistics
 
 ## 📖 Documentation

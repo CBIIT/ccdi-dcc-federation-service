@@ -82,16 +82,16 @@ class SubjectService:
     
     async def get_subject_by_identifier(
         self,
-        org: str,
-        ns: str,
+        organization: str,
+        namespace: Optional[str],
         name: str
     ) -> Subject:
         """
         Get a specific subject by organization, namespace, and name.
         
         Args:
-            org: Organization identifier
-            ns: Namespace identifier  
+            organization: Organization identifier
+            namespace: Namespace identifier  
             name: Subject name/identifier
             
         Returns:
@@ -102,24 +102,27 @@ class SubjectService:
         """
         logger.debug(
             "Getting subject by identifier",
-            org=org,
-            ns=ns,
+            organization=organization,
+            namespace=namespace,
             name=name
         )
         
         # Validate parameters
-        self._validate_identifier_params(org, ns, name)
+        self._validate_identifier_params(organization, namespace, name)
         
         # Get from repository
-        subject = await self.repository.get_subject_by_identifier(org, ns, name)
+        subject = await self.repository.get_subject_by_identifier(organization, namespace, name)
         
         if not subject:
-            raise NotFoundError(f"Subject not found: {org}.{ns}.{name}")
+            if namespace:
+                raise NotFoundError(f"Subject not found: {organization}.{namespace}.{name}")
+            else:
+                raise NotFoundError(f"Subject not found: {organization}.{name}")
         
         logger.info(
             "Retrieved subject by identifier",
-            org=org,
-            ns=ns,
+            organization=organization,
+            namespace=namespace,
             name=name,
             subject_data=getattr(subject, 'id', str(subject)[:50])  # Flexible logging
         )
@@ -252,31 +255,35 @@ class SubjectService:
         
         return response
     
-    def _validate_identifier_params(self, org: str, ns: str, name: str) -> None:
+    def _validate_identifier_params(self, organization: str, namespace: Optional[str], name: str) -> None:
         """
         Validate identifier parameters.
         
         Args:
-            org: Organization identifier
-            ns: Namespace identifier
+            organization: Organization identifier
+            namespace: Namespace identifier
             name: Subject name
             
         Raises:
             ValidationError: If parameters are invalid
         """
-        if not org or not org.strip():
+        if not organization or not organization.strip():
             raise ValidationError("Organization identifier cannot be empty")
         
-        if not ns or not ns.strip():
-            raise ValidationError("Namespace identifier cannot be empty")
+        # Namespace is optional (can be None or empty) - it's the study_id value
+        # No validation needed for namespace as it's used as-is
         
         if not name or not name.strip():
             raise ValidationError("Subject name cannot be empty")
         
         # Check for invalid characters
-        for param_name, param_value in [("org", org), ("ns", ns), ("name", name)]:
-            if any(char in param_value for char in [".", "/", "\\", " "]):
+        for param_name, param_value in [("organization", organization), ("name", name)]:
+            if param_value and any(char in param_value for char in [".", "/", "\\", " "]):
                 raise ValidationError(f"Invalid characters in {param_name}: {param_value}")
+        
+        # Check namespace if provided
+        if namespace and any(char in namespace for char in [".", "/", "\\", " "]):
+            raise ValidationError(f"Invalid characters in namespace: {namespace}")
     
     def _build_cache_key(
         self,

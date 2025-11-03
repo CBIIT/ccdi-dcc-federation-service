@@ -122,6 +122,11 @@ def setup_health_check(app: FastAPI) -> None:
         """Health check endpoint."""
         return {"status": "healthy", "service": "ccdi-federation-service"}
     
+    @app.get("/ping", tags=["ping"])
+    async def health_check():
+        """Health check endpoint."""
+        return {"status": "pong"}
+
     @app.get("/", tags=["health"])
     async def root():
         """Root endpoint."""

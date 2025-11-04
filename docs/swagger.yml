@@ -102,7 +102,6 @@ paths:
         required: false
         schema:
           type: string
-        example: White
       - name: ethnicity
         in: query
         description: |-
@@ -144,22 +143,20 @@ paths:
         in: query
         description: |-
           Matches any subject where the `age_at_vital_status` field matches the
-          integer value provided. The age is stored in days (e.g., 3650 days = ~10 years).
+          integer value provided. The age is stored in days.
           Must be a valid non-negative integer.
         required: false
         schema:
           type: integer
           minimum: 0
-      # - name: depositions
-      #   in: query
-      #   description: |-
-      #     Matches any subject where any member of the `depositions` fields match
-      #     the string provided.
-      #   required: false
-      #   schema:
-      #     type: string
-      #     default: phs
-      #   example: phs
+      - name: depositions
+        in: query
+        description: |-
+          Filter by depositions. If value is `db_gap`, returns all subjects (no filtering). 
+          Any other value will return an empty result set.
+        required: false
+        schema:
+          type: string
       # - name: metadata.unharmonized.<field>
       #   in: query
       #   description: |-

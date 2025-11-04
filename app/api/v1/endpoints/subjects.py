@@ -69,69 +69,44 @@ async def list_subjects(
     )
     
     try:
-        # Check for invalid parameter values
-        route_with_query = str(request.url.path) + (f"?{request.url.query}" if request.url.query else "")
-        
-        # Check if invalid ethnicity value was provided
+        # Check for invalid parameter values - return empty result instead of error
+        # Check if any invalid filter value was provided
         invalid_ethnicity_value = filters.get("_invalid_ethnicity")
-        if invalid_ethnicity_value:
-            error = InvalidParametersError(
-                parameters=["ethnicity"],
-                reason="Value not allowed.",
-                method=request.method,
-                route=route_with_query,
-                message=f"Invalid value for parameter ethnicity: Value not allowed."
-            )
-            raise error.to_http_exception()
-        
-        # Check if invalid sex value was provided
         invalid_sex_value = filters.get("_invalid_sex")
-        if invalid_sex_value:
-            error = InvalidParametersError(
-                parameters=["sex"],
-                reason="Value not allowed.",
-                method=request.method,
-                route=route_with_query,
-                message=f"Invalid value for parameter sex: Value not allowed."
-            )
-            raise error.to_http_exception()
-        
-        # Check if invalid race value was provided
         invalid_race_value = filters.get("_invalid_race")
-        if invalid_race_value:
-            error = InvalidParametersError(
-                parameters=["race"],
-                reason="Value not allowed.",
-                method=request.method,
-                route=route_with_query,
-                message=f"Invalid value for parameter race: Value not allowed."
-            )
-            raise error.to_http_exception()
-        
-        # Check if invalid vital_status value was provided
         invalid_vital_status_value = filters.get("_invalid_vital_status")
-        if invalid_vital_status_value:
-            error = InvalidParametersError(
-                parameters=["vital_status"],
-                reason="Value not allowed.",
-                method=request.method,
-                route=route_with_query,
-                message=f"Invalid value for parameter vital_status: Value not allowed."
-            )
-            raise error.to_http_exception()
-        
-        # Check if invalid age_at_vital_status value was provided
         invalid_age_value = filters.get("_invalid_age_at_vital_status")
-        if invalid_age_value:
-            reason = filters.get("_age_at_vital_status_reason", "Value not allowed.")
-            error = InvalidParametersError(
-                parameters=["age_at_vital_status"],
-                reason=reason,
-                method=request.method,
-                route=route_with_query,
-                message=f"Invalid value for parameter age_at_vital_status: {reason}"
+        
+        # If any invalid value is present, return empty result
+        if invalid_ethnicity_value or invalid_sex_value or invalid_race_value or invalid_vital_status_value or invalid_age_value:
+            # Return empty response with zero counts
+            pagination_info = calculate_pagination_info(
+                page=pagination.page,
+                per_page=pagination.per_page,
+                total_items=0
             )
-            raise error.to_http_exception()
+            
+            result = SubjectResponse(
+                summary={
+                    "counts": {
+                        "all": 0,
+                        "current": 0
+                    }
+                },
+                data=[],
+                pagination=pagination_info
+            )
+            
+            logger.info(
+                "Invalid filter value detected, returning empty result",
+                invalid_ethnicity=invalid_ethnicity_value,
+                invalid_sex=invalid_sex_value,
+                invalid_race=invalid_race_value,
+                invalid_vital_status=invalid_vital_status_value,
+                invalid_age=invalid_age_value
+            )
+            
+            return result
         
         # Remove the markers if present
         filters.pop("_invalid_ethnicity", None)
@@ -140,6 +115,41 @@ async def list_subjects(
         filters.pop("_invalid_vital_status", None)
         filters.pop("_invalid_age_at_vital_status", None)
         filters.pop("_age_at_vital_status_reason", None)
+        
+        # Handle depositions filter
+        # If depositions=db_gap, return all values (remove filter)
+        # If depositions has any other value, return empty []
+        depositions_value = filters.get("depositions")
+        if depositions_value is not None:
+            depositions_str = str(depositions_value).strip()
+            if depositions_str.lower() != "db_gap":
+                # Return empty result for any value other than db_gap
+                pagination_info = calculate_pagination_info(
+                    page=pagination.page,
+                    per_page=pagination.per_page,
+                    total_items=0
+                )
+                
+                result = SubjectResponse(
+                    summary={
+                        "counts": {
+                            "all": 0,
+                            "current": 0
+                        }
+                    },
+                    data=[],
+                    pagination=pagination_info
+                )
+                
+                logger.info(
+                    "Depositions filter with invalid value, returning empty result",
+                    depositions=depositions_str
+                )
+                
+                return result
+            else:
+                # Remove depositions filter since db_gap means return all
+                filters.pop("depositions", None)
         
         # Create service
         cache_service = get_cache_service()

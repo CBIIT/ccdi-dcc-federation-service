@@ -1426,10 +1426,7 @@ WITH p, d, c, st,
                 elif field == "ethnicity":
                     # Ethnicity filter will be applied in the WITH clause after calculation
                     ethnicity_param = param_name
-                    derived_conditions.append(f"""CASE 
-                        WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
-                        ELSE 'Not reported'
-                    END = ${ethnicity_param}""")
+                    derived_conditions.append(f"ethnicity_value = ${ethnicity_param}")
                 params[param_name] = value
         
         derived_where_clause = ""
@@ -1489,7 +1486,26 @@ WITH p, d, c, st,
             # Simple query without survival processing
             # Deduplicate by participant_id only to avoid duplicates from OPTIONAL MATCH relationships
             if where_clause or race_condition or identifiers_condition or derived_where_clause:
-                cypher = f"""
+                # If we have ethnicity filter, we need to calculate it first
+                if "ethnicity" in derived_filters:
+                    cypher = f"""
+        MATCH (p:participant)
+        OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
+        OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
+        OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
+        WITH p{race_condition}{identifiers_condition}
+        {where_clause}
+        WITH p,
+             CASE 
+               WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
+               ELSE 'Not reported'
+             END AS ethnicity_value
+        {derived_where_clause}
+        WITH DISTINCT p.participant_id AS participant_id
+        RETURN count(participant_id) as total_count
+        """.strip()
+                else:
+                    cypher = f"""
         MATCH (p:participant)
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)

@@ -61,8 +61,7 @@
             "required": false,
             "schema": {
               "type": "string"
-            },
-            "example": "White"
+            }
           },
           {
             "name": "ethnicity",
@@ -104,11 +103,20 @@
           {
             "name": "age_at_vital_status",
             "in": "query",
-            "description": "Matches any subject where the `age_at_vital_status` field matches the\ninteger value provided. The age is stored in days (e.g., 3650 days = ~10 years).\nMust be a valid non-negative integer.",
+            "description": "Matches any subject where the `age_at_vital_status` field matches the\ninteger value provided. The age is stored in days.\nMust be a valid non-negative integer.",
             "required": false,
             "schema": {
               "type": "integer",
               "minimum": 0
+            }
+          },
+          {
+            "name": "depositions",
+            "in": "query",
+            "description": "Filter by depositions. If value is `db_gap`, returns all subjects (no filtering). \nAny other value will return an empty result set.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           },
           {

@@ -80,7 +80,7 @@ def get_subject_filters(
     identifiers: Optional[str] = Query(None, description="Matches any subject where any member of the `identifiers` field matches the string provided. **Note:** a logical OR (`||`) is performed across the values when determining whether the subject should be included in the results."),
     vital_status: Optional[str] = Query(None, description="Matches any subject where the `vital_status` field matches the string provided."),
     age_at_vital_status: Optional[str] = Query(None, description="Matches any subject where the `age_at_vital_status` field matches the string provided."),
-    depositions: Optional[str] = Query(None, description="Filter by depositions"),
+    depositions: Optional[str] = Query(None, description="Filter by depositions. The default value is 'db_gap'."),
     request: Request = None
 ) -> Dict[str, Any]:
     """Get subject filter parameters."""
@@ -90,11 +90,14 @@ def get_subject_filters(
     if ethnicity is not None:
         # Validate ethnicity - only accept the two valid values
         from app.core.constants import Ethnicity
-        if ethnicity not in Ethnicity.values():
-            # Invalid ethnicity value - store for error handling in endpoint
-            filters["_invalid_ethnicity"] = ethnicity
-            return filters
-        filters["ethnicity"] = ethnicity
+        # Strip whitespace and normalize the value
+        ethnicity_str = str(ethnicity).strip() if ethnicity else None
+        if ethnicity_str:
+            if ethnicity_str not in Ethnicity.values():
+                # Invalid ethnicity value - store for error handling in endpoint
+                filters["_invalid_ethnicity"] = ethnicity_str
+                return filters
+            filters["ethnicity"] = ethnicity_str
     
     # Validate sex if provided
     if sex is not None:

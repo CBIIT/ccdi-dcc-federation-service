@@ -1,0 +1,507 @@
+#!/usr/bin/env python3
+"""
+Simple script to create basic OpenAPI documentation without requiring all dependencies.
+"""
+
+import json
+import yaml
+from pathlib import Path
+
+def create_basic_openapi_spec():
+    """Create a basic OpenAPI specification for the CCDI Federation Service."""
+    
+    openapi_spec = {
+        "openapi": "3.1.0",
+        "info": {
+            "title": "CCDI Federation Service API",
+            "description": "REST API for querying CCDI-DCC  graph database",
+            "version": "1.0.0",
+            "summary": "Childhood Cancer Data Initiative Federation Service",
+            "contact": {
+                "name": "CCDI Development Team",
+                "email": "support@ccdi.org",
+                "url": "https://github.com/CBIIT/ccdi-dcc-federation-service"
+            },
+            "license": {
+                "name": "MIT",
+                "url": "https://opensource.org/licenses/MIT"
+            },
+            "termsOfService": "https://your-server.com/terms"
+        },
+        "servers": [
+            {
+                "url": "http://localhost:8000/api/v1",
+                "description": "Local development server (default)"
+            },
+            {
+                "url": "https://your-server.com/api/v1",
+                "description": "Production server"
+            },
+            {
+                "url": "https://ccdi-federation-test.herokuapp.com/api/v1",
+                "description": "Test server (Heroku) - For online testing"
+            },
+            {
+                "url": "https://ccdi-api-test.up.railway.app/api/v1",
+                "description": "Test server (Railway) - For online testing"
+            }
+        ],
+        "paths": {
+            "/subject": {
+                "get": {
+                    "summary": "List subjects",
+                    "description": "Get paginated list of subjects with optional filtering",
+                    "parameters": [
+                        {
+                            "name": "page",
+                            "in": "query",
+                            "description": "Page number",
+                            "required": False,
+                            "schema": {"type": "integer", "default": 1, "minimum": 1}
+                        },
+                        {
+                            "name": "per_page",
+                            "in": "query",
+                            "description": "Items per page",
+                            "required": False,
+                            "schema": {"type": "integer", "default": 20, "minimum": 1, "maximum": 100}
+                        },
+                        {
+                            "name": "sex",
+                            "in": "query",
+                            "description": "Filter by sex",
+                            "required": False,
+                            "schema": {"type": "string", "enum": ["Male", "Female", "Unknown"]}
+                        },
+                        {
+                            "name": "race",
+                            "in": "query",
+                            "description": "Filter by race",
+                            "required": False,
+                            "schema": {"type": "string"}
+                        }
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "Successful response",
+                            "content": {
+                                "application/json": {
+                                    "schema": {"$ref": "#/components/schemas/SubjectResponse"}
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/subject/{organization}/{namespace}/{name}": {
+                "get": {
+                    "summary": "Get subject by identifier",
+                    "description": "Get a specific subject by organization, namespace, and name. For CCDI-DCC/phs (case-insensitive), supports participant ID search with multiple IDs (comma-separated).",
+                    "parameters": [
+                        {
+                            "name": "org",
+                            "in": "path",
+                            "description": "Organization name (must be 'CCDI-DCC')",
+                            "required": True,
+                            "schema": {"type": "string", "default": "CCDI-DCC"},
+                            "example": "CCDI-DCC"
+                        },
+                        {
+                            "name": "namespace",
+                            "in": "path",
+                            "description": "Namespace name (must be 'phs', case-insensitive)",
+                            "required": True,
+                            "schema": {"type": "string", "default": "phs"},
+                            "example": "phs"
+                        },
+                        {
+                            "name": "name",
+                            "in": "path",
+                            "description": "Subject name or participant ID(s). For CCDI-DCC/phs, multiple IDs can be comma-separated.",
+                            "required": True,
+                            "schema": {"type": "string", "default": "TARGET-10-PAKKMW"},
+                            "example": "TARGET-10-PAKKMW"
+                        }
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "Successful response",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "oneOf": [
+                                            {"$ref": "#/components/schemas/Subject"},
+                                            {"$ref": "#/components/schemas/SubjectResponse"}
+                                        ]
+                                    }
+                                }
+                            }
+                        },
+                        "404": {
+                            "description": "Subject not found",
+                            "content": {
+                                "application/json": {
+                                    "schema": {"$ref": "#/components/schemas/Error"}
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/subject/summary": {
+                "get": {
+                    "summary": "Get subject summary (counts)",
+                    "description": "Returns high-level counts for subjects. The total is the number of unique participants that match the current filters (if any). This endpoint is optimized for dashboards and headers where only counts are needed.",
+                    "responses": {
+                        "200": {
+                            "description": "Summary counts successfully returned",
+                            "content": {
+                                "application/json": {
+                                    "schema": {"$ref": "#/components/schemas/SummaryResponse"},
+                                    "example": {
+                                        "counts": {
+                                            "total": 104496
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "components": {
+            "schemas": {
+                "Subject": {
+                    "type": "object",
+                    "description": "Normalized participant entity returned by this service.",
+                    "properties": {
+                        "id": {"$ref": "#/components/schemas/SubjectId"},
+                        "kind": {"type": "string", "example": "Participant", "const": "Participant"},
+                        "metadata": {"$ref": "#/components/schemas/SubjectMetadata"},
+                        "gateways": {"type": "array", "items": {"type": "string"}, "default": []}
+                    },
+                    "required": ["id", "kind", "metadata", "gateways"],
+                    "examples": [
+                        {
+                            "id": {
+                                "namespace": {
+                                    "organization": "CCDI-DCC",
+                                    "name": "dbGaP_phs000465"
+                                },
+                                "name": "TARGET-10-PAKKMW"
+                            },
+                            "kind": "Participant",
+                            "metadata": {
+                                "sex": {"value": "Female", "ancestors": None},
+                                "race": [{"value": "White", "ancestors": None}],
+                                "ethnicity": {"value": "Not reported", "ancestors": None},
+                                "identifiers": [{
+                                    "value": {
+                                        "namespace": {
+                                            "organization": "CCDI-DCC",
+                                            "name": "dbGaP_phs000465"
+                                        },
+                                        "name": "TARGET-10-PAKKMW",
+                                        "type": "Linked"
+                                    },
+                                    "ancestors": None
+                                }],
+                                "associated_diagnoses": [{
+                                    "value": "Acute Lymphoblastic Leukemia, NOS",
+                                    "ancestors": None,
+                                    "owned": True,
+                                    "comment": None,
+                                    "details": {
+                                        "method": None,
+                                        "harmonizer": None,
+                                        "url": "https://portal.pedscommons.org/DD?view=table"
+                                    }
+                                }],
+                                "vital_status": {"value": "Alive", "ancestors": None},
+                                "age_at_vital_status": {"value": 15, "ancestors": None},
+                                "depositions": ["db_gap"]
+                            },
+                            "gateways": []
+                        }
+                    ]
+                },
+                "SubjectId": {
+                    "type": "object",
+                    "description": "Compound identifier composed of namespace and local name.",
+                    "properties": {
+                        "namespace": {"$ref": "#/components/schemas/Namespace"},
+                        "name": {"type": "string", "example": "TARGET-10-PAKKMW", "pattern": "^[A-Z0-9-]+$"}
+                    },
+                    "required": ["namespace", "name"]
+                },
+                "Namespace": {
+                    "type": "object",
+                    "description": "Authority issuing the identifier (organization plus prefixed study name).",
+                    "properties": {
+                        "organization": {"type": "string", "example": "CCDI-DCC", "const": "CCDI-DCC"},
+                        "name": {"type": "string", "example": "dbGaP_phs000465", "pattern": "^dbGaP_phs[0-9]+$"}
+                    },
+                    "required": ["organization", "name"]
+                },
+                "SubjectMetadata": {
+                    "type": "object",
+                    "description": "Harmonized and unharmonized attributes associated with the participant.",
+                    "properties": {
+                        "sex": {"$ref": "#/components/schemas/MetadataField"},
+                        "race": {"type": "array", "items": {"$ref": "#/components/schemas/MetadataField"}, "minItems": 0},
+                        "ethnicity": {"$ref": "#/components/schemas/MetadataField"},
+                        "identifiers": {"type": "array", "items": {"$ref": "#/components/schemas/IdentifierField"}, "minItems": 1},
+                        "associated_diagnoses": {"type": "array", "items": {"$ref": "#/components/schemas/AssociatedDiagnosisField"}, "minItems": 0},
+                        "vital_status": {"$ref": "#/components/schemas/MetadataField"},
+                        "age_at_vital_status": {"$ref": "#/components/schemas/MetadataField"},
+                        "depositions": {"type": "array", "items": {"type": "string"}, "default": ["db_gap"]}
+                    },
+                    "required": ["sex", "race", "ethnicity", "identifiers", "associated_diagnoses", "vital_status", "age_at_vital_status", "depositions"]
+                },
+                "MetadataField": {
+                    "type": "object",
+                    "description": "Scalar metadata value with optional ancestry/provenance.",
+                    "properties": {
+                        "value": {"type": "string", "minLength": 1},
+                        "ancestors": {"type": ["string", "null"], "default": None}
+                    },
+                    "required": ["value", "ancestors"]
+                },
+                "IdentifierField": {
+                    "type": "object",
+                    "description": "External identifier binding for the participant.",
+                    "properties": {
+                        "value": {"$ref": "#/components/schemas/IdentifierValue"},
+                        "ancestors": {"type": ["string", "null"], "default": None}
+                    },
+                    "required": ["value", "ancestors"]
+                },
+                "IdentifierValue": {
+                    "type": "object",
+                    "description": "Concrete identifier value including namespace and local name.",
+                    "properties": {
+                        "namespace": {"$ref": "#/components/schemas/Namespace"},
+                        "name": {"type": "string", "minLength": 1}
+                    },
+                    "required": ["namespace", "name"]
+                },
+                "AssociatedDiagnosisField": {
+                    "type": "object",
+                    "description": "Diagnosis term assigned to the participant with optional metadata.",
+                    "properties": {
+                        "value": {"type": "string", "minLength": 1},
+                        "ancestors": {"type": ["string", "null"], "default": None},
+                        "owned": {"type": "boolean", "default": True},
+                        "comment": {"type": ["string", "null"], "default": None},
+                        "details": {"$ref": "#/components/schemas/DiagnosisDetails"}
+                    },
+                    "required": ["value", "ancestors", "owned", "comment", "details"]
+                },
+                "DiagnosisDetails": {
+                    "type": "object",
+                    "description": "Additional details for a diagnosis value (optional metadata).",
+                    "properties": {
+                        "method": {"type": ["string", "null"], "default": None},
+                        "harmonizer": {"type": ["string", "null"], "default": None},
+                        "url": {"type": "string", "example": "https://portal.pedscommons.org/DD?view=table", "format": "uri"}
+                    },
+                    "required": ["method", "harmonizer", "url"]
+                },
+                "SubjectResponse": {
+                    "type": "object",
+                    "description": "Envelope containing source metadata, result list, and pagination info.",
+                    "properties": {
+                        "summary": {"$ref": "#/components/schemas/Summary"},
+                        "data": {"type": "array", "items": {"$ref": "#/components/schemas/Subject"}},
+                        "pagination": {"$ref": "#/components/schemas/PaginationInfo"}
+                    }
+                },
+                "Summary": {
+                    "type": "object",
+                    "description": "Top-level counts related to the current result set and overall corpus.",
+                    "properties": {
+                        "counts": {"$ref": "#/components/schemas/Counts"}
+                    }
+                },
+                "Counts": {
+                    "type": "object",
+                    "description": "Count metrics: all = total unique participants; current = items returned in this page.",
+                    "properties": {
+                        "all": {"type": "integer", "example": 104496},
+                        "current": {"type": "integer", "example": 20}
+                    }
+                },
+                "PaginationInfo": {
+                    "type": "object",
+                    "description": "Pagination metadata for client navigation.",
+                    "properties": {
+                        "page": {"type": "integer", "example": 1},
+                        "per_page": {"type": "integer", "example": 20},
+                        "total_pages": {"type": "integer", "example": 5225},
+                        "total_items": {"type": "integer", "example": 104496},
+                        "has_next": {"type": "boolean", "example": True},
+                        "has_prev": {"type": "boolean", "example": False}
+                    }
+                },
+                "SummaryCounts": {
+                    "type": "object",
+                    "description": "Summary counts structure.",
+                    "properties": {
+                        "total": {"type": "integer", "description": "Total entity count"}
+                    },
+                    "required": ["total"]
+                },
+                "SummaryResponse": {
+                    "type": "object",
+                    "description": "Summary-only response for endpoints that return aggregate counts.",
+                    "properties": {
+                        "counts": {"$ref": "#/components/schemas/SummaryCounts"}
+                    },
+                    "required": ["counts"]
+                },
+                "Error": {
+                    "type": "object",
+                    "description": "Standard error envelope.",
+                    "properties": {
+                        "detail": {"type": "string", "example": "Subject not found"}
+                    }
+                }
+            }
+        }
+    }
+    
+    return openapi_spec
+
+def generate_documentation():
+    """Generate OpenAPI documentation files."""
+    try:
+        # Create docs directory if it doesn't exist
+        docs_dir = Path("docs")
+        docs_dir.mkdir(exist_ok=True)
+        
+        # Generate OpenAPI spec
+        openapi_spec = create_basic_openapi_spec()
+        
+        # Save as JSON
+        json_path = docs_dir / "openapi.json"
+        with open(json_path, 'w') as f:
+            json.dump(openapi_spec, f, indent=2)
+        print(f"✅ OpenAPI JSON spec generated: {json_path}")
+        
+        # Save as YAML
+        yaml_path = docs_dir / "swagger.yml"
+        with open(yaml_path, 'w') as f:
+            yaml.dump(openapi_spec, f, default_flow_style=False, sort_keys=False)
+        print(f"✅ OpenAPI YAML spec generated: {yaml_path}")
+        
+        # Generate embedded HTML
+        html_path = docs_dir / "embedded.html"
+        generate_embedded_html(openapi_spec, html_path)
+        print(f"✅ Embedded HTML documentation generated: {html_path}")
+        
+        return True
+        
+    except Exception as e:
+        print(f"❌ Error generating documentation: {e}")
+        return False
+
+def generate_embedded_html(openapi_spec, output_path):
+    """Generate HTML with embedded OpenAPI spec."""
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CCDI Federation Service API Documentation</title>
+    <link rel="stylesheet" type="text/css" href="https://unpkg.com/swagger-ui-dist@5.9.0/swagger-ui.css" />
+    <style>
+        html {{
+            box-sizing: border-box;
+            overflow: -moz-scrollbars-vertical;
+            overflow-y: scroll;
+        }}
+        *, *:before, *:after {{
+            box-sizing: inherit;
+        }}
+        body {{
+            margin:0;
+            background: #fafafa;
+        }}
+        .swagger-ui .topbar {{
+            background-color: #2c3e50;
+        }}
+        .custom-header {{
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 2rem;
+            text-align: center;
+            margin-bottom: 2rem;
+        }}
+        .custom-header h1 {{
+            margin: 0;
+            font-size: 2.5rem;
+            font-weight: 300;
+        }}
+        .custom-header p {{
+            margin: 0.5rem 0 0 0;
+            font-size: 1.2rem;
+            opacity: 0.9;
+        }}
+    </style>
+</head>
+<body>
+    <div class="custom-header">
+        <h1>CCDI Federation Service API</h1>
+        <p>REST API for querying CCDI-DCC  graph database</p>
+    </div>
+    <div id="swagger-ui"></div>
+    <script src="https://unpkg.com/swagger-ui-dist@5.9.0/swagger-ui-bundle.js"></script>
+    <script src="https://unpkg.com/swagger-ui-dist@5.9.0/swagger-ui-standalone-preset.js"></script>
+    <script>
+        window.onload = function() {{
+            const spec = {json.dumps(openapi_spec)};
+            
+            const ui = SwaggerUIBundle({{
+                spec: spec,
+                dom_id: '#swagger-ui',
+                deepLinking: true,
+                presets: [
+                    SwaggerUIBundle.presets.apis,
+                    SwaggerUIStandalonePreset
+                ],
+                plugins: [
+                    SwaggerUIBundle.plugins.DownloadUrl
+                ],
+                layout: "StandaloneLayout",
+                validatorUrl: null,
+                tryItOutEnabled: true,
+                supportedSubmitMethods: ['get', 'post', 'put', 'delete', 'patch']
+            }});
+            
+            window.ui = ui;
+        }};
+    </script>
+</body>
+</html>"""
+    
+    with open(output_path, 'w') as f:
+        f.write(html_content)
+
+if __name__ == "__main__":
+    print("🚀 Generating OpenAPI documentation...")
+    success = generate_documentation()
+    
+    if success:
+        print("\n✅ Documentation generated successfully!")
+        print("\n📖 Available documentation files:")
+        print("   - docs/openapi.json (OpenAPI spec in JSON format)")
+        print("   - docs/swagger.yml (OpenAPI spec in YAML format)")
+        print("   - docs/embedded.html (Swagger UI with embedded spec)")
+        print("\n🌐 To view the documentation:")
+        print("   1. Open docs/embedded.html in your browser")
+        print("   2. Or serve the docs directory with a web server")
+        print("   3. Or push to GitHub and enable GitHub Pages")
+    else:
+        print("\n❌ Failed to generate documentation")
+        exit(1)

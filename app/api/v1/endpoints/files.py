@@ -121,14 +121,14 @@ async def list_files(
 # ============================================================================
 
 @router.get(
-    "/{org}/{ns}/{name}",
+    "/{organization}/{namespace}/{name}",
     response_model=File,
     summary="Get file by identifier",
     description="Get a specific file by organization, namespace, and name"
 )
 async def get_file(
-    org: str,
-    ns: str,
+    organization: str,
+    namespace: str,
     name: str,
     request: Request,
     session: AsyncSession = Depends(get_database_session),
@@ -139,8 +139,8 @@ async def get_file(
     """Get a specific file by identifier."""
     logger.info(
         "Get file request",
-        org=org,
-        ns=ns,
+        organization=organization,
+        namespace=namespace,
         name=name,
         path=request.url.path
     )
@@ -151,12 +151,12 @@ async def get_file(
         service = FileService(session, allowlist, settings, cache_service)
         
         # Get file
-        file = await service.get_file_by_identifier(org, ns, name)
+        file = await service.get_file_by_identifier(organization, namespace, name)
         
         logger.info(
             "Get file response",
-            org=org,
-            ns=ns,
+            organization=organization,
+            namespace=namespace,
             name=name,
             file_data=getattr(file, 'id', str(file)[:50])  # Flexible logging
         )
@@ -164,7 +164,7 @@ async def get_file(
         return file
         
     except NotFoundError as e:
-        logger.warning("File not found", org=org, ns=ns, name=name)
+        logger.warning("File not found", organization=organization, namespace=namespace, name=name)
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.error("Error getting file", error=str(e), exc_info=True)

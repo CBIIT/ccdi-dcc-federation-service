@@ -55,7 +55,7 @@ A REST API service for querying the CCDI (Childhood Cancer Data Initiative) grap
 
 #### Subjects
 - `GET /api/v1/subject` - List subjects with pagination and filtering
-- `GET /api/v1/subject/{org}/{ns}/{name}` - Get specific subject by identifier
+- `GET /api/v1/subject/{organization}/{namespace}/{name}` - Get specific subject by identifier
 - `GET /api/v1/subject/by/{field}/count` - Count subjects by field value
 - `GET /api/v1/subject/summary` - Get subject summary statistics
 - `GET /api/v1/subject/diagnosis/search` - Search subjects by diagnosis
@@ -64,14 +64,14 @@ A REST API service for querying the CCDI (Childhood Cancer Data Initiative) grap
 
 #### Samples
 - `GET /api/v1/sample` - List samples with pagination and filtering
-- `GET /api/v1/sample/{org}/{ns}/{name}` - Get specific sample by identifier
+- `GET /api/v1/sample/{organization}/{namespace}/{name}` - Get specific sample by identifier
 - `GET /api/v1/sample/by/{field}/count` - Count samples by field value
 - `GET /api/v1/sample/summary` - Get sample summary statistics
 - `GET /api/v1/sample/diagnosis/*` - Sample diagnosis endpoints (similar to subjects)
 
 #### Files
 - `GET /api/v1/file` - List files with pagination and filtering
-- `GET /api/v1/file/{org}/{ns}/{name}` - Get specific file by identifier
+- `GET /api/v1/file/{organization}/{namespace}/{name}` - Get specific file by identifier
 - `GET /api/v1/file/by/{field}/count` - Count files by field value
 - `GET /api/v1/file/summary` - Get file summary statistics
 
@@ -298,7 +298,7 @@ The service works with the following entities:
 ```python
 {
   "id": "string",
-  "identifiers": ["org.namespace.name"],
+  "identifiers": ["organization.namespace.name"],
   "sex": "string",
   "race": "string", 
   "ethnicity": "string",

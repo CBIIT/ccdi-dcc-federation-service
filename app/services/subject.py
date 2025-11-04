@@ -31,7 +31,7 @@ class SubjectService:
         cache_service: Optional[CacheService] = None
     ):
         """Initialize service with dependencies."""
-        self.repository = SubjectRepository(session, allowlist)
+        self.repository = SubjectRepository(session, allowlist, settings)
         self.settings = settings
         self.cache_service = cache_service
         
@@ -82,16 +82,16 @@ class SubjectService:
     
     async def get_subject_by_identifier(
         self,
-        org: str,
-        ns: str,
+        organization: str,
+        namespace: Optional[str],
         name: str
     ) -> Subject:
         """
         Get a specific subject by organization, namespace, and name.
         
         Args:
-            org: Organization identifier
-            ns: Namespace identifier  
+            organization: Organization identifier
+            namespace: Namespace identifier  
             name: Subject name/identifier
             
         Returns:
@@ -102,24 +102,32 @@ class SubjectService:
         """
         logger.debug(
             "Getting subject by identifier",
-            org=org,
-            ns=ns,
+            organization=organization,
+            namespace=namespace,
             name=name
         )
         
         # Validate parameters
-        self._validate_identifier_params(org, ns, name)
+        self._validate_identifier_params(organization, namespace, name)
         
         # Get from repository
-        subject = await self.repository.get_subject_by_identifier(org, ns, name)
+        subject = await self.repository.get_subject_by_identifier(organization, namespace, name)
         
+        # Return None if not found (instead of raising NotFoundError)
+        # The endpoint will handle None by returning empty results
         if not subject:
-            raise NotFoundError(f"Subject not found: {org}.{ns}.{name}")
+            logger.debug(
+                "Subject not found in repository",
+                organization=organization,
+                namespace=namespace,
+                name=name
+            )
+            return None
         
         logger.info(
             "Retrieved subject by identifier",
-            org=org,
-            ns=ns,
+            organization=organization,
+            namespace=namespace,
             name=name,
             subject_data=getattr(subject, 'id', str(subject)[:50])  # Flexible logging
         )
@@ -157,12 +165,13 @@ class SubjectService:
                 return CountResponse(**cached_result)
         
         # Get counts from repository
-        counts = await self.repository.count_subjects_by_field(field, filters)
+        result = await self.repository.count_subjects_by_field(field, filters)
         
         # Build response
         response = CountResponse(
-            field=field,
-            counts=counts
+            total=result.get("total", 0),
+            missing=result.get("missing", 0),
+            values=result.get("values", [])
         )
         
         # Cache result
@@ -176,7 +185,9 @@ class SubjectService:
         logger.info(
             "Completed subject count by field",
             field=field,
-            result_count=len(counts)
+            total=response.total,
+            missing=response.missing,
+            values_count=len(response.values)
         )
         
         return response
@@ -194,25 +205,48 @@ class SubjectService:
         Returns:
             SummaryResponse with summary statistics
         """
-        logger.debug("Getting subjects summary", filters=filters)
+        logger.debug(
+            "Getting subjects summary",
+            filters=filters,
+            race_filter_type=type(filters.get("race")).__name__ if "race" in filters else None,
+            race_filter_value=filters.get("race")
+        )
         
         # Check cache first
         cache_key = None
         if self.cache_service:
             cache_key = self._build_cache_key("subject_summary", None, filters)
+            logger.debug("Cache key", cache_key=cache_key, filters=filters)
             cached_result = await self.cache_service.get(cache_key)
             if cached_result:
-                logger.debug("Returning cached subjects summary")
-                return SummaryResponse(**cached_result)
+                logger.debug(
+                    "Returning cached subjects summary",
+                    cached_total=cached_result.get("counts", {}).get("total") if isinstance(cached_result, dict) and "counts" in cached_result else cached_result.get("total_count")
+                )
+                # Handle both old and new cache formats
+                if "counts" in cached_result:
+                    return SummaryResponse(**cached_result)
+                else:
+                    # Transform old format to new format
+                    from app.models.dto import SummaryCounts
+                    return SummaryResponse(
+                        counts=SummaryCounts(total=cached_result.get("total_count", 0))
+                    )
         
         # Get summary from repository
+        logger.debug("Calling repository.get_subjects_summary", filters=filters)
         summary_data = await self.repository.get_subjects_summary(filters)
+        logger.debug("Repository returned", total_count=summary_data.get("total_count"))
         
-        # Build response
-        response = SummaryResponse(**summary_data)
+        # Transform repository format to response format
+        from app.models.dto import SummaryResponse, SummaryCounts
+        response = SummaryResponse(
+            counts=SummaryCounts(total=summary_data.get("total_count", 0))
+        )
         
         # Cache result
         if self.cache_service and cache_key:
+            logger.debug("Caching summary result", cache_key=cache_key, total=response.counts.total)
             await self.cache_service.set(
                 cache_key,
                 response.dict(),
@@ -221,36 +255,40 @@ class SubjectService:
         
         logger.info(
             "Completed subjects summary",
-            total_count=response.total_count
+            total_count=response.counts.total
         )
         
         return response
     
-    def _validate_identifier_params(self, org: str, ns: str, name: str) -> None:
+    def _validate_identifier_params(self, organization: str, namespace: Optional[str], name: str) -> None:
         """
         Validate identifier parameters.
         
         Args:
-            org: Organization identifier
-            ns: Namespace identifier
+            organization: Organization identifier
+            namespace: Namespace identifier
             name: Subject name
             
         Raises:
             ValidationError: If parameters are invalid
         """
-        if not org or not org.strip():
+        if not organization or not organization.strip():
             raise ValidationError("Organization identifier cannot be empty")
         
-        if not ns or not ns.strip():
-            raise ValidationError("Namespace identifier cannot be empty")
+        # Namespace is optional (can be None or empty) - it's the study_id value
+        # No validation needed for namespace as it's used as-is
         
         if not name or not name.strip():
             raise ValidationError("Subject name cannot be empty")
         
         # Check for invalid characters
-        for param_name, param_value in [("org", org), ("ns", ns), ("name", name)]:
-            if any(char in param_value for char in [".", "/", "\\", " "]):
+        for param_name, param_value in [("organization", organization), ("name", name)]:
+            if param_value and any(char in param_value for char in [".", "/", "\\", " "]):
                 raise ValidationError(f"Invalid characters in {param_name}: {param_value}")
+        
+        # Check namespace if provided
+        if namespace and any(char in namespace for char in [".", "/", "\\", " "]):
+            raise ValidationError(f"Invalid characters in namespace: {namespace}")
     
     def _build_cache_key(
         self,
@@ -270,7 +308,17 @@ class SubjectService:
             Cache key string
         """
         # Sort filters for consistent cache keys
-        filter_items = sorted(filters.items()) if filters else []
+        # Normalize list values to strings for consistent cache keys
+        normalized_filters = {}
+        for k, v in filters.items():
+            if isinstance(v, list):
+                # Sort list and join with comma for consistent cache key
+                sorted_items = sorted([str(item).strip() for item in v if item])
+                normalized_filters[k] = ",".join(sorted_items) if sorted_items else ""
+            else:
+                normalized_filters[k] = str(v) if v is not None else ""
+        
+        filter_items = sorted(normalized_filters.items()) if normalized_filters else []
         filter_str = "|".join([f"{k}:{v}" for k, v in filter_items])
         
         if field:

@@ -1,0 +1,52 @@
+# GitHub Pages configuration for CCDI Federation Service API Documentation
+
+title: CCDI Federation Service API
+description: REST API for querying CCDI-DCC  graph database
+baseurl: "/ccdi-federation-service"  # Change this to your repository name
+url: "https://cbiit.github.io"  # Change this to your GitHub username
+
+# GitHub Pages settings
+theme: minima
+plugins:
+  - jekyll-feed
+  - jekyll-sitemap
+
+# Navigation
+navigation:
+  - title: API Documentation
+    url: /ccdi-federation-service/
+  - title: OpenAPI Spec
+    url: /ccdi-federation-service/swagger.yml
+  - title: JSON Spec
+    url: /ccdi-federation-service/openapi.json
+
+# Exclude files from processing
+exclude:
+  - README.md
+  - Gemfile
+  - Gemfile.lock
+  - node_modules
+  - vendor
+
+# Include files
+include:
+  - _redirects
+
+# Collections
+collections:
+  api:
+    output: true
+    permalink: /:collection/:name/
+
+# Defaults
+defaults:
+  - scope:
+      path: ""
+      type: "pages"
+    values:
+      layout: "default"
+  - scope:
+      path: ""
+      type: "api"
+    values:
+      layout: "api"

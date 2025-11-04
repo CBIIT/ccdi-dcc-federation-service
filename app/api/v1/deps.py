@@ -5,7 +5,7 @@ This module provides dependency injection for common resources like
 database sessions, configuration, and pagination parameters.
 """
 
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 from fastapi import Depends, Query, HTTPException, Request
 from neo4j import AsyncSession
@@ -74,31 +74,124 @@ def get_pagination_params(
 # ============================================================================
 
 def get_subject_filters(
-    sex: Optional[str] = Query(None, description="Filter by sex"),
-    race: Optional[str] = Query(None, description="Filter by race"),
-    ethnicity: Optional[str] = Query(None, description="Filter by ethnicity"),
-    identifiers: Optional[str] = Query(None, description="Filter by identifiers"),
-    vital_status: Optional[str] = Query(None, description="Filter by vital status"),
-    age_at_vital_status: Optional[str] = Query(None, description="Filter by age at vital status"),
-    depositions: Optional[str] = Query(None, description="Filter by depositions"),
+    sex: Optional[str] = Query(None, description="Matches any subject where the `sex` field matches the string provided."),
+    race: Optional[str] = Query(None, description="Matches any subject where any member of the `race` field matches any of the provided values. Multiple race values can be provided separated by `||` (double pipe). The race field in the database may contain semicolon-separated values (e.g., 'Asian;White'), and the filter will match if any of the provided values is found within those values. Only `||` is accepted as a delimiter; all other characters are treated as part of a single value."),
+    ethnicity: Optional[str] = Query(None, description="Matches any subject where the `ethnicity` field matches the string provided. Ethnicity is derived from race values: if race contains 'Hispanic or Latino', ethnicity is 'Hispanic or Latino'; otherwise 'Not reported'. Only these two values are accepted."),
+    identifiers: Optional[str] = Query(None, description="Matches any subject where any member of the `identifiers` field matches the string provided. **Note:** a logical OR (`||`) is performed across the values when determining whether the subject should be included in the results."),
+    vital_status: Optional[str] = Query(None, description="Matches any subject where the `vital_status` field matches the string provided."),
+    age_at_vital_status: Optional[str] = Query(None, description="Matches any subject where the `age_at_vital_status` field matches the string provided."),
+    depositions: Optional[str] = Query(None, description="Filter by depositions. The default value is 'db_gap'."),
     request: Request = None
 ) -> Dict[str, Any]:
     """Get subject filter parameters."""
     filters = {}
     
-    # Add non-null filters
-    if sex is not None:
-        filters["sex"] = sex
-    if race is not None:
-        filters["race"] = race
+    # Validate ethnicity first if provided
     if ethnicity is not None:
-        filters["ethnicity"] = ethnicity
+        # Validate ethnicity - only accept the two valid values
+        from app.core.constants import Ethnicity
+        # Strip whitespace and normalize the value
+        ethnicity_str = str(ethnicity).strip() if ethnicity else None
+        if ethnicity_str:
+            if ethnicity_str not in Ethnicity.values():
+                # Invalid ethnicity value - store for error handling in endpoint
+                filters["_invalid_ethnicity"] = ethnicity_str
+                return filters
+            filters["ethnicity"] = ethnicity_str
+    
+    # Validate sex if provided
+    if sex is not None:
+        # Validate sex - only accept valid values (M, F, U)
+        valid_sex_values = ["M", "F", "U"]
+        if sex not in valid_sex_values:
+            # Invalid sex value - store for error handling in endpoint
+            filters["_invalid_sex"] = sex
+            return filters
+        filters["sex"] = sex
+    
+    # Validate race if provided
+    if race is not None:
+        # Handle race as string input with || delimiter
+        from app.core.constants import Race
+        valid_race_values = Race.values()
+        
+        race_str = str(race).strip() if race else None
+        race_list = []
+        
+        if race_str:
+            # Handle URL-encoded version (%7C%7C = double pipe encoded)
+            if '%7C%7C' in race_str:
+                race_str = race_str.replace('%7C%7C', '||')
+            
+            # Split ONLY on || delimiter - comma, ampersand, etc. are treated as part of the value
+            if '||' in race_str:
+                race_list = [r.strip() for r in race_str.split('||') if r.strip()]
+            else:
+                # No || delimiter found - treat entire value as single race value
+                race_list = [race_str]
+        
+        # Filter out invalid race values - keep only valid ones
+        if race_list:
+            valid_race_list = [r for r in race_list if r in valid_race_values]
+            invalid_races = [r for r in race_list if r not in valid_race_values]
+            
+            if valid_race_list:
+                # Use list if multiple, single string if one
+                if len(valid_race_list) > 1:
+                    filters["race"] = valid_race_list
+                elif len(valid_race_list) == 1:
+                    filters["race"] = valid_race_list[0]
+            else:
+                # All values were invalid - return error
+                filters["_invalid_race"] = invalid_races[0] if len(invalid_races) == 1 else invalid_races
+                return filters
     if identifiers is not None:
-        filters["identifiers"] = identifiers
+        # Handle identifiers: only '||' is allowed as delimiter for multiple values
+        # If no '||' found, treat as single identifier value
+        identifiers_str = str(identifiers).strip()
+        if identifiers_str:
+            if '||' in identifiers_str:
+                # Split by '||' delimiter
+                identifiers_list = [id.strip() for id in identifiers_str.split('||') if id.strip()]
+                if len(identifiers_list) > 1:
+                    filters["identifiers"] = identifiers_list
+                elif len(identifiers_list) == 1:
+                    filters["identifiers"] = identifiers_list[0]
+            else:
+                # No '||' delimiter found - treat as single identifier value
+                filters["identifiers"] = identifiers_str
+    
+    # Validate vital_status if provided
     if vital_status is not None:
-        filters["vital_status"] = vital_status
+        # Validate vital_status - only accept valid enum values
+        from app.core.constants import VitalStatus
+        vital_status_str = str(vital_status).strip() if vital_status else None
+        if vital_status_str:
+            if vital_status_str not in VitalStatus.values():
+                # Invalid vital_status value - store for error handling in endpoint
+                filters["_invalid_vital_status"] = vital_status_str
+                return filters
+            filters["vital_status"] = vital_status_str
+    
+    # Validate age_at_vital_status if provided
     if age_at_vital_status is not None:
-        filters["age_at_vital_status"] = age_at_vital_status
+        age_str = str(age_at_vital_status).strip() if age_at_vital_status else None
+        if age_str:
+            try:
+                # Try to convert to integer
+                # Note: age_at_vital_status is stored in days in the database
+                age_int = int(age_str)
+                # Validate it's a reasonable age (0-73000 days = ~200 years)
+                if age_int < 0 or age_int > 73000:
+                    filters["_invalid_age_at_vital_status"] = age_str
+                    filters["_age_at_vital_status_reason"] = "Age must be a valid non-negative integer (stored in days)."
+                    return filters
+                filters["age_at_vital_status"] = age_int
+            except ValueError:
+                # Invalid integer format
+                filters["_invalid_age_at_vital_status"] = age_str
+                filters["_age_at_vital_status_reason"] = "Age must be a valid integer (stored in days)."
+                return filters
     if depositions is not None:
         filters["depositions"] = depositions
     
@@ -219,7 +312,7 @@ def get_diagnosis_search_params(
 def get_subject_diagnosis_filters(
     search: Optional[str] = Query(None, description="Diagnosis search term"),
     sex: Optional[str] = Query(None, description="Filter by sex"),
-    race: Optional[str] = Query(None, description="Filter by race"),
+    race: Optional[List[str]] = Query(None, description="Filter by race. Can be provided multiple times: `?race=White&race=Asian`"),
     ethnicity: Optional[str] = Query(None, description="Filter by ethnicity"),
     identifiers: Optional[str] = Query(None, description="Filter by identifiers"),
     vital_status: Optional[str] = Query(None, description="Filter by vital status"),

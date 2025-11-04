@@ -59,11 +59,13 @@ def calculate_pagination_info(
     page: int, per_page: int, total_items: int
 ) -> PaginationInfo:
     """Calculate pagination information."""
-    total_pages = (total_items + per_page - 1) // per_page
+    total_pages = (total_items + per_page - 1) // per_page if total_items > 0 else 0
     
     return PaginationInfo(
         page=page,
         per_page=per_page,
+        total_pages=total_pages,
+        total_items=total_items,
         has_next=page < total_pages,
         has_prev=page > 1
     )

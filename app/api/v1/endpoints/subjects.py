@@ -395,11 +395,30 @@ async def get_subject(
                 
                 return result
             else:
-                # No value provided for field filter
-                raise InvalidParametersError(
-                    parameters=["value"],
-                    reason=f"Field '{field_name}' requires a value parameter. Use query parameter ?value=<value> or ?{field_name}=<value>"
+                # No value provided for field filter - return empty result
+                from app.core.pagination import calculate_pagination_info
+                pagination_info = calculate_pagination_info(
+                    page=1,
+                    per_page=0,
+                    total_items=0
                 )
+                result = SubjectResponse(
+                    summary={
+                        "counts": {
+                            "all": 0,
+                            "current": 0
+                        }
+                    },
+                    data=[],
+                    pagination=pagination_info
+                )
+                logger.info(
+                    "Field filter with no value, returning empty result",
+                    field=field_name,
+                    organization=organization,
+                    namespace=namespace
+                )
+                return result
         
         # Participant ID search (organization must be CCDI-DCC)
         if organization == "CCDI-DCC":
@@ -410,35 +429,114 @@ async def get_subject(
             participant_id_list = [pid.strip() for pid in name.split(',') if pid.strip()]
             
             if not participant_id_list:
-                raise InvalidParametersError(
-                    parameters=["name"],
-                    reason="At least one participant ID must be provided"
+                # No participant IDs provided - return empty result
+                from app.core.pagination import calculate_pagination_info
+                pagination_info = calculate_pagination_info(
+                    page=1,
+                    per_page=0,
+                    total_items=0
                 )
+                result = SubjectResponse(
+                    summary={
+                        "counts": {
+                            "all": 0,
+                            "current": 0
+                        }
+                    },
+                    data=[],
+                    pagination=pagination_info
+                )
+                logger.info(
+                    "No participant IDs provided, returning empty result",
+                    organization=organization,
+                    namespace=namespace,
+                    name=name
+                )
+                return result
             
             # Create filters for participant IDs
             filters = {"identifiers": participant_id_list}
             
-            # Get subjects using the search method
-            subjects = await service.get_subjects(
-                filters=filters,
-                offset=0,
-                limit=100  # Allow multiple results
-            )
+            # If namespace is provided, filter by it using get_subject_by_identifier for each participant ID
+            # This ensures we only get participants that belong to the specified study_id
+            if namespace:
+                subjects = []
+                for participant_id in participant_id_list:
+                    subject = await service.get_subject_by_identifier(organization, namespace, participant_id)
+                    if subject:
+                        subjects.append(subject)
+            else:
+                # Get subjects using the search method (no namespace filter)
+                subjects = await service.get_subjects(
+                    filters=filters,
+                    offset=0,
+                    limit=100  # Allow multiple results
+                )
             
+            # Return empty result if no subjects found (instead of raising NotFoundError)
             if not subjects:
-                raise NotFoundError("Subject")
+                # Return empty SubjectResponse
+                from app.core.pagination import calculate_pagination_info
+                pagination_info = calculate_pagination_info(
+                    page=1,
+                    per_page=0,
+                    total_items=0
+                )
+                result = SubjectResponse(
+                    summary={
+                        "counts": {
+                            "all": 0,
+                            "current": 0
+                        }
+                    },
+                    data=[],
+                    pagination=pagination_info
+                )
+                logger.info(
+                    "Get subject response (no matches found)",
+                    organization=organization,
+                    namespace=namespace,
+                    name=name
+                )
+                return result
             
             # If only one participant ID, return single Subject
             if len(participant_id_list) == 1:
-                subject = subjects[0]
-                logger.info(
-                    "Get subject response (single participant ID)",
-                    organization=organization,
-                    namespace=namespace,
-                    name=name,
-                    subject_data=getattr(subject, 'id', str(subject)[:50])
-                )
-                return subject
+                if subjects:
+                    subject = subjects[0]
+                    logger.info(
+                        "Get subject response (single participant ID)",
+                        organization=organization,
+                        namespace=namespace,
+                        name=name,
+                        subject_data=getattr(subject, 'id', str(subject)[:50])
+                    )
+                    return subject
+                else:
+                    # Return empty result for single participant ID
+                    from app.core.pagination import calculate_pagination_info
+                    pagination_info = calculate_pagination_info(
+                        page=1,
+                        per_page=0,
+                        total_items=0
+                    )
+                    result = SubjectResponse(
+                        summary={
+                            "counts": {
+                                "all": 0,
+                                "current": 0
+                            }
+                        },
+                        data=[],
+                        pagination=pagination_info
+                    )
+                    logger.info(
+                        "Get subject response (single participant ID, no match)",
+                        organization=organization,
+                        namespace=namespace,
+                        name=name
+                    )
+                    return result
             else:
                 # If multiple participant IDs, return SubjectResponse format
                 
@@ -478,6 +576,32 @@ async def get_subject(
             # Get subject
             subject = await service.get_subject_by_identifier(organization, namespace, name)
             
+            # Return empty result if not found (instead of raising NotFoundError)
+            if not subject:
+                from app.core.pagination import calculate_pagination_info
+                pagination_info = calculate_pagination_info(
+                    page=1,
+                    per_page=0,
+                    total_items=0
+                )
+                result = SubjectResponse(
+                    summary={
+                        "counts": {
+                            "all": 0,
+                            "current": 0
+                        }
+                    },
+                    data=[],
+                    pagination=pagination_info
+                )
+                logger.info(
+                    "Get subject response (not found)",
+                    organization=organization,
+                    namespace=namespace,
+                    name=name
+                )
+                return result
+            
             logger.info(
                 "Get subject response",
                 organization=organization,
@@ -488,17 +612,32 @@ async def get_subject(
             
             return subject
         
-    except (NotFoundError, InvalidParametersError) as e:
-        if isinstance(e, NotFoundError):
-            logger.warning("Subject not found", organization=organization, namespace=namespace, name=name)
-        else:
-            logger.warning("Invalid parameters", organization=organization, namespace=namespace, name=name)
-        raise e.to_http_exception()
     except Exception as e:
-        logger.error("Error getting subject", error=str(e), exc_info=True)
-        if hasattr(e, 'to_http_exception'):
-            raise e.to_http_exception()
-        raise HTTPException(status_code=500, detail="Internal server error")
+        # For any error (not found, invalid parameters, etc.), return empty result
+        logger.warning(
+            "Error getting subject, returning empty result",
+            organization=organization,
+            namespace=namespace,
+            name=name,
+            error=str(e)
+        )
+        from app.core.pagination import calculate_pagination_info
+        pagination_info = calculate_pagination_info(
+            page=1,
+            per_page=0,
+            total_items=0
+        )
+        result = SubjectResponse(
+            summary={
+                "counts": {
+                    "all": 0,
+                    "current": 0
+                }
+            },
+            data=[],
+            pagination=pagination_info
+        )
+        return result
 
 
 # ============================================================================

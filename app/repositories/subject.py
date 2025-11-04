@@ -317,20 +317,93 @@ class SubjectRepository:
         # Build query parameters
         params = {"participant_id": name}
         
-        # If namespace (study_id) is provided, filter by it
-        namespace_filter = ""
+        # If namespace (study_id) is provided, require it to match the participant's study
+        # This ensures namespace is a valid study_id for the participant
         if namespace:
-            namespace_filter = " AND st.study_id = $namespace"
+            # When namespace is provided, match participant and study together with study_id filter
+            # This ensures we only get results where the participant belongs to the specified study
+            # IMPORTANT: The WHERE clause filters by study_id FIRST, so only participants
+            # belonging to the exact requested study_id will be matched
             params["namespace"] = namespace
-        
-        # Build query to find subject by identifier with relationships
-        cypher = f"""
+            cypher = f"""
+        // First, find the study with the requested study_id
+        MATCH (st:study)
+        WHERE st.study_id = $namespace
+        // Then find participants that belong to this specific study
+        // The relationship path must be: participant -> consent_group -> study
+        // This ensures we only match participants that are actually connected to the requested study
+        MATCH (p:participant)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st)
+        WHERE p.participant_id = $participant_id
+        // Verify that the participant is connected to the requested study
+        // Use DISTINCT to ensure we only get one row per participant-study combination
+        WITH DISTINCT p, st
+        // Verify st.study_id matches the requested namespace (defensive check)
+        WHERE st.study_id = $namespace
+        OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
+        OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
+        WITH p, d, st, 
+             // Collect all survival records for this participant
+             collect(DISTINCT s) AS survival_records
+        WITH p, d, st,
+             // Keep only records with a status
+             [sr IN survival_records WHERE sr.last_known_survival_status IS NOT NULL] AS survs
+        WITH p, d, st, survs,
+             // Check if any record has 'Dead' status
+             any(sr IN survs WHERE sr.last_known_survival_status = 'Dead') AS has_dead,
+             // Find max age among Dead records (if any exist)
+             reduce(dead_max_age = 0, sr IN survs |
+                    CASE 
+                      WHEN sr.last_known_survival_status = 'Dead' 
+                           AND sr.age_at_last_known_survival_status IS NOT NULL 
+                           AND sr.age_at_last_known_survival_status > dead_max_age
+                      THEN sr.age_at_last_known_survival_status 
+                      ELSE dead_max_age 
+                    END) AS max_dead_age,
+             // Find max age across all non-null records
+             reduce(max_age = 0, sr IN survs |
+                    CASE 
+                      WHEN sr.age_at_last_known_survival_status IS NOT NULL 
+                           AND sr.age_at_last_known_survival_status > max_age
+                      THEN sr.age_at_last_known_survival_status 
+                      ELSE max_age 
+                    END) AS max_age
+        WITH p, d, st,
+             // Priority: If 'Dead' exists, use 'Dead'; otherwise use status with max age
+             CASE 
+               WHEN has_dead THEN 'Dead'
+               ELSE head([sr IN survs 
+                           WHERE sr.age_at_last_known_survival_status = max_age 
+                           | sr.last_known_survival_status])
+             END AS final_vital_status,
+             // Age: If 'Dead' exists, use max Dead age; otherwise use max age
+             CASE 
+               WHEN has_dead THEN max_dead_age
+               ELSE max_age
+             END AS final_age_at_vital_status
+        RETURN
+          p.participant_id AS name,
+          p.race AS race,
+          CASE 
+            WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
+            ELSE 'Not reported'
+          END AS ethnicity,
+          final_age_at_vital_status AS age_at_vital_status,
+          final_vital_status AS vital_status,
+          d.diagnosis AS associated_diagnoses,
+          p.sex_at_birth AS sex,
+          $namespace AS namespace,
+          $namespace AS depositions
+        LIMIT 1
+        """
+        else:
+            # When namespace is not provided, use optional match for study
+            cypher = f"""
         MATCH (p:participant)
         WHERE p.participant_id = $participant_id
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
-        WITH p, d, c, st{namespace_filter if namespace_filter else ""}
+        WITH p, d, c, st
         WITH p, d, c, st, 
              // Collect all survival records for this participant
              collect(s) AS survival_records

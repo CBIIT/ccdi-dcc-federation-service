@@ -113,11 +113,16 @@ class SubjectService:
         # Get from repository
         subject = await self.repository.get_subject_by_identifier(organization, namespace, name)
         
+        # Return None if not found (instead of raising NotFoundError)
+        # The endpoint will handle None by returning empty results
         if not subject:
-            if namespace:
-                raise NotFoundError(f"Subject not found: {organization}.{namespace}.{name}")
-            else:
-                raise NotFoundError(f"Subject not found: {organization}.{name}")
+            logger.debug(
+                "Subject not found in repository",
+                organization=organization,
+                namespace=namespace,
+                name=name
+            )
+            return None
         
         logger.info(
             "Retrieved subject by identifier",

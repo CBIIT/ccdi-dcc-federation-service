@@ -11,14 +11,14 @@ info:
   license:
     name: MIT
     url: https://opensource.org/licenses/MIT
-  termsOfService: https://your-server.com/terms
+  # termsOfService: https://your-server.com/terms
 servers:
 - url: http://localhost:8000/api/v1
   description: Local development server (default)
-- url: https://your-server.com/api/v1
-  description: Production server
-- url: https://ccdi-federation-test.test.com/api/v1
-  description: Test server - For online testing
+- url: http://internal-ccdi-dev-federation-dcc-alb-261178975.us-east-1.elb.amazonaws.com:8000/api/v1
+  description: Dev Test server
+# - url: https://ccdi-federation-test.test.com/api/v1
+#   description: Test server - For online testing
 
 paths:
   /subject:
@@ -152,11 +152,15 @@ paths:
       - name: depositions
         in: query
         description: |-
-          Filter by depositions. If value is `db_gap`, returns all subjects (no filtering). 
-          Any other value will return an empty result set.
+          Filter by study_id. Matches any subject where the `depositions` field contains 
+          the specified study_id value (e.g., `phs002431`). Returns all participants that 
+          belong to the specified study.
+          
+          Example: `depositions=phs002431` will return all participants in study `phs002431`.
         required: false
         schema:
           type: string
+          example: phs002431
       # - name: metadata.unharmonized.<field>
       #   in: query
       #   description: |-
@@ -269,7 +273,10 @@ paths:
                     age_at_vital_status:
                       value: 5475
                     depositions:
-                    - db_gap
+                    - kind: dbGaP
+                      value: phs002431
+                    - kind: dbGaP
+                      value: phs000463
                   gateways: []
                 pagination:
                   page: 1
@@ -728,7 +735,10 @@ components:
           age_at_vital_status:
             value: 5475
           depositions:
-          - db_gap
+          - kind: dbGaP
+            value: phs002431
+          - kind: dbGaP
+            value: phs000463
         gateways: []
     SubjectId:
       type: object
@@ -789,9 +799,20 @@ components:
         depositions:
           type: array
           items:
-            type: string
-          default:
-          - db_gap
+            type: object
+            properties:
+              kind:
+                type: string
+                example: dbGaP
+              value:
+                type: string
+                example: phs002431
+          description: Array of deposition objects containing study_id values
+          example:
+            - kind: dbGaP
+              value: phs002431
+            - kind: dbGaP
+              value: phs000463
       required:
       - sex
       - race

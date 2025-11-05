@@ -13,6 +13,7 @@ from neo4j import AsyncSession
 from app.core.config import Settings, get_settings
 from app.core.pagination import PaginationParams, parse_pagination_params
 from app.core.logging import get_logger
+from app.core.constants import Race, Ethnicity, VitalStatus
 from app.db.memgraph import get_session
 from app.lib.field_allowlist import get_field_allowlist, FieldAllowlist
 from app.models.errors import create_pagination_error, InvalidParametersError
@@ -74,13 +75,33 @@ def get_pagination_params(
 # ============================================================================
 
 def get_subject_filters(
-    sex: Optional[str] = Query(None, description="Matches any subject where the `sex` field matches the string provided."),
-    race: Optional[str] = Query(None, description="Matches any subject where any member of the `race` field matches any of the provided values. Multiple race values can be provided separated by `||` (double pipe). The race field in the database may contain semicolon-separated values (e.g., 'Asian;White'), and the filter will match if any of the provided values is found within those values. Only `||` is accepted as a delimiter; all other characters are treated as part of a single value."),
-    ethnicity: Optional[str] = Query(None, description="Matches any subject where the `ethnicity` field matches the string provided. Ethnicity is derived from race values: if race contains 'Hispanic or Latino', ethnicity is 'Hispanic or Latino'; otherwise 'Not reported'. Only these two values are accepted."),
+    sex: Optional[str] = Query(
+        None, 
+        description="Matches any subject where the `sex` field matches the string provided.",
+        enum=["M", "F", "U"]
+    ),
+    race: Optional[str] = Query(
+        None, 
+        description="Matches any subject where any member of the `race` field matches any of the provided values. Multiple race values can be provided separated by `||` (double pipe). The race field in the database may contain semicolon-separated values (e.g., 'Asian;White'), and the filter will match if any of the provided values is found within those values. Only `||` is accepted as a delimiter; all other characters are treated as part of a single value.",
+        enum=[r.value for r in Race]
+    ),
+    ethnicity: Optional[str] = Query(
+        None, 
+        description="Matches any subject where the `ethnicity` field matches the string provided. Ethnicity is derived from race values: if race contains 'Hispanic or Latino', ethnicity is 'Hispanic or Latino'; otherwise 'Not reported'. Only these two values are accepted.",
+        enum=[e.value for e in Ethnicity]
+    ),
     identifiers: Optional[str] = Query(None, description="Matches any subject where any member of the `identifiers` field matches the string provided. **Note:** a logical OR (`||`) is performed across the values when determining whether the subject should be included in the results."),
-    vital_status: Optional[str] = Query(None, description="Matches any subject where the `vital_status` field matches the string provided."),
+    vital_status: Optional[str] = Query(
+        None, 
+        description="Matches any subject where the `vital_status` field matches the string provided.",
+        enum=[v.value for v in VitalStatus]
+    ),
     age_at_vital_status: Optional[str] = Query(None, description="Matches any subject where the `age_at_vital_status` field matches the string provided."),
-    depositions: Optional[str] = Query(None, description="Filter by depositions. The default value is 'db_gap'."),
+    depositions: Optional[str] = Query(
+        None, 
+        description="Filter by study_id. Matches any subject where the `depositions` field contains the specified study_id value (e.g., `phs002431`). Returns all participants that belong to the specified study. Example: `depositions=phs002431` will return all participants in study `phs002431`.",
+        example="phs002431"
+    ),
     request: Request = None
 ) -> Dict[str, Any]:
     """Get subject filter parameters."""

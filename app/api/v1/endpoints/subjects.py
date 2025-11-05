@@ -7,7 +7,7 @@ including listing, individual retrieval, counting, and summaries.
 
 from typing import Dict, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status, Path
 from neo4j import AsyncSession
 
 from app.api.v1.deps import (
@@ -117,39 +117,8 @@ async def list_subjects(
         filters.pop("_age_at_vital_status_reason", None)
         
         # Handle depositions filter
-        # If depositions=db_gap, return all values (remove filter)
-        # If depositions has any other value, return empty []
-        depositions_value = filters.get("depositions")
-        if depositions_value is not None:
-            depositions_str = str(depositions_value).strip()
-            if depositions_str.lower() != "db_gap":
-                # Return empty result for any value other than db_gap
-                pagination_info = calculate_pagination_info(
-                    page=pagination.page,
-                    per_page=pagination.per_page,
-                    total_items=0
-                )
-                
-                result = SubjectResponse(
-                    summary={
-                        "counts": {
-                            "all": 0,
-                            "current": 0
-                        }
-                    },
-                    data=[],
-                    pagination=pagination_info
-                )
-                
-                logger.info(
-                    "Depositions filter with invalid value, returning empty result",
-                    depositions=depositions_str
-                )
-                
-                return result
-            else:
-                # Remove depositions filter since db_gap means return all
-                filters.pop("depositions", None)
+        # Depositions filter now accepts study_id value (e.g., phs002431)
+        # The filter will be processed in the repository to match participants by study_id
         
         # Create service
         cache_service = get_cache_service()
@@ -225,23 +194,62 @@ async def list_subjects(
 @router.get(
     "/by/{field}/count",
     response_model=CountResponse,
-    summary="Count subjects by field",
-    description="Get counts of subjects grouped by a specific field value"
+    summary="Groups the subjects by the specified metadata field and returns counts.",
+    description="Groups the subjects by the specified metadata field and returns counts.",
+    operation_id="subjects_by_count",
+    responses={
+        200: {
+            "description": "Successful operation.",
+            "content": {
+                "application/json": {
+                    "schema": {"$ref": "#/components/schemas/CountResponse"}
+                }
+            }
+        },
+        422: {
+            "description": "Unsupported field.",
+            "content": {
+                "application/json": {
+                    "schema": {"$ref": "#/components/schemas/ErrorsResponse"},
+                    "example": {
+                        "errors": [
+                            {
+                                "kind": "UnsupportedField",
+                                "field": "handedness",
+                                "reason": "This field is not present for subjects.",
+                                "message": "Field 'handedness' is not supported: this field is not present for subjects."
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+    }
 )
 async def count_subjects_by_field(
-    field: str,
     request: Request,
-    filters: Dict[str, Any] = Depends(get_subject_filters),
+    field: str = Path(
+        ...,
+        description="The field to group by and count with.",
+        enum=["sex", "race", "ethnicity", "vital_status", "age_at_vital_status", "associated_diagnoses"],
+        examples={
+            "sex": {"value": "sex", "summary": "Count by sex"},
+            "race": {"value": "race", "summary": "Count by race"},
+            "ethnicity": {"value": "ethnicity", "summary": "Count by ethnicity"},
+            "vital_status": {"value": "vital_status", "summary": "Count by vital status"},
+            "age_at_vital_status": {"value": "age_at_vital_status", "summary": "Count by age at vital status"},
+            "associated_diagnoses": {"value": "associated_diagnoses", "summary": "Count by associated diagnoses"}
+        }
+    ),
     session: AsyncSession = Depends(get_database_session),
     settings: Settings = Depends(get_app_settings),
     allowlist: FieldAllowlist = Depends(get_allowlist),
     _rate_limit: None = Depends(check_rate_limit)
 ):
-    """Count subjects grouped by a specific field."""
+    """Groups the subjects by the specified metadata field and returns counts."""
     logger.info(
         "Count subjects by field request",
         field=field,
-        filters=filters,
         path=request.url.path
     )
     
@@ -250,8 +258,8 @@ async def count_subjects_by_field(
         cache_service = get_cache_service()
         service = SubjectService(session, allowlist, settings, cache_service)
         
-        # Get counts
-        result = await service.count_subjects_by_field(field, filters)
+        # Get counts (no filters - return all counts)
+        result = await service.count_subjects_by_field(field, {})
         
         logger.info(
             "Count subjects by field response",
@@ -647,21 +655,38 @@ async def get_subject(
 @router.get(
     "/summary",
     response_model=SummaryResponse,
-    summary="Get subjects summary",
-    description="Get summary statistics for subjects"
+    summary="Reports summary information for the subjects known by this server.",
+    description="Reports summary information for the subjects known by this server.",
+    operation_id="subject_summary",
+    responses={
+        200: {
+            "description": "Summary counts successfully returned",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "counts": {
+                            "total": 25696
+                        }
+                    }
+                }
+            }
+        }
+    }
 )
 async def get_subjects_summary(
     request: Request,
-    filters: Dict[str, Any] = Depends(get_subject_filters),
     session: AsyncSession = Depends(get_database_session),
     settings: Settings = Depends(get_app_settings),
     allowlist: FieldAllowlist = Depends(get_allowlist),
     _rate_limit: None = Depends(check_rate_limit)
 ):
-    """Get summary statistics for subjects."""
+    """
+    Reports summary information for the subjects known by this server.
+    
+    Returns summary counts for all subjects.
+    """
     logger.info(
         "Get subjects summary request",
-        filters=filters,
         path=request.url.path
     )
     
@@ -670,8 +695,8 @@ async def get_subjects_summary(
         cache_service = get_cache_service()
         service = SubjectService(session, allowlist, settings, cache_service)
         
-        # Get summary
-        result = await service.get_subjects_summary(filters)
+        # Get summary (no filters - return total count)
+        result = await service.get_subjects_summary({})
         
         logger.info(
             "Get subjects summary response",

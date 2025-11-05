@@ -86,7 +86,7 @@ class SubjectRepository:
         identifiers_condition = ""
         if "identifiers" in filters:
             identifiers_value = filters.pop("identifiers")
-            if identifiers_value is not None:
+            if identifiers_value is not None and str(identifiers_value).strip():
                 param_counter += 1
                 id_param = f"param_{param_counter}"
                 params[id_param] = identifiers_value
@@ -100,7 +100,15 @@ class SubjectRepository:
                 END AS id_list"""
                 where_conditions.append("p.participant_id IN id_list")
         
-        # Depositions processing disabled - using preset value only
+        # Handle depositions filter (study_id)
+        if "depositions" in filters:
+            depositions_value = filters.pop("depositions")
+            if depositions_value is not None and str(depositions_value).strip():
+                param_counter += 1
+                dep_param = f"param_{param_counter}"
+                params[dep_param] = str(depositions_value).strip()
+                # Filter by study_id - participants must belong to the specified study
+                where_conditions.append("st.study_id = ${}".format(dep_param))
         
         # Handle diagnosis search
         if "_diagnosis_search" in filters:
@@ -219,7 +227,7 @@ class SubjectRepository:
                       THEN sr.age_at_last_known_survival_status 
                       ELSE max_age 
                     END) AS max_age
-        WITH p, d, c, st,
+        WITH p, d, c, st, survs,
              // Priority: If 'Dead' exists, use 'Dead'; otherwise use status with max age
              CASE 
                WHEN has_dead THEN 'Dead'
@@ -238,8 +246,47 @@ class SubjectRepository:
                ELSE 'Not reported'
              END AS ethnicity_value
         {derived_where_clause}
+        // Group by participant to aggregate study_ids and handle multiple records per participant
+        WITH p.participant_id AS participant_id, p, d, st, final_vital_status, final_age_at_vital_status,
+             ethnicity_value
+        WITH participant_id, 
+             // Use head to get first participant node (they're all the same per participant_id)
+             head(collect(DISTINCT p)) AS p,
+             // Collect all diagnosis nodes - we'll aggregate diagnoses from all nodes
+             collect(DISTINCT d) AS diagnosis_nodes,
+             // final_vital_status and final_age_at_vital_status are already calculated per participant, just take first
+             head(collect(DISTINCT final_vital_status)) AS final_vital_status,
+             head(collect(DISTINCT final_age_at_vital_status)) AS final_age_at_vital_status,
+             head(collect(DISTINCT ethnicity_value)) AS ethnicity_value,
+             // Collect all distinct study_ids for this participant
+             collect(DISTINCT st.study_id) AS study_ids
+        WITH participant_id, p, final_vital_status, final_age_at_vital_status,
+             ethnicity_value, study_ids,
+             // Aggregate all diagnoses from all diagnosis nodes
+             // Extract diagnosis values from each node (d.diagnosis can be string or list)
+             // Filter out NULL nodes first
+             [node IN diagnosis_nodes WHERE node IS NOT NULL] AS non_null_nodes
+        WITH participant_id, p, final_vital_status, final_age_at_vital_status,
+             ethnicity_value, study_ids,
+             // Extract diagnosis values from non-null nodes
+             reduce(all_diagnoses = [], node IN non_null_nodes |
+                    CASE 
+                      WHEN node.diagnosis IS NOT NULL THEN
+                        all_diagnoses + [node.diagnosis]
+                      ELSE all_diagnoses
+                    END) AS all_diagnoses_list
+        WITH participant_id, p, final_vital_status, final_age_at_vital_status,
+             ethnicity_value, study_ids,
+             // Return the aggregated diagnoses list (will be processed in Python)
+             all_diagnoses_list AS d
+        WITH participant_id, p, d, final_vital_status, final_age_at_vital_status,
+             ethnicity_value,
+             // Use first study_id for namespace (for backward compatibility)
+             head(study_ids) AS namespace,
+             // All study_ids for depositions (filter out null values)
+             [sid IN study_ids WHERE sid IS NOT NULL] AS study_ids_filtered
         RETURN
-          p.participant_id AS name,
+          participant_id AS name,
           p.race AS race,
           CASE 
             WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
@@ -247,11 +294,11 @@ class SubjectRepository:
           END AS ethnicity,
           final_age_at_vital_status AS age_at_vital_status,
           final_vital_status AS vital_status,
-          d.diagnosis AS associated_diagnoses,
+          d AS associated_diagnoses,
           p.sex_at_birth AS sex,
-          st.study_id AS namespace,
-          st.study_id AS depositions
-        ORDER BY id(p)
+          namespace,
+          study_ids_filtered AS depositions
+        ORDER BY name
         SKIP $offset
         LIMIT $limit
         """.strip()
@@ -367,7 +414,7 @@ class SubjectRepository:
                       THEN sr.age_at_last_known_survival_status 
                       ELSE max_age 
                     END) AS max_age
-        WITH p, d, st,
+        WITH p, d, st, survs,
              // Priority: If 'Dead' exists, use 'Dead'; otherwise use status with max age
              CASE 
                WHEN has_dead THEN 'Dead'
@@ -380,8 +427,20 @@ class SubjectRepository:
                WHEN has_dead THEN max_dead_age
                ELSE max_age
              END AS final_age_at_vital_status
+        // Now collect all study_ids for this participant (not just the filtered one)
+        WITH p.participant_id AS participant_id, p, d, survs, final_vital_status, final_age_at_vital_status
+        // Get all studies for this participant
+        OPTIONAL MATCH (p)-[:of_participant]->(c_all:consent_group)-[:of_consent_group]->(st_all:study)
+        WITH participant_id, p, d, survs, final_vital_status, final_age_at_vital_status,
+             // Collect all distinct study_ids for this participant
+             collect(DISTINCT st_all.study_id) AS study_ids
+        WITH participant_id, p, d, survs, final_vital_status, final_age_at_vital_status,
+             // Use requested namespace for namespace (for backward compatibility)
+             $namespace AS namespace,
+             // All study_ids for depositions
+             study_ids
         RETURN
-          p.participant_id AS name,
+          participant_id AS name,
           p.race AS race,
           CASE 
             WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
@@ -391,8 +450,8 @@ class SubjectRepository:
           final_vital_status AS vital_status,
           d.diagnosis AS associated_diagnoses,
           p.sex_at_birth AS sex,
-          $namespace AS namespace,
-          $namespace AS depositions
+          namespace,
+          study_ids AS depositions
         LIMIT 1
         """
         else:
@@ -430,7 +489,7 @@ class SubjectRepository:
                       THEN sr.age_at_last_known_survival_status 
                       ELSE max_age 
                     END) AS max_age
-        WITH p, d, c, st,
+        WITH p, d, c, st, survs,
              // Priority: If 'Dead' exists, use 'Dead'; otherwise use status with max age
              CASE 
                WHEN has_dead THEN 'Dead'
@@ -443,8 +502,17 @@ class SubjectRepository:
                WHEN has_dead THEN max_dead_age
                ELSE max_age
              END AS final_age_at_vital_status
+        // Collect all study_ids for this participant
+        WITH p.participant_id AS participant_id, p, d, survs, final_vital_status, final_age_at_vital_status,
+             // Collect all distinct study_ids for this participant
+             collect(DISTINCT st.study_id) AS study_ids
+        WITH participant_id, p, d, survs, final_vital_status, final_age_at_vital_status,
+             // Use first study_id for namespace (for backward compatibility)
+             head(study_ids) AS namespace,
+             // All study_ids for depositions
+             study_ids
         RETURN
-          p.participant_id AS name,
+          participant_id AS name,
           p.race AS race,
           CASE 
             WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
@@ -454,8 +522,8 @@ class SubjectRepository:
           final_vital_status AS vital_status,
           d.diagnosis AS associated_diagnoses,
           p.sex_at_birth AS sex,
-          st.study_id AS namespace,
-          st.study_id AS depositions
+          namespace,
+          study_ids AS depositions
         LIMIT 1
         """
         
@@ -609,7 +677,7 @@ class SubjectRepository:
         identifiers_condition = ""
         if "identifiers" in filters:
             identifiers_value = filters.pop("identifiers")
-            if identifiers_value is not None:
+            if identifiers_value is not None and str(identifiers_value).strip():
                 param_counter += 1
                 id_param = f"param_{param_counter}"
                 params[id_param] = identifiers_value
@@ -623,7 +691,15 @@ class SubjectRepository:
                 END AS id_list"""
                 base_where_conditions.append("p.participant_id IN id_list")
         
-        # Depositions processing disabled - using preset value only
+        # Handle depositions filter (study_id)
+        if "depositions" in filters:
+            depositions_value = filters.pop("depositions")
+            if depositions_value is not None and str(depositions_value).strip():
+                param_counter += 1
+                dep_param = f"param_{param_counter}"
+                params[dep_param] = str(depositions_value).strip()
+                # Filter by study_id - participants must belong to the specified study
+                base_where_conditions.append("st.study_id = ${}".format(dep_param))
         
         # Handle diagnosis search
         if "_diagnosis_search" in filters:
@@ -884,7 +960,7 @@ WITH p, d, c, st,
         identifiers_condition = ""
         if "identifiers" in filters:
             identifiers_value = filters.pop("identifiers")
-            if identifiers_value is not None:
+            if identifiers_value is not None and str(identifiers_value).strip():
                 param_counter += 1
                 id_param = f"param_{param_counter}"
                 params[id_param] = identifiers_value
@@ -1051,7 +1127,7 @@ WITH p, d, c, st,
         identifiers_condition = ""
         if "identifiers" in filters:
             identifiers_value = filters.pop("identifiers")
-            if identifiers_value is not None:
+            if identifiers_value is not None and str(identifiers_value).strip():
                 param_counter += 1
                 id_param = f"param_{param_counter}"
                 params[id_param] = identifiers_value
@@ -1206,7 +1282,7 @@ WITH p, d, c, st,
         identifiers_condition = ""
         if "identifiers" in filters:
             identifiers_value = filters.pop("identifiers")
-            if identifiers_value is not None:
+            if identifiers_value is not None and str(identifiers_value).strip():
                 param_counter += 1
                 id_param = f"param_{param_counter}"
                 params[id_param] = identifiers_value
@@ -1406,7 +1482,7 @@ WITH p, d, c, st,
         identifiers_condition = ""
         if "identifiers" in filters:
             identifiers_value = filters.pop("identifiers")
-            if identifiers_value is not None:
+            if identifiers_value is not None and str(identifiers_value).strip():
                 param_counter += 1
                 id_param = f"param_{param_counter}"
                 params[id_param] = identifiers_value
@@ -1420,7 +1496,15 @@ WITH p, d, c, st,
                 END AS id_list"""
                 where_conditions.append("p.participant_id IN id_list")
         
-        # Depositions processing disabled - using preset value only
+        # Handle depositions filter (study_id)
+        if "depositions" in filters:
+            depositions_value = filters.pop("depositions")
+            if depositions_value is not None and str(depositions_value).strip():
+                param_counter += 1
+                dep_param = f"param_{param_counter}"
+                params[dep_param] = str(depositions_value).strip()
+                # Filter by study_id - participants must belong to the specified study
+                where_conditions.append("st.study_id = ${}".format(dep_param))
         
         # Handle diagnosis search
         if "_diagnosis_search" in filters:
@@ -1509,7 +1593,76 @@ WITH p, d, c, st,
         # Build query - if we have derived filters, we need to calculate them first
         if derived_filters and ("vital_status" in derived_filters or "age_at_vital_status" in derived_filters):
             # Calculate survival records for vital_status and age_at_vital_status filters
-            cypher = f"""
+            # For identifiers filter, deduplicate early to avoid counting same participant multiple times
+            if identifiers_condition:
+                # Apply identifiers filter and deduplicate BEFORE OPTIONAL MATCH to avoid duplicates from multiple studies
+                # Build WHERE clause without identifiers condition (already applied)
+                where_clause_filtered = where_clause.replace("WHERE p.participant_id IN id_list", "").replace("AND p.participant_id IN id_list", "").strip() if where_clause else ""
+                where_clause_filtered = where_clause_filtered if where_clause_filtered.startswith("WHERE") else ("WHERE " + where_clause_filtered if where_clause_filtered else "")
+                
+                # Create a WITH clause version of identifiers_condition for this query
+                # Extract the CASE statement from identifiers_condition and format it properly
+                if identifiers_condition.startswith(","):
+                    # Remove leading comma and create proper WITH clause
+                    case_statement = identifiers_condition[1:].strip()  # Remove comma and whitespace
+                    # First compute id_list, then match participants
+                    identifiers_with_clause = f"""
+        WITH {case_statement}"""
+                else:
+                    identifiers_with_clause = identifiers_condition
+                
+                cypher = f"""
+        {identifiers_with_clause}
+        MATCH (p:participant)
+        WHERE p.participant_id IN id_list
+        WITH DISTINCT p.participant_id AS participant_id, p
+        OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
+        OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
+        OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
+        {where_clause_filtered}
+        WITH participant_id, p, d, c, st{race_condition},
+             collect(s) AS survival_records
+        WITH participant_id, p, d, c, st,
+             [sr IN survival_records WHERE sr.last_known_survival_status IS NOT NULL] AS survs
+        WITH participant_id, p, d, c, st, survs,
+             any(sr IN survs WHERE sr.last_known_survival_status = 'Dead') AS has_dead,
+             reduce(dead_max_age = 0, sr IN survs |
+                    CASE 
+                      WHEN sr.last_known_survival_status = 'Dead' 
+                           AND sr.age_at_last_known_survival_status IS NOT NULL 
+                           AND sr.age_at_last_known_survival_status > dead_max_age
+                      THEN sr.age_at_last_known_survival_status 
+                      ELSE dead_max_age 
+                    END) AS max_dead_age,
+             reduce(max_age = 0, sr IN survs |
+                    CASE 
+                      WHEN sr.age_at_last_known_survival_status IS NOT NULL 
+                           AND sr.age_at_last_known_survival_status > max_age
+                      THEN sr.age_at_last_known_survival_status 
+                      ELSE max_age 
+                    END) AS max_age
+        WITH participant_id, p, d, c, st,
+             CASE 
+               WHEN has_dead THEN 'Dead'
+               ELSE head([sr IN survs 
+                           WHERE sr.age_at_last_known_survival_status = max_age 
+                           | sr.last_known_survival_status])
+             END AS final_vital_status,
+             CASE 
+               WHEN has_dead THEN max_dead_age
+               ELSE max_age
+             END AS final_age_at_vital_status,
+             CASE 
+               WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
+               ELSE 'Not reported'
+             END AS ethnicity_value
+        {derived_where_clause}
+        WITH DISTINCT participant_id
+        RETURN count(participant_id) as total_count
+        """.strip()
+            else:
+                # No identifiers condition - use original query
+                cypher = f"""
         MATCH (p:participant)
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
@@ -1553,6 +1706,7 @@ WITH p, d, c, st,
                ELSE 'Not reported'
              END AS ethnicity_value
         {derived_where_clause}
+        WITH DISTINCT participant_id
         RETURN count(participant_id) as total_count
         """.strip()
         else:
@@ -1561,7 +1715,44 @@ WITH p, d, c, st,
             if where_clause or race_condition or identifiers_condition or derived_where_clause:
                 # If we have ethnicity filter, we need to calculate it first
                 if "ethnicity" in derived_filters:
-                    cypher = f"""
+                    # When identifiers are used, ensure we count unique participants
+                    # Deduplicate early to avoid counting the same participant multiple times
+                    if identifiers_condition:
+                        # Build WHERE clause without identifiers condition (already applied)
+                        where_clause_filtered = where_clause.replace("WHERE p.participant_id IN id_list", "").replace("AND p.participant_id IN id_list", "").strip() if where_clause else ""
+                        where_clause_filtered = where_clause_filtered if where_clause_filtered.startswith("WHERE") else ("WHERE " + where_clause_filtered if where_clause_filtered else "")
+                        
+                        # Create a WITH clause version of identifiers_condition for this query
+                        # Extract the CASE statement from identifiers_condition and format it properly
+                        if identifiers_condition.startswith(","):
+                            # Remove leading comma and create proper WITH clause
+                            case_statement = identifiers_condition[1:].strip()  # Remove comma and whitespace
+                            # First compute id_list, then match participants
+                            identifiers_with_clause = f"""
+        WITH {case_statement}"""
+                        else:
+                            identifiers_with_clause = identifiers_condition
+                        
+                        cypher = f"""
+        {identifiers_with_clause}
+        MATCH (p:participant)
+        WHERE p.participant_id IN id_list
+        WITH DISTINCT p.participant_id AS participant_id, p
+        OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
+        OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
+        OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
+        {where_clause_filtered}
+        WITH participant_id, p{race_condition},
+             CASE 
+               WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
+               ELSE 'Not reported'
+             END AS ethnicity_value
+        {derived_where_clause}
+        WITH DISTINCT participant_id
+        RETURN count(participant_id) as total_count
+        """.strip()
+                    else:
+                        cypher = f"""
         MATCH (p:participant)
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
@@ -1578,7 +1769,40 @@ WITH p, d, c, st,
         RETURN count(participant_id) as total_count
         """.strip()
                 else:
-                    cypher = f"""
+                    # When identifiers are used, ensure we count unique participants
+                    # The OPTIONAL MATCH for study can create duplicates if participant belongs to multiple studies
+                    # So we need to deduplicate early by participant_id
+                    if identifiers_condition:
+                        # Build WHERE clause without identifiers condition (already applied)
+                        where_clause_filtered = where_clause.replace("WHERE p.participant_id IN id_list", "").replace("AND p.participant_id IN id_list", "").strip() if where_clause else ""
+                        where_clause_filtered = where_clause_filtered if where_clause_filtered.startswith("WHERE") else ("WHERE " + where_clause_filtered if where_clause_filtered else "")
+                        
+                        # Create a WITH clause version of identifiers_condition for this query
+                        # Extract the CASE statement from identifiers_condition and format it properly
+                        if identifiers_condition.startswith(","):
+                            # Remove leading comma and create proper WITH clause
+                            case_statement = identifiers_condition[1:].strip()  # Remove comma and whitespace
+                            # First compute id_list, then match participants
+                            identifiers_with_clause = f"""
+        WITH {case_statement}"""
+                        else:
+                            identifiers_with_clause = identifiers_condition
+                        
+                        cypher = f"""
+        {identifiers_with_clause}
+        MATCH (p:participant)
+        WHERE p.participant_id IN id_list
+        WITH DISTINCT p.participant_id AS participant_id, p
+        OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
+        OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
+        OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
+        {where_clause_filtered}
+        WITH participant_id, p{race_condition}
+        WITH DISTINCT participant_id
+        RETURN count(participant_id) as total_count
+        """.strip()
+                    else:
+                        cypher = f"""
         MATCH (p:participant)
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
@@ -1643,23 +1867,33 @@ WITH p, d, c, st,
         # Extract values from record
         participant_id = record.get("name")
         study_id = record.get("namespace")
+        study_ids = record.get("depositions")  # This is now an array of study_ids
         race_value = record.get("race")
         sex_value_raw = record.get("sex")
         vital_status = record.get("vital_status")
         age_at_vital_status = record.get("age_at_vital_status")
         associated_diagnoses_raw = record.get("associated_diagnoses")
         
-        # Handle associated_diagnoses - it might be a string or list
+        # Handle associated_diagnoses - it might be a string, list, or list of diagnosis nodes
+        # The query now aggregates diagnosis nodes, so we get a list of diagnosis values
+        associated_diagnoses = []
         if associated_diagnoses_raw:
             if isinstance(associated_diagnoses_raw, list):
-                associated_diagnoses = associated_diagnoses_raw
+                # Flatten the list - each element might be a string or another list
+                for item in associated_diagnoses_raw:
+                    if isinstance(item, list):
+                        associated_diagnoses.extend(item)
+                    elif isinstance(item, str) and item.strip():
+                        associated_diagnoses.append(item)
+                    elif item is not None:
+                        # Handle diagnosis node objects (if they exist)
+                        associated_diagnoses.append(str(item))
             elif isinstance(associated_diagnoses_raw, str):
                 # If it's a string, treat it as a single diagnosis
-                associated_diagnoses = [associated_diagnoses_raw]
-            else:
-                associated_diagnoses = []
-        else:
-            associated_diagnoses = []
+                associated_diagnoses = [associated_diagnoses_raw] if associated_diagnoses_raw.strip() else []
+        
+        # Remove duplicates and empty values
+        associated_diagnoses = list(dict.fromkeys([d for d in associated_diagnoses if d and str(d).strip()]))
         
         # Handle race - split by semicolon if present
         original_race_list = []
@@ -1725,11 +1959,15 @@ WITH p, d, c, st,
                     sex_value = "U"
 
         # Build nested subject structure
+        # Use latest (last alphabetically) study_id for id.namespace.name (sorted study_ids list)
+        sorted_study_ids = sorted([sid for sid in (study_ids if study_ids else []) if sid]) if study_ids else []
+        primary_study_id = sorted_study_ids[-1] if sorted_study_ids else study_id  # Use latest (last) study_id
+        
         subject_data = {
             "id": {
                 "namespace": {
                     "organization": "CCDI-DCC",
-                    "name": study_id
+                    "name": primary_study_id
                 },
                 "name": participant_id
             },
@@ -1745,34 +1983,44 @@ WITH p, d, c, st,
                     else None
                 ),
                 "ethnicity": {"value": ethnicity_value} if ethnicity_value else None,
-                "identifiers": [
-                    {
-                        "value": {
-                            "namespace": {
-                                "organization": "CCDI-DCC",
-                                "name": study_id
-                            },
-                            "name": participant_id
+                "identifiers": sorted(
+                    [
+                        {
+                            "value": {
+                                "namespace": {
+                                    "organization": "CCDI-DCC",
+                                    "name": study_id
+                                },
+                                "name": participant_id
+                            }
                         }
-                    }
-                ] if participant_id and study_id else None,
-                "associated_diagnoses": [
-                    {
-                        "value": diag,
-                        "owned": True,
-                        "comment": None,
-                        "details": {
-                            "method": None,
-                            "harmonizer": None,
-                            "url": "https://portal.pedscommons.organization/DD?view=table"
+                        for study_id in (study_ids if study_ids else [])
+                        if study_id and participant_id  # Filter out None/null values
+                    ],
+                    key=lambda x: x["value"]["namespace"]["name"]  # Sort by namespace name (study_id)
+                ) if participant_id and study_ids else None,
+                "associated_diagnoses": sorted(
+                    [
+                        {
+                            "value": diag,
+                            "owned": True,
+                            "comment": None
                         }
-                    }
-                    for diag in associated_diagnoses
-                ] if associated_diagnoses else None,
+                        for diag in associated_diagnoses
+                    ],
+                    key=lambda x: x["value"]  # Sort by diagnosis value
+                ) if associated_diagnoses else None,
                 "unharmonized": None,
                 "vital_status": {"value": vital_status} if vital_status else None,
                 "age_at_vital_status": {"value": int(age_at_vital_status)} if age_at_vital_status is not None else None,
-                "depositions": ["db_gap"]
+                "depositions": sorted(
+                    [
+                        {"kind": "dbGaP", "value": study_id}
+                        for study_id in (study_ids if study_ids else [])
+                        if study_id  # Filter out None/null values
+                    ],
+                    key=lambda x: x["value"]  # Sort by value (study_id)
+                ) if study_ids else []
             },
             "gateways": []
         }

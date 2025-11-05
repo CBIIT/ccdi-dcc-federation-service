@@ -13,8 +13,7 @@
     "license": {
       "name": "MIT",
       "url": "https://opensource.org/licenses/MIT"
-    },
-    "termsOfService": "https://your-server.com/terms"
+    }
   },
   "servers": [
     {
@@ -22,12 +21,8 @@
       "description": "Local development server (default)"
     },
     {
-      "url": "https://your-server.com/api/v1",
-      "description": "Production server"
-    },
-    {
-      "url": "https://ccdi-federation-test.test.com/api/v1",
-      "description": "Test server - For online testing"
+      "url": "http://internal-ccdi-dev-federation-dcc-alb-261178975.us-east-1.elb.amazonaws.com:8000/api/v1",
+      "description": "Dev Test server"
     }
   ],
   "paths": {
@@ -113,10 +108,11 @@
           {
             "name": "depositions",
             "in": "query",
-            "description": "Filter by depositions. If value is `db_gap`, returns all subjects (no filtering). \nAny other value will return an empty result set.",
+            "description": "Filter by study_id. Matches any subject where the `depositions` field contains \nthe specified study_id value (e.g., `phs002431`). Returns all participants that \nbelong to the specified study.\n\nExample: `depositions=phs002431` will return all participants in study `phs002431`.",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "example": "phs002431"
             }
           },
           {
@@ -219,7 +215,14 @@
                           "value": 5475
                         },
                         "depositions": [
-                          "db_gap"
+                          {
+                            "kind": "dbGaP",
+                            "value": "phs002431"
+                          },
+                          {
+                            "kind": "dbGaP",
+                            "value": "phs000463"
+                          }
                         ]
                       },
                       "gateways": []
@@ -921,7 +924,14 @@
                 "value": 5475
               },
               "depositions": [
-                "db_gap"
+                {
+                  "kind": "dbGaP",
+                  "value": "phs002431"
+                },
+                {
+                  "kind": "dbGaP",
+                  "value": "phs000463"
+                }
               ]
             },
             "gateways": []
@@ -1006,10 +1016,28 @@
           "depositions": {
             "type": "array",
             "items": {
-              "type": "string"
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "example": "dbGaP"
+                },
+                "value": {
+                  "type": "string",
+                  "example": "phs002431"
+                }
+              }
             },
-            "default": [
-              "db_gap"
+            "description": "Array of deposition objects containing study_id values",
+            "example": [
+              {
+                "kind": "dbGaP",
+                "value": "phs002431"
+              },
+              {
+                "kind": "dbGaP",
+                "value": "phs000463"
+              }
             ]
           }
         },

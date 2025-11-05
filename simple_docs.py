@@ -18,7 +18,7 @@ def create_basic_openapi_spec():
             "version": "1.0.0",
             "summary": "Childhood Cancer Data Initiative Federation Service",
             "contact": {
-                "name": "CCDI Development Team",
+                "name": "CCDI-DCC Development Team",
                 "email": "support@ccdi.org",
                 "url": "https://github.com/CBIIT/ccdi-dcc-federation-service"
             },
@@ -26,7 +26,7 @@ def create_basic_openapi_spec():
                 "name": "MIT",
                 "url": "https://opensource.org/licenses/MIT"
             },
-            "termsOfService": "https://your-server.com/terms"
+            # "termsOfService": "https://your-server.com/terms"
         },
         "servers": [
             {
@@ -34,16 +34,8 @@ def create_basic_openapi_spec():
                 "description": "Local development server (default)"
             },
             {
-                "url": "https://your-server.com/api/v1",
-                "description": "Production server"
-            },
-            {
-                "url": "https://ccdi-federation-test.herokuapp.com/api/v1",
+                "url": "http://internal-ccdi-dev-federation-dcc-alb-261178975.us-east-1.elb.amazonaws.com:8000/api/v1",
                 "description": "Test server (Heroku) - For online testing"
-            },
-            {
-                "url": "https://ccdi-api-test.up.railway.app/api/v1",
-                "description": "Test server (Railway) - For online testing"
             }
         ],
         "paths": {

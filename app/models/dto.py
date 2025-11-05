@@ -342,7 +342,6 @@ class AssociatedDiagnosisField(BaseModel):
     ancestors: Optional[Any] = Field(default=None, description="Ancestor entities", exclude=True)
     owned: bool = Field(default=True, description="Ownership status")
     comment: Optional[str] = Field(default=None, description="Comment")
-    details: Optional[Dict[str, Any]] = Field(default=None, description="Additional details")
 
 class IdentifierValue(BaseModel):
     """Identifier value with nested structure."""
@@ -366,7 +365,7 @@ class SubjectMetadata(BaseModel):
     unharmonized: Optional[Any] = None
     vital_status: Optional[MetadataField] = None
     age_at_vital_status: Optional[MetadataField] = None
-    depositions: Optional[List[str]] = None
+    depositions: Optional[List[DepositionAccession]] = None
 
 class Subject(BaseModel):
     """Subject model with nested CCDI-DCC structure."""

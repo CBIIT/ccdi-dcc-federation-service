@@ -7,7 +7,7 @@ for querying the CCDI-DCC  graph database.
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, Request, status, Depends
 from fastapi.exceptions import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -15,16 +15,19 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 import re
 
-from app.core.config import get_settings
+from app.core.config import get_settings, Settings
 from app.core.logging import configure_logging, get_logger
 from app.core.cache import redis_lifespan
 from app.db.memgraph import memgraph_lifespan
 from app.api.v1.endpoints.subjects import router as subjects_router
 from app.api.v1.endpoints.samples import router as samples_router
 from app.api.v1.endpoints.files import router as files_router
-# from app.api.v1.endpoints.metadata import router as metadata_router
+from app.api.v1.endpoints.metadata import router as metadata_router
 from app.api.v1.endpoints.namespaces import router as namespaces_router
 from app.api.v1.endpoints.errors import router as errors_router
+from app.api.v1.endpoints.root import router as root_router
+from app.api.v1.endpoints.info import router as info_router
+from app.api.v1.endpoints.organizations import router as organizations_router
 from app.models.errors import ErrorsResponse, ErrorDetail, ErrorKind, CCDIException
 
 # Configure logging before creating the logger
@@ -149,13 +152,23 @@ def setup_routers(app: FastAPI) -> None:
     # app.include_router(files_router, prefix="/api/v1")
     
     # Add metadata routes
-    # app.include_router(metadata_router, prefix="/api/v1")
+    app.include_router(metadata_router, prefix="/api/v1")
     
     # Add namespace routes
     app.include_router(namespaces_router, prefix="/api/v1")
     
+    # Add organization routes
+    app.include_router(organizations_router, prefix="/api/v1")
+    
     # Add error examples routes
     app.include_router(errors_router, prefix="/api/v1")
+    
+    # Add root API routes - available at both /api/v1/ and /
+    app.include_router(root_router, prefix="/api/v1")
+    app.include_router(root_router)
+    
+    # Add info routes
+    app.include_router(info_router, prefix="/api/v1")
     
     logger.info("API routers configured")
 
@@ -372,15 +385,13 @@ def setup_health_check(app: FastAPI) -> None:
         """Health check endpoint."""
         return {"status": "pong"}
 
-    @app.get("/", tags=["health"])
-    async def root():
-        """Root endpoint."""
-        return {
-            "service": "CCDI Federation Service",
-            "version": "1.0.0",
-            "status": "running",
-            "docs": "/docs"
-        }
+    @app.get("/version", tags=["version"])
+    async def version(settings: Settings = Depends(get_settings)):
+        """Version endpoint."""
+        return {"version": settings.app_version}
+
+    # Root endpoint is now handled by root_router (returns API root JSON)
+    # Available at both /api/v1/ and /
     
     logger.info("Health check endpoints configured")
 

@@ -55,8 +55,8 @@ class UnharmonizedField(BaseModel):
 
 class HarmonizedStandard(BaseModel):
     """Standard to which a field is harmonized."""
-    name: str = Field(..., description="Standard name")
-    url: str = Field(..., description="Standard URL")
+    name: Optional[str] = Field(None, description="Standard name")
+    url: Optional[str] = Field(None, description="Standard URL")
 
 
 class HarmonizedFieldDescription(BaseModel):
@@ -65,6 +65,19 @@ class HarmonizedFieldDescription(BaseModel):
     path: str = Field(..., description="Dot-delimited path to field location")
     wiki_url: str = Field(..., description="Wiki URL for field documentation")
     standard: Optional[HarmonizedStandard] = None
+
+
+class MetadataFieldInfo(BaseModel):
+    """Metadata field information for /metadata/fields endpoint."""
+    path: str = Field(..., description="Field path")
+    harmonized: bool = Field(..., description="Whether the field is harmonized")
+    wiki_url: str = Field(..., description="Wiki URL for field documentation")
+    standard: HarmonizedStandard = Field(..., description="Standard information")
+
+
+class MetadataFieldsInfoResponse(BaseModel):
+    """Response for /metadata/fields/{field_type} endpoint."""
+    fields: List[MetadataFieldInfo] = Field(..., description="List of metadata fields")
 
 
 class UnharmonizedFieldDescription(BaseModel):
@@ -418,6 +431,7 @@ class NamespaceMetadata(CommonMetadata):
     study_name: Optional[UnharmonizedField] = None
     study_funding_id: Optional[List[UnharmonizedField]] = None
     study_id: Optional[UnharmonizedField] = None
+    depositions: Optional[List[Dict[str, str]]] = None
     unharmonized: Optional[Dict[str, UnharmonizedField]] = Field(
         None,
         description="Unharmonized metadata fields"

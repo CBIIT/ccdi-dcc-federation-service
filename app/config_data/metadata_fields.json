@@ -1,0 +1,186 @@
+{
+  "subjects": {
+    "fields": [
+      {
+        "path": "sex",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api/wiki/Subject-Metadata-Fields#sex",
+        "standard": {
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=6343385%20and%20ver_nr=1",
+          "name": "caDSR CDE 6343385 v1.00"
+        }
+      },
+      {
+        "path": "race",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api/wiki/Subject-Metadata-Fields#race",
+        "standard": {
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=2192199%20and%20ver_nr=1",
+          "name": "caDSR CDE 2192199 v1.00"
+        }
+      },
+      {
+        "path": "ethnicity",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api/wiki/Subject-Metadata-Fields#ethnicity",
+        "standard": {
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=2192217%20and%20ver_nr=2",
+          "name": "caDSR CDE 2192217 v2.00"
+        }
+      },
+      {
+        "path": "identifiers",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api/wiki/Subject-Metadata-Fields#identifiers",
+        "standard": {
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=6380049%20and%20ver_nr=1",
+          "name": "caDSR CDE 6380049 v1.00"
+        }
+      },
+      {
+        "path": "vital_status",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api/wiki/Subject-Metadata-Fields#vital_status",
+        "standard": {
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=2847330%20and%20ver_nr=1",
+          "name": "caDSR CDE 2847330 v1.00"
+        }
+      },
+      {
+        "path": "age_at_vital_status",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api/wiki/Subject-Metadata-Fields#age_at_vital_status",
+        "standard": {
+          "url": null,
+          "name": null
+        }
+      },
+      {
+        "path": "associated_diagnoses",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api/wiki/Subject-Metadata-Fields#associated_diagnoses",
+        "standard": {
+          "url": null,
+          "name": null
+        }
+      },
+      {
+        "path": "depositions",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api/wiki/Subject-Metadata-Fields",
+        "standard": {
+          "url": null,
+          "name": null
+        }
+      }
+    ]
+  },
+  "samples": {
+    "fields": [
+      {
+        "path": "disease_phase",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#disease_phase"
+      },
+      {
+        "path": "tissue_type",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#tissue_type"
+      },
+      {
+        "path": "tumor_classification",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#tumor_classification"
+      },
+      {
+        "path": "tumor_grade",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#tumor_grade"
+      },
+      {
+        "path": "age_at_collection",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#age_at_collection"
+      },
+      {
+        "path": "library_source_material",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#library_source_material"
+      },
+      {
+        "path": "specimen_molecular_analyte_type",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#specimen_molecular_analyte_type"
+      },
+      {
+        "path": "anatomical_sites",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#anatomical_sites"
+      },
+      {
+        "path": "diagnosis",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#diagnosis"
+      },
+      {
+        "path": "age_at_diagnosis",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#age_at_diagnosis"
+      },
+      {
+        "path": "library_selection_method",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#library_selection_method"
+      },
+      {
+        "path": "library_strategy",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#library_strategy"
+      },
+      {
+        "path": "preservation_method",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#preservation_method"
+      },
+      {
+        "path": "tumor_tissue_morphology",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#tumor_tissue_morphology"
+      },
+      {
+        "path": "depositions",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#depositions"
+      }
+    ]
+  },
+  "file": {
+    "fields": [
+      {
+        "path": "type",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/File-Metadata-Fields#type"
+      },
+      {
+        "path": "size",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/File-Metadata-Fields#size"
+      },
+      {
+        "path": "checksums",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/File-Metadata-Fields#checksums"
+      },
+      {
+        "path": "description",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/File-Metadata-Fields#description"
+      },
+      {
+        "path": "depositions",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/File-Metadata-Fields#depositions"
+      }
+    ]
+  }
+}

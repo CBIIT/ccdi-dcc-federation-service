@@ -662,7 +662,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/OrganizationResponse'
         '404':
-          description: Organization not found.
+          description: Not found.
           content:
             application/json:
               schema:
@@ -670,13 +670,8 @@ paths:
               example:
                 errors:
                 - kind: NotFound
-                  entity: Organization
-        '500':
-          description: Internal server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorsResponse'
+                  entity: Organizations
+                  message: Organizations not found.
 components:
   schemas:
     Subject:

@@ -82,16 +82,16 @@ class SampleService:
     
     async def get_sample_by_identifier(
         self,
-        org: str,
-        ns: str,
+        organization: str,
+        namespace: str,
         name: str
     ) -> Sample:
         """
         Get a specific sample by organization, namespace, and name.
         
         Args:
-            org: Organization identifier
-            ns: Namespace identifier  
+            organization: Organization identifier
+            namespace: Namespace identifier  
             name: Sample name/identifier
             
         Returns:
@@ -102,24 +102,24 @@ class SampleService:
         """
         logger.debug(
             "Getting sample by identifier",
-            org=org,
-            ns=ns,
+            organization=organization,
+            namespace=namespace,
             name=name
         )
         
         # Validate parameters
-        self._validate_identifier_params(org, ns, name)
+        self._validate_identifier_params(organization, namespace, name)
         
         # Get from repository
-        sample = await self.repository.get_sample_by_identifier(org, ns, name)
+        sample = await self.repository.get_sample_by_identifier(organization, namespace, name)
         
         if not sample:
-            raise NotFoundError(f"Sample not found: {org}.{ns}.{name}")
+            raise NotFoundError(f"Sample not found: {organization}.{namespace}.{name}")
         
         logger.info(
             "Retrieved sample by identifier",
-            org=org,
-            ns=ns,
+            organization=organization,
+            namespace=namespace,
             name=name,
             sample_data=getattr(sample, 'id', str(sample)[:50])  # Flexible logging
         )
@@ -226,29 +226,29 @@ class SampleService:
         
         return response
     
-    def _validate_identifier_params(self, org: str, ns: str, name: str) -> None:
+    def _validate_identifier_params(self, organization: str, namespace: str, name: str) -> None:
         """
         Validate identifier parameters.
         
         Args:
-            org: Organization identifier
-            ns: Namespace identifier
+            organization: Organization identifier
+            namespace: Namespace identifier
             name: Sample name
             
         Raises:
             ValidationError: If parameters are invalid
         """
-        if not org or not org.strip():
+        if not organization or not organization.strip():
             raise ValidationError("Organization identifier cannot be empty")
         
-        if not ns or not ns.strip():
+        if not namespace or not namespace.strip():
             raise ValidationError("Namespace identifier cannot be empty")
         
         if not name or not name.strip():
             raise ValidationError("Sample name cannot be empty")
         
         # Check for invalid characters
-        for param_name, param_value in [("org", org), ("ns", ns), ("name", name)]:
+        for param_name, param_value in [("organization", organization), ("namespace", namespace), ("name", name)]:
             if any(char in param_value for char in [".", "/", "\\", " "]):
                 raise ValidationError(f"Invalid characters in {param_name}: {param_value}")
     

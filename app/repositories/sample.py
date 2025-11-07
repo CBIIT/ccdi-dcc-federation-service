@@ -117,16 +117,16 @@ class SampleRepository:
     
     async def get_sample_by_identifier(
         self,
-        org: str,
-        ns: str,
+        organization: str,
+        namespace: str,
         name: str
     ) -> Optional[Sample]:
         """
         Get a specific sample by organization, namespace, and name.
         
         Args:
-            org: Organization identifier
-            ns: Namespace identifier
+            organization: Organization identifier
+            namespace: Namespace identifier
             name: Sample name/identifier
             
         Returns:
@@ -134,8 +134,8 @@ class SampleRepository:
         """
         logger.debug(
             "Fetching sample by identifier",
-            org=org,
-            ns=ns,
+            organization=organization,
+            namespace=namespace,
             name=name
         )
         
@@ -148,7 +148,7 @@ class SampleRepository:
         """
         
         # Build the full identifier
-        identifier = f"{org}.{ns}.{name}"
+        identifier = f"{organization}.{namespace}.{name}"
         params = {"identifier": identifier}
         
         logger.info(

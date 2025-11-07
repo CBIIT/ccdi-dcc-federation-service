@@ -6,7 +6,7 @@ environment variables and .env files.
 """
 
 from functools import lru_cache
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 from pydantic import Field, BaseModel
 from pydantic_settings import BaseSettings
@@ -153,6 +153,12 @@ class Settings(BaseSettings):
         alias="SHARE_LINE_LEVEL_DATA"
     )
     
+    # Namespace prefix
+    namespace_prefix: str = Field(
+        default="dbGaP_",
+        alias="NAMESPACE_PREFIX"
+    )
+    
     # Organization and server info
     organization_name: str = Field(
         default="Example Organization",
@@ -188,6 +194,24 @@ class Settings(BaseSettings):
     # Pagination settings
     pagination_default_per_page: Optional[int] = Field(default=20, description="Default items per page")
     pagination_max_per_page: Optional[int] = Field(default=100, description="Maximum items per page")
+    
+    # Valid fields for subject count operations (case-sensitive)
+    subject_count_fields: List[str] = Field(
+        default=["sex", "race", "ethnicity", "vital_status", "age_at_vital_status","associated_diagnoses"],
+        alias="SUBJECT_COUNT_FIELDS",
+        description="Valid field names for /subject/by/{field}/count endpoint"
+    )
+    
+    # Sex value mappings: database values -> normalized output values
+    sex_value_mappings: Dict[str, str] = Field(
+        default={
+            "Male": "M",
+            "Female": "F",
+            "Not Reported": "U"
+        },
+        alias="SEX_VALUE_MAPPINGS",
+        description="Mapping of database sex values to normalized output values"
+    )
     
     model_config = {
         "extra": "allow",  # Allow extra fields that aren't defined

@@ -2,14 +2,18 @@
 CCDI Federation Service - Main Application
 
 This is the main FastAPI application that provides REST endpoints
-for querying the CCDI graph database.
+for querying the CCDI-DCC  graph database.
 """
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status
+from fastapi.exceptions import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
+import re
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
@@ -18,8 +22,10 @@ from app.db.memgraph import memgraph_lifespan
 from app.api.v1.endpoints.subjects import router as subjects_router
 from app.api.v1.endpoints.samples import router as samples_router
 from app.api.v1.endpoints.files import router as files_router
-from app.api.v1.endpoints.metadata import router as metadata_router
+# from app.api.v1.endpoints.metadata import router as metadata_router
 from app.api.v1.endpoints.namespaces import router as namespaces_router
+from app.api.v1.endpoints.errors import router as errors_router
+from app.models.errors import ErrorsResponse, ErrorDetail, ErrorKind, CCDIException
 
 # Configure logging before creating the logger
 configure_logging()
@@ -53,7 +59,7 @@ def create_app() -> FastAPI:
     # Create FastAPI app
     app = FastAPI(
         title="CCDI Federation Service",
-        description="REST API for querying CCDI graph database",
+        description="REST API for querying CCDI-DCC  graph database",
         version="1.0.0",
         openapi_url="/openapi.json",
         docs_url="/docs" if settings.app.debug else None,
@@ -63,6 +69,9 @@ def create_app() -> FastAPI:
     
     # Add middleware
     setup_middleware(app, settings)
+    
+    # Add exception handlers
+    setup_exception_handlers(app)
     
     # Add routers
     setup_routers(app)
@@ -74,19 +83,53 @@ def create_app() -> FastAPI:
     return app
 
 
+def _suggest_correct_path(path: str) -> str:
+    """
+    Detect common path typos and suggest the correct path.
+    
+    Examples:
+    - /api/v1/subject/by2/race2/count -> /api/v1/subject/by/race/count
+    - /api/v1/subject/by3/sex2/count -> /api/v1/subject/by/sex/count
+    - /api/v1/subject/by2/race/count -> /api/v1/subject/by/race/count
+    """
+    # Match pattern: /subject/by{number}/{field}{number}/count
+    # Pattern: /api/v1/subject/by2/race2/count
+    pattern = r'(/api/v1/subject/)(by)(\d+)(/)([^/]+?)(\d+)(/count)'
+    match = re.search(pattern, path)
+    if match:
+        prefix = match.group(1)  # /api/v1/subject/
+        by_part = match.group(2)  # by
+        slash = match.group(4)  # /
+        field_part = match.group(5)  # race, sex, etc.
+        suffix = match.group(7)  # /count
+        return f"{prefix}{by_part}{slash}{field_part}{suffix}"
+    
+    # Also handle cases where only 'by' has a typo: /subject/by2/{field}/count
+    # Pattern: /api/v1/subject/by2/race/count
+    pattern_by_only = r'(/api/v1/subject/)(by)(\d+)(/[^/]+/count)'
+    match_by = re.search(pattern_by_only, path)
+    if match_by:
+        prefix = match_by.group(1)
+        by_part = match_by.group(2)
+        rest = match_by.group(4)
+        return f"{prefix}{by_part}{rest}"
+    
+    return None
+
+
 def setup_middleware(app: FastAPI, settings) -> None:
     """Set up application middleware."""
     
-    # # CORS middleware
-    # if settings.cors.enabled:
-    #     app.add_middleware(
-    #         CORSMiddleware,
-    #         allow_origins=settings.cors.allowed_origins,
-    #         allow_credentials=settings.cors.allow_credentials,
-    #         allow_methods=settings.cors.allowed_methods,
-    #         allow_headers=settings.cors.allowed_headers,
-    #     )
-    #     logger.info("CORS middleware enabled")
+    # CORS middleware
+    if settings.cors.enabled:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors.allowed_origins,
+            allow_credentials=settings.cors.allow_credentials,
+            allow_methods=settings.cors.allowed_methods,
+            allow_headers=settings.cors.allowed_headers,
+        )
+        logger.info("CORS middleware enabled")
     
     # GZip compression middleware
     app.add_middleware(GZipMiddleware, minimum_size=1000)
@@ -99,19 +142,221 @@ def setup_routers(app: FastAPI) -> None:
     # Add subject routes
     app.include_router(subjects_router, prefix="/api/v1")
     
-    # Add sample routes
-    app.include_router(samples_router, prefix="/api/v1")
+    # Add sample routes (commented out - not shown in Swagger docs)
+    # app.include_router(samples_router, prefix="/api/v1")
     
-    # Add file routes
-    app.include_router(files_router, prefix="/api/v1")
+    # Add file routes (commented out - not shown in Swagger docs)
+    # app.include_router(files_router, prefix="/api/v1")
     
     # Add metadata routes
-    app.include_router(metadata_router, prefix="/api/v1")
+    # app.include_router(metadata_router, prefix="/api/v1")
     
     # Add namespace routes
     app.include_router(namespaces_router, prefix="/api/v1")
     
+    # Add error examples routes
+    app.include_router(errors_router, prefix="/api/v1")
+    
     logger.info("API routers configured")
+
+
+def setup_exception_handlers(app: FastAPI) -> None:
+    """Set up global exception handlers for consistent error responses."""
+    
+    @app.exception_handler(CCDIException)
+    async def ccdi_exception_handler(request: Request, exc: CCDIException):
+        """Handle CCDI custom exceptions - add path suggestions for InvalidRoute."""
+        # If this is an InvalidRoute error, check if we can suggest a corrected path
+        if exc.kind == ErrorKind.INVALID_ROUTE:
+            suggested_path = _suggest_correct_path(exc.route or str(request.url.path))
+            if suggested_path:
+                # Create error detail with suggestion
+                error_detail = ErrorDetail(
+                    kind=exc.kind,
+                    method=exc.method,
+                    route=exc.route,
+                    reason=f"Did you mean '{suggested_path}'?"
+                )
+            else:
+                error_detail = exc.to_error_detail()
+        else:
+            error_detail = exc.to_error_detail()
+        
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
+    
+    @app.exception_handler(StarletteHTTPException)
+    async def starlette_http_exception_handler(request: Request, exc: StarletteHTTPException):
+        """Handle Starlette HTTP exceptions (including 404s for non-existent routes)."""
+        # If detail is already a structured error response, return it
+        if isinstance(exc.detail, dict) and "errors" in exc.detail:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content=exc.detail
+            )
+        
+        # Handle 404 errors - all 404s are treated as InvalidRoute
+        if exc.status_code == 404:
+            # Check if we can suggest a corrected path
+            suggested_path = _suggest_correct_path(str(request.url.path))
+            
+            # This is an invalid route
+            error_detail = ErrorDetail(
+                kind=ErrorKind.INVALID_ROUTE,
+                method=request.method,
+                route=str(request.url.path)
+            )
+            
+            # If we detected a typo, add a helpful reason
+            if suggested_path:
+                error_detail.reason = f"Did you mean '{suggested_path}'?"
+            
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+            )
+        
+        # For other status codes, convert to appropriate error format
+        if exc.status_code in (400, 422):
+            error_detail = ErrorDetail(
+                kind=ErrorKind.INVALID_PARAMETERS,
+                parameters=["request"],
+                reason=str(exc.detail) if exc.detail else "Invalid request parameters"
+            )
+            return JSONResponse(
+                status_code=exc.status_code,
+                content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+            )
+        
+        # Default NotFound for other 4xx errors
+        if 400 <= exc.status_code < 500:
+            error_detail = ErrorDetail(
+                kind=ErrorKind.NOT_FOUND,
+                entity="Resource"
+            )
+            return JSONResponse(
+                status_code=exc.status_code,
+                content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+            )
+        
+        # For 500 errors, don't expose internal details
+        error_detail = ErrorDetail(
+            kind=ErrorKind.INTERNAL_SERVER_ERROR,
+            reason="An internal server error occurred"
+        )
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
+    
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(request: Request, exc: HTTPException):
+        """Handle FastAPI HTTP exceptions - convert to structured error format."""
+        # If detail is already a structured error response, return it
+        if isinstance(exc.detail, dict) and "errors" in exc.detail:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content=exc.detail
+            )
+        
+        # Handle 404 errors - check if invalid route or missing resource
+        if exc.status_code == 404:
+            # Check if we can suggest a corrected path
+            suggested_path = _suggest_correct_path(str(request.url.path))
+            
+            # This is likely an invalid route
+            error_detail = ErrorDetail(
+                kind=ErrorKind.INVALID_ROUTE,
+                method=request.method,
+                route=str(request.url.path)
+            )
+            
+            # If we detected a typo, add a helpful reason
+            if suggested_path:
+                error_detail.reason = f"Did you mean '{suggested_path}'?"
+            
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+            )
+        
+        # Convert to InvalidParameters error for 400/422 errors
+        if exc.status_code in (400, 422):
+            # Check if this might be a path typo (e.g., /subject/by2/race2/count)
+            path = str(request.url.path)
+            suggested_path = _suggest_correct_path(path)
+            
+            # If we detected a typo pattern, treat as InvalidRoute
+            if suggested_path:
+                error_detail = ErrorDetail(
+                    kind=ErrorKind.INVALID_ROUTE,
+                    method=request.method,
+                    route=path,
+                    reason=f"Did you mean '{suggested_path}'?"
+                )
+                return JSONResponse(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+                )
+            
+            # Check if error detail suggests organization/namespace validation (path typo pattern)
+            error_detail_dict = exc.detail if isinstance(exc.detail, dict) else {}
+            if isinstance(error_detail_dict, dict) and "errors" in error_detail_dict:
+                errors_list = error_detail_dict.get("errors", [])
+                # Check if any error mentions organization/namespace parameters
+                for err in errors_list:
+                    if isinstance(err, dict):
+                        params = err.get("parameters", [])
+                        if "organization" in params or "namespace" in params:
+                            # Check again with the path
+                            suggested_path = _suggest_correct_path(path)
+                            if suggested_path:
+                                # Return as InvalidRoute instead
+                                error_detail = ErrorDetail(
+                                    kind=ErrorKind.INVALID_ROUTE,
+                                    method=request.method,
+                                    route=path,
+                                    reason=f"Did you mean '{suggested_path}'?"
+                                )
+                                return JSONResponse(
+                                    status_code=status.HTTP_404_NOT_FOUND,
+                                    content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+                                )
+            
+            error_detail = ErrorDetail(
+                kind=ErrorKind.INVALID_PARAMETERS,
+                parameters=["request"],
+                reason=str(exc.detail) if exc.detail else "Invalid request parameters"
+            )
+            return JSONResponse(
+                status_code=exc.status_code,
+                content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+            )
+        
+        # Default NotFound for other 4xx errors
+        if 400 <= exc.status_code < 500:
+            error_detail = ErrorDetail(
+                kind=ErrorKind.NOT_FOUND,
+                entity="Resource"
+            )
+            return JSONResponse(
+                status_code=exc.status_code,
+                content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+            )
+        
+        # For 500 errors, don't expose internal details
+        error_detail = ErrorDetail(
+            kind=ErrorKind.INTERNAL_SERVER_ERROR,
+            reason="An internal server error occurred"
+        )
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
+    
+    logger.info("Exception handlers configured")
 
 
 def setup_health_check(app: FastAPI) -> None:

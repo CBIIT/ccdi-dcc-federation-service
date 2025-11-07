@@ -1,0 +1,77 @@
+name: Deploy API Documentation
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  generate-openapi:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install fastapi uvicorn
+        
+    - name: Generate OpenAPI spec
+      run: |
+        python -c "
+        import json
+        import yaml
+        from fastapi import FastAPI
+        from app.main import app
+        
+        # Generate OpenAPI spec
+        openapi_spec = app.openapi()
+        
+        # Save as JSON
+        with open('docs/openapi.json', 'w') as f:
+            json.dump(openapi_spec, f, indent=2)
+            
+        # Save as YAML
+        with open('docs/swagger.yml', 'w') as f:
+            yaml.dump(openapi_spec, f, default_flow_style=False, sort_keys=False)
+            
+        print('OpenAPI spec generated successfully')
+        "
+        
+    - name: Update documentation
+      run: |
+        # Update the HTML file to use the generated spec
+        sed -i 's|https://raw.githubusercontent.com/CBIIT/ccdi-dcc-federation-service/main/swagger.yml|./swagger.yml|g' docs/index.html
+        
+    - name: Commit and push changes
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add docs/
+        git diff --staged --quiet || git commit -m "Update API documentation [skip ci]"
+        git push
+
+  deploy-to-github-pages:
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    needs: generate-openapi
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Deploy to GitHub Pages
+      uses: peaceiris/actions-gh-pages@v3
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: ./docs
+        # GitHub Pages URL will be: https://cbiit.github.io/ccdi-dcc-federation-service/

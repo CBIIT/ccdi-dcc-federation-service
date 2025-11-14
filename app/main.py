@@ -66,8 +66,8 @@ def create_app() -> FastAPI:
         description="REST API for querying CCDI-DCC  graph database",
         version="1.0.0",
         openapi_url="/openapi.json",
-        docs_url=None,  # Use custom embedded page instead
-        redoc_url=None,  # Disable default ReDoc
+        docs_url="/docs-api",  # Default FastAPI Swagger UI at /docs-api
+        redoc_url="/redoc",  # Enable ReDoc at /redoc
         lifespan=lifespan
     )
     
@@ -83,8 +83,8 @@ def create_app() -> FastAPI:
     # Add health check
     setup_health_check(app)
     
-    # Add custom docs endpoint
-    setup_docs_endpoint(app)
+    # Add custom docs endpoint (serves embedded.html with custom styling)
+    setup_custom_docs_endpoint(app)
     
     logger.info("FastAPI application created")
     return app
@@ -425,19 +425,31 @@ def setup_health_check(app: FastAPI) -> None:
     logger.info("Health check endpoints configured")
 
 
-def setup_docs_endpoint(app: FastAPI) -> None:
-    """Set up custom Swagger documentation endpoint using embedded.html."""
+def setup_custom_docs_endpoint(app: FastAPI) -> None:
+    """Set up custom Swagger documentation endpoint using embedded.html.
+    
+    This serves a self-contained Swagger UI with:
+    - Custom styling and branding
+    - Embedded OpenAPI spec (works standalone, e.g., for GitHub Pages)
+    - Custom Swagger UI configuration
+    """
     
     # Path to embedded.html - from app/main.py, go up 1 level to project root, then docs/
     embedded_html_path = Path(__file__).resolve().parents[1] / "docs" / "embedded.html"
     
     @app.get("/docs", response_class=HTMLResponse, include_in_schema=False)
-    async def serve_docs():
+    async def serve_custom_docs():
         """
-        Serve the custom Swagger UI documentation page.
+        Serve the custom Swagger UI documentation page at /docs.
         
         This endpoint serves the embedded.html file which contains a self-contained
         Swagger UI with the OpenAPI specification embedded inline.
+        Features:
+        - Custom styling and branding
+        - Embedded OpenAPI spec (works standalone, e.g., for GitHub Pages)
+        - Custom Swagger UI configuration
+        
+        The default FastAPI Swagger UI is also available at /docs-api.
         """
         try:
             with embedded_html_path.open("r", encoding="utf-8") as f:
@@ -456,7 +468,7 @@ def setup_docs_endpoint(app: FastAPI) -> None:
                 detail="Error loading documentation"
             )
     
-    logger.info("Custom /docs endpoint configured")
+    logger.info("Custom /docs endpoint configured (default FastAPI docs available at /docs-api)")
 
 
 # Create the application instance

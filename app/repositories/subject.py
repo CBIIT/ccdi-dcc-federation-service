@@ -312,10 +312,13 @@ class SubjectRepository:
             filters=filters
         )
         
-        # Execute query
+        # Execute query with proper result consumption
         try:
             result = await self.session.run(cypher, params)
-            records = await result.data()
+            # Ensure the result is fully consumed - use async iteration for reliability
+            records = []
+            async for record in result:
+                records.append(dict(record))
         except Exception as e:
             logger.error(
                 "Error executing get_subjects Cypher query",
@@ -537,9 +540,31 @@ class SubjectRepository:
             params=params
         )
 
-        # Execute query
-        result = await self.session.run(cypher, params)
-        records = await result.data()
+        # Execute query with proper error handling and result consumption
+        try:
+            result = await self.session.run(cypher, params)
+            # Ensure the result is fully consumed - use async iteration for reliability
+            # This ensures all records are fetched before proceeding
+            records = []
+            async for record in result:
+                records.append(dict(record))
+            
+            logger.debug(
+                "Query execution completed",
+                participant_id=name,
+                namespace=namespace,
+                records_count=len(records) if records else 0
+            )
+        except Exception as e:
+            logger.error(
+                "Error executing get_subject_by_identifier Cypher query",
+                error=str(e),
+                error_type=type(e).__name__,
+                participant_id=name,
+                namespace=namespace,
+                cypher=cypher[:500] if cypher else None
+            )
+            raise
         
         if not records:
             logger.debug("Subject not found", participant_id=name, namespace=namespace)
@@ -899,17 +924,23 @@ WITH p, d, c, st,
             params_count=len(params)
         )
         
-        # Execute all three queries
+        # Execute all three queries with proper result consumption
         total_result = await self.session.run(total_cypher, params)
-        total_records = await total_result.data()
+        total_records = []
+        async for record in total_result:
+            total_records.append(dict(record))
         total_count = total_records[0].get("total", 0) if total_records else 0
         
         missing_result = await self.session.run(missing_cypher, params)
-        missing_records = await missing_result.data()
+        missing_records = []
+        async for record in missing_result:
+            missing_records.append(dict(record))
         missing_count = missing_records[0].get("missing", 0) if missing_records else 0
         
         values_result = await self.session.run(values_cypher, params)
-        values_records = await values_result.data()
+        values_records = []
+        async for record in values_result:
+            values_records.append(dict(record))
         
         # Format values results
         counts = []
@@ -1063,17 +1094,23 @@ WITH p, d, c, st,
             params_count=len(params)
         )
         
-        # Execute all three queries
+        # Execute all three queries with proper result consumption
         total_result = await self.session.run(total_cypher, params)
-        total_records = await total_result.data()
+        total_records = []
+        async for record in total_result:
+            total_records.append(dict(record))
         total_count = total_records[0].get("total", 0) if total_records else 0
         
         missing_result = await self.session.run(missing_cypher, params)
-        missing_records = await missing_result.data()
+        missing_records = []
+        async for record in missing_result:
+            missing_records.append(dict(record))
         missing_count = missing_records[0].get("missing", 0) if missing_records else 0
         
         values_result = await self.session.run(values_cypher, params)
-        values_records = await values_result.data()
+        values_records = []
+        async for record in values_result:
+            values_records.append(dict(record))
         
         # Format results - ensure all valid races are included (even with 0 count)
         counts_by_value = {record.get("value"): record.get("count", 0) for record in values_records}
@@ -1218,17 +1255,23 @@ WITH p, d, c, st,
             params_count=len(params)
         )
         
-        # Execute all three queries
+        # Execute all three queries with proper result consumption
         total_result = await self.session.run(total_cypher, params)
-        total_records = await total_result.data()
+        total_records = []
+        async for record in total_result:
+            total_records.append(dict(record))
         total_count = total_records[0].get("total", 0) if total_records else 0
         
         missing_result = await self.session.run(missing_cypher, params)
-        missing_records = await missing_result.data()
+        missing_records = []
+        async for record in missing_result:
+            missing_records.append(dict(record))
         missing_count = missing_records[0].get("missing", 0) if missing_records else 0
         
         values_result = await self.session.run(values_cypher, params)
-        values_records = await values_result.data()
+        values_records = []
+        async for record in values_result:
+            values_records.append(dict(record))
         
         # Format results - ensure both ethnicity options are included (even with 0 count)
         counts_by_value = {record.get("value"): record.get("count", 0) for record in values_records}
@@ -1401,17 +1444,23 @@ WITH p, d, c, st,
             has_where_clause=bool(where_clause)
         )
         
-        # Execute all three queries
+        # Execute all three queries with proper result consumption
         total_result = await self.session.run(total_cypher, params)
-        total_records = await total_result.data()
+        total_records = []
+        async for record in total_result:
+            total_records.append(dict(record))
         total_count = total_records[0].get("total", 0) if total_records else 0
         
         missing_result = await self.session.run(missing_cypher, params)
-        missing_records = await missing_result.data()
+        missing_records = []
+        async for record in missing_result:
+            missing_records.append(dict(record))
         missing_count = missing_records[0].get("missing", 0) if missing_records else 0
         
         values_result = await self.session.run(values_cypher, params)
-        values_records = await values_result.data()
+        values_records = []
+        async for record in values_result:
+            values_records.append(dict(record))
         
         # Format results
         counts = []
@@ -1826,9 +1875,11 @@ WITH p, d, c, st,
             cypher=cypher,
             params=params
         )
-        # Execute query
+        # Execute query with proper result consumption
         result = await self.session.run(cypher, params)
-        records = await result.data()
+        records = []
+        async for record in result:
+            records.append(dict(record))
         
         if not records:
             return {"total_count": 0}

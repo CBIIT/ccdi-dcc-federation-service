@@ -86,9 +86,11 @@ class FileRepository:
             params=params
         )
         
-        # Execute query
+        # Execute query with proper result consumption
         result = await self.session.run(cypher, params)
-        records = await result.data()
+        records = []
+        async for record in result:
+            records.append(dict(record))
         
         # Convert to File objects
         files = []
@@ -145,9 +147,11 @@ class FileRepository:
             params=params
         )
         
-        # Execute query
+        # Execute query with proper result consumption
         result = await self.session.run(cypher, params)
-        records = await result.data()
+        records = []
+        async for record in result:
+            records.append(dict(record))
         
         if not records:
             logger.debug("File not found", identifier=identifier)
@@ -224,9 +228,11 @@ class FileRepository:
             params=params
         )
         
-        # Execute query
+        # Execute query with proper result consumption
         result = await self.session.run(cypher, params)
-        records = await result.data()
+        records = []
+        async for record in result:
+            records.append(dict(record))
         
         # Format results
         counts = []
@@ -292,9 +298,11 @@ class FileRepository:
             params=params
         )
         
-        # Execute query
+        # Execute query with proper result consumption
         result = await self.session.run(cypher, params)
-        records = await result.data()
+        records = []
+        async for record in result:
+            records.append(dict(record))
         
         if not records:
             return {"total_count": 0}

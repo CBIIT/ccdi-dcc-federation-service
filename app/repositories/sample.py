@@ -97,9 +97,11 @@ class SampleRepository:
             params=params
         )
         
-        # Execute query
+        # Execute query with proper result consumption
         result = await self.session.run(cypher, params)
-        records = await result.data()
+        records = []
+        async for record in result:
+            records.append(dict(record))
         
         # Convert to Sample objects
         samples = []
@@ -157,9 +159,11 @@ class SampleRepository:
             params=params
         )
         
-        # Execute query
+        # Execute query with proper result consumption
         result = await self.session.run(cypher, params)
-        records = await result.data()
+        records = []
+        async for record in result:
+            records.append(dict(record))
         
         if not records:
             logger.debug("Sample not found", identifier=identifier)
@@ -247,9 +251,11 @@ class SampleRepository:
             params=params
         )
         
-        # Execute query
+        # Execute query with proper result consumption
         result = await self.session.run(cypher, params)
-        records = await result.data()
+        records = []
+        async for record in result:
+            records.append(dict(record))
         
         # Format results
         counts = []
@@ -326,9 +332,11 @@ class SampleRepository:
             params=params
         )
         
-        # Execute query
+        # Execute query with proper result consumption
         result = await self.session.run(cypher, params)
-        records = await result.data()
+        records = []
+        async for record in result:
+            records.append(dict(record))
         
         if not records:
             return {"total_count": 0}

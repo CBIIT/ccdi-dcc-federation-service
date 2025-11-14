@@ -21,7 +21,7 @@
       "description": "Local development server (default)"
     },
     {
-      "url": "http://internal-ccdi-dev-federation-dcc-alb-261178975.us-east-1.elb.amazonaws.com:8000/api/v1",
+      "url": "https://dcc-dev.ccdi.cancer.gov/api/v1",
       "description": "Dev Test server"
     }
   ],
@@ -252,7 +252,7 @@
                     {
                       "kind": "UnshareableData",
                       "entity": "Subjects",
-                      "reason": "Our agreement with data providers prohibits us from sharing line-level data."
+                      "message": "Our agreement with data providers prohibits us from sharing line-level data."
                     }
                   ]
                 }
@@ -274,7 +274,6 @@
                         "page",
                         "per_page"
                       ],
-                      "reason": "Unable to calculate offset.",
                       "message": "Invalid value for parameters 'page' and 'per_page': unable to calculate offset."
                     }
                   ]
@@ -469,7 +468,6 @@
                     {
                       "kind": "UnsupportedField",
                       "field": "handedness",
-                      "reason": "This field is not present for subjects.",
                       "message": "Field 'handedness' is not supported: this field is not present for subjects."
                     }
                   ]
@@ -556,7 +554,7 @@
                           "parameters": [
                             "id"
                           ],
-                          "reason": "The parameter was a non-integer value."
+                          "message": "The parameter was a non-integer value."
                         },
                         {
                           "kind": "NotFound",
@@ -565,12 +563,12 @@
                         {
                           "kind": "UnshareableData",
                           "entity": "Sample",
-                          "reason": "Our agreement with data providers prohibits us from sharing line-level data."
+                          "message": "Our agreement with data providers prohibits us from sharing line-level data."
                         },
                         {
                           "kind": "UnsupportedField",
                           "field": "field",
-                          "reason": "The field was not found in the metadata object."
+                          "message": "The field was not found in the metadata object."
                         }
                       ]
                     }
@@ -596,7 +594,7 @@
                           "parameters": [
                             "id"
                           ],
-                          "reason": "The parameter was a non-integer value."
+                          "message": "The parameter was a non-integer value."
                         }
                       ]
                     }
@@ -619,7 +617,7 @@
                         {
                           "kind": "UnshareableData",
                           "entity": "Sample",
-                          "reason": "Our agreement with data providers prohibits us from sharing line-level data."
+                          "message": "Our agreement with data providers prohibits us from sharing line-level data."
                         }
                       ]
                     }
@@ -631,7 +629,7 @@
                         {
                           "kind": "UnsupportedField",
                           "field": "field",
-                          "reason": "The field was not found in the metadata object."
+                          "message": "The field was not found in the metadata object."
                         }
                       ]
                     }
@@ -1373,9 +1371,9 @@
               "id"
             ]
           },
-          "reason": {
+          "message": {
             "type": "string",
-            "description": "Explanation for the error",
+            "description": "Error message explaining what went wrong",
             "example": "The parameter was a non-integer value."
           },
           "entity": {
@@ -1395,7 +1393,8 @@
             "required": [
               "kind",
               "method",
-              "route"
+              "route",
+              "message"
             ]
           },
           {
@@ -1403,14 +1402,7 @@
             "required": [
               "kind",
               "parameters",
-              "reason"
-            ]
-          },
-          {
-            "type": "object",
-            "required": [
-              "kind",
-              "entity"
+              "message"
             ]
           },
           {
@@ -1418,7 +1410,15 @@
             "required": [
               "kind",
               "entity",
-              "reason"
+              "message"
+            ]
+          },
+          {
+            "type": "object",
+            "required": [
+              "kind",
+              "entity",
+              "message"
             ]
           },
           {
@@ -1426,7 +1426,7 @@
             "required": [
               "kind",
               "field",
-              "reason"
+              "message"
             ]
           }
         ]

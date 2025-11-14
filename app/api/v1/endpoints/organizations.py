@@ -8,9 +8,17 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import List
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
+from neo4j import AsyncSession
 
+from app.api.v1.deps import (
+    get_database_session,
+    get_app_settings,
+    check_rate_limit
+)
+from app.core.config import Settings
 from app.core.logging import get_logger
 from app.models.dto import OrganizationsResponse, OrganizationResponse, Organization
 from app.models.errors import ErrorDetail, ErrorsResponse, ErrorKind
@@ -25,11 +33,17 @@ DATA_PATH = Path(__file__).resolve().parents[3] / "config_data" / "info.json"
 
 
 @router.get("", response_model=OrganizationsResponse, summary="Get organizations")
-def get_organizations():
+async def get_organizations(
+    request: Request,
+    session: AsyncSession = Depends(get_database_session),
+    settings: Settings = Depends(get_app_settings),
+    _rate_limit: None = Depends(check_rate_limit)
+):
     """
     Returns the list of organizations.
     
-    This endpoint serves the organizations information from the info.json file.
+    This endpoint serves the organizations information from the info.json file
+    and adds institution data from the database.
     """
     try:
         with DATA_PATH.open("r", encoding="utf-8") as f:
@@ -38,18 +52,45 @@ def get_organizations():
         # Get organizations from info.json
         organizations_data = data.get("organizations", [])
         
-        # Convert to Organization models
-        organizations = [
-            Organization(
-                identifier=org.get("identifier"),
-                name=org.get("name")
-            )
-            for org in organizations_data
+        # Query database for distinct institutions from study_personnel.institution
+        cypher = """
+        MATCH (sp:study_personnel)
+        WHERE sp.institution IS NOT NULL AND sp.institution <> ''
+        RETURN DISTINCT sp.institution AS institution
+        ORDER BY sp.institution
+        """
+        
+        result = await session.run(cypher)
+        records = await result.data()
+        
+        # Build institution array with {"value": "institution_string"} format
+        institutions = [
+            {"value": record.get("institution")}
+            for record in records
+            if record.get("institution")
         ]
+        
+        # Convert to Organization models and add institution to metadata
+        organizations = []
+        for org in organizations_data:
+            # Get existing metadata or create new dict
+            metadata = org.get("metadata", {}) or {}
+            
+            # Add institution array to metadata
+            metadata["institution"] = institutions
+            
+            organizations.append(
+                Organization(
+                    identifier=org.get("identifier"),
+                    name=org.get("name"),
+                    metadata=metadata
+                )
+            )
         
         logger.info(
             "Get organizations response",
-            organizations_count=len(organizations)
+            organizations_count=len(organizations),
+            institutions_count=len(institutions)
         )
         
         return OrganizationsResponse(organizations=organizations)
@@ -70,7 +111,13 @@ def get_organizations():
 
 
 @router.get("/{name}", response_model=OrganizationResponse, summary="Get organization by name")
-def get_organization_by_name(name: str):
+async def get_organization_by_name(
+    name: str,
+    request: Request,
+    session: AsyncSession = Depends(get_database_session),
+    settings: Settings = Depends(get_app_settings),
+    _rate_limit: None = Depends(check_rate_limit)
+):
     """
     Returns the organization matching the provided name (if it exists).
     
@@ -110,16 +157,42 @@ def get_organization_by_name(name: str):
             detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
         )
     
+    # Query database for distinct institutions from study_personnel.institution
+    cypher = """
+    MATCH (sp:study_personnel)
+    WHERE sp.institution IS NOT NULL AND sp.institution <> ''
+    RETURN DISTINCT sp.institution AS institution
+    ORDER BY sp.institution
+    """
+    
+    result = await session.run(cypher)
+    records = await result.data()
+    
+    # Build institution array with {"value": "institution_string"} format
+    institutions = [
+        {"value": record.get("institution")}
+        for record in records
+        if record.get("institution")
+    ]
+    
+    # Get existing metadata or create new dict
+    metadata = found_org.get("metadata", {}) or {}
+    
+    # Add institution array to metadata
+    metadata["institution"] = institutions
+    
     # Convert to Organization model
     organization = Organization(
         identifier=found_org.get("identifier"),
-        name=found_org.get("name")
+        name=found_org.get("name"),
+        metadata=metadata
     )
     
     logger.info(
         "Get organization by name response",
         name=name,
-        identifier=organization.identifier
+        identifier=organization.identifier,
+        institutions_count=len(institutions)
     )
     
     return OrganizationResponse(organization=organization)

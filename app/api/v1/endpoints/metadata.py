@@ -47,15 +47,20 @@ def convert_to_response(data: Dict[str, Any]) -> MetadataFieldsInfoResponse:
     """Convert JSON data to response model."""
     fields = []
     for field_data in data.get("fields", []):
+        # Handle optional standard field
         standard_data = field_data.get("standard", {})
         standard = HarmonizedStandard(
-            name=standard_data.get("name"),
-            url=standard_data.get("url")
+            name=standard_data.get("name") if standard_data else None,
+            url=standard_data.get("url") if standard_data else None
         )
+        
+        # Handle optional wiki_url field
+        wiki_url = field_data.get("wiki_url", "")
+        
         field_info = MetadataFieldInfo(
             path=field_data["path"],
             harmonized=field_data.get("harmonized", True),
-            wiki_url=field_data["wiki_url"],
+            wiki_url=wiki_url,
             standard=standard
         )
         fields.append(field_info)

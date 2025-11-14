@@ -11,6 +11,7 @@ from neo4j import AsyncSession
 from app.core.logging import get_logger
 from app.core.constants import Race
 from app.lib.field_allowlist import FieldAllowlist
+from app.lib.url_builder import build_identifier_server_url
 from app.models.dto import Subject
 from app.models.errors import UnsupportedFieldError
 
@@ -30,7 +31,8 @@ class SubjectRepository:
         self,
         filters: Dict[str, Any],
         offset: int = 0,
-        limit: int = 20
+        limit: int = 20,
+        base_url: Optional[str] = None
     ) -> List[Subject]:
         """
         Get paginated list of subjects with filtering.
@@ -327,7 +329,7 @@ class SubjectRepository:
         # Convert to Subject objects
         subjects = []
         for record in records:
-            subjects.append(self._record_to_subject(record))
+            subjects.append(self._record_to_subject(record, base_url=base_url))
         
         logger.debug(
             "Found subjects",
@@ -341,7 +343,8 @@ class SubjectRepository:
         self,
         organization: str,
         namespace: Optional[str],
-        name: str
+        name: str,
+        base_url: Optional[str] = None
     ) -> Optional[Subject]:
         """
         Get a specific subject by organization, namespace, and name.
@@ -543,7 +546,7 @@ class SubjectRepository:
             return None
         
         # Convert to Subject object
-        subject = self._record_to_subject(records[0])
+        subject = self._record_to_subject(records[0], base_url=base_url)
         
         logger.debug("Found subject", participant_id=name, namespace=namespace, subject_data=getattr(subject, 'name', str(subject)[:50]))
         
@@ -1854,12 +1857,13 @@ WITH p, d, c, st,
             if not self.allowlist.is_field_allowed(entity_type, field):
                 raise UnsupportedFieldError(f"Field '{field}' is not supported for {entity_type} filtering")
     
-    def _record_to_subject(self, record: Dict[str, Any]) -> Subject:
+    def _record_to_subject(self, record: Dict[str, Any], base_url: Optional[str] = None) -> Subject:
         """
         Convert a database record to a Subject object with nested CCDI-DCC format.
         
         Args:
             record: Database record dictionary
+            base_url: Base URL for generating server URLs in identifiers (optional)
             
         Returns:
             Subject object with nested CCDI-DCC structure
@@ -1992,7 +1996,15 @@ WITH p, d, c, st,
                                     "name": study_id
                                 },
                                 "name": participant_id
-                            }
+                            },
+                            "type": "Linked",
+                            "server": build_identifier_server_url(
+                                base_url=base_url or "",
+                                entity_type="subject",
+                                organization="CCDI-DCC",
+                                study_id=study_id,
+                                name=participant_id
+                            ) if base_url else None
                         }
                         for study_id in (study_ids if study_ids else [])
                         if study_id and participant_id  # Filter out None/null values

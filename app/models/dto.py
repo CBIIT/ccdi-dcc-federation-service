@@ -360,12 +360,12 @@ class IdentifierValue(BaseModel):
     """Identifier value with nested structure."""
     namespace: NamespaceIdentifier = Field(..., description="Namespace identifier")
     name: str = Field(..., description="Identifier name")
-    server: Optional[str] = Field(default=None, description="Server URL", exclude=True)
-    type: Optional[str] = Field(default=None, description="Identifier type", exclude=True)
 
 class IdentifierField(BaseModel):
     """Identifier field with nested value."""
     value: IdentifierValue = Field(..., description="Identifier value")
+    type: Optional[str] = Field(default="Linked", description="Identifier type")
+    server: Optional[str] = Field(default=None, description="Server URL")
     ancestors: Optional[Any] = Field(default=None, description="Ancestor entities", exclude=True)
 
 class SubjectMetadata(BaseModel):
@@ -518,10 +518,14 @@ class SubjectResponse(BaseModel):
     
     # Top-level response structure
     summary: Optional[Dict[str, Any]] = Field(None, description="Summary statistics")
-    data: List[Subject] = Field(..., description="List of subjects with nested structure")
+    data: List[Any] = Field(..., description="List of subjects with nested structure (with gateways)")
+    gateways: List[Any] = Field(
+        default_factory=list,
+        description="Named gateways referenced by subjects"
+    )
     
-    # For paginated responses
-    pagination: Optional[Any] = Field(None, description="Pagination information")
+    # Pagination removed - no longer included in responses
+    # pagination: Optional[Any] = Field(None, description="Pagination information")
 
 
 class SampleResponse(BaseModel):

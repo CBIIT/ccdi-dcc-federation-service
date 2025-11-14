@@ -15,7 +15,7 @@ info:
 servers:
 - url: http://localhost:8000/api/v1
   description: Local development server (default)
-- url: http://internal-ccdi-dev-federation-dcc-alb-261178975.us-east-1.elb.amazonaws.com:8000/api/v1
+- url: https://dcc-dev.ccdi.cancer.gov/api/v1
   description: Dev Test server
 # - url: https://ccdi-federation-test.test.com/api/v1
 #   description: Test server - For online testing
@@ -297,7 +297,7 @@ paths:
                 errors:
                 - kind: UnshareableData
                   entity: Subjects
-                  reason: Our agreement with data providers prohibits us from sharing line-level data.
+                  message: Our agreement with data providers prohibits us from sharing line-level data.
         '422':
           description: Invalid query or path parameters.
           content:
@@ -310,7 +310,6 @@ paths:
                   parameters:
                   - page
                   - per_page
-                  reason: Unable to calculate offset.
                   message: 'Invalid value for parameters ''page'' and ''per_page'': unable to calculate offset.'
   /subject/{organization}/{namespace}/{name}:
     get:
@@ -438,7 +437,6 @@ paths:
                 errors:
                 - kind: UnsupportedField
                   field: handedness
-                  reason: This field is not present for subjects.
                   message: 'Field ''handedness'' is not supported: this field is not present for subjects.'
   /errors/examples:
     get:
@@ -509,18 +507,20 @@ paths:
                     - kind: InvalidRoute
                       method: GET
                       route: /foobar
+                      message: Invalid route: GET /foobar
                     - kind: InvalidParameters
                       parameters:
                       - id
-                      reason: The parameter was a non-integer value.
+                      message: The parameter was a non-integer value.
                     - kind: NotFound
                       entity: Samples
+                      message: Samples not found.
                     - kind: UnshareableData
                       entity: Sample
-                      reason: Our agreement with data providers prohibits us from sharing line-level data.
+                      message: Our agreement with data providers prohibits us from sharing line-level data.
                     - kind: UnsupportedField
                       field: field
-                      reason: The field was not found in the metadata object.
+                      message: The field was not found in the metadata object.
                 invalidRoute:
                   summary: Invalid route error
                   value:
@@ -528,6 +528,7 @@ paths:
                     - kind: InvalidRoute
                       method: GET
                       route: /foobar
+                      message: Invalid route: GET /foobar
                 invalidParameters:
                   summary: Invalid parameters error
                   value:
@@ -535,27 +536,28 @@ paths:
                     - kind: InvalidParameters
                       parameters:
                       - id
-                      reason: The parameter was a non-integer value.
+                      message: The parameter was a non-integer value.
                 notFound:
                   summary: Not found error
                   value:
                     errors:
                     - kind: NotFound
                       entity: Samples
+                      message: Samples not found.
                 unshareableData:
                   summary: Unshareable data error
                   value:
                     errors:
                     - kind: UnshareableData
                       entity: Sample
-                      reason: Our agreement with data providers prohibits us from sharing line-level data.
+                      message: Our agreement with data providers prohibits us from sharing line-level data.
                 unsupportedField:
                   summary: Unsupported field error
                   value:
                     errors:
                     - kind: UnsupportedField
                       field: field
-                      reason: The field was not found in the metadata object.
+                      message: The field was not found in the metadata object.
   /namespace:
     get:
       tags:
@@ -1053,9 +1055,9 @@ components:
             type: string
           example:
           - id
-        reason:
+        message:
           type: string
-          description: Explanation for the error
+          description: Error message explaining what went wrong
           example: The parameter was a non-integer value.
         entity:
           type: string
@@ -1071,25 +1073,27 @@ components:
         - kind
         - method
         - route
+        - message
       - type: object
         required:
         - kind
         - parameters
-        - reason
+        - message
       - type: object
         required:
         - kind
         - entity
+        - message
       - type: object
         required:
         - kind
         - entity
-        - reason
+        - message
       - type: object
         required:
         - kind
         - field
-        - reason
+        - message
     NamespaceEntity:
       type: object
       description: Namespace entity with identifier, description, and metadata.

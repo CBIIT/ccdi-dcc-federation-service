@@ -58,34 +58,36 @@ async def get_error_examples(
         errors.append(ErrorDetail(
             kind=ErrorKind.INVALID_ROUTE,
             method="GET",
-            route="/foobar"
+            route="/foobar",
+            message="Invalid route: GET /foobar"
         ))
     
     if error_type == "all" or error_type == "InvalidParameters":
         errors.append(ErrorDetail(
             kind=ErrorKind.INVALID_PARAMETERS,
             parameters=["id"],
-            reason="The parameter was a non-integer value."
+            message="The parameter was a non-integer value."
         ))
     
     if error_type == "all" or error_type == "NotFound":
         errors.append(ErrorDetail(
             kind=ErrorKind.NOT_FOUND,
-            entity="Samples"
+            entity="Samples",
+            message="Samples not found."
         ))
     
     if error_type == "all" or error_type == "UnshareableData":
         errors.append(ErrorDetail(
             kind=ErrorKind.UNSHAREABLE_DATA,
             entity="Sample",
-            reason="Our agreement with data providers prohibits us from sharing line-level data."
+            message="Our agreement with data providers prohibits us from sharing line-level data."
         ))
     
     if error_type == "all" or error_type == "UnsupportedField":
         errors.append(ErrorDetail(
             kind=ErrorKind.UNSUPPORTED_FIELD,
             field="field",
-            reason="The field was not found in the metadata object."
+            message="The field was not found in the metadata object."
         ))
     
     logger.debug(

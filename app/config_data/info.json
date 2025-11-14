@@ -32,12 +32,20 @@
     },
     "last_updated": "2025-10-30",
     "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki",
-    "documentation_url": "https://github.com/CBIIT/ccdi-dcc-federation-service/"
+    "documentation_url": "https://cbiit.github.io/ccdi-dcc-federation-service/docs/index.html"
   },
   "organizations": [
     {
       "identifier": "CCDI-DCC",
-      "name": "Childhood Cancer Data Initiative Data Coordinating Center"
+      "name": "Childhood Cancer Data Initiative Data Coordinating Center",
+      "metadata": {
+        "institution": [
+          {
+            "value":"NCI"
+          }
+        ],
+        "depositions":null
+      }
     }
   ]
 }

@@ -53,15 +53,19 @@ class NamespaceService:
         """
         logger.debug("Getting all namespaces")
         
-        # Query to get all unique study nodes with their properties
+        # Query to get all unique study nodes with their properties and study_funding grant_ids
         cypher = """
         MATCH (st:study)
         WHERE st.study_id IS NOT NULL AND st.study_id <> ''
+        OPTIONAL MATCH (st)-[r]-(sf:study_funding)
+        WHERE sf.grant_id IS NOT NULL AND sf.grant_id <> ''
+        WITH st, COLLECT(DISTINCT sf.grant_id) AS grant_ids
         RETURN DISTINCT 
             st.study_id AS study_id,
             COALESCE(st.study_description, '') AS study_description,
             COALESCE(st.study_acronym, '') AS study_acronym,
-            COALESCE(st.study_name, '') AS study_name
+            COALESCE(st.study_name, '') AS study_name,
+            grant_ids
         ORDER BY st.study_id
         """
         
@@ -78,15 +82,26 @@ class NamespaceService:
             study_description = record.get("study_description", "")
             study_acronym = record.get("study_acronym", "")
             study_name = record.get("study_name", "")
+            grant_ids = record.get("grant_ids", [])
             
             if not study_id:
                 continue
+            
+            # Build study_funding_id array from distinct grant_ids
+            study_funding_id = None
+            if grant_ids:
+                # Filter out None/empty values and create UnharmonizedField objects
+                study_funding_id = [
+                    UnharmonizedField(value=grant_id) 
+                    for grant_id in grant_ids 
+                    if grant_id
+                ]
             
             # Build metadata
             metadata = NamespaceMetadata(
                 study_short_title=UnharmonizedField(value=study_acronym) if study_acronym else None,
                 study_name=UnharmonizedField(value=study_name) if study_name else None,
-                study_funding_id=None,
+                study_funding_id=study_funding_id,
                 study_id=UnharmonizedField(value=study_id),
                 depositions=[{"kind": "dbGaP", "value": study_id}]
             )
@@ -126,15 +141,19 @@ class NamespaceService:
             logger.debug("Organization not matched", organization=organization)
             return None
         
-        # Query to get the specific study by study_id
+        # Query to get the specific study by study_id with study_funding grant_ids
         cypher = """
         MATCH (st:study)
         WHERE st.study_id = $study_id
+        OPTIONAL MATCH (st)-[r]-(sf:study_funding)
+        WHERE sf.grant_id IS NOT NULL AND sf.grant_id <> ''
+        WITH st, COLLECT(DISTINCT sf.grant_id) AS grant_ids
         RETURN 
             st.study_id AS study_id,
             COALESCE(st.study_description, '') AS study_description,
             COALESCE(st.study_acronym, '') AS study_acronym,
-            COALESCE(st.study_name, '') AS study_name
+            COALESCE(st.study_name, '') AS study_name,
+            grant_ids
         LIMIT 1
         """
         
@@ -151,14 +170,25 @@ class NamespaceService:
         study_description = record.get("study_description", "")
         study_acronym = record.get("study_acronym", "")
         study_name = record.get("study_name", "")
+        grant_ids = record.get("grant_ids", [])
         
         contact_email = "NCIChildhoodCancerDataInitiative@mail.nih.gov"
+        
+        # Build study_funding_id array from distinct grant_ids
+        study_funding_id = None
+        if grant_ids:
+            # Filter out None/empty values and create UnharmonizedField objects
+            study_funding_id = [
+                UnharmonizedField(value=grant_id) 
+                for grant_id in grant_ids 
+                if grant_id
+            ]
         
         # Build metadata
         metadata = NamespaceMetadata(
             study_short_title=UnharmonizedField(value=study_acronym) if study_acronym else None,
             study_name=UnharmonizedField(value=study_name) if study_name else None,
-            study_funding_id=None,
+            study_funding_id=study_funding_id,
             study_id=UnharmonizedField(value=study_id),
             depositions=[{"kind": "dbGaP", "value": study_id}]
         )

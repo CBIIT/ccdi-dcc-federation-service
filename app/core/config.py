@@ -201,6 +201,13 @@ class Settings(BaseSettings):
         alias="CONTACT_EMAIL"
     )
     
+    # Identifier server URL - used for building identifier URLs in responses
+    identifier_server_url: str = Field(
+        default="https://dcc.ccdi.cancer.gov",
+        alias="IDENTIFIER_SERVER_URL",
+        description="Base URL used for identifier server values in API responses"
+    )
+    
     # Database settings
     database_url: str = Field(default="bolt://localhost:7687", description="Database connection URL")
 

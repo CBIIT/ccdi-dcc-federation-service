@@ -28,7 +28,21 @@ def api_info():
     """
     try:
         with DATA_PATH.open("r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+            
+            # Filter the response:
+            # 1. Keep only "api_version" and "documentation_url" in the "api" field
+            # 2. Remove "organizations" field
+            filtered_data = {
+                "server": data.get("server", {}),
+                "api": {
+                    "api_version": data.get("api", {}).get("api_version"),
+                    "documentation_url": data.get("api", {}).get("documentation_url")
+                },
+                "data": data.get("data", {})
+            }
+            
+            return filtered_data
     except FileNotFoundError:
         raise HTTPException(
             status_code=500,

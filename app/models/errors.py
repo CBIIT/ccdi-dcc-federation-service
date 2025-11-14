@@ -25,23 +25,22 @@ class ErrorDetail(BaseModel):
     """Individual error detail model matching OpenAPI specification.
     
     Fields vary by error kind:
-    - InvalidRoute: kind, method, route
-    - InvalidParameters: kind, parameters, reason, method, route, message
-    - NotFound: kind, entity
-    - UnshareableData: kind, entity, reason
-    - UnsupportedField: kind, field, reason
+    - InvalidRoute: kind, method, route, message
+    - InvalidParameters: kind, parameters, message
+    - NotFound: kind, entity, message
+    - UnshareableData: kind, entity, message
+    - UnsupportedField: kind, field, message
     """
     
     model_config = ConfigDict(exclude_none=True)
     
     kind: str
+    message: Optional[str] = None
     # InvalidRoute fields
     method: Optional[str] = None
     route: Optional[str] = None
     # InvalidParameters fields
     parameters: Optional[List[str]] = None
-    reason: Optional[str] = None
-    message: Optional[str] = None
     # NotFound/UnshareableData fields
     entity: Optional[str] = None
     # UnsupportedField fields
@@ -67,7 +66,7 @@ class CCDIException(Exception):
         parameters: Optional[List[str]] = None,
         field: Optional[str] = None,
         entity: Optional[str] = None,
-        reason: Optional[str] = None
+        message: Optional[str] = None
     ):
         """Initialize CCDI exception."""
         self.kind = kind
@@ -77,8 +76,8 @@ class CCDIException(Exception):
         self.parameters = parameters or []
         self.field = field
         self.entity = entity
-        self.reason = reason
-        super().__init__(self._generate_message())
+        self.message = message or self._generate_message()
+        super().__init__(self.message)
     
     def _generate_message(self) -> str:
         """Generate error message from error details."""
@@ -86,30 +85,18 @@ class CCDIException(Exception):
             return f"Invalid route: {self.method} {self.route}"
         elif self.kind == ErrorKind.INVALID_PARAMETERS:
             param_list = "', '".join(self.parameters) if self.parameters else ""
-            return f"Invalid parameter{'s' if len(self.parameters) > 1 else ''} '{param_list}': {self.reason or ''}"
+            return f"Invalid parameter{'s' if len(self.parameters) > 1 else ''} '{param_list}'"
         elif self.kind == ErrorKind.NOT_FOUND:
             return f"{self.entity or 'Resource'} not found."
         elif self.kind == ErrorKind.UNSHAREABLE_DATA:
-            return f"Unable to share data for {self.entity or 'resource'}: {self.reason or ''}"
+            return f"Unable to share data for {self.entity or 'resource'}"
         elif self.kind == ErrorKind.UNSUPPORTED_FIELD:
-            return f"Field '{self.field}' is not supported: {self.reason or ''}"
+            return f"Field '{self.field}' is not supported"
         else:
             return "An error occurred."
     
     def to_error_detail(self) -> ErrorDetail:
         """Convert exception to error detail."""
-        # Handle special case for InvalidParameters with message
-        if hasattr(self, 'message') and self.message:
-            return ErrorDetail(
-                kind=self.kind,
-                method=self.method,
-                route=self.route,
-                parameters=self.parameters if self.parameters else None,
-                field=self.field,
-                entity=self.entity,
-                reason=self.reason,
-                message=self.message
-            )
         return ErrorDetail(
             kind=self.kind,
             method=self.method,
@@ -117,7 +104,7 @@ class CCDIException(Exception):
             parameters=self.parameters if self.parameters else None,
             field=self.field,
             entity=self.entity,
-            reason=self.reason
+            message=self.message
         )
     
     def to_http_exception(self) -> HTTPException:
@@ -135,13 +122,17 @@ class InvalidRouteError(CCDIException):
         self, 
         method: str,
         route: str,
-        status_code: int = status.HTTP_404_NOT_FOUND
+        status_code: int = status.HTTP_404_NOT_FOUND,
+        message: Optional[str] = None
     ):
+        if message is None:
+            message = f"Invalid route: {method} {route}"
         super().__init__(
             kind=ErrorKind.INVALID_ROUTE,
             status_code=status_code,
             method=method,
-            route=route
+            route=route,
+            message=message
         )
 
 
@@ -151,21 +142,19 @@ class InvalidParametersError(CCDIException):
     def __init__(
         self, 
         parameters: List[str], 
-        reason: str,
+        message: str,
         status_code: int = status.HTTP_400_BAD_REQUEST,
         method: Optional[str] = None,
-        route: Optional[str] = None,
-        message: Optional[str] = None
+        route: Optional[str] = None
     ):
         super().__init__(
             kind=ErrorKind.INVALID_PARAMETERS,
             status_code=status_code,
             parameters=parameters,
-            reason=reason,
             method=method,
-            route=route
+            route=route,
+            message=message
         )
-        self.message = message
 
 
 class ValidationError(CCDIException):
@@ -180,7 +169,7 @@ class ValidationError(CCDIException):
             kind=ErrorKind.INVALID_PARAMETERS,
             status_code=status_code,
             parameters=["input"],
-            reason=message
+            message=message
         )
 
 
@@ -191,15 +180,17 @@ class UnsupportedFieldError(CCDIException):
         self, 
         field: str, 
         entity_type: str,
-        status_code: int = status.HTTP_400_BAD_REQUEST
+        status_code: int = status.HTTP_400_BAD_REQUEST,
+        message: Optional[str] = None
     ):
-        reason = "The field was not found in the metadata object."
+        if message is None:
+            message = f"Field '{field}' is not supported: this field is not present for {entity_type}."
         
         super().__init__(
             kind=ErrorKind.UNSUPPORTED_FIELD,
             status_code=status_code,
             field=field,
-            reason=reason
+            message=message
         )
 
 
@@ -209,12 +200,16 @@ class NotFoundError(CCDIException):
     def __init__(
         self, 
         entity: str,
-        status_code: int = status.HTTP_404_NOT_FOUND
+        status_code: int = status.HTTP_404_NOT_FOUND,
+        message: Optional[str] = None
     ):
+        if message is None:
+            message = f"{entity} not found."
         super().__init__(
             kind=ErrorKind.NOT_FOUND,
             status_code=status_code,
-            entity=entity
+            entity=entity,
+            message=message
         )
 
 
@@ -224,14 +219,14 @@ class UnshareableDataError(CCDIException):
     def __init__(
         self, 
         entity: str,
-        reason: str = "Our agreement with data providers prohibits us from sharing line-level data.",
+        message: str = "Our agreement with data providers prohibits us from sharing line-level data.",
         status_code: int = status.HTTP_404_NOT_FOUND
     ):
         super().__init__(
             kind=ErrorKind.UNSHAREABLE_DATA,
             status_code=status_code,
             entity=entity,
-            reason=reason
+            message=message
         )
 
 
@@ -240,12 +235,14 @@ class InternalServerError(CCDIException):
     
     def __init__(
         self, 
-        reason: Optional[str] = None
+        message: Optional[str] = None
     ):
+        if message is None:
+            message = "An internal server error occurred"
         super().__init__(
             kind=ErrorKind.INTERNAL_SERVER_ERROR,
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            reason=reason
+            message=message
         )
 
 
@@ -259,9 +256,12 @@ def create_pagination_error(page: Optional[int] = None, per_page: Optional[int] 
     if per_page is not None and per_page < 1:
         parameters.append("per_page")
     
+    param_list = "', '".join(parameters) if parameters else "page and per_page"
+    message = f"Invalid value for parameter{'s' if len(parameters) > 1 else ''} '{param_list}': unable to calculate offset."
+    
     return InvalidParametersError(
         parameters=parameters or ["page", "per_page"],
-        reason="The parameter was a non-integer value."
+        message=message
     )
 
 

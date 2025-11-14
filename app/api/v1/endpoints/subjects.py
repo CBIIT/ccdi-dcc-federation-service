@@ -5,7 +5,7 @@ This module provides REST endpoints for subject operations
 including listing, individual retrieval, counting, and summaries.
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status, Path
 from neo4j import AsyncSession
@@ -29,7 +29,8 @@ from app.models.dto import (
     Subject,
     SubjectResponse,
     CountResponse,
-    SummaryResponse
+    SummaryResponse,
+    NamedGateway
 )
 from app.models.errors import NotFoundError, InvalidParametersError, InvalidRouteError
 from app.services.subject import SubjectService
@@ -37,6 +38,35 @@ from app.services.subject import SubjectService
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/subject", tags=["subjects"])
+
+
+def prepare_subjects_for_response(subjects: List[Subject]) -> tuple[List[Dict[str, Any]], List[Any]]:
+    """
+    Prepare subjects for response, keeping gateways in individual subjects
+    and also collecting them at the top level.
+    
+    Args:
+        subjects: List of Subject objects
+        
+    Returns:
+        Tuple of (subjects dicts with gateways, collected gateways list)
+    """
+    all_gateways = []
+    subjects_dicts = []
+    
+    for subject in subjects:
+        # Collect gateways if any (currently always empty, but structure for future)
+        if hasattr(subject, 'gateways') and subject.gateways:
+            # Process gateways if needed in the future
+            all_gateways.extend(subject.gateways)
+        # Create subject dict with gateways included
+        subject_dict = subject.model_dump()
+        # Ensure gateways is present (as empty array if not set)
+        if 'gateways' not in subject_dict:
+            subject_dict['gateways'] = []
+        subjects_dicts.append(subject_dict)
+    
+    return subjects_dicts, all_gateways
 
 
 # ============================================================================
@@ -80,11 +110,11 @@ async def list_subjects(
         # If any invalid value is present, return empty result
         if invalid_ethnicity_value or invalid_sex_value or invalid_race_value or invalid_vital_status_value or invalid_age_value:
             # Return empty response with zero counts
-            pagination_info = calculate_pagination_info(
-                page=pagination.page,
-                per_page=pagination.per_page,
-                total_items=0
-            )
+            # pagination_info = calculate_pagination_info(
+            #     page=pagination.page,
+            #     per_page=pagination.per_page,
+            #     total_items=0
+            # )
             
             result = SubjectResponse(
                 summary={
@@ -94,7 +124,8 @@ async def list_subjects(
                     }
                 },
                 data=[],
-                pagination=pagination_info
+                gateways=[]
+                # pagination=pagination_info
             )
             
             logger.info(
@@ -127,11 +158,15 @@ async def list_subjects(
         # Make a copy of filters for get_subjects (it modifies the dict by popping race/identifiers)
         filters_copy = filters.copy()
         
+        # Use configured identifier server URL for all identifier server values
+        base_url = settings.identifier_server_url.rstrip("/")
+        
         # Get subjects
         subjects = await service.get_subjects(
             filters=filters_copy,
             offset=pagination.offset,
-            limit=pagination.per_page
+            limit=pagination.per_page,
+            base_url=base_url
         )
         
         # Get total count for summary (use original filters, not the modified copy)
@@ -139,20 +174,23 @@ async def list_subjects(
         total_count = summary_result.counts.total
         
         # Calculate pagination info using the utility function
-        pagination_info = calculate_pagination_info(
-            page=pagination.page,
-            per_page=pagination.per_page,
-            total_items=total_count
-        )
+        # pagination_info = calculate_pagination_info(
+        #     page=pagination.page,
+        #     per_page=pagination.per_page,
+        #     total_items=total_count
+        # )
         
         # Add Link header for pagination
-        link_header = build_link_header(
-            request=request,
-            pagination=pagination_info
-        )
+        # link_header = build_link_header(
+        #     request=request,
+        #     pagination=pagination_info
+        # )
         
-        if link_header:
-            response.headers["Link"] = link_header
+        # if link_header:
+        #     response.headers["Link"] = link_header
+        
+        # Prepare subjects for response (keep gateways in subjects, also collect at top level)
+        subjects_dicts, all_gateways = prepare_subjects_for_response(subjects)
         
         # Build nested response structure
         result = SubjectResponse(
@@ -162,8 +200,9 @@ async def list_subjects(
                     "current": len(subjects)
                 }
             },
-            data=subjects,
-            pagination=pagination_info
+            data=subjects_dicts,  # List of dicts with gateways included
+            gateways=all_gateways if all_gateways else []
+            # pagination=pagination_info
         )
         
         logger.info(
@@ -216,7 +255,6 @@ async def list_subjects(
                             {
                                 "kind": "UnsupportedField",
                                 "field": "handedness",
-                                "reason": "This field is not present for subjects.",
                                 "message": "Field 'handedness' is not supported: this field is not present for subjects."
                             }
                         ]
@@ -321,7 +359,7 @@ async def get_subject(
         if organization.strip().upper() != "CCDI-DCC":
             raise InvalidParametersError(
                 parameters=["organization"],
-                reason="Organization accepted is 'CCDI-DCC'"
+                message="Organization accepted is 'CCDI-DCC'"
             )
         
         organization = "CCDI-DCC"
@@ -361,6 +399,9 @@ async def get_subject(
             if field_value:
                 filters[field_name] = field_value
             
+            # Use configured identifier server URL for all identifier server values
+            base_url = settings.identifier_server_url.rstrip("/")
+            
             # Get subjects with this filter
             # If no value provided, we could return all subjects (but that's not useful)
             # Or we could return an error - let's return filtered results if value provided
@@ -368,7 +409,8 @@ async def get_subject(
                 subjects = await service.get_subjects(
                     filters=filters,
                     offset=0,
-                    limit=100
+                    limit=100,
+                    base_url=base_url
                 )
                 
                 # Get total count for summary
@@ -376,11 +418,14 @@ async def get_subject(
                 total_count = summary_result.counts.total
                 
                 # Build pagination
-                pagination_info = calculate_pagination_info(
-                    page=1,
-                    per_page=len(subjects),
-                    total_items=total_count
-                )
+                # pagination_info = calculate_pagination_info(
+                #     page=1,
+                #     per_page=len(subjects),
+                #     total_items=total_count
+                # )
+                
+                # Prepare subjects for response (keep gateways in subjects, also collect at top level)
+                subjects_dicts, all_gateways = prepare_subjects_for_response(subjects)
                 
                 # Build response
                 result = SubjectResponse(
@@ -390,8 +435,9 @@ async def get_subject(
                             "current": len(subjects)
                         }
                     },
-                    data=subjects,
-                    pagination=pagination_info
+                    data=subjects_dicts,  # List of dicts with gateways included
+                    gateways=all_gateways if all_gateways else []
+                    # pagination=pagination_info
                 )
                 
                 logger.info(
@@ -404,12 +450,12 @@ async def get_subject(
                 return result
             else:
                 # No value provided for field filter - return empty result
-                from app.core.pagination import calculate_pagination_info
-                pagination_info = calculate_pagination_info(
-                    page=1,
-                    per_page=0,
-                    total_items=0
-                )
+                # from app.core.pagination import calculate_pagination_info
+                # pagination_info = calculate_pagination_info(
+                #     page=1,
+                #     per_page=0,
+                #     total_items=0
+                # )
                 result = SubjectResponse(
                     summary={
                         "counts": {
@@ -417,8 +463,8 @@ async def get_subject(
                             "current": 0
                         }
                     },
-                    data=[],
-                    pagination=pagination_info
+                    data=[]
+                    # pagination=pagination_info
                 )
                 logger.info(
                     "Field filter with no value, returning empty result",
@@ -438,12 +484,12 @@ async def get_subject(
             
             if not participant_id_list:
                 # No participant IDs provided - return empty result
-                from app.core.pagination import calculate_pagination_info
-                pagination_info = calculate_pagination_info(
-                    page=1,
-                    per_page=0,
-                    total_items=0
-                )
+                # from app.core.pagination import calculate_pagination_info
+                # pagination_info = calculate_pagination_info(
+                #     page=1,
+                #     per_page=0,
+                #     total_items=0
+                # )
                 result = SubjectResponse(
                     summary={
                         "counts": {
@@ -451,8 +497,8 @@ async def get_subject(
                             "current": 0
                         }
                     },
-                    data=[],
-                    pagination=pagination_info
+                    data=[]
+                    # pagination=pagination_info
                 )
                 logger.info(
                     "No participant IDs provided, returning empty result",
@@ -465,12 +511,15 @@ async def get_subject(
             # Create filters for participant IDs
             filters = {"identifiers": participant_id_list}
             
+            # Use configured identifier server URL for all identifier server values
+            base_url = settings.identifier_server_url.rstrip("/")
+            
             # If namespace is provided, filter by it using get_subject_by_identifier for each participant ID
             # This ensures we only get participants that belong to the specified study_id
             if namespace:
                 subjects = []
                 for participant_id in participant_id_list:
-                    subject = await service.get_subject_by_identifier(organization, namespace, participant_id)
+                    subject = await service.get_subject_by_identifier(organization, namespace, participant_id, base_url=base_url)
                     if subject:
                         subjects.append(subject)
             else:
@@ -478,18 +527,19 @@ async def get_subject(
                 subjects = await service.get_subjects(
                     filters=filters,
                     offset=0,
+                    base_url=base_url,
                     limit=100  # Allow multiple results
                 )
             
             # Return empty result if no subjects found (instead of raising NotFoundError)
             if not subjects:
                 # Return empty SubjectResponse
-                from app.core.pagination import calculate_pagination_info
-                pagination_info = calculate_pagination_info(
-                    page=1,
-                    per_page=0,
-                    total_items=0
-                )
+                # from app.core.pagination import calculate_pagination_info
+                # pagination_info = calculate_pagination_info(
+                #     page=1,
+                #     per_page=0,
+                #     total_items=0
+                # )
                 result = SubjectResponse(
                     summary={
                         "counts": {
@@ -497,8 +547,8 @@ async def get_subject(
                             "current": 0
                         }
                     },
-                    data=[],
-                    pagination=pagination_info
+                    data=[]
+                    # pagination=pagination_info
                 )
                 logger.info(
                     "Get subject response (no matches found)",
@@ -512,6 +562,7 @@ async def get_subject(
             if len(participant_id_list) == 1:
                 if subjects:
                     subject = subjects[0]
+                    # Keep gateways in single subject response
                     logger.info(
                         "Get subject response (single participant ID)",
                         organization=organization,
@@ -522,12 +573,12 @@ async def get_subject(
                     return subject
                 else:
                     # Return empty result for single participant ID
-                    from app.core.pagination import calculate_pagination_info
-                    pagination_info = calculate_pagination_info(
-                        page=1,
-                        per_page=0,
-                        total_items=0
-                    )
+                    # from app.core.pagination import calculate_pagination_info
+                    # pagination_info = calculate_pagination_info(
+                    #     page=1,
+                    #     per_page=0,
+                    #     total_items=0
+                    # )
                     result = SubjectResponse(
                         summary={
                             "counts": {
@@ -535,8 +586,8 @@ async def get_subject(
                                 "current": 0
                             }
                         },
-                        data=[],
-                        pagination=pagination_info
+                        data=[]
+                        # pagination=pagination_info
                     )
                     logger.info(
                         "Get subject response (single participant ID, no match)",
@@ -550,11 +601,14 @@ async def get_subject(
                 
                 # Build pagination based on matched subjects (single page)
                 matched_count = len(subjects)
-                pagination_info = calculate_pagination_info(
-                    page=1,
-                    per_page=matched_count if matched_count > 0 else 0,
-                    total_items=matched_count
-                )
+                # pagination_info = calculate_pagination_info(
+                #     page=1,
+                #     per_page=matched_count if matched_count > 0 else 0,
+                #     total_items=matched_count
+                # )
+                
+                # Prepare subjects for response (keep gateways in subjects, also collect at top level)
+                subjects_dicts, all_gateways = prepare_subjects_for_response(subjects)
                 
                 # Build nested response structure
                 result = SubjectResponse(
@@ -564,8 +618,9 @@ async def get_subject(
                             "current": matched_count
                         }
                     },
-                    data=subjects,
-                    pagination=pagination_info
+                    data=subjects_dicts,  # List of dicts with gateways included
+                    gateways=all_gateways if all_gateways else []
+                    # pagination=pagination_info
                 )
                 
                 logger.info(
@@ -581,17 +636,20 @@ async def get_subject(
             # Use original identifier search logic
             logger.info("Using identifier search for non-CCDI-DCC")
             
+            # Use configured identifier server URL for all identifier server values
+            base_url = settings.identifier_server_url.rstrip("/")
+            
             # Get subject
-            subject = await service.get_subject_by_identifier(organization, namespace, name)
+            subject = await service.get_subject_by_identifier(organization, namespace, name, base_url=base_url)
             
             # Return empty result if not found (instead of raising NotFoundError)
             if not subject:
-                from app.core.pagination import calculate_pagination_info
-                pagination_info = calculate_pagination_info(
-                    page=1,
-                    per_page=0,
-                    total_items=0
-                )
+                # from app.core.pagination import calculate_pagination_info
+                # pagination_info = calculate_pagination_info(
+                #     page=1,
+                #     per_page=0,
+                #     total_items=0
+                # )
                 result = SubjectResponse(
                     summary={
                         "counts": {
@@ -599,8 +657,8 @@ async def get_subject(
                             "current": 0
                         }
                     },
-                    data=[],
-                    pagination=pagination_info
+                    data=[]
+                    # pagination=pagination_info
                 )
                 logger.info(
                     "Get subject response (not found)",
@@ -629,12 +687,12 @@ async def get_subject(
             name=name,
             error=str(e)
         )
-        from app.core.pagination import calculate_pagination_info
-        pagination_info = calculate_pagination_info(
-            page=1,
-            per_page=0,
-            total_items=0
-        )
+        # from app.core.pagination import calculate_pagination_info
+        # pagination_info = calculate_pagination_info(
+        #     page=1,
+        #     per_page=0,
+        #     total_items=0
+        # )
         result = SubjectResponse(
             summary={
                 "counts": {
@@ -642,8 +700,8 @@ async def get_subject(
                     "current": 0
                 }
             },
-            data=[],
-            pagination=pagination_info
+            data=[]
+            # pagination=pagination_info
         )
         return result
 

@@ -55,6 +55,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code & (optionally) the builder artifacts (virtualenv) for any packages not pinned in requirements.txt
 COPY --from=builder /app/app ./app
 
+# Copy docs directory for embedded.html (used by /docs endpoint)
+COPY docs/ ./docs/
+
 # Create non-root user
 RUN useradd --create-home --shell /bin/bash app \
     && chown -R app:app /app

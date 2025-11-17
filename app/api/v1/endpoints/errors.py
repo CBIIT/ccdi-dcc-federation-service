@@ -12,7 +12,7 @@ from app.models.errors import ErrorsResponse, ErrorDetail, ErrorKind
 
 logger = get_logger(__name__)
 
-router = APIRouter(prefix="/errors", tags=["errors"])
+router = APIRouter(prefix="/errors", tags=["Errors"])
 
 
 @router.get(

@@ -33,6 +33,9 @@ def api_info():
             # Filter the response:
             # 1. Keep only "api_version" and "documentation_url" in the "api" field
             # 2. Remove "organizations" field
+            # 3. Return the entire "data" object which includes:
+            #    - "version" object with "version" and "about_url" fields
+            #    - "last_updated", "wiki_url", "documentation_url"
             filtered_data = {
                 "server": data.get("server", {}),
                 "api": {

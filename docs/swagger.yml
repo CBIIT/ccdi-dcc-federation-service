@@ -457,7 +457,7 @@ paths:
         any internal error messages or user inputs. Any error not covered by the
         categories below should return a 404 NotFound error.
       tags:
-      - errors
+      - Errors
       parameters:
       - name: error_type
         in: query
@@ -507,7 +507,7 @@ paths:
                     - kind: InvalidRoute
                       method: GET
                       route: /foobar
-                      message: Invalid route: GET /foobar
+                      message: "Invalid route: GET /foobar"
                     - kind: InvalidParameters
                       parameters:
                       - id
@@ -528,7 +528,7 @@ paths:
                     - kind: InvalidRoute
                       method: GET
                       route: /foobar
-                      message: Invalid route: GET /foobar
+                      message: "Invalid route: GET /foobar"
                 invalidParameters:
                   summary: Invalid parameters error
                   value:

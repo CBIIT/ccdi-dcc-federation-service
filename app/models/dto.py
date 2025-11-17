@@ -427,11 +427,12 @@ class Organization(BaseModel):
 
 class NamespaceMetadata(CommonMetadata):
     """Namespace metadata model."""
-    study_short_title: Optional[UnharmonizedField] = None
-    study_name: Optional[UnharmonizedField] = None
-    study_funding_id: Optional[List[UnharmonizedField]] = None
-    study_id: Optional[UnharmonizedField] = None
-    depositions: Optional[List[Dict[str, str]]] = None
+    study_short_title: Optional[str] = None
+    study_name: Optional[str] = None
+    study_funding_id: Optional[List[Dict[str, str]]] = None
+    study_id: Optional[str] = None
+    depositions: Optional[str] = None
+    deposition: Optional[str] = None
     unharmonized: Optional[Dict[str, UnharmonizedField]] = Field(
         None,
         description="Unharmonized metadata fields"

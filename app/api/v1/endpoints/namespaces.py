@@ -7,7 +7,7 @@ including listing namespaces and getting individual namespace details.
 
 from typing import List, Dict, Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from neo4j import AsyncSession
 
 from app.api.v1.deps import (
@@ -23,9 +23,9 @@ from app.models.dto import (
     NamespacesResponse, 
     NamespaceResponse,
     NamespaceIdentifier,
-    NamespaceMetadata,
-    UnharmonizedField
+    NamespaceMetadata
 )
+from app.models.errors import ErrorDetail, ErrorsResponse, ErrorKind
 
 logger = get_logger(__name__)
 
@@ -65,6 +65,7 @@ class NamespaceService:
             COALESCE(st.study_description, '') AS study_description,
             COALESCE(st.study_acronym, '') AS study_acronym,
             COALESCE(st.study_name, '') AS study_name,
+            COALESCE(st.study_dd, st.study_id) AS study_dd,
             grant_ids
         ORDER BY st.study_id
         """
@@ -82,28 +83,30 @@ class NamespaceService:
             study_description = record.get("study_description", "")
             study_acronym = record.get("study_acronym", "")
             study_name = record.get("study_name", "")
+            study_dd = record.get("study_dd", study_id)
             grant_ids = record.get("grant_ids", [])
             
             if not study_id:
                 continue
             
-            # Build study_funding_id array from distinct grant_ids
+            # Build study_funding_id array from distinct grant_ids (as objects with "value" key)
             study_funding_id = None
             if grant_ids:
-                # Filter out None/empty values and create UnharmonizedField objects
+                # Filter out None/empty values and wrap in {"value": "string"} format
                 study_funding_id = [
-                    UnharmonizedField(value=grant_id) 
+                    {"value": grant_id}
                     for grant_id in grant_ids 
                     if grant_id
                 ]
             
             # Build metadata
             metadata = NamespaceMetadata(
-                study_short_title=UnharmonizedField(value=study_acronym) if study_acronym else None,
-                study_name=UnharmonizedField(value=study_name) if study_name else None,
+                study_short_title=study_acronym if study_acronym else None,
+                study_name=study_name if study_name else None,
                 study_funding_id=study_funding_id,
-                study_id=UnharmonizedField(value=study_id),
-                depositions=[{"kind": "dbGaP", "value": study_id}]
+                study_id=study_id,
+                depositions=study_id,
+                deposition=study_dd
             )
             
             # Build namespace object
@@ -153,6 +156,7 @@ class NamespaceService:
             COALESCE(st.study_description, '') AS study_description,
             COALESCE(st.study_acronym, '') AS study_acronym,
             COALESCE(st.study_name, '') AS study_name,
+            COALESCE(st.study_dd, st.study_id) AS study_dd,
             grant_ids
         LIMIT 1
         """
@@ -170,27 +174,29 @@ class NamespaceService:
         study_description = record.get("study_description", "")
         study_acronym = record.get("study_acronym", "")
         study_name = record.get("study_name", "")
+        study_dd = record.get("study_dd", study_id)
         grant_ids = record.get("grant_ids", [])
         
         contact_email = "NCIChildhoodCancerDataInitiative@mail.nih.gov"
         
-        # Build study_funding_id array from distinct grant_ids
+        # Build study_funding_id array from distinct grant_ids (as objects with "value" key)
         study_funding_id = None
         if grant_ids:
-            # Filter out None/empty values and create UnharmonizedField objects
+            # Filter out None/empty values and wrap in {"value": "string"} format
             study_funding_id = [
-                UnharmonizedField(value=grant_id) 
+                {"value": grant_id}
                 for grant_id in grant_ids 
                 if grant_id
             ]
         
         # Build metadata
         metadata = NamespaceMetadata(
-            study_short_title=UnharmonizedField(value=study_acronym) if study_acronym else None,
-            study_name=UnharmonizedField(value=study_name) if study_name else None,
+            study_short_title=study_acronym if study_acronym else None,
+            study_name=study_name if study_name else None,
             study_funding_id=study_funding_id,
-            study_id=UnharmonizedField(value=study_id),
-            depositions=[{"kind": "dbGaP", "value": study_id}]
+            study_id=study_id,
+            depositions=study_id,
+            deposition=study_dd
         )
         
         # Build namespace object
@@ -220,7 +226,7 @@ class NamespaceService:
 
 @router.get(
     "",
-    response_model=NamespacesResponse,
+    response_model=List[Namespace],
     summary="List namespaces",
     description="Get all available namespaces"
 )
@@ -248,8 +254,8 @@ async def list_namespaces(
             namespace_count=len(namespaces)
         )
         
-        # Return NamespacesResponse with namespaces array
-        return NamespacesResponse(namespaces=namespaces)
+        # Return namespaces array directly
+        return namespaces
         
     except Exception as e:
         logger.error("Error listing namespaces", error=str(e), exc_info=True)
@@ -262,9 +268,9 @@ async def list_namespaces(
 
 @router.get(
     "/{organization}/{namespace}",
-    response_model=NamespacesResponse,
+    response_model=Namespace,
     summary="Get namespace details",
-    description="Get details for a specific namespace. Returns empty array if organization or namespace doesn't match."
+    description="Get details for a specific namespace. Returns 404 if organization or namespace doesn't match."
 )
 async def get_namespace(
     organization: str,
@@ -277,7 +283,7 @@ async def get_namespace(
     """
     Get details for a specific namespace.
     
-    Returns empty array [] if:
+    Returns 404 if:
     - Organization is not "CCDI-DCC"
     - Study ID (namespace) is not found in the database
     """
@@ -295,14 +301,22 @@ async def get_namespace(
         # Get namespace
         result = await service.get_namespace_detail(organization, namespace)
         
-        # If result is None, return empty array
+        # If result is None, return 404
         if result is None:
             logger.info(
                 "Get namespace response - not found",
                 organization=organization,
                 namespace=namespace
             )
-            return NamespacesResponse(namespaces=[])
+            error_detail = ErrorDetail(
+                kind=ErrorKind.NOT_FOUND,
+                entity="Namespace",
+                message="Namespace not found."
+            )
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+            )
         
         logger.info(
             "Get namespace response",
@@ -310,10 +324,21 @@ async def get_namespace(
             namespace=namespace
         )
         
-        # Return NamespacesResponse with single namespace in array
-        return NamespacesResponse(namespaces=[result])
+        # Return namespace object directly
+        return result
         
+    except HTTPException:
+        # Re-raise HTTP exceptions (like 404)
+        raise
     except Exception as e:
         logger.error("Error getting namespace", error=str(e), exc_info=True)
-        # Return empty array for any error (not found, invalid organization, etc.)
-        return NamespacesResponse(namespaces=[])
+        # Return 404 for any other error
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Namespace",
+            message="Namespace not found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )

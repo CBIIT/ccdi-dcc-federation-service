@@ -571,7 +571,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/NamespacesResponse'
+                type: array
+                items:
+                  $ref: '#/components/schemas/NamespaceEntity'
         '500':
           description: Internal server error.
           content:
@@ -604,7 +606,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/NamespaceResponse'
+                $ref: '#/components/schemas/NamespaceEntity'
         '404':
           description: Namespace not found.
           content:
@@ -635,7 +637,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OrganizationsResponse'
+                type: array
+                items:
+                  $ref: '#/components/schemas/OrganizationEntity'
         '500':
           description: Internal server error.
           content:
@@ -662,7 +666,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OrganizationResponse'
+                $ref: '#/components/schemas/OrganizationEntity'
         '404':
           description: Not found.
           content:

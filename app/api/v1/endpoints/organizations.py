@@ -32,7 +32,7 @@ router = APIRouter(prefix="/organization", tags=["Organization"])
 DATA_PATH = Path(__file__).resolve().parents[3] / "config_data" / "info.json"
 
 
-@router.get("", response_model=OrganizationsResponse, summary="Get organizations")
+@router.get("", response_model=List[Organization], summary="Get organizations")
 async def get_organizations(
     request: Request,
     session: AsyncSession = Depends(get_database_session),
@@ -93,7 +93,8 @@ async def get_organizations(
             institutions_count=len(institutions)
         )
         
-        return OrganizationsResponse(organizations=organizations)
+        # Return organizations array directly
+        return organizations
         
     except FileNotFoundError:
         raise HTTPException(
@@ -110,7 +111,7 @@ async def get_organizations(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.get("/{name}", response_model=OrganizationResponse, summary="Get organization by name")
+@router.get("/{name}", response_model=Organization, summary="Get organization by name")
 async def get_organization_by_name(
     name: str,
     request: Request,
@@ -195,5 +196,6 @@ async def get_organization_by_name(
         institutions_count=len(institutions)
     )
     
-    return OrganizationResponse(organization=organization)
+    # Return organization object directly
+    return organization
 

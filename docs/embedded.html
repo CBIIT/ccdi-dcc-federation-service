@@ -777,7 +777,10 @@
                                     "content": {
                                           "application/json": {
                                                 "schema": {
-                                                      "$ref": "#/components/schemas/NamespacesResponse"
+                                                      "type": "array",
+                                                      "items": {
+                                                            "$ref": "#/components/schemas/NamespaceEntity"
+                                                      }
                                                 }
                                           }
                                     }
@@ -819,7 +822,7 @@
                                     "content": {
                                           "application/json": {
                                                 "schema": {
-                                                      "$ref": "#/components/schemas/NamespaceResponse"
+                                                      "$ref": "#/components/schemas/NamespaceEntity"
                                                 }
                                           }
                                     }
@@ -860,7 +863,10 @@
                                     "content": {
                                           "application/json": {
                                                 "schema": {
-                                                      "$ref": "#/components/schemas/OrganizationsResponse"
+                                                      "type": "array",
+                                                      "items": {
+                                                            "$ref": "#/components/schemas/OrganizationEntity"
+                                                      }
                                                 }
                                           }
                                     }
@@ -893,7 +899,7 @@
                                     "content": {
                                           "application/json": {
                                                 "schema": {
-                                                      "$ref": "#/components/schemas/OrganizationResponse"
+                                                      "$ref": "#/components/schemas/OrganizationEntity"
                                                 }
                                           }
                                     }

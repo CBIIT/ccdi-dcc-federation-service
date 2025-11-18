@@ -206,6 +206,19 @@ class UnsupportedFieldError(CCDIException):
             message=message,
             reason=reason
         )
+    
+    def to_error_detail(self) -> ErrorDetail:
+        """Convert exception to error detail, using 'wrong field' instead of actual field value."""
+        return ErrorDetail(
+            kind=self.kind,
+            method=self.method,
+            route=self.route,
+            parameters=self.parameters if self.parameters else None,
+            field="wrong field",  # Use "wrong field" instead of actual field value
+            entity=self.entity,
+            message=self.message,
+            reason=self.reason
+        )
 
 
 class NotFoundError(CCDIException):

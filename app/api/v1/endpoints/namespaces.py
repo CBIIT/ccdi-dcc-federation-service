@@ -71,9 +71,11 @@ class NamespaceService:
         ORDER BY st.study_id
         """
         
-        # Execute query
+        # Execute query with proper async result consumption
         result = await self.session.run(cypher)
-        records = await result.data()
+        records = []
+        async for record in result:
+            records.append(dict(record))
         
         # Build namespace objects
         namespaces = []
@@ -160,9 +162,11 @@ class NamespaceService:
         LIMIT 1
         """
         
-        # Execute query
+        # Execute query with proper async result consumption
         result = await self.session.run(cypher, {"study_id": namespace})
-        records = await result.data()
+        records = []
+        async for record in result:
+            records.append(dict(record))
         
         if not records or not records[0].get("study_id"):
             logger.debug("Study ID not found", study_id=namespace)

@@ -61,7 +61,9 @@ async def get_organizations(
         """
         
         result = await session.run(cypher)
-        records = await result.data()
+        records = []
+        async for record in result:
+            records.append(dict(record))
         
         # Build institution array with {"value": "institution_string"} format
         institutions = [
@@ -167,7 +169,9 @@ async def get_organization_by_name(
     """
     
     result = await session.run(cypher)
-    records = await result.data()
+    records = []
+    async for record in result:
+        records.append(dict(record))
     
     # Build institution array with {"value": "institution_string"} format
     institutions = [

@@ -106,9 +106,12 @@ async def list_samples(
             page=pagination.page
         )
         
+        # Exclude gateways from individual samples (keep as placeholder in code)
+        samples_dicts = [sample.model_dump(exclude={'gateways'}) if hasattr(sample, 'model_dump') else {k: v for k, v in (sample if isinstance(sample, dict) else sample.__dict__).items() if k != 'gateways'} for sample in samples]
+        
         # Build response
         result = SamplesResponse(
-            samples=samples
+            samples=samples_dicts
         )
         
         return result
@@ -165,7 +168,8 @@ async def get_sample(
             sample_data=getattr(sample, 'id', str(sample)[:50])  # Flexible logging
         )
         
-        return sample
+        # Return sample dict excluding gateways (keep as placeholder in code)
+        return sample.model_dump(exclude={'gateways'})
         
     except NotFoundError as e:
         logger.warning("Sample not found", organization=organization, namespace=namespace, name=name)

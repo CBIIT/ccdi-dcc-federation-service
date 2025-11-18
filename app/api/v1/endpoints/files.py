@@ -95,9 +95,12 @@ async def list_files(
         if link_header:
             response.headers["Link"] = link_header
         
+        # Exclude gateways from individual files (keep as placeholder in code)
+        files_dicts = [file.model_dump(exclude={'gateways'}) if hasattr(file, 'model_dump') else {k: v for k, v in (file if isinstance(file, dict) else file.__dict__).items() if k != 'gateways'} for file in files]
+        
         # Build response
         result = FileResponse(
-            files=files,
+            files=files_dicts,
             pagination=pagination_info
         )
         
@@ -161,7 +164,8 @@ async def get_file(
             file_data=getattr(file, 'id', str(file)[:50])  # Flexible logging
         )
         
-        return file
+        # Return file dict excluding gateways (keep as placeholder in code)
+        return file.model_dump(exclude={'gateways'})
         
     except NotFoundError as e:
         logger.warning("File not found", organization=organization, namespace=namespace, name=name)

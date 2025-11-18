@@ -6,6 +6,7 @@ including listing, individual retrieval, counting, and summaries.
 """
 
 from typing import Dict, Any, List
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status, Path
 from neo4j import AsyncSession
@@ -40,33 +41,24 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/subject", tags=["subjects"])
 
 
-def prepare_subjects_for_response(subjects: List[Subject]) -> tuple[List[Dict[str, Any]], List[Any]]:
+def prepare_subjects_for_response(subjects: List[Subject]) -> List[Dict[str, Any]]:
     """
-    Prepare subjects for response, keeping gateways in individual subjects
-    and also collecting them at the top level.
+    Prepare subjects for response, excluding gateways from output.
     
     Args:
         subjects: List of Subject objects
         
     Returns:
-        Tuple of (subjects dicts with gateways, collected gateways list)
+        List of subject dicts without gateways field
     """
-    all_gateways = []
     subjects_dicts = []
     
     for subject in subjects:
-        # Collect gateways if any (currently always empty, but structure for future)
-        if hasattr(subject, 'gateways') and subject.gateways:
-            # Process gateways if needed in the future
-            all_gateways.extend(subject.gateways)
-        # Create subject dict with gateways included
-        subject_dict = subject.model_dump()
-        # Ensure gateways is present (as empty array if not set)
-        if 'gateways' not in subject_dict:
-            subject_dict['gateways'] = []
+        # Create subject dict excluding gateways field (keep as placeholder in code)
+        subject_dict = subject.model_dump(exclude={'gateways'})
         subjects_dicts.append(subject_dict)
     
-    return subjects_dicts, all_gateways
+    return subjects_dicts
 
 
 # ============================================================================
@@ -99,6 +91,33 @@ async def list_subjects(
     )
     
     try:
+        # Validate that no unknown query parameters are provided
+        allowed_params = {
+            "sex", "race", "ethnicity", "identifiers", "vital_status", 
+            "age_at_vital_status", "depositions", "page", "per_page"
+        }
+        
+        unknown_params = []
+        for key in request.query_params.keys():
+            if not key.startswith("metadata.unharmonized.") and key not in allowed_params:
+                unknown_params.append(key)
+        
+        if unknown_params:
+            raise InvalidParametersError(
+                parameters=unknown_params,
+                message="Invalid query parameter(s) provided.",
+                reason=f"Unknown query parameter(s): {', '.join(unknown_params)}"
+            )
+        
+        # Check for unknown parameters from filter dependency (backup check)
+        unknown_params_from_filter = filters.get("_unknown_parameters")
+        if unknown_params_from_filter:
+            raise InvalidParametersError(
+                parameters=unknown_params_from_filter,
+                message="Invalid query parameter(s) provided.",
+                reason=f"Unknown query parameter(s): {', '.join(unknown_params_from_filter)}"
+            )
+        
         # Check for invalid parameter values - return empty result instead of error
         # Check if any invalid filter value was provided
         invalid_ethnicity_value = filters.get("_invalid_ethnicity")
@@ -123,8 +142,7 @@ async def list_subjects(
                         "current": 0
                     }
                 },
-                data=[],
-                gateways=[]
+                data=[]
                 # pagination=pagination_info
             )
             
@@ -189,8 +207,8 @@ async def list_subjects(
         # if link_header:
         #     response.headers["Link"] = link_header
         
-        # Prepare subjects for response (keep gateways in subjects, also collect at top level)
-        subjects_dicts, all_gateways = prepare_subjects_for_response(subjects)
+        # Prepare subjects for response (exclude gateways from output)
+        subjects_dicts = prepare_subjects_for_response(subjects)
         
         # Build nested response structure
         result = SubjectResponse(
@@ -200,8 +218,7 @@ async def list_subjects(
                     "current": len(subjects)
                 }
             },
-            data=subjects_dicts,  # List of dicts with gateways included
-            gateways=all_gateways if all_gateways else []
+            data=subjects_dicts  # List of dicts without gateways
             # pagination=pagination_info
         )
         
@@ -352,6 +369,23 @@ async def get_subject(
     )
     
     try:
+        # Check if this looks like a typo for /by/{field}/count route
+        # Pattern: /subject/{typo}/field/count where typo might be "b1y", "by2", etc.
+        if name == "count":
+            # Check if organization looks like a typo of "by"
+            org_lower = organization.lower() if organization else ""
+            if re.match(r'^b.*y.*$', org_lower) and org_lower != "by":
+                # Valid field names for count endpoint
+                valid_fields = {"sex", "race", "ethnicity", "vital_status", "age_at_vital_status", "associated_diagnoses"}
+                if namespace.lower() in valid_fields:
+                    # This is likely a typo for /subject/by/{field}/count
+                    suggested_path = f"/api/v1/subject/by/{namespace}/count"
+                    raise InvalidRouteError(
+                        method=request.method,
+                        route=str(request.url.path),
+                        message=f"Invalid route. Did you mean '{suggested_path}'?"
+                    )
+        
         # Normalize and validate organization (defaults to CCDI-DCC)
         if not organization or not organization.strip():
             organization = "CCDI-DCC"
@@ -359,7 +393,8 @@ async def get_subject(
         if organization.strip().upper() != "CCDI-DCC":
             raise InvalidParametersError(
                 parameters=["organization"],
-                message="Organization accepted is 'CCDI-DCC'"
+                message="Invalid query parameter(s) provided.",
+                reason=f"Organization accepted is 'CCDI-DCC', but received '{organization}'"
             )
         
         organization = "CCDI-DCC"
@@ -424,8 +459,8 @@ async def get_subject(
                 #     total_items=total_count
                 # )
                 
-                # Prepare subjects for response (keep gateways in subjects, also collect at top level)
-                subjects_dicts, all_gateways = prepare_subjects_for_response(subjects)
+                # Prepare subjects for response (exclude gateways from output)
+                subjects_dicts = prepare_subjects_for_response(subjects)
                 
                 # Build response
                 result = SubjectResponse(
@@ -435,8 +470,7 @@ async def get_subject(
                             "current": len(subjects)
                         }
                     },
-                    data=subjects_dicts,  # List of dicts with gateways included
-                    gateways=all_gateways if all_gateways else []
+                    data=subjects_dicts  # List of dicts without gateways
                     # pagination=pagination_info
                 )
                 
@@ -562,7 +596,8 @@ async def get_subject(
             if len(participant_id_list) == 1:
                 if subjects:
                     subject = subjects[0]
-                    # Keep gateways in single subject response
+                    # Return subject dict excluding gateways (keep as placeholder in code)
+                    subject_dict = subject.model_dump(exclude={'gateways'})
                     logger.info(
                         "Get subject response (single participant ID)",
                         organization=organization,
@@ -570,7 +605,7 @@ async def get_subject(
                         name=name,
                         subject_data=getattr(subject, 'id', str(subject)[:50])
                     )
-                    return subject
+                    return subject_dict
                 else:
                     # Return empty result for single participant ID
                     # from app.core.pagination import calculate_pagination_info
@@ -607,8 +642,8 @@ async def get_subject(
                 #     total_items=matched_count
                 # )
                 
-                # Prepare subjects for response (keep gateways in subjects, also collect at top level)
-                subjects_dicts, all_gateways = prepare_subjects_for_response(subjects)
+                # Prepare subjects for response (exclude gateways from output)
+                subjects_dicts = prepare_subjects_for_response(subjects)
                 
                 # Build nested response structure
                 result = SubjectResponse(
@@ -618,8 +653,7 @@ async def get_subject(
                             "current": matched_count
                         }
                     },
-                    data=subjects_dicts,  # List of dicts with gateways included
-                    gateways=all_gateways if all_gateways else []
+                    data=subjects_dicts  # List of dicts without gateways
                     # pagination=pagination_info
                 )
                 
@@ -676,8 +710,12 @@ async def get_subject(
                 subject_data=getattr(subject, 'id', str(subject)[:50])  # Flexible logging
             )
             
-            return subject
+            # Return subject dict excluding gateways (keep as placeholder in code)
+            return subject.model_dump(exclude={'gateways'})
         
+    except (InvalidRouteError, InvalidParametersError) as e:
+        # Re-raise route/parameter errors to let the exception handler process them
+        raise e.to_http_exception()
     except Exception as e:
         # For any error (not found, invalid parameters, etc.), return empty result
         logger.warning(

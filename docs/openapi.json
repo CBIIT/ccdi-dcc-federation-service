@@ -383,7 +383,7 @@
                 },
                 "example": {
                   "counts": {
-                    "total": 104496
+                    "total": 25696
                   }
                 }
               }
@@ -1209,7 +1209,7 @@
         "properties": {
           "all": {
             "type": "integer",
-            "example": 104496
+            "example": 25696
           },
           "current": {
             "type": "integer",
@@ -1235,7 +1235,7 @@
           },
           "total_items": {
             "type": "integer",
-            "example": 104496
+            "example": 25696
           },
           "has_next": {
             "type": "boolean",

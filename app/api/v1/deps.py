@@ -107,6 +107,25 @@ def get_subject_filters(
     """Get subject filter parameters."""
     filters = {}
     
+    # Validate that no unknown query parameters are provided
+    if request:
+        # Define all allowed query parameter names
+        allowed_params = {
+            "sex", "race", "ethnicity", "identifiers", "vital_status", 
+            "age_at_vital_status", "depositions", "page", "per_page"
+        }
+        
+        # Check for unknown parameters (excluding unharmonized fields)
+        unknown_params = []
+        for key in request.query_params.keys():
+            if not key.startswith("metadata.unharmonized.") and key not in allowed_params:
+                unknown_params.append(key)
+        
+        if unknown_params:
+            # Store unknown parameters for error handling in endpoint
+            filters["_unknown_parameters"] = unknown_params
+            return filters
+    
     # Validate ethnicity first if provided
     if ethnicity is not None:
         # Validate ethnicity - only accept the two valid values

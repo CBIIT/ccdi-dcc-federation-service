@@ -98,6 +98,8 @@ def _suggest_correct_path(path: str) -> str:
     - /api/v1/subject/by2/race2/count -> /api/v1/subject/by/race/count
     - /api/v1/subject/by3/sex2/count -> /api/v1/subject/by/sex/count
     - /api/v1/subject/by2/race/count -> /api/v1/subject/by/race/count
+    - /api/v1/subject/b1y/sex/count -> /api/v1/subject/by/sex/count
+    - /api/v1/subject/by1/race/count -> /api/v1/subject/by/race/count
     """
     # Match pattern: /subject/by{number}/{field}{number}/count
     # Pattern: /api/v1/subject/by2/race2/count
@@ -120,6 +122,35 @@ def _suggest_correct_path(path: str) -> str:
         by_part = match_by.group(2)
         rest = match_by.group(4)
         return f"{prefix}{by_part}{rest}"
+    
+    # Handle cases where 'by' has a typo with number in middle: /subject/b1y/{field}/count
+    # Pattern: /api/v1/subject/b1y/sex/count or /api/v1/subject/by1/race/count
+    pattern_by_typo = r'(/api/v1/subject/)(b)(\d+)(y)(/[^/]+/count)'
+    match_typo = re.search(pattern_by_typo, path)
+    if match_typo:
+        prefix = match_typo.group(1)  # /api/v1/subject/
+        b_part = match_typo.group(2)  # b
+        number = match_typo.group(3)  # 1, 2, etc.
+        y_part = match_typo.group(4)  # y
+        rest = match_typo.group(5)  # /sex/count
+        return f"{prefix}{b_part}{y_part}{rest}"
+    
+    # Handle pattern: /subject/{typo}/field/count where typo looks like "by"
+    # Pattern: /api/v1/subject/b1y/sex/count
+    pattern_typo_field_count = r'(/api/v1/subject/)([^/]+)/([^/]+)/(count)'
+    match_typo_field = re.search(pattern_typo_field_count, path)
+    if match_typo_field:
+        prefix = match_typo_field.group(1)  # /api/v1/subject/
+        first_seg = match_typo_field.group(2)  # b1y, by2, etc.
+        field_seg = match_typo_field.group(3)  # sex, race, etc.
+        count_seg = match_typo_field.group(4)  # count
+        
+        # Check if first segment looks like a typo of "by" (contains 'b' and 'y' with numbers)
+        if re.match(r'^b.*y.*$', first_seg, re.IGNORECASE) and count_seg == "count":
+            # Valid field names for count endpoint
+            valid_fields = {"sex", "race", "ethnicity", "vital_status", "age_at_vital_status", "associated_diagnoses"}
+            if field_seg.lower() in valid_fields:
+                return f"{prefix}by/{field_seg}/{count_seg}"
     
     return None
 
@@ -203,17 +234,21 @@ def setup_exception_handlers(app: FastAPI) -> None:
         """Handle CCDI custom exceptions - add path suggestions for InvalidRoute."""
         # If this is an InvalidRoute error, check if we can suggest a corrected path
         if exc.kind == ErrorKind.INVALID_ROUTE:
-            suggested_path = _suggest_correct_path(exc.route or str(request.url.path))
-            if suggested_path:
-                # Create error detail with suggestion
-                error_detail = ErrorDetail(
-                    kind=exc.kind,
-                    method=exc.method,
-                    route=exc.route,
-                    message=f"Did you mean '{suggested_path}'?"
-                )
-            else:
+            # If message already contains a suggestion, use it; otherwise try to generate one
+            if exc.message and "Did you mean" in exc.message:
                 error_detail = exc.to_error_detail()
+            else:
+                suggested_path = _suggest_correct_path(exc.route or str(request.url.path))
+                if suggested_path:
+                    # Create error detail with suggestion
+                    error_detail = ErrorDetail(
+                        kind=exc.kind,
+                        method=exc.method,
+                        route=exc.route,
+                        message=f"Did you mean '{suggested_path}'?"
+                    )
+                else:
+                    error_detail = exc.to_error_detail()
         else:
             error_detail = exc.to_error_detail()
         

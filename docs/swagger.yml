@@ -379,7 +379,7 @@ paths:
                 $ref: '#/components/schemas/SummaryResponse'
               example:
                 counts:
-                  total: 104496
+                  total: 25696
   /subject/by/{field}/count:
     get:
       tags:
@@ -436,8 +436,9 @@ paths:
               example:
                 errors:
                 - kind: UnsupportedField
-                  field: handedness
-                  message: 'Field ''handedness'' is not supported: this field is not present for subjects.'
+                  field: "wrong field"
+                  message: "Field is not supported: a field is not present for subject."
+                  reason: "The requested field is not found."
   /errors/examples:
     get:
       summary: Error response examples
@@ -512,15 +513,19 @@ paths:
                       parameters:
                       - id
                       message: The parameter was a non-integer value.
+                      reason: "The parameter value is invalid or incorrectly formatted."
                     - kind: NotFound
                       entity: Samples
                       message: Samples not found.
+                      reason: "The requested resource does not exist."
                     - kind: UnshareableData
                       entity: Sample
                       message: Our agreement with data providers prohibits us from sharing line-level data.
+                      reason: "Data sharing is restricted by agreement with data providers."
                     - kind: UnsupportedField
-                      field: field
-                      message: The field was not found in the metadata object.
+                      field: "wrong field"
+                      message: "Field is not supported: a field is not present for subject."
+                      reason: "The requested field is not found."
                 invalidRoute:
                   summary: Invalid route error
                   value:
@@ -537,6 +542,7 @@ paths:
                       parameters:
                       - id
                       message: The parameter was a non-integer value.
+                      reason: "The parameter value is invalid or incorrectly formatted."
                 notFound:
                   summary: Not found error
                   value:
@@ -544,6 +550,7 @@ paths:
                     - kind: NotFound
                       entity: Samples
                       message: Samples not found.
+                      reason: "The requested resource does not exist."
                 unshareableData:
                   summary: Unshareable data error
                   value:
@@ -551,13 +558,15 @@ paths:
                     - kind: UnshareableData
                       entity: Sample
                       message: Our agreement with data providers prohibits us from sharing line-level data.
+                      reason: "Data sharing is restricted by agreement with data providers."
                 unsupportedField:
                   summary: Unsupported field error
                   value:
                     errors:
                     - kind: UnsupportedField
-                      field: field
-                      message: The field was not found in the metadata object.
+                      field: "wrong field"
+                      message: "Field is not supported: a field is not present for subject."
+                      reason: "The requested field is not found."
   /namespace:
     get:
       tags:
@@ -861,9 +870,19 @@ components:
         name:
           type: string
           minLength: 1
+        type:
+          type: string
+          description: Identifier type
+          default: Linked
+          example: Linked
+        server:
+          type: string
+          description: Server URL
+          nullable: true
+          example: https://example.com/api/v1/subject/CCDI-DCC/phs002431/SUBJ-001
       required:
-      - namespace
-      - name
+        - namespace
+        - name
     AssociatedDiagnosisField:
       type: object
       description: Diagnosis term assigned to the participant with optional metadata.
@@ -941,7 +960,7 @@ components:
       properties:
         all:
           type: integer
-          example: 104496
+          example: 25696
         current:
           type: integer
           example: 20
@@ -960,7 +979,7 @@ components:
           example: 5225
         total_items:
           type: integer
-          example: 104496
+          example: 25696
         has_next:
           type: boolean
           example: true
@@ -1071,6 +1090,10 @@ components:
           type: string
           description: Field name (for UnsupportedField errors)
           example: field
+        reason:
+          type: string
+          description: Reason for the error (for UnsupportedField errors)
+          example: The requested field is not found.
       oneOf:
       - type: object
         required:
@@ -1083,21 +1106,96 @@ components:
         - kind
         - parameters
         - message
+        - reason
       - type: object
         required:
         - kind
         - entity
         - message
+        - reason
       - type: object
         required:
         - kind
         - entity
         - message
+        - reason
       - type: object
         required:
         - kind
         - field
         - message
+        - reason
+    DepositionAccession:
+      type: object
+      description: Deposition accession with repository kind and value.
+      properties:
+        kind:
+          type: string
+          description: Repository type
+          example: dbGaP
+        value:
+          type: string
+          description: Accession value
+          example: phs002356
+      required:
+        - kind
+        - value
+    NamespaceMetadata:
+      type: object
+      description: Namespace metadata with study information.
+      properties:
+        study_short_title:
+          type: object
+          description: Study short title
+          nullable: true
+          properties:
+            value:
+              type: string
+              example: "short title here"
+          required:
+            - value
+        study_name:
+          type: object
+          description: Study name
+          nullable: true
+          properties:
+            value:
+              type: string
+              example: "name here"
+          required:
+            - value
+        study_id:
+          type: object
+          description: Study identifier
+          nullable: true
+          properties:
+            value:
+              type: string
+              example: "phs002356"
+          required:
+            - value
+        study_funding_id:
+          type: array
+          description: Study funding identifiers
+          nullable: true
+          items:
+            type: object
+            properties:
+              value:
+                type: string
+                example: "fund here"
+            required:
+              - value
+        depositions:
+          type: array
+          description: Array of deposition objects containing study_id values
+          nullable: true
+          items:
+            $ref: '#/components/schemas/DepositionAccession'
+        deposition:
+          type: string
+          description: Deposition identifier
+          nullable: true
     NamespaceEntity:
       type: object
       description: Namespace entity with identifier, description, and metadata.
@@ -1114,8 +1212,7 @@ components:
           description: Contact email for namespace support
           example: support@ccdi.org
         metadata:
-          type: object
-          description: Additional namespace metadata
+          $ref: '#/components/schemas/NamespaceMetadata'
           nullable: true
       required:
       - id

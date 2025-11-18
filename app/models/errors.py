@@ -26,10 +26,10 @@ class ErrorDetail(BaseModel):
     
     Fields vary by error kind:
     - InvalidRoute: kind, method, route, message
-    - InvalidParameters: kind, parameters, message
-    - NotFound: kind, entity, message
-    - UnshareableData: kind, entity, message
-    - UnsupportedField: kind, field, message
+    - InvalidParameters: kind, parameters, message, reason
+    - NotFound: kind, entity, message, reason
+    - UnshareableData: kind, entity, message, reason
+    - UnsupportedField: kind, field, message, reason
     """
     
     model_config = ConfigDict(exclude_none=True)
@@ -45,6 +45,7 @@ class ErrorDetail(BaseModel):
     entity: Optional[str] = None
     # UnsupportedField fields
     field: Optional[str] = None
+    reason: Optional[str] = None
 
 
 class ErrorsResponse(BaseModel):
@@ -66,7 +67,8 @@ class CCDIException(Exception):
         parameters: Optional[List[str]] = None,
         field: Optional[str] = None,
         entity: Optional[str] = None,
-        message: Optional[str] = None
+        message: Optional[str] = None,
+        reason: Optional[str] = None
     ):
         """Initialize CCDI exception."""
         self.kind = kind
@@ -77,6 +79,7 @@ class CCDIException(Exception):
         self.field = field
         self.entity = entity
         self.message = message or self._generate_message()
+        self.reason = reason
         super().__init__(self.message)
     
     def _generate_message(self) -> str:
@@ -104,7 +107,8 @@ class CCDIException(Exception):
             parameters=self.parameters if self.parameters else None,
             field=self.field,
             entity=self.entity,
-            message=self.message
+            message=self.message,
+            reason=self.reason
         )
     
     def to_http_exception(self) -> HTTPException:
@@ -142,18 +146,24 @@ class InvalidParametersError(CCDIException):
     def __init__(
         self, 
         parameters: List[str], 
-        message: str,
+        message: Optional[str] = None,
         status_code: int = status.HTTP_400_BAD_REQUEST,
         method: Optional[str] = None,
-        route: Optional[str] = None
+        route: Optional[str] = None,
+        reason: Optional[str] = None
     ):
+        if message is None:
+            message = "Invalid query parameter(s) provided."
+        if reason is None:
+            reason = "The parameter value is invalid or incorrectly formatted."
         super().__init__(
             kind=ErrorKind.INVALID_PARAMETERS,
             status_code=status_code,
             parameters=parameters,
             method=method,
             route=route,
-            message=message
+            message=message,
+            reason=reason
         )
 
 
@@ -181,16 +191,20 @@ class UnsupportedFieldError(CCDIException):
         field: str, 
         entity_type: str,
         status_code: int = status.HTTP_400_BAD_REQUEST,
-        message: Optional[str] = None
+        message: Optional[str] = None,
+        reason: Optional[str] = None
     ):
         if message is None:
-            message = f"Field '{field}' is not supported: this field is not present for {entity_type}."
+            message = f"Field is not supported: a field is not present for {entity_type}."
+        if reason is None:
+            reason = "The requested field is not found."
         
         super().__init__(
             kind=ErrorKind.UNSUPPORTED_FIELD,
             status_code=status_code,
             field=field,
-            message=message
+            message=message,
+            reason=reason
         )
 
 
@@ -201,15 +215,19 @@ class NotFoundError(CCDIException):
         self, 
         entity: str,
         status_code: int = status.HTTP_404_NOT_FOUND,
-        message: Optional[str] = None
+        message: Optional[str] = None,
+        reason: Optional[str] = None
     ):
         if message is None:
             message = f"{entity} not found."
+        if reason is None:
+            reason = "The requested resource does not exist."
         super().__init__(
             kind=ErrorKind.NOT_FOUND,
             status_code=status_code,
             entity=entity,
-            message=message
+            message=message,
+            reason=reason
         )
 
 
@@ -220,13 +238,17 @@ class UnshareableDataError(CCDIException):
         self, 
         entity: str,
         message: str = "Our agreement with data providers prohibits us from sharing line-level data.",
-        status_code: int = status.HTTP_404_NOT_FOUND
+        status_code: int = status.HTTP_404_NOT_FOUND,
+        reason: Optional[str] = None
     ):
+        if reason is None:
+            reason = "Data sharing is restricted by agreement with data providers."
         super().__init__(
             kind=ErrorKind.UNSHAREABLE_DATA,
             status_code=status_code,
             entity=entity,
-            message=message
+            message=message,
+            reason=reason
         )
 
 
@@ -257,11 +279,12 @@ def create_pagination_error(page: Optional[int] = None, per_page: Optional[int] 
         parameters.append("per_page")
     
     param_list = "', '".join(parameters) if parameters else "page and per_page"
-    message = f"Invalid value for parameter{'s' if len(parameters) > 1 else ''} '{param_list}': unable to calculate offset."
+    reason = f"Invalid value for parameter{'s' if len(parameters) > 1 else ''} '{param_list}': unable to calculate offset."
     
     return InvalidParametersError(
         parameters=parameters or ["page", "per_page"],
-        message=message
+        message="Invalid query parameter(s) provided.",
+        reason=reason
     )
 
 

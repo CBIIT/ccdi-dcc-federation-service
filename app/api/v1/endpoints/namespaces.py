@@ -23,9 +23,10 @@ from app.models.dto import (
     NamespacesResponse, 
     NamespaceResponse,
     NamespaceIdentifier,
-    NamespaceMetadata
+    NamespaceMetadata,
+    DepositionAccession
 )
-from app.models.errors import ErrorDetail, ErrorsResponse, ErrorKind
+from app.models.errors import ErrorDetail, ErrorsResponse, ErrorKind, InvalidParametersError
 
 logger = get_logger(__name__)
 
@@ -99,14 +100,14 @@ class NamespaceService:
                     if grant_id
                 ]
             
-            # Build metadata
+            # Build metadata with value-wrapped fields
+            # Use null for missing data, JSON objects for found data
             metadata = NamespaceMetadata(
-                study_short_title=study_acronym if study_acronym else None,
-                study_name=study_name if study_name else None,
-                study_funding_id=study_funding_id,
-                study_id=study_id,
-                depositions=study_id,
-                deposition=study_dd
+                study_short_title={"value": study_acronym} if study_acronym else None,
+                study_name={"value": study_name} if study_name else None,
+                study_funding_id=study_funding_id if study_funding_id else None,
+                study_id={"value": study_id} if study_id else None,
+                depositions=[DepositionAccession(kind="dbGaP", value=study_id)] if study_id else None
             )
             
             # Build namespace object
@@ -139,10 +140,8 @@ class NamespaceService:
         """
         logger.debug("Getting namespace detail", organization=organization, namespace=namespace)
         
-        # Validate that organization is CCDI-DCC (case-insensitive)
-        if organization.upper() != "CCDI-DCC":
-            logger.debug("Organization not matched", organization=organization)
-            return None
+        # Organization is always CCDI-DCC (only one organization supported)
+        # No need to validate - just use CCDI-DCC regardless of what's passed
         
         # Query to get the specific study by study_id with study_funding grant_ids
         cypher = """
@@ -189,14 +188,14 @@ class NamespaceService:
                 if grant_id
             ]
         
-        # Build metadata
+        # Build metadata with value-wrapped fields
+        # Use null for missing data, JSON objects for found data
         metadata = NamespaceMetadata(
-            study_short_title=study_acronym if study_acronym else None,
-            study_name=study_name if study_name else None,
-            study_funding_id=study_funding_id,
-            study_id=study_id,
-            depositions=study_id,
-            deposition=study_dd
+            study_short_title={"value": study_acronym} if study_acronym else None,
+            study_name={"value": study_name} if study_name else None,
+            study_funding_id=study_funding_id if study_funding_id else None,
+            study_id={"value": study_id} if study_id else None,
+            depositions=[DepositionAccession(kind="dbGaP", value=study_id)] if study_id else None
         )
         
         # Build namespace object
@@ -283,8 +282,9 @@ async def get_namespace(
     """
     Get details for a specific namespace.
     
+    Organization is always "CCDI-DCC" (only one organization supported).
+    
     Returns 404 if:
-    - Organization is not "CCDI-DCC"
     - Study ID (namespace) is not found in the database
     """
     logger.info(
@@ -295,28 +295,44 @@ async def get_namespace(
     )
     
     try:
+        # Validate organization - must be "CCDI-DCC"
+        if organization.strip().upper() != "CCDI-DCC":
+            logger.info(
+                "Get namespace response - invalid organization",
+                organization=organization,
+                namespace=namespace
+            )
+            raise InvalidParametersError(
+                parameters=["organization"],
+                message="Invalid query parameter(s) provided.",
+                reason=f"Organization must be 'CCDI-DCC', but received '{organization}'"
+            )
+        
         # Create service
         service = NamespaceService(session, settings)
         
         # Get namespace
         result = await service.get_namespace_detail(organization, namespace)
         
-        # If result is None, return 404
+        # If result is None (namespace not found), return namespace with metadata: null
         if result is None:
             logger.info(
-                "Get namespace response - not found",
+                "Get namespace response - namespace not found, returning with null metadata",
                 organization=organization,
                 namespace=namespace
             )
-            error_detail = ErrorDetail(
-                kind=ErrorKind.NOT_FOUND,
-                entity="Namespace",
-                message="Namespace not found."
+            # Return namespace object with metadata: null
+            contact_email = "NCIChildhoodCancerDataInitiative@mail.nih.gov"
+            namespace_obj = Namespace(
+                id=NamespaceIdentifier(
+                    organization="CCDI-DCC",
+                    name=namespace
+                ),
+                description=f"Study {namespace}",
+                contact_email=contact_email,
+                metadata=None  # Set metadata to null for invalid namespace
             )
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
-            )
+            return namespace_obj
         
         logger.info(
             "Get namespace response",
@@ -328,17 +344,24 @@ async def get_namespace(
         return result
         
     except HTTPException:
-        # Re-raise HTTP exceptions (like 404)
+        # Re-raise HTTP exceptions
         raise
+    except InvalidParametersError as e:
+        # Re-raise InvalidParametersError to let the exception handler process it
+        raise e.to_http_exception()
     except Exception as e:
         logger.error("Error getting namespace", error=str(e), exc_info=True)
-        # Return 404 for any other error
-        error_detail = ErrorDetail(
-            kind=ErrorKind.NOT_FOUND,
-            entity="Namespace",
-            message="Namespace not found."
+        if hasattr(e, 'to_http_exception'):
+            raise e.to_http_exception()
+        # For any other error, return namespace with metadata: null
+        contact_email = "NCIChildhoodCancerDataInitiative@mail.nih.gov"
+        namespace_obj = Namespace(
+            id=NamespaceIdentifier(
+                organization="CCDI-DCC",
+                name=namespace
+            ),
+            description=f"Study {namespace}",
+            contact_email=contact_email,
+            metadata=None
         )
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
-        )
+        return namespace_obj

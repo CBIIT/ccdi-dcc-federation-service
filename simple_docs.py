@@ -152,7 +152,7 @@ def create_basic_openapi_spec():
                                     "schema": {"$ref": "#/components/schemas/SummaryResponse"},
                                     "example": {
                                         "counts": {
-                                            "total": 104496
+                                            "total": 25696
                                         }
                                     }
                                 }
@@ -320,7 +320,7 @@ def create_basic_openapi_spec():
                     "type": "object",
                     "description": "Count metrics: all = total unique participants; current = items returned in this page.",
                     "properties": {
-                        "all": {"type": "integer", "example": 104496},
+                        "all": {"type": "integer", "example": 25696},
                         "current": {"type": "integer", "example": 20}
                     }
                 },
@@ -331,7 +331,7 @@ def create_basic_openapi_spec():
                         "page": {"type": "integer", "example": 1},
                         "per_page": {"type": "integer", "example": 20},
                         "total_pages": {"type": "integer", "example": 5225},
-                        "total_items": {"type": "integer", "example": 104496},
+                        "total_items": {"type": "integer", "example": 25696},
                         "has_next": {"type": "boolean", "example": True},
                         "has_prev": {"type": "boolean", "example": False}
                     }

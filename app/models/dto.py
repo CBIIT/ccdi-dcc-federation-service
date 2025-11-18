@@ -360,12 +360,12 @@ class IdentifierValue(BaseModel):
     """Identifier value with nested structure."""
     namespace: NamespaceIdentifier = Field(..., description="Namespace identifier")
     name: str = Field(..., description="Identifier name")
+    type: Optional[str] = Field(default="Linked", description="Identifier type")
+    server: Optional[str] = Field(default=None, description="Server URL")
 
 class IdentifierField(BaseModel):
     """Identifier field with nested value."""
     value: IdentifierValue = Field(..., description="Identifier value")
-    type: Optional[str] = Field(default="Linked", description="Identifier type")
-    server: Optional[str] = Field(default=None, description="Server URL")
     ancestors: Optional[Any] = Field(default=None, description="Ancestor entities", exclude=True)
 
 class SubjectMetadata(BaseModel):
@@ -388,7 +388,11 @@ class Subject(BaseModel):
     id: SubjectId = Field(..., description="Subject identifier with nested namespace")
     kind: str = Field(default="Participant", description="Entity kind")
     metadata: SubjectMetadata = Field(..., description="Subject metadata")
-    gateways: List[Any] = Field(default_factory=list, description="Gateway access information")
+    gateways: List[Any] = Field(
+        default_factory=list,
+        exclude=True,  # Exclude from serialization but keep as placeholder in code
+        description="Gateway access information (placeholder - excluded from responses)"
+    )
     
     # Allow any additional fields to be added dynamically
     def __init__(self, **data):
@@ -427,15 +431,17 @@ class Organization(BaseModel):
 
 class NamespaceMetadata(CommonMetadata):
     """Namespace metadata model."""
-    study_short_title: Optional[str] = None
-    study_name: Optional[str] = None
-    study_funding_id: Optional[List[Dict[str, str]]] = None
-    study_id: Optional[str] = None
-    depositions: Optional[str] = None
-    deposition: Optional[str] = None
+    model_config = ConfigDict()  # Don't exclude None values - include null in JSON response
+    
+    study_short_title: Optional[Dict[str, str]] = None  # Format: {"value": "string"} or null
+    study_name: Optional[Dict[str, str]] = None  # Format: {"value": "string"} or null
+    study_funding_id: Optional[List[Dict[str, str]]] = None  # Format: [{"value": "string"}] or null
+    study_id: Optional[Dict[str, str]] = None  # Format: {"value": "string"} or null
+    # depositions inherited from CommonMetadata as Optional[List[DepositionAccession]]
     unharmonized: Optional[Dict[str, UnharmonizedField]] = Field(
         None,
-        description="Unharmonized metadata fields"
+        exclude=True,  # Exclude from serialization but keep as placeholder in code
+        description="Unharmonized metadata fields (placeholder - excluded from responses)"
     )
 
 
@@ -485,9 +491,11 @@ class SubjectsResponse(BaseModel):
     model_config = ConfigDict(extra="allow")
     
     subjects: List[Subject] = Field(..., description="List of subjects with flexible structure")
+    # gateways field kept as placeholder in code but excluded from responses
     gateways: Optional[Dict[str, NamedGateway]] = Field(
         None,
-        description="Named gateways referenced by subjects"
+        exclude=True,  # Exclude from serialization but keep as placeholder in code
+        description="Named gateways referenced by subjects (placeholder - excluded from responses)"
     )
 
 
@@ -496,10 +504,17 @@ class SamplesResponse(BaseModel):
     model_config = ConfigDict(extra="allow")
     
     samples: List[Sample] = Field(..., description="List of samples with flexible structure")
+    # gateways field kept as placeholder in code but excluded from responses
     gateways: Optional[Dict[str, NamedGateway]] = Field(
         None,
-        description="Named gateways referenced by samples"
+        description="Named gateways referenced by samples (placeholder - excluded from responses)"
     )
+    
+    def model_dump(self, **kwargs):
+        """Override model_dump to exclude gateways from serialization."""
+        data = super().model_dump(**kwargs)
+        data.pop('gateways', None)
+        return data
 
 
 class FilesResponse(BaseModel):
@@ -507,10 +522,17 @@ class FilesResponse(BaseModel):
     model_config = ConfigDict(extra="allow")
     
     files: List[File] = Field(..., description="List of files with flexible structure")
+    # gateways field kept as placeholder in code but excluded from responses
     gateways: Optional[Dict[str, NamedGateway]] = Field(
         None,
-        description="Named gateways referenced by files"
+        description="Named gateways referenced by files (placeholder - excluded from responses)"
     )
+    
+    def model_dump(self, **kwargs):
+        """Override model_dump to exclude gateways from serialization."""
+        data = super().model_dump(**kwargs)
+        data.pop('gateways', None)
+        return data
 
 
 class SubjectResponse(BaseModel):
@@ -519,10 +541,12 @@ class SubjectResponse(BaseModel):
     
     # Top-level response structure
     summary: Optional[Dict[str, Any]] = Field(None, description="Summary statistics")
-    data: List[Any] = Field(..., description="List of subjects with nested structure (with gateways)")
+    data: List[Any] = Field(..., description="List of subjects with nested structure")
+    # gateways field kept as placeholder in code but excluded from responses
     gateways: List[Any] = Field(
         default_factory=list,
-        description="Named gateways referenced by subjects"
+        exclude=True,  # Exclude from serialization but keep as placeholder in code
+        description="Named gateways referenced by subjects (placeholder - excluded from responses)"
     )
     
     # Pagination removed - no longer included in responses
@@ -540,13 +564,20 @@ class SampleResponse(BaseModel):
     samples: Optional[List[Sample]] = Field(None, description="List of samples")
     
     # Common fields
+    # gateways field kept as placeholder in code but excluded from responses
     gateways: Optional[Dict[str, NamedGateway]] = Field(
         None,
-        description="Named gateways referenced by samples"
+        description="Named gateways referenced by samples (placeholder - excluded from responses)"
     )
     
     # For paginated responses
     pagination: Optional[Any] = Field(None, description="Pagination information")
+    
+    def model_dump(self, **kwargs):
+        """Override model_dump to exclude gateways from serialization."""
+        data = super().model_dump(**kwargs)
+        data.pop('gateways', None)
+        return data
 
 
 class FileResponse(BaseModel):
@@ -556,17 +587,24 @@ class FileResponse(BaseModel):
     # For single file responses
     file: Optional[File] = Field(None, description="Single file details")
     
-    # For multiple file responses  
+    # For multiple file responses
     files: Optional[List[File]] = Field(None, description="List of files")
     
     # Common fields
+    # gateways field kept as placeholder in code but excluded from responses
     gateways: Optional[Dict[str, NamedGateway]] = Field(
         None,
-        description="Named gateways referenced by files"
+        description="Named gateways referenced by files (placeholder - excluded from responses)"
     )
     
     # For paginated responses
     pagination: Optional[Any] = Field(None, description="Pagination information")
+    
+    def model_dump(self, **kwargs):
+        """Override model_dump to exclude gateways from serialization."""
+        data = super().model_dump(**kwargs)
+        data.pop('gateways', None)
+        return data
 
 
 class SubjectCountResponse(BaseModel):

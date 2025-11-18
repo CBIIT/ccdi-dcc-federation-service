@@ -2046,16 +2046,16 @@ WITH p, d, c, st,
                                     "organization": "CCDI-DCC",
                                     "name": study_id
                                 },
-                                "name": participant_id
-                            },
-                            "type": "Linked",
-                            "server": build_identifier_server_url(
-                                base_url=base_url or "",
-                                entity_type="subject",
-                                organization="CCDI-DCC",
-                                study_id=study_id,
-                                name=participant_id
-                            ) if base_url else None
+                                "name": participant_id,
+                                "type": "Linked",
+                                "server": build_identifier_server_url(
+                                    base_url=base_url or "",
+                                    entity_type="subject",
+                                    organization="CCDI-DCC",
+                                    study_id=study_id,
+                                    name=participant_id
+                                ) if base_url else None
+                            }
                         }
                         for study_id in (study_ids if study_ids else [])
                         if study_id and participant_id  # Filter out None/null values

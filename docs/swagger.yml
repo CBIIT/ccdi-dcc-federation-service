@@ -13,10 +13,10 @@ info:
     url: https://opensource.org/licenses/MIT
   # termsOfService: https://your-server.com/terms
 servers:
-- url: http://localhost:8000/api/v1
-  description: Local development server (default)
 - url: https://dcc-dev.ccdi.cancer.gov/api/v1
-  description: Dev Test server
+  description: Dev Test server (default)
+- url: http://localhost:8000/api/v1
+  description: Local development server
 # - url: https://ccdi-federation-test.test.com/api/v1
 #   description: Test server - For online testing
 
@@ -440,6 +440,11 @@ paths:
                   message: "Field is not supported for subjects."
                   reason: "This field is not present for subjects."
   /:
+    servers:
+    - url: https://dcc-dev.ccdi.cancer.gov
+      description: Dev Test server (default)
+    - url: http://localhost:8000
+      description: Local development server
     get:
       tags:
       - Convenience
@@ -479,6 +484,11 @@ paths:
                   message: "Unable to find data for your request."
                   reason: "No data found."
   /version:
+    servers:
+    - url: https://dcc-dev.ccdi.cancer.gov
+      description: Dev Test server (default)
+    - url: http://localhost:8000
+      description: Local development server
     get:
       tags:
       - Convenience

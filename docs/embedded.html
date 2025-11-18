@@ -78,12 +78,12 @@
       },
       "servers": [
             {
-                  "url": "http://localhost:8000/api/v1",
-                  "description": "Local development server (default)"
+                  "url": "https://dcc-dev.ccdi.cancer.gov/api/v1",
+                  "description": "Dev Test server (default)"
             },
             {
-                  "url": "https://dcc-dev.ccdi.cancer.gov/api/v1",
-                  "description": "Dev Test server"
+                  "url": "http://localhost:8000/api/v1",
+                  "description": "Local development server"
             }
       ],
       "paths": {
@@ -602,6 +602,16 @@
                   }
             },
             "/": {
+                  "servers": [
+                        {
+                              "url": "https://dcc-dev.ccdi.cancer.gov",
+                              "description": "Dev Test server (default)"
+                        },
+                        {
+                              "url": "http://localhost:8000",
+                              "description": "Local development server"
+                        }
+                  ],
                   "get": {
                         "tags": [
                               "Convenience"
@@ -662,6 +672,16 @@
                   }
             },
             "/version": {
+                  "servers": [
+                        {
+                              "url": "https://dcc-dev.ccdi.cancer.gov",
+                              "description": "Dev Test server (default)"
+                        },
+                        {
+                              "url": "http://localhost:8000",
+                              "description": "Local development server"
+                        }
+                  ],
                   "get": {
                         "tags": [
                               "Convenience"

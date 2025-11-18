@@ -781,8 +781,7 @@
                                                                         {
                                                                               "kind": "InvalidRoute",
                                                                               "method": "GET",
-                                                                              "route": "/foobar",
-                                                                              "message": "Invalid route: GET /foobar"
+                                                                              "message": "Invalid route requested."
                                                                         },
                                                                         {
                                                                               "kind": "InvalidParameters",
@@ -818,8 +817,7 @@
                                                                         {
                                                                               "kind": "InvalidRoute",
                                                                               "method": "GET",
-                                                                              "route": "/foobar",
-                                                                              "message": "Invalid route: GET /foobar"
+                                                                              "message": "Invalid route requested."
                                                                         }
                                                                   ]
                                                             }
@@ -1634,8 +1632,9 @@
                               },
                               "route": {
                                     "type": "string",
-                                    "description": "Invalid route path (for InvalidRoute errors)",
-                                    "example": "/foobar"
+                                    "nullable": true,
+                                    "description": "Invalid route path (for InvalidRoute errors - not included in responses for security)",
+                                    "example": null
                               },
                               "parameters": {
                                     "type": "array",
@@ -1674,7 +1673,6 @@
                                     "required": [
                                           "kind",
                                           "method",
-                                          "route",
                                           "message"
                                     ]
                               },

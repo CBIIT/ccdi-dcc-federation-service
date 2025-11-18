@@ -183,7 +183,8 @@ async def get_sample(
         
     except NotFoundError as e:
         logger.warning("Sample not found", organization=organization, namespace=namespace, name=name)
-        raise HTTPException(status_code=404, detail=str(e))
+        # Re-raise to let the exception handler process it with proper format
+        raise e.to_http_exception()
     except Exception as e:
         logger.error("Error getting sample", error=str(e), exc_info=True)
         if hasattr(e, 'to_http_exception'):

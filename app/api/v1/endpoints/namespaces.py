@@ -27,6 +27,7 @@ from app.models.dto import (
     DepositionAccession
 )
 from app.models.errors import ErrorDetail, ErrorsResponse, ErrorKind, InvalidParametersError
+from fastapi import status
 
 logger = get_logger(__name__)
 
@@ -262,7 +263,17 @@ async def list_namespaces(
         
     except Exception as e:
         logger.error("Error listing namespaces", error=str(e), exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Namespaces",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
 
 
 # ============================================================================
@@ -307,9 +318,9 @@ async def get_namespace(
                 namespace=namespace
             )
             raise InvalidParametersError(
-                parameters=["organization"],
+                parameters=[],  # Empty array - don't expose parameter names
                 message="Invalid query parameter(s) provided.",
-                reason=f"Organization must be 'CCDI-DCC', but received '{organization}'"
+                reason="Unknown query parameter(s)"
             )
         
         # Create service

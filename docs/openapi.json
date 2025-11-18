@@ -259,7 +259,7 @@
               }
             }
           },
-          "422": {
+          "400": {
             "description": "Invalid query or path parameters.",
             "content": {
               "application/json": {
@@ -456,7 +456,7 @@
               }
             }
           },
-          "422": {
+          "400": {
             "description": "Unsupported field.",
             "content": {
               "application/json": {

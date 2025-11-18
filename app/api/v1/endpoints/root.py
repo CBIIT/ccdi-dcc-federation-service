@@ -9,7 +9,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, status
+from app.models.errors import ErrorDetail, ErrorsResponse, ErrorKind
 
 router = APIRouter(tags=["Root"])
 
@@ -38,13 +39,27 @@ def api_root():
                 "endpoints": data.get("api", {}).get("endpoints", {})
             }
     except FileNotFoundError:
+        # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Root",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
         raise HTTPException(
-            status_code=500, 
-            detail=f"Missing file: {DATA_PATH}"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
         )
     except json.JSONDecodeError:
+        # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Root",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
         raise HTTPException(
-            status_code=500, 
-            detail="Invalid JSON in info.json"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
         )
 

@@ -7,7 +7,7 @@ including listing, individual retrieval, counting, and summaries.
 
 from typing import Dict, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from neo4j import AsyncSession
 
 from app.api.v1.deps import (
@@ -29,7 +29,7 @@ from app.models.dto import (
     CountResponse,
     SummaryResponse
 )
-from app.models.errors import NotFoundError
+from app.models.errors import NotFoundError, ErrorDetail, ErrorsResponse, ErrorKind
 from app.services.file import FileService
 
 logger = get_logger(__name__)
@@ -116,7 +116,17 @@ async def list_files(
         logger.error("Error listing files", error=str(e), exc_info=True)
         if hasattr(e, 'to_http_exception'):
             raise e.to_http_exception()
-        raise HTTPException(status_code=500, detail="Internal server error")
+        # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Files",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
 
 
 # ============================================================================
@@ -169,12 +179,23 @@ async def get_file(
         
     except NotFoundError as e:
         logger.warning("File not found", organization=organization, namespace=namespace, name=name)
-        raise HTTPException(status_code=404, detail=str(e))
+        # Re-raise to let the exception handler process it with proper format
+        raise e.to_http_exception()
     except Exception as e:
         logger.error("Error getting file", error=str(e), exc_info=True)
         if hasattr(e, 'to_http_exception'):
             raise e.to_http_exception()
-        raise HTTPException(status_code=500, detail="Internal server error")
+        # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Files",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
 
 
 # ============================================================================
@@ -224,7 +245,17 @@ async def count_files_by_field(
         logger.error("Error counting files by field", error=str(e), exc_info=True)
         if hasattr(e, 'to_http_exception'):
             raise e.to_http_exception()
-        raise HTTPException(status_code=500, detail="Internal server error")
+        # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Files",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
 
 
 # ============================================================================
@@ -271,4 +302,14 @@ async def get_files_summary(
         logger.error("Error getting files summary", error=str(e), exc_info=True)
         if hasattr(e, 'to_http_exception'):
             raise e.to_http_exception()
-        raise HTTPException(status_code=500, detail="Internal server error")
+        # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Files",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )

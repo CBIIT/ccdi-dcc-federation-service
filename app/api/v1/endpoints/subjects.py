@@ -25,7 +25,7 @@ from app.core.pagination import PaginationParams, PaginationInfo, build_link_hea
 from app.core.cache import get_cache_service
 from app.core.logging import get_logger
 from app.lib.field_allowlist import FieldAllowlist
-from app.models.errors import ErrorsResponse
+from app.models.errors import ErrorsResponse, ErrorDetail, ErrorKind
 from app.models.dto import (
     Subject,
     SubjectResponse,
@@ -104,18 +104,18 @@ async def list_subjects(
         
         if unknown_params:
             raise InvalidParametersError(
-                parameters=unknown_params,
+                parameters=[],  # Empty array - don't expose parameter names
                 message="Invalid query parameter(s) provided.",
-                reason=f"Unknown query parameter(s): {', '.join(unknown_params)}"
+                reason="Unknown query parameter(s)"
             )
         
         # Check for unknown parameters from filter dependency (backup check)
         unknown_params_from_filter = filters.get("_unknown_parameters")
         if unknown_params_from_filter:
             raise InvalidParametersError(
-                parameters=unknown_params_from_filter,
+                parameters=[],  # Empty array - don't expose parameter names
                 message="Invalid query parameter(s) provided.",
-                reason=f"Unknown query parameter(s): {', '.join(unknown_params_from_filter)}"
+                reason="Unknown query parameter(s)"
             )
         
         # Check for invalid parameter values - return empty result instead of error
@@ -240,7 +240,17 @@ async def list_subjects(
         logger.error("Error listing subjects", error=str(e), exc_info=True)
         if hasattr(e, 'to_http_exception'):
             raise e.to_http_exception()
-        raise HTTPException(status_code=500, detail="Internal server error")
+        # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Subjects",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
 
 
 # ============================================================================
@@ -262,7 +272,7 @@ async def list_subjects(
                 }
             }
         },
-        422: {
+        400: {
             "description": "Unsupported field.",
             "content": {
                 "application/json": {
@@ -330,7 +340,17 @@ async def count_subjects_by_field(
         logger.error("Error counting subjects by field", error=str(e), exc_info=True)
         if hasattr(e, 'to_http_exception'):
             raise e.to_http_exception()
-        raise HTTPException(status_code=500, detail="Internal server error")
+        # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Subjects",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
 
 
 # ============================================================================
@@ -392,9 +412,9 @@ async def get_subject(
         
         if organization.strip().upper() != "CCDI-DCC":
             raise InvalidParametersError(
-                parameters=["organization"],
+                parameters=[],  # Empty array - don't expose parameter names
                 message="Invalid query parameter(s) provided.",
-                reason=f"Organization accepted is 'CCDI-DCC', but received '{organization}'"
+                reason="Unknown query parameter(s)"
             )
         
         organization = "CCDI-DCC"
@@ -805,7 +825,17 @@ async def get_subjects_summary(
         logger.error("Error getting subjects summary", error=str(e), exc_info=True)
         if hasattr(e, 'to_http_exception'):
             raise e.to_http_exception()
-        raise HTTPException(status_code=500, detail="Internal server error")
+        # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Subjects",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
 
 
 # ============================================================================
@@ -884,7 +914,17 @@ async def get_subjects_summary(
 #         logger.error("Error searching subjects by diagnosis", error=str(e), exc_info=True)
 #         if hasattr(e, 'to_http_exception'):
 #             raise e.to_http_exception()
-#         raise HTTPException(status_code=500, detail="Internal server error")
+#         # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Subjects",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
 
 
 # @router.get(
@@ -930,7 +970,17 @@ async def get_subjects_summary(
 #         logger.error("Error counting subjects by field with diagnosis", error=str(e), exc_info=True)
 #         if hasattr(e, 'to_http_exception'):
 #             raise e.to_http_exception()
-#         raise HTTPException(status_code=500, detail="Internal server error")
+#         # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Subjects",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
 
 
 # @router.get(
@@ -973,7 +1023,17 @@ async def get_subjects_summary(
 #         logger.error("Error getting subjects summary with diagnosis", error=str(e), exc_info=True)
 #         if hasattr(e, 'to_http_exception'):
 #             raise e.to_http_exception()
-#         raise HTTPException(status_code=500, detail="Internal server error")
+#         # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Subjects",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
 
 
 # @router.get(
@@ -1102,4 +1162,14 @@ async def get_subjects_summary(
 #         logger.error("Error searching by participant ID", error=str(e), exc_info=True)
 #         if hasattr(e, 'to_http_exception'):
 #             raise e.to_http_exception()
-#         raise HTTPException(status_code=500, detail="Internal server error")
+#         # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Subjects",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )

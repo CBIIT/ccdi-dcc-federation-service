@@ -6,9 +6,10 @@ for querying the CCDI-DCC  graph database.
 """
 
 from contextlib import asynccontextmanager
+import os
 
 from fastapi import FastAPI, Request, status, Depends
-from fastapi.exceptions import HTTPException
+from fastapi.exceptions import HTTPException, RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse
@@ -211,9 +212,32 @@ def setup_routers(app: FastAPI) -> None:
 def setup_exception_handlers(app: FastAPI) -> None:
     """Set up global exception handlers for consistent error responses."""
     
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_exception_handler(request: Request, exc: RequestValidationError):
+        """Handle FastAPI request validation errors - convert to InvalidParameters format."""
+        # Log the validation error details for debugging
+        logger.warning(
+            "Request validation error",
+            method=request.method,
+            path=str(request.url.path),
+            errors=exc.errors()
+        )
+        
+        # Return sanitized InvalidParameters error
+        error_detail = ErrorDetail(
+            kind=ErrorKind.INVALID_PARAMETERS,
+            parameters=[],  # Empty array - don't expose parameter names
+            message="Invalid query parameter(s) provided.",
+            reason="Unknown query parameter(s)"
+        )
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
+    
     @app.exception_handler(DatabaseConnectionError)
     async def database_connection_error_handler(request: Request, exc: DatabaseConnectionError):
-        """Handle database connection errors - return 500 Internal Server Error."""
+        """Handle database connection errors - return 404 Not Found (service unavailable)."""
         logger.error(
             "Database connection error",
             path=str(request.url.path),
@@ -221,34 +245,29 @@ def setup_exception_handlers(app: FastAPI) -> None:
             error=str(exc)
         )
         error_detail = ErrorDetail(
-            kind=ErrorKind.INTERNAL_SERVER_ERROR,
-            message="Database is not available. Please try again later."
+            kind=ErrorKind.NOT_FOUND,
+            entity="Resource",
+            message="Unable to find data for your request.",
+            reason="No data found."
         )
         return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=status.HTTP_404_NOT_FOUND,
             content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
         )
     
     @app.exception_handler(CCDIException)
     async def ccdi_exception_handler(request: Request, exc: CCDIException):
-        """Handle CCDI custom exceptions - add path suggestions for InvalidRoute."""
-        # If this is an InvalidRoute error, check if we can suggest a corrected path
+        """Handle CCDI custom exceptions - log full details but sanitize InvalidRoute responses."""
+        # If this is an InvalidRoute error, log the full details (including route)
         if exc.kind == ErrorKind.INVALID_ROUTE:
-            # If message already contains a suggestion, use it; otherwise try to generate one
-            if exc.message and "Did you mean" in exc.message:
-                error_detail = exc.to_error_detail()
-            else:
-                suggested_path = _suggest_correct_path(exc.route or str(request.url.path))
-                if suggested_path:
-                    # Create error detail with suggestion
-                    error_detail = ErrorDetail(
-                        kind=exc.kind,
-                        method=exc.method,
-                        route=exc.route,
-                        message=f"Did you mean '{suggested_path}'?"
-                    )
-                else:
-                    error_detail = exc.to_error_detail()
+            logger.warning(
+                "Invalid route requested",
+                method=exc.method,
+                route=exc.route or str(request.url.path),
+                path=str(request.url.path)
+            )
+            # Return sanitized error detail (no route in response)
+            error_detail = exc.to_error_detail()
         else:
             error_detail = exc.to_error_detail()
         
@@ -269,21 +288,20 @@ def setup_exception_handlers(app: FastAPI) -> None:
         
         # Handle 404 errors - all 404s are treated as InvalidRoute
         if exc.status_code == 404:
-            # Check if we can suggest a corrected path
-            suggested_path = _suggest_correct_path(str(request.url.path))
+            # Log the full details (including the actual route)
+            logger.warning(
+                "Invalid route requested",
+                method=request.method,
+                route=str(request.url.path),
+                path=str(request.url.path)
+            )
             
-            # This is an invalid route
-            message = None
-            if suggested_path:
-                message = f"Did you mean '{suggested_path}'?"
-            else:
-                message = f"Invalid route: {request.method} {request.url.path}"
-            
+            # Return sanitized error detail (no route in response, generic message)
             error_detail = ErrorDetail(
                 kind=ErrorKind.INVALID_ROUTE,
                 method=request.method,
-                route=str(request.url.path),
-                message=message
+                route=None,  # Don't include route in response
+                message="Invalid route requested."
             )
             
             return JSONResponse(
@@ -293,13 +311,15 @@ def setup_exception_handlers(app: FastAPI) -> None:
         
         # For other status codes, convert to appropriate error format
         if exc.status_code in (400, 422):
+            # Sanitize error message - don't expose internal details or user inputs
             error_detail = ErrorDetail(
                 kind=ErrorKind.INVALID_PARAMETERS,
-                parameters=["request"],
-                message=str(exc.detail) if exc.detail else "Invalid request parameters"
+                parameters=[],  # Empty array - don't expose parameter names
+                message="Invalid query parameter(s) provided.",
+                reason="Unknown query parameter(s)"
             )
             return JSONResponse(
-                status_code=exc.status_code,
+                status_code=status.HTTP_400_BAD_REQUEST,  # Always return 400 for InvalidParameters
                 content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
             )
         
@@ -307,20 +327,24 @@ def setup_exception_handlers(app: FastAPI) -> None:
         if 400 <= exc.status_code < 500:
             error_detail = ErrorDetail(
                 kind=ErrorKind.NOT_FOUND,
-                entity="Resource"
+                entity="Resource",
+                message="Unable to find data for your request.",
+                reason="No data found."
             )
             return JSONResponse(
-                status_code=exc.status_code,
+                status_code=status.HTTP_404_NOT_FOUND,  # Always return 404 for NotFound
                 content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
             )
         
-        # For 500 errors, don't expose internal details
+        # For 500+ errors, convert to 404 NotFound (no 500 errors allowed)
         error_detail = ErrorDetail(
-            kind=ErrorKind.INTERNAL_SERVER_ERROR,
-            message="An internal server error occurred"
+            kind=ErrorKind.NOT_FOUND,
+            entity="Resource",
+            message="Unable to find data for your request.",
+            reason="No data found."
         )
         return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=status.HTTP_404_NOT_FOUND,
             content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
         )
     
@@ -336,21 +360,20 @@ def setup_exception_handlers(app: FastAPI) -> None:
         
         # Handle 404 errors - check if invalid route or missing resource
         if exc.status_code == 404:
-            # Check if we can suggest a corrected path
-            suggested_path = _suggest_correct_path(str(request.url.path))
+            # Log the full details (including the actual route) for debugging
+            logger.warning(
+                "Invalid route requested",
+                method=request.method,
+                route=str(request.url.path),
+                path=str(request.url.path)
+            )
             
-            # This is likely an invalid route
-            message = None
-            if suggested_path:
-                message = f"Did you mean '{suggested_path}'?"
-            else:
-                message = f"Invalid route: {request.method} {request.url.path}"
-            
+            # Return sanitized error detail (no route in response, generic message)
             error_detail = ErrorDetail(
                 kind=ErrorKind.INVALID_ROUTE,
                 method=request.method,
-                route=str(request.url.path),
-                message=message
+                route=None,  # Don't include route in response
+                message="Invalid route requested."
             )
             
             return JSONResponse(
@@ -366,11 +389,19 @@ def setup_exception_handlers(app: FastAPI) -> None:
             
             # If we detected a typo pattern, treat as InvalidRoute
             if suggested_path:
+                # Log the full details (including the actual route and suggestion) for debugging
+                logger.warning(
+                    "Invalid route requested (typo detected)",
+                    method=request.method,
+                    route=path,
+                    suggested_path=suggested_path
+                )
+                # Return sanitized error detail (no route in response, generic message)
                 error_detail = ErrorDetail(
                     kind=ErrorKind.INVALID_ROUTE,
                     method=request.method,
-                    route=path,
-                    message=f"Did you mean '{suggested_path}'?"
+                    route=None,  # Don't include route in response
+                    message="Invalid route requested."
                 )
                 return JSONResponse(
                     status_code=status.HTTP_404_NOT_FOUND,
@@ -389,25 +420,34 @@ def setup_exception_handlers(app: FastAPI) -> None:
                             # Check again with the path
                             suggested_path = _suggest_correct_path(path)
                             if suggested_path:
-                                # Return as InvalidRoute instead
+                                # Log the full details (including the actual route and suggestion) for debugging
+                                logger.warning(
+                                    "Invalid route requested (typo detected)",
+                                    method=request.method,
+                                    route=path,
+                                    suggested_path=suggested_path
+                                )
+                                # Return sanitized error detail (no route in response, generic message)
                                 error_detail = ErrorDetail(
                                     kind=ErrorKind.INVALID_ROUTE,
                                     method=request.method,
-                                    route=path,
-                                    message=f"Did you mean '{suggested_path}'?"
+                                    route=None,  # Don't include route in response
+                                    message="Invalid route requested."
                                 )
                                 return JSONResponse(
                                     status_code=status.HTTP_404_NOT_FOUND,
                                     content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
                                 )
             
+            # Sanitize error message - don't expose internal details or user inputs
             error_detail = ErrorDetail(
                 kind=ErrorKind.INVALID_PARAMETERS,
-                parameters=["request"],
-                message=str(exc.detail) if exc.detail else "Invalid request parameters"
+                parameters=[],  # Empty array - don't expose parameter names
+                message="Invalid query parameter(s) provided.",
+                reason="Unknown query parameter(s)"
             )
             return JSONResponse(
-                status_code=exc.status_code,
+                status_code=status.HTTP_400_BAD_REQUEST,  # Always return 400 for InvalidParameters
                 content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
             )
         
@@ -416,20 +456,44 @@ def setup_exception_handlers(app: FastAPI) -> None:
             error_detail = ErrorDetail(
                 kind=ErrorKind.NOT_FOUND,
                 entity="Resource",
-                message="Resource not found."
+                message="Unable to find data for your request.",
+                reason="No data found."
             )
             return JSONResponse(
-                status_code=exc.status_code,
+                status_code=status.HTTP_404_NOT_FOUND,  # Always return 404 for NotFound
                 content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
             )
         
-        # For 500 errors, don't expose internal details
+        # For 500+ errors, convert to 404 NotFound (no 500 errors allowed)
         error_detail = ErrorDetail(
-            kind=ErrorKind.INTERNAL_SERVER_ERROR,
-            message="An internal server error occurred"
+            kind=ErrorKind.NOT_FOUND,
+            entity="Resource",
+            message="Unable to find data for your request.",
+            reason="No data found."
         )
         return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=status.HTTP_404_NOT_FOUND,
+            content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
+    
+    @app.exception_handler(Exception)
+    async def generic_exception_handler(request: Request, exc: Exception):
+        """Handle all unhandled exceptions - return 404 NotFound (no 500 errors allowed)."""
+        logger.error(
+            "Unhandled exception",
+            path=str(request.url.path),
+            method=request.method,
+            error=str(exc),
+            exc_info=True
+        )
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Resource",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
             content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
         )
     
@@ -452,7 +516,9 @@ def setup_health_check(app: FastAPI) -> None:
     @app.get("/version", tags=["version"])
     async def version(settings: Settings = Depends(get_settings)):
         """Version endpoint."""
-        return {"version": settings.app_version}
+        # Use API_VERSION environment variable if set, otherwise fall back to settings.app_version
+        api_version = os.getenv("API_VERSION", settings.app_version)
+        return {"version": api_version}
 
     # Root endpoint is now handled by root_router (returns API root JSON)
     # Available at both /api/v1/ and /

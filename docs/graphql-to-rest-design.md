@@ -139,7 +139,7 @@ List endpoints support exact-match filtering (case-sensitive) across harmonized 
 
 ## `/by/{field}/count` Endpoints
 
-Count endpoints group entities by a validated field and return frequency distributions, excluding null or empty values, and respond with 422 for unsupported fields.
+Count endpoints group entities by a validated field and return frequency distributions, excluding null or empty values, and respond with 400 for unsupported fields.
 
 ---
 
@@ -147,7 +147,7 @@ Count endpoints group entities by a validated field and return frequency distrib
 
 Parameters: `page` (1-based, default 1), `per_page` (default 100 unless overridden via config).
 
-Offset calculation: `offset = (page - 1) * per_page`. Guard: if page < 1 or per_page < 1 → 422 `InvalidParameters`.
+Offset calculation: `offset = (page - 1) * per_page`. Guard: if page < 1 or per_page < 1 → 400 `InvalidParameters`.
 
 Total counting strategies:
 1. Standard: `MATCH (n:Entity {filters}) RETURN count(n)` (may be expensive; optionally restrict to `LIMIT (page * per_page + 1)` to infer `next`).
@@ -182,8 +182,8 @@ Error envelope (implemented in `models/errors.py`):
 **Error Mappings:**
 | Condition | HTTP Status | Error Kind |
 |-----------|-------------|------------|
-| Unknown field (count) | 422 | `UnsupportedField` |
-| Invalid `page` / `per_page` | 422 | `InvalidParameters` |
+| Unknown field (count) | 400 | `UnsupportedField` |
+| Invalid `page` / `per_page` | 400 | `InvalidParameters` |
 | Entity not found by ID | 404 | `NotFound` |
 | Data cannot be shared (config) | 404 | `UnshareableData` |
 | Internal exception | 500 | `InternalServerError` |

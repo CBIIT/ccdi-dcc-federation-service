@@ -13,10 +13,10 @@ info:
     url: https://opensource.org/licenses/MIT
   # termsOfService: https://your-server.com/terms
 servers:
-- url: http://localhost:8000/api/v1
-  description: Local development server (default)
 - url: https://dcc-dev.ccdi.cancer.gov/api/v1
-  description: Dev Test server
+  description: Dev Test server (default)
+- url: http://localhost:8000/api/v1
+  description: Local development server
 # - url: https://ccdi-federation-test.test.com/api/v1
 #   description: Test server - For online testing
 
@@ -298,7 +298,7 @@ paths:
                 - kind: UnshareableData
                   entity: Subjects
                   message: Our agreement with data providers prohibits us from sharing line-level data.
-        '422':
+        '400':
           description: Invalid query or path parameters.
           content:
             application/json:
@@ -307,10 +307,9 @@ paths:
               example:
                 errors:
                 - kind: InvalidParameters
-                  parameters:
-                  - page
-                  - per_page
-                  message: 'Invalid value for parameters ''page'' and ''per_page'': unable to calculate offset.'
+                  parameters: []
+                  message: "Invalid query parameter(s) provided."
+                  reason: "Unknown query parameter(s)"
   /subject/{organization}/{namespace}/{name}:
     get:
       tags:
@@ -362,7 +361,8 @@ paths:
                 errors:
                 - kind: NotFound
                   entity: Subjects
-                  message: Subjects not found.
+                  message: "Unable to find data for your request."
+                  reason: "No data found."
   /subject/summary:
     get:
       tags:
@@ -427,7 +427,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CountResponse'
-        '422':
+        '400':
           description: Unsupported field.
           content:
             application/json:
@@ -437,136 +437,77 @@ paths:
                 errors:
                 - kind: UnsupportedField
                   field: "wrong field"
-                  message: "Field is not supported: a field is not present for subject."
-                  reason: "The requested field is not found."
-  /errors/examples:
+                  message: "Field is not supported for subjects."
+                  reason: "This field is not present for subjects."
+  /:
+    servers:
+    - url: https://dcc-dev.ccdi.cancer.gov
+      description: Dev Test server (default)
+    - url: http://localhost:8000
+      description: Local development server
     get:
-      summary: Error response examples
-      description: |
-        This endpoint provides example error responses for different error types.
-        This is a reference endpoint showing the structure of error responses
-        that may be returned by other endpoints.
-        
-        **Error Types:**
-        - `InvalidRoute`: Returned when requesting a non-existent route
-        - `InvalidParameters`: Returned when request parameters are invalid
-        - `NotFound`: Returned when a requested resource is not found
-        - `UnshareableData`: Returned when data cannot be shared due to agreements
-        - `UnsupportedField`: Returned when a field is not supported for operations
-        
-        For 400 or 404 errors, always use a customized response to avoid exposing
-        any internal error messages or user inputs. Any error not covered by the
-        categories below should return a 404 NotFound error.
       tags:
-      - Errors
-      parameters:
-      - name: error_type
-        in: query
-        description: Type of error example to return
-        required: false
-        schema:
-          type: string
-          enum:
-          - InvalidRoute
-          - InvalidParameters
-          - NotFound
-          - UnshareableData
-          - UnsupportedField
-          - all
-          default: all
-        examples:
-          InvalidRoute:
-            value: InvalidRoute
-            summary: Invalid route error example
-          InvalidParameters:
-            value: InvalidParameters
-            summary: Invalid parameters error example
-          NotFound:
-            value: NotFound
-            summary: Not found error example
-          UnshareableData:
-            value: UnshareableData
-            summary: Unshareable data error example
-          UnsupportedField:
-            value: UnsupportedField
-            summary: Unsupported field error example
-          all:
-            value: all
-            summary: All error examples
+      - Convenience
+      summary: API root JSON
+      description: Returns the API root JSON configuration with available endpoints and API metadata.
+      operationId: api_root
       responses:
         '200':
-          description: Error examples successfully returned
+          description: Successful operation.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  title:
+                    type: string
+                    example: "CCDI DCC Federation API Server"
+                  version:
+                    type: string
+                    example: "v1.2.0"
+                  description:
+                    type: string
+                    example: "CCDI DCC Federation API Implementation"
+                  endpoints:
+                    type: object
+                    description: Available API endpoints
+        '404':
+          description: Root not found.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorsResponse'
-              examples:
-                allErrors:
-                  summary: All error examples
-                  value:
-                    errors:
-                    - kind: InvalidRoute
-                      method: GET
-                      route: /foobar
-                      message: 'Invalid route: GET /foobar'
-                    - kind: InvalidParameters
-                      parameters:
-                      - id
-                      message: The parameter was a non-integer value.
-                      reason: "The parameter value is invalid or incorrectly formatted."
-                    - kind: NotFound
-                      entity: Samples
-                      message: Samples not found.
-                      reason: "The requested resource does not exist."
-                    - kind: UnshareableData
-                      entity: Sample
-                      message: Our agreement with data providers prohibits us from sharing line-level data.
-                      reason: "Data sharing is restricted by agreement with data providers."
-                    - kind: UnsupportedField
-                      field: "wrong field"
-                      message: "Field is not supported: a field is not present for subject."
-                      reason: "The requested field is not found."
-                invalidRoute:
-                  summary: Invalid route error
-                  value:
-                    errors:
-                    - kind: InvalidRoute
-                      method: GET
-                      route: /foobar
-                      message: 'Invalid route: GET /foobar'
-                invalidParameters:
-                  summary: Invalid parameters error
-                  value:
-                    errors:
-                    - kind: InvalidParameters
-                      parameters:
-                      - id
-                      message: The parameter was a non-integer value.
-                      reason: "The parameter value is invalid or incorrectly formatted."
-                notFound:
-                  summary: Not found error
-                  value:
-                    errors:
-                    - kind: NotFound
-                      entity: Samples
-                      message: Samples not found.
-                      reason: "The requested resource does not exist."
-                unshareableData:
-                  summary: Unshareable data error
-                  value:
-                    errors:
-                    - kind: UnshareableData
-                      entity: Sample
-                      message: Our agreement with data providers prohibits us from sharing line-level data.
-                      reason: "Data sharing is restricted by agreement with data providers."
-                unsupportedField:
-                  summary: Unsupported field error
-                  value:
-                    errors:
-                    - kind: UnsupportedField
-                      field: "wrong field"
-                      message: "Field is not supported: a field is not present for subject."
-                      reason: "The requested field is not found."
+              example:
+                errors:
+                - kind: NotFound
+                  entity: Root
+                  message: "Unable to find data for your request."
+                  reason: "No data found."
+  /version:
+    servers:
+    - url: https://dcc-dev.ccdi.cancer.gov
+      description: Dev Test server (default)
+    - url: http://localhost:8000
+      description: Local development server
+    get:
+      tags:
+      - Convenience
+      summary: Get API version
+      description: Returns the current API version.
+      operationId: get_version
+      responses:
+        '200':
+          description: Successful operation.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version:
+                    type: string
+                    example: "v1.2.0"
+                required:
+                - version
   /namespace:
     get:
       tags:
@@ -686,7 +627,8 @@ paths:
                 errors:
                 - kind: NotFound
                   entity: Organizations
-                  message: Organizations not found.
+                  message: "Unable to find data for your request."
+                  reason: "No data found."
 components:
   schemas:
     Subject:
@@ -1069,8 +1011,9 @@ components:
           example: GET
         route:
           type: string
-          description: Invalid route path (for InvalidRoute errors)
-          example: /foobar
+          nullable: true
+          description: Invalid route path (for InvalidRoute errors - not included in responses for security)
+          example: null
         parameters:
           type: array
           description: List of invalid parameter names (for InvalidParameters errors)
@@ -1092,14 +1035,13 @@ components:
           example: field
         reason:
           type: string
-          description: Reason for the error (for UnsupportedField errors)
-          example: The requested field is not found.
+          description: Reason for the error (for InvalidParameters, NotFound, UnshareableData, and UnsupportedField errors)
+          example: "This field is not present for subjects."
       oneOf:
       - type: object
         required:
         - kind
         - method
-        - route
         - message
       - type: object
         required:
@@ -1304,7 +1246,7 @@ tags:
   description: List and describe namespaces known by this server.
 - name: Organization
   description: List and describe organizations known by this server.
-# - name: Metadata
-#   description: Metadata field descriptions for subjects, samples, and files.
-- name: Errors
-  description: Error response examples and documentation.
+- name: Info
+  description: API information including server, API, and data details.
+- name: Convenience
+  description: Convenience endpoints for API root and version information.

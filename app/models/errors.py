@@ -138,6 +138,18 @@ class InvalidRouteError(CCDIException):
             route=route,
             message=message
         )
+    
+    def to_error_detail(self) -> ErrorDetail:
+        """Convert exception to error detail - sanitize route from response."""
+        # Return error detail without the route field and with generic message
+        return ErrorDetail(
+            kind=self.kind,
+            method=self.method,
+            # Don't include route in response - keep it generic
+            route=None,
+            message="Invalid route requested.",
+            reason=None
+        )
 
 
 class InvalidParametersError(CCDIException):
@@ -155,11 +167,12 @@ class InvalidParametersError(CCDIException):
         if message is None:
             message = "Invalid query parameter(s) provided."
         if reason is None:
-            reason = "The parameter value is invalid or incorrectly formatted."
+            reason = "Unknown query parameter(s)"
+        # Always use empty parameters array to avoid exposing user inputs
         super().__init__(
             kind=ErrorKind.INVALID_PARAMETERS,
             status_code=status_code,
-            parameters=parameters,
+            parameters=[],  # Empty array - don't expose parameter names
             method=method,
             route=route,
             message=message,
@@ -195,9 +208,9 @@ class UnsupportedFieldError(CCDIException):
         reason: Optional[str] = None
     ):
         if message is None:
-            message = f"Field is not supported: a field is not present for {entity_type}."
+            message = f"Field is not supported for {entity_type}."
         if reason is None:
-            reason = "The requested field is not found."
+            reason = f"This field is not present for {entity_type}."
         
         super().__init__(
             kind=ErrorKind.UNSUPPORTED_FIELD,
@@ -232,9 +245,9 @@ class NotFoundError(CCDIException):
         reason: Optional[str] = None
     ):
         if message is None:
-            message = f"{entity} not found."
+            message = "Unable to find data for your request."
         if reason is None:
-            reason = "The requested resource does not exist."
+            reason = "No data found."
         super().__init__(
             kind=ErrorKind.NOT_FOUND,
             status_code=status_code,
@@ -295,9 +308,9 @@ def create_pagination_error(page: Optional[int] = None, per_page: Optional[int] 
     reason = f"Invalid value for parameter{'s' if len(parameters) > 1 else ''} '{param_list}': unable to calculate offset."
     
     return InvalidParametersError(
-        parameters=parameters or ["page", "per_page"],
+        parameters=[],  # Empty array - don't expose parameter names
         message="Invalid query parameter(s) provided.",
-        reason=reason
+        reason="Unknown query parameter(s)"
     )
 
 

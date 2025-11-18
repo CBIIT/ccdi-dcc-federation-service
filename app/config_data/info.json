@@ -31,7 +31,7 @@
       "version": "3.1.0",
       "about_url": "https://cbiit.github.io/crdc-data-model-navigator/?config=https://raw.githubusercontent.com/CBIIT/ccdi-dcc-model/refs/heads/main/"
     },
-    "last_updated": "2025-10-30",
+    "last_updated": "September 12, 2025",
     "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki",
     "documentation_url": "https://cbiit.github.io/ccdi-dcc-federation-service/docs/index.html"
   },

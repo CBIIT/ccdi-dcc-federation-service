@@ -198,7 +198,7 @@ paths:
                   entity: Subjects
                   reason: Our agreement with data providers prohibits us from sharing line-level data.
                   message: 'Unable to share data for subjects: our agreement with data providers prohibits us from sharing line-level data.'
-        '422':
+        '400':
           description: Invalid query or path parameters.
           content:
             application/json:
@@ -279,7 +279,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/responses.by.count.subject.Results'
-        '422':
+        '400':
           description: Unsupported field.
           content:
             application/json:
@@ -535,7 +535,7 @@ paths:
                   entity: Samples
                   reason: Our agreement with data providers prohibits us from sharing line-level data.
                   message: 'Unable to share data for samples: our agreement with data providers prohibits us from sharing line-level data.'
-        '422':
+        '400':
           description: Invalid query or path parameters.
           content:
             application/json:
@@ -616,7 +616,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/responses.by.count.sample.Results'
-        '422':
+        '400':
           description: Unsupported field.
           content:
             application/json:
@@ -791,7 +791,7 @@ paths:
                   entity: Files
                   reason: Our agreement with data providers prohibits us from sharing file-level data.
                   message: 'Unable to share data for files: our agreement with data providers prohibits us from sharing file-level data.'
-        '422':
+        '400':
           description: Invalid query or path parameters.
           content:
             application/json:
@@ -872,7 +872,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/responses.by.count.file.Results'
-        '422':
+        '400':
           description: Unsupported field.
           content:
             application/json:
@@ -1293,7 +1293,7 @@ paths:
                   entity: Samples
                   reason: Our agreement with data providers prohibits us from sharing line-level data.
                   message: 'Unable to share data for samples: our agreement with data providers prohibits us from sharing line-level data.'
-        '422':
+        '400':
           description: Invalid query or path parameters.
           content:
             application/json:
@@ -1495,7 +1495,7 @@ paths:
                   entity: Subjects
                   reason: Our agreement with data providers prohibits us from sharing line-level data.
                   message: 'Unable to share data for subjects: our agreement with data providers prohibits us from sharing line-level data.'
-        '422':
+        '400':
           description: Invalid query or path parameters.
           content:
             application/json:

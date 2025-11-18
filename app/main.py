@@ -6,6 +6,7 @@ for querying the CCDI-DCC  graph database.
 """
 
 from contextlib import asynccontextmanager
+import os
 
 from fastapi import FastAPI, Request, status, Depends
 from fastapi.exceptions import HTTPException
@@ -213,7 +214,7 @@ def setup_exception_handlers(app: FastAPI) -> None:
     
     @app.exception_handler(DatabaseConnectionError)
     async def database_connection_error_handler(request: Request, exc: DatabaseConnectionError):
-        """Handle database connection errors - return 500 Internal Server Error."""
+        """Handle database connection errors - return 404 Not Found (service unavailable)."""
         logger.error(
             "Database connection error",
             path=str(request.url.path),
@@ -221,11 +222,13 @@ def setup_exception_handlers(app: FastAPI) -> None:
             error=str(exc)
         )
         error_detail = ErrorDetail(
-            kind=ErrorKind.INTERNAL_SERVER_ERROR,
-            message="Database is not available. Please try again later."
+            kind=ErrorKind.NOT_FOUND,
+            entity="Resource",
+            message="Unable to find data for your request.",
+            reason="No data found."
         )
         return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=status.HTTP_404_NOT_FOUND,
             content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
         )
     
@@ -293,10 +296,12 @@ def setup_exception_handlers(app: FastAPI) -> None:
         
         # For other status codes, convert to appropriate error format
         if exc.status_code in (400, 422):
+            # Sanitize error message - don't expose internal details or user inputs
             error_detail = ErrorDetail(
                 kind=ErrorKind.INVALID_PARAMETERS,
-                parameters=["request"],
-                message=str(exc.detail) if exc.detail else "Invalid request parameters"
+                parameters=[],  # Empty array - don't expose parameter names
+                message="Invalid query parameter(s) provided.",
+                reason="Unknown query parameter(s)"
             )
             return JSONResponse(
                 status_code=exc.status_code,
@@ -307,20 +312,23 @@ def setup_exception_handlers(app: FastAPI) -> None:
         if 400 <= exc.status_code < 500:
             error_detail = ErrorDetail(
                 kind=ErrorKind.NOT_FOUND,
-                entity="Resource"
+                entity="Resource",
+                message="Resource not found."
             )
             return JSONResponse(
                 status_code=exc.status_code,
                 content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
             )
         
-        # For 500 errors, don't expose internal details
+        # For 500+ errors, convert to 404 NotFound (no 500 errors allowed)
         error_detail = ErrorDetail(
-            kind=ErrorKind.INTERNAL_SERVER_ERROR,
-            message="An internal server error occurred"
+            kind=ErrorKind.NOT_FOUND,
+            entity="Resource",
+            message="Unable to find data for your request.",
+            reason="No data found."
         )
         return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=status.HTTP_404_NOT_FOUND,
             content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
         )
     
@@ -401,10 +409,12 @@ def setup_exception_handlers(app: FastAPI) -> None:
                                     content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
                                 )
             
+            # Sanitize error message - don't expose internal details or user inputs
             error_detail = ErrorDetail(
                 kind=ErrorKind.INVALID_PARAMETERS,
-                parameters=["request"],
-                message=str(exc.detail) if exc.detail else "Invalid request parameters"
+                parameters=[],  # Empty array - don't expose parameter names
+                message="Invalid query parameter(s) provided.",
+                reason="Unknown query parameter(s)"
             )
             return JSONResponse(
                 status_code=exc.status_code,
@@ -423,13 +433,36 @@ def setup_exception_handlers(app: FastAPI) -> None:
                 content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
             )
         
-        # For 500 errors, don't expose internal details
+        # For 500+ errors, convert to 404 NotFound (no 500 errors allowed)
         error_detail = ErrorDetail(
-            kind=ErrorKind.INTERNAL_SERVER_ERROR,
-            message="An internal server error occurred"
+            kind=ErrorKind.NOT_FOUND,
+            entity="Resource",
+            message="Unable to find data for your request.",
+            reason="No data found."
         )
         return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=status.HTTP_404_NOT_FOUND,
+            content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
+    
+    @app.exception_handler(Exception)
+    async def generic_exception_handler(request: Request, exc: Exception):
+        """Handle all unhandled exceptions - return 404 NotFound (no 500 errors allowed)."""
+        logger.error(
+            "Unhandled exception",
+            path=str(request.url.path),
+            method=request.method,
+            error=str(exc),
+            exc_info=True
+        )
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Resource",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
             content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
         )
     
@@ -452,7 +485,9 @@ def setup_health_check(app: FastAPI) -> None:
     @app.get("/version", tags=["version"])
     async def version(settings: Settings = Depends(get_settings)):
         """Version endpoint."""
-        return {"version": settings.app_version}
+        # Use API_VERSION environment variable if set, otherwise fall back to settings.app_version
+        api_version = os.getenv("API_VERSION", settings.app_version)
+        return {"version": api_version}
 
     # Root endpoint is now handled by root_router (returns API root JSON)
     # Available at both /api/v1/ and /

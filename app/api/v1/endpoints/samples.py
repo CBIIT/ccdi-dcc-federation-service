@@ -7,7 +7,7 @@ including listing, individual retrieval, counting, and summaries.
 
 from typing import Dict, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from neo4j import AsyncSession
 
 from app.api.v1.deps import (
@@ -31,7 +31,7 @@ from app.models.dto import (
     CountResponse,
     SummaryResponse
 )
-from app.models.errors import NotFoundError
+from app.models.errors import NotFoundError, ErrorDetail, ErrorsResponse, ErrorKind
 from app.services.sample import SampleService
 
 logger = get_logger(__name__)
@@ -120,7 +120,17 @@ async def list_samples(
         logger.error("Error listing samples", error=str(e), exc_info=True)
         if hasattr(e, 'to_http_exception'):
             raise e.to_http_exception()
-        raise HTTPException(status_code=500, detail="Internal server error")
+        # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Samples",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
 
 
 # ============================================================================
@@ -178,7 +188,17 @@ async def get_sample(
         logger.error("Error getting sample", error=str(e), exc_info=True)
         if hasattr(e, 'to_http_exception'):
             raise e.to_http_exception()
-        raise HTTPException(status_code=500, detail="Internal server error")
+        # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Samples",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
 
 
 # ============================================================================
@@ -228,7 +248,17 @@ async def count_samples_by_field(
         logger.error("Error counting samples by field", error=str(e), exc_info=True)
         if hasattr(e, 'to_http_exception'):
             raise e.to_http_exception()
-        raise HTTPException(status_code=500, detail="Internal server error")
+        # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Samples",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
 
 
 # ============================================================================
@@ -275,7 +305,17 @@ async def get_samples_summary(
         logger.error("Error getting samples summary", error=str(e), exc_info=True)
         if hasattr(e, 'to_http_exception'):
             raise e.to_http_exception()
-        raise HTTPException(status_code=500, detail="Internal server error")
+        # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Samples",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
 
 
 # ============================================================================
@@ -354,7 +394,17 @@ async def search_samples_by_diagnosis(
         logger.error("Error searching samples by diagnosis", error=str(e), exc_info=True)
         if hasattr(e, 'to_http_exception'):
             raise e.to_http_exception()
-        raise HTTPException(status_code=500, detail="Internal server error")
+        # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Samples",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
 
 
 @router.get(
@@ -400,7 +450,17 @@ async def count_samples_by_field_with_diagnosis(
         logger.error("Error counting samples by field with diagnosis", error=str(e), exc_info=True)
         if hasattr(e, 'to_http_exception'):
             raise e.to_http_exception()
-        raise HTTPException(status_code=500, detail="Internal server error")
+        # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Samples",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
 
 
 @router.get(
@@ -443,4 +503,14 @@ async def get_samples_summary_with_diagnosis(
         logger.error("Error getting samples summary with diagnosis", error=str(e), exc_info=True)
         if hasattr(e, 'to_http_exception'):
             raise e.to_http_exception()
-        raise HTTPException(status_code=500, detail="Internal server error")
+        # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Samples",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )

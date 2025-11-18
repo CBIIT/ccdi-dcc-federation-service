@@ -114,7 +114,7 @@ class SampleService:
         sample = await self.repository.get_sample_by_identifier(organization, namespace, name)
         
         if not sample:
-            raise NotFoundError(f"Sample not found: {organization}.{namespace}.{name}")
+            raise NotFoundError("Samples")
         
         logger.info(
             "Retrieved sample by identifier",

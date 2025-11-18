@@ -65,17 +65,17 @@ async def get_error_examples(
     if error_type == "all" or error_type == "InvalidParameters":
         errors.append(ErrorDetail(
             kind=ErrorKind.INVALID_PARAMETERS,
-            parameters=["id"],
-            message="The parameter was a non-integer value.",
-            reason="The parameter value is invalid or incorrectly formatted."
+            parameters=[],  # Empty array - don't expose parameter names
+            message="Invalid query parameter(s) provided.",
+            reason="Unknown query parameter(s)"
         ))
     
     if error_type == "all" or error_type == "NotFound":
         errors.append(ErrorDetail(
             kind=ErrorKind.NOT_FOUND,
             entity="Samples",
-            message="Samples not found.",
-            reason="The requested resource does not exist."
+            message="Unable to find data for your request.",
+            reason="No data found."
         ))
     
     if error_type == "all" or error_type == "UnshareableData":
@@ -90,8 +90,8 @@ async def get_error_examples(
         errors.append(ErrorDetail(
             kind=ErrorKind.UNSUPPORTED_FIELD,
             field="wrong field",
-            message="Field is not supported: a field is not present for subject.",
-            reason="The requested field is not found."
+            message="Field is not supported for subjects.",
+            reason="This field is not present for subjects."
         ))
     
     logger.debug(

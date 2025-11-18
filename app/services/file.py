@@ -114,7 +114,7 @@ class FileService:
         file = await self.repository.get_file_by_identifier(organization, namespace, name)
         
         if not file:
-            raise NotFoundError(f"File not found: {organization}.{namespace}.{name}")
+            raise NotFoundError("Files")
         
         logger.info(
             "Retrieved file by identifier",

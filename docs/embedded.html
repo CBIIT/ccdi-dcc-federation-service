@@ -320,7 +320,7 @@
                                           }
                                     }
                               },
-                              "422": {
+                              "400": {
                                     "description": "Invalid query or path parameters.",
                                     "content": {
                                           "application/json": {
@@ -409,7 +409,7 @@
                                           }
                                     }
                               },
-                              "422": {
+                              "400": {
                                     "description": "Unsupported field.",
                                     "content": {
                                           "application/json": {
@@ -421,8 +421,8 @@
                                                             {
                                                                   "kind": "UnsupportedField",
                                                                   "field": "wrong field",
-                                                                  "message": "Field is not supported: a field is not present for subject.",
-                                                                  "reason": "The requested field is not found."
+                                                                  "message": "Field is not supported for subjects.",
+                                                                  "reason": "This field is not present for subjects."
                                                             }
                                                       ]
                                                 }
@@ -530,7 +530,8 @@
                                                             {
                                                                   "kind": "NotFound",
                                                                   "entity": "Subjects",
-                                                                  "message": "Subjects not found."
+                                                                  "message": "Unable to find data for your request.",
+                                                                  "reason": "No data found."
                                                             }
                                                       ]
                                                 }
@@ -592,6 +593,97 @@
                                                                         "name": "caDSR CDE 6343385 v1.00"
                                                                   }
                                                             }
+                                                      ]
+                                                }
+                                          }
+                                    }
+                              }
+                        }
+                  }
+            },
+            "/": {
+                  "get": {
+                        "tags": [
+                              "Convenience"
+                        ],
+                        "summary": "API root JSON",
+                        "description": "Returns the API root JSON configuration with available endpoints and API metadata.",
+                        "operationId": "api_root",
+                        "responses": {
+                              "200": {
+                                    "description": "Successful operation.",
+                                    "content": {
+                                          "application/json": {
+                                                "schema": {
+                                                      "type": "object",
+                                                      "properties": {
+                                                            "title": {
+                                                                  "type": "string",
+                                                                  "example": "CCDI DCC Federation API Server"
+                                                            },
+                                                            "version": {
+                                                                  "type": "string",
+                                                                  "example": "v1.2.0"
+                                                            },
+                                                            "description": {
+                                                                  "type": "string",
+                                                                  "example": "CCDI DCC Federation API Implementation"
+                                                            },
+                                                            "endpoints": {
+                                                                  "type": "object",
+                                                                  "description": "Available API endpoints"
+                                                            }
+                                                      }
+                                                }
+                                          }
+                                    }
+                              },
+                              "404": {
+                                    "description": "Root not found.",
+                                    "content": {
+                                          "application/json": {
+                                                "schema": {
+                                                      "$ref": "#/components/schemas/ErrorsResponse"
+                                                },
+                                                "example": {
+                                                      "errors": [
+                                                            {
+                                                                  "kind": "NotFound",
+                                                                  "entity": "Root",
+                                                                  "message": "Unable to find data for your request.",
+                                                                  "reason": "No data found."
+                                                            }
+                                                      ]
+                                                }
+                                          }
+                                    }
+                              }
+                        }
+                  }
+            },
+            "/version": {
+                  "get": {
+                        "tags": [
+                              "Convenience"
+                        ],
+                        "summary": "Get API version",
+                        "description": "Returns the current API version.",
+                        "operationId": "get_version",
+                        "responses": {
+                              "200": {
+                                    "description": "Successful operation.",
+                                    "content": {
+                                          "application/json": {
+                                                "schema": {
+                                                      "type": "object",
+                                                      "properties": {
+                                                            "version": {
+                                                                  "type": "string",
+                                                                  "example": "v1.2.0"
+                                                            }
+                                                      },
+                                                      "required": [
+                                                            "version"
                                                       ]
                                                 }
                                           }
@@ -674,17 +766,15 @@
                                                                         },
                                                                         {
                                                                               "kind": "InvalidParameters",
-                                                                              "parameters": [
-                                                                                    "id"
-                                                                              ],
-                                                                              "message": "The parameter was a non-integer value.",
-                                                                              "reason": "The parameter value is invalid or incorrectly formatted."
+                                                                              "parameters": [],
+                                                                              "message": "Invalid query parameter(s) provided.",
+                                                                              "reason": "Unknown query parameter(s)"
                                                                         },
                                                                         {
                                                                               "kind": "NotFound",
                                                                               "entity": "Samples",
-                                                                              "message": "Samples not found.",
-                                                                              "reason": "The requested resource does not exist."
+                                                                              "message": "Unable to find data for your request.",
+                                                                              "reason": "No data found."
                                                                         },
                                                                         {
                                                                               "kind": "UnshareableData",
@@ -695,8 +785,8 @@
                                                                         {
                                                                               "kind": "UnsupportedField",
                                                                               "field": "wrong field",
-                                                                              "message": "Field is not supported: a field is not present for subject.",
-                                                                              "reason": "The requested field is not found."
+                                                                              "message": "Field is not supported for subjects.",
+                                                                              "reason": "This field is not present for subjects."
                                                                         }
                                                                   ]
                                                             }
@@ -720,11 +810,9 @@
                                                                   "errors": [
                                                                         {
                                                                               "kind": "InvalidParameters",
-                                                                              "parameters": [
-                                                                                    "id"
-                                                                              ],
-                                                                              "message": "The parameter was a non-integer value.",
-                                                                              "reason": "The parameter value is invalid or incorrectly formatted."
+                                                                              "parameters": [],
+                                                                              "message": "Invalid query parameter(s) provided.",
+                                                                              "reason": "Unknown query parameter(s)"
                                                                         }
                                                                   ]
                                                             }
@@ -736,8 +824,8 @@
                                                                         {
                                                                               "kind": "NotFound",
                                                                               "entity": "Samples",
-                                                                              "message": "Samples not found.",
-                                                                              "reason": "The requested resource does not exist."
+                                                                              "message": "Unable to find data for your request.",
+                                                                              "reason": "No data found."
                                                                         }
                                                                   ]
                                                             }
@@ -762,8 +850,8 @@
                                                                         {
                                                                               "kind": "UnsupportedField",
                                                                               "field": "wrong field",
-                                                                              "message": "Field is not supported: a field is not present for subject.",
-                                                                              "reason": "The requested field is not found."
+                                                                              "message": "Field is not supported for subjects.",
+                                                                              "reason": "This field is not present for subjects."
                                                                         }
                                                                   ]
                                                             }
@@ -851,7 +939,8 @@
                                                             {
                                                                   "kind": "NotFound",
                                                                   "entity": "Namespaces",
-                                                                  "message": "Namespaces not found."
+                                                                  "message": "Unable to find data for your request.",
+                                                                  "reason": "No data found."
                                                             }
                                                       ]
                                                 }
@@ -927,7 +1016,9 @@
                                                       "errors": [
                                                             {
                                                                   "kind": "NotFound",
-                                                                  "entity": "Organization"
+                                                                  "entity": "Organization",
+                                                                  "message": "Unable to find data for your request.",
+                                                                  "reason": "No data found."
                                                             }
                                                       ]
                                                 }
@@ -1554,7 +1645,7 @@
                               "reason": {
                                     "type": "string",
                                     "description": "Reason for the error (for InvalidParameters, NotFound, UnshareableData, and UnsupportedField errors)",
-                                    "example": "The requested field is not found."
+                                    "example": "This field is not present for subjects."
                               }
                         },
                         "oneOf": [
@@ -2050,6 +2141,10 @@
             {
                   "name": "Info",
                   "description": "API information including server, API, and data details."
+            },
+            {
+                  "name": "Convenience",
+                  "description": "Convenience endpoints for API root and version information."
             },
             {
                   "name": "Errors",

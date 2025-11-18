@@ -22,6 +22,7 @@ from app.core.config import Settings
 from app.core.logging import get_logger
 from app.models.dto import OrganizationsResponse, OrganizationResponse, Organization
 from app.models.errors import ErrorDetail, ErrorsResponse, ErrorKind
+from fastapi import status
 
 logger = get_logger(__name__)
 
@@ -99,18 +100,42 @@ async def get_organizations(
         return organizations
         
     except FileNotFoundError:
+        # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Organizations",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
         raise HTTPException(
-            status_code=500,
-            detail=f"Missing file: {DATA_PATH}"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
         )
     except json.JSONDecodeError:
+        # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Organizations",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
         raise HTTPException(
-            status_code=500,
-            detail="Invalid JSON in info.json"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
         )
     except Exception as e:
         logger.error("Error getting organizations", error=str(e), exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Organizations",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
 
 
 @router.get("/{name}", response_model=Organization, summary="Get organization by name")
@@ -153,7 +178,8 @@ async def get_organization_by_name(
         error_detail = ErrorDetail(
             kind=ErrorKind.NOT_FOUND,
             entity="Organizations",
-            message="Organizations not found."
+            message="Unable to find data for your request.",
+            reason="No data found."
         )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

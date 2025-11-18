@@ -298,7 +298,7 @@ paths:
                 - kind: UnshareableData
                   entity: Subjects
                   message: Our agreement with data providers prohibits us from sharing line-level data.
-        '422':
+        '400':
           description: Invalid query or path parameters.
           content:
             application/json:
@@ -307,10 +307,9 @@ paths:
               example:
                 errors:
                 - kind: InvalidParameters
-                  parameters:
-                  - page
-                  - per_page
-                  message: 'Invalid value for parameters ''page'' and ''per_page'': unable to calculate offset.'
+                  parameters: []
+                  message: "Invalid query parameter(s) provided."
+                  reason: "Unknown query parameter(s)"
   /subject/{organization}/{namespace}/{name}:
     get:
       tags:
@@ -362,7 +361,8 @@ paths:
                 errors:
                 - kind: NotFound
                   entity: Subjects
-                  message: Subjects not found.
+                  message: "Unable to find data for your request."
+                  reason: "No data found."
   /subject/summary:
     get:
       tags:
@@ -427,7 +427,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CountResponse'
-        '422':
+        '400':
           description: Unsupported field.
           content:
             application/json:
@@ -437,8 +437,67 @@ paths:
                 errors:
                 - kind: UnsupportedField
                   field: "wrong field"
-                  message: "Field is not supported: a field is not present for subject."
-                  reason: "The requested field is not found."
+                  message: "Field is not supported for subjects."
+                  reason: "This field is not present for subjects."
+  /:
+    get:
+      tags:
+      - Convenience
+      summary: API root JSON
+      description: Returns the API root JSON configuration with available endpoints and API metadata.
+      operationId: api_root
+      responses:
+        '200':
+          description: Successful operation.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  title:
+                    type: string
+                    example: "CCDI DCC Federation API Server"
+                  version:
+                    type: string
+                    example: "v1.2.0"
+                  description:
+                    type: string
+                    example: "CCDI DCC Federation API Implementation"
+                  endpoints:
+                    type: object
+                    description: Available API endpoints
+        '404':
+          description: Root not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorsResponse'
+              example:
+                errors:
+                - kind: NotFound
+                  entity: Root
+                  message: "Unable to find data for your request."
+                  reason: "No data found."
+  /version:
+    get:
+      tags:
+      - Convenience
+      summary: Get API version
+      description: Returns the current API version.
+      operationId: get_version
+      responses:
+        '200':
+          description: Successful operation.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version:
+                    type: string
+                    example: "v1.2.0"
+                required:
+                - version
   /errors/examples:
     get:
       summary: Error response examples
@@ -539,18 +598,17 @@ paths:
                   value:
                     errors:
                     - kind: InvalidParameters
-                      parameters:
-                      - id
-                      message: The parameter was a non-integer value.
-                      reason: "The parameter value is invalid or incorrectly formatted."
+                      parameters: []
+                      message: "Invalid query parameter(s) provided."
+                      reason: "Unknown query parameter(s)"
                 notFound:
                   summary: Not found error
                   value:
                     errors:
                     - kind: NotFound
                       entity: Samples
-                      message: Samples not found.
-                      reason: "The requested resource does not exist."
+                      message: "Unable to find data for your request."
+                      reason: "No data found."
                 unshareableData:
                   summary: Unshareable data error
                   value:
@@ -565,8 +623,8 @@ paths:
                     errors:
                     - kind: UnsupportedField
                       field: "wrong field"
-                      message: "Field is not supported: a field is not present for subject."
-                      reason: "The requested field is not found."
+                      message: "Field is not supported for subjects."
+                      reason: "This field is not present for subjects."
   /namespace:
     get:
       tags:
@@ -686,7 +744,8 @@ paths:
                 errors:
                 - kind: NotFound
                   entity: Organizations
-                  message: Organizations not found.
+                  message: "Unable to find data for your request."
+                  reason: "No data found."
 components:
   schemas:
     Subject:
@@ -1092,8 +1151,8 @@ components:
           example: field
         reason:
           type: string
-          description: Reason for the error (for UnsupportedField errors)
-          example: The requested field is not found.
+          description: Reason for the error (for InvalidParameters, NotFound, UnshareableData, and UnsupportedField errors)
+          example: "This field is not present for subjects."
       oneOf:
       - type: object
         required:
@@ -1304,7 +1363,9 @@ tags:
   description: List and describe namespaces known by this server.
 - name: Organization
   description: List and describe organizations known by this server.
-# - name: Metadata
-#   description: Metadata field descriptions for subjects, samples, and files.
+- name: Info
+  description: API information including server, API, and data details.
+- name: Convenience
+  description: Convenience endpoints for API root and version information.
 - name: Errors
   description: Error response examples and documentation.

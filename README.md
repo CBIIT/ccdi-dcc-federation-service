@@ -381,8 +381,8 @@ The API returns structured error responses matching the OpenAPI specification:
 ```
 
 **Error Types:**
-- `InvalidParameters` (422) - Invalid query/path parameters
-- `UnsupportedField` (422) - Field not available for filtering/counting  
+- `InvalidParameters` (400) - Invalid query/path parameters
+- `UnsupportedField` (400) - Field not available for filtering/counting  
 - `NotFound` (404) - Entity not found by identifier
 - `UnshareableData` (404) - Data sharing restrictions
 - `InternalServerError` (500) - Server-side errors

@@ -16,6 +16,8 @@ from fastapi.responses import JSONResponse
 
 from app.core.logging import get_logger
 from app.models.dto import MetadataFieldsInfoResponse, MetadataFieldInfo, HarmonizedStandard
+from app.models.errors import ErrorDetail, ErrorsResponse, ErrorKind
+from fastapi import status
 
 logger = get_logger(__name__)
 
@@ -32,14 +34,28 @@ def load_metadata_fields() -> Dict[str, Any]:
         with DATA_PATH.open("r", encoding="utf-8") as f:
             return json.load(f)
     except FileNotFoundError:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Missing file: {DATA_PATH}"
+        # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Metadata",
+            message="Unable to find data for your request.",
+            reason="No data found."
         )
-    except json.JSONDecodeError as e:
         raise HTTPException(
-            status_code=500,
-            detail=f"Invalid JSON in metadata_fields.json: {str(e)}"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
+    except json.JSONDecodeError:
+        # Return 404 instead of 500 - no 500 errors allowed (don't expose error details)
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Metadata",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
         )
 
 

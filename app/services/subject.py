@@ -39,7 +39,8 @@ class SubjectService:
         self,
         filters: Dict[str, Any],
         offset: int = 0,
-        limit: int = 20
+        limit: int = 20,
+        base_url: Optional[str] = None
     ) -> List[Subject]:
         """
         Get paginated list of subjects with filtering.
@@ -69,7 +70,7 @@ class SubjectService:
             )
         
         # Get data from repository
-        subjects = await self.repository.get_subjects(filters, offset, limit)
+        subjects = await self.repository.get_subjects(filters, offset, limit, base_url=base_url)
         
         logger.info(
             "Retrieved subjects",
@@ -84,7 +85,8 @@ class SubjectService:
         self,
         organization: str,
         namespace: Optional[str],
-        name: str
+        name: str,
+        base_url: Optional[str] = None
     ) -> Subject:
         """
         Get a specific subject by organization, namespace, and name.
@@ -111,7 +113,7 @@ class SubjectService:
         self._validate_identifier_params(organization, namespace, name)
         
         # Get from repository
-        subject = await self.repository.get_subject_by_identifier(organization, namespace, name)
+        subject = await self.repository.get_subject_by_identifier(organization, namespace, name, base_url=base_url)
         
         # Return None if not found (instead of raising NotFoundError)
         # The endpoint will handle None by returning empty results

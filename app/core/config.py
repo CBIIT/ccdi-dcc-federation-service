@@ -5,17 +5,39 @@ This module uses pydantic-settings for configuration management, supporting
 environment variables and .env files.
 """
 
+import json
 from functools import lru_cache
-from typing import Optional, List, Dict
+from pathlib import Path
+from typing import Optional, List, Dict, Any
 
 from pydantic import Field, BaseModel
 from pydantic_settings import BaseSettings
 
 
+def load_info_json() -> Dict[str, Any]:
+    """Load info.json file and return its contents."""
+    # From app/core/config.py, go up 1 level to reach app/, then config_data/
+    info_path = Path(__file__).resolve().parents[1] / "config_data" / "info.json"
+    
+    try:
+        with info_path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        # Return empty dict if file doesn't exist or is invalid
+        # This allows the app to still work with environment variable defaults
+        return {}
+
+
+# Load info.json once at module level
+_info_data = load_info_json()
+_server_info = _info_data.get("server", {})
+_api_info = _info_data.get("api", {})
+
+
 class AppSettings(BaseModel):
     """Application-specific settings."""
-    name: str = "CCDI Federation Service"
-    version: str = "v1.2.0" 
+    name: str = _server_info.get("name", "CCDI Federation Service")
+    version: str = _api_info.get("api_version", "v1.2.0")
     debug: bool = False
 
 
@@ -67,11 +89,17 @@ class PaginationSettings(BaseModel):
 
 
 class Settings(BaseSettings):
-    """Application settings loaded from environment variables."""
+    """Application settings loaded from environment variables and info.json."""
 
-    # Application
-    app_name: str = Field(default="CCDI Federation Service", alias="APP_NAME")
-    app_version: str = Field(default="v1.2.0", alias="APP_VERSION")
+    # Application - defaults from info.json, can be overridden by environment variables
+    app_name: str = Field(
+        default=_server_info.get("name", "CCDI Federation Service"),
+        alias="APP_NAME"
+    )
+    app_version: str = Field(
+        default=_api_info.get("api_version", "v1.2.0"),
+        alias="APP_VERSION"
+    )
     debug: bool = Field(default=False, alias="DEBUG")
     
     # Server
@@ -159,18 +187,25 @@ class Settings(BaseSettings):
         alias="NAMESPACE_PREFIX"
     )
     
-    # Organization and server info
+    # Organization and server info - defaults from info.json
     organization_name: str = Field(
-        default="Example Organization",
+        default=_server_info.get("owner", "Example Organization"),
         alias="ORGANIZATION_NAME"
     )
     server_name: str = Field(
-        default="Example CCDI Federation Node",
+        default=_server_info.get("name", "Example CCDI Federation Node"),
         alias="SERVER_NAME"
     )
     contact_email: str = Field(
-        default="support@example.com",
+        default=_server_info.get("contact_email", "support@example.com"),
         alias="CONTACT_EMAIL"
+    )
+    
+    # Identifier server URL - used for building identifier URLs in responses
+    identifier_server_url: str = Field(
+        default="https://dcc.ccdi.cancer.gov",
+        alias="IDENTIFIER_SERVER_URL",
+        description="Base URL used for identifier server values in API responses"
     )
     
     # Database settings

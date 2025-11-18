@@ -86,7 +86,7 @@ Currently, the API does not require authentication. Rate limiting is applied to 
   "source": "CCDI-DCC",
   "summary": {
     "counts": {
-      "all": 104496,
+      "all": 25696,
       "current": 2
     }
   },
@@ -98,7 +98,7 @@ Currently, the API does not require authentication. Rate limiting is applied to 
     "page": 1,
     "per_page": 100,
     "total_pages": 1045,
-    "total_items": 104496,
+    "total_items": 25696,
     "has_next": true,
     "has_prev": false
   }

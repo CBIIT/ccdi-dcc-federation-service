@@ -12,7 +12,7 @@ from app.models.errors import ErrorsResponse, ErrorDetail, ErrorKind
 
 logger = get_logger(__name__)
 
-router = APIRouter(prefix="/errors", tags=["errors"])
+router = APIRouter(prefix="/errors", tags=["Errors"])
 
 
 @router.get(
@@ -58,34 +58,40 @@ async def get_error_examples(
         errors.append(ErrorDetail(
             kind=ErrorKind.INVALID_ROUTE,
             method="GET",
-            route="/foobar"
+            route="/foobar",
+            message="Invalid route: GET /foobar"
         ))
     
     if error_type == "all" or error_type == "InvalidParameters":
         errors.append(ErrorDetail(
             kind=ErrorKind.INVALID_PARAMETERS,
             parameters=["id"],
-            reason="The parameter was a non-integer value."
+            message="The parameter was a non-integer value.",
+            reason="The parameter value is invalid or incorrectly formatted."
         ))
     
     if error_type == "all" or error_type == "NotFound":
         errors.append(ErrorDetail(
             kind=ErrorKind.NOT_FOUND,
-            entity="Samples"
+            entity="Samples",
+            message="Samples not found.",
+            reason="The requested resource does not exist."
         ))
     
     if error_type == "all" or error_type == "UnshareableData":
         errors.append(ErrorDetail(
             kind=ErrorKind.UNSHAREABLE_DATA,
             entity="Sample",
-            reason="Our agreement with data providers prohibits us from sharing line-level data."
+            message="Our agreement with data providers prohibits us from sharing line-level data.",
+            reason="Data sharing is restricted by agreement with data providers."
         ))
     
     if error_type == "all" or error_type == "UnsupportedField":
         errors.append(ErrorDetail(
             kind=ErrorKind.UNSUPPORTED_FIELD,
-            field="field",
-            reason="The field was not found in the metadata object."
+            field="wrong field",
+            message="Field is not supported: a field is not present for subject.",
+            reason="The requested field is not found."
         ))
     
     logger.debug(

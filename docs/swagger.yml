@@ -1,4 +1,4 @@
-openapi: 3.1.0
+openapi: "3.1.0"
 info:
   title: CCDI Federation Service API
   description: REST API for querying CCDI-DCC  graph database
@@ -15,7 +15,7 @@ info:
 servers:
 - url: http://localhost:8000/api/v1
   description: Local development server (default)
-- url: http://internal-ccdi-dev-federation-dcc-alb-261178975.us-east-1.elb.amazonaws.com:8000/api/v1
+- url: https://dcc-dev.ccdi.cancer.gov/api/v1
   description: Dev Test server
 # - url: https://ccdi-federation-test.test.com/api/v1
 #   description: Test server - For online testing
@@ -297,7 +297,7 @@ paths:
                 errors:
                 - kind: UnshareableData
                   entity: Subjects
-                  reason: Our agreement with data providers prohibits us from sharing line-level data.
+                  message: Our agreement with data providers prohibits us from sharing line-level data.
         '422':
           description: Invalid query or path parameters.
           content:
@@ -310,7 +310,6 @@ paths:
                   parameters:
                   - page
                   - per_page
-                  reason: Unable to calculate offset.
                   message: 'Invalid value for parameters ''page'' and ''per_page'': unable to calculate offset.'
   /subject/{organization}/{namespace}/{name}:
     get:
@@ -380,7 +379,7 @@ paths:
                 $ref: '#/components/schemas/SummaryResponse'
               example:
                 counts:
-                  total: 104496
+                  total: 25696
   /subject/by/{field}/count:
     get:
       tags:
@@ -437,9 +436,9 @@ paths:
               example:
                 errors:
                 - kind: UnsupportedField
-                  field: handedness
-                  reason: This field is not present for subjects.
-                  message: 'Field ''handedness'' is not supported: this field is not present for subjects.'
+                  field: "wrong field"
+                  message: "Field is not supported: a field is not present for subject."
+                  reason: "The requested field is not found."
   /errors/examples:
     get:
       summary: Error response examples
@@ -459,7 +458,7 @@ paths:
         any internal error messages or user inputs. Any error not covered by the
         categories below should return a 404 NotFound error.
       tags:
-      - errors
+      - Errors
       parameters:
       - name: error_type
         in: query
@@ -509,18 +508,24 @@ paths:
                     - kind: InvalidRoute
                       method: GET
                       route: /foobar
+                      message: 'Invalid route: GET /foobar'
                     - kind: InvalidParameters
                       parameters:
                       - id
-                      reason: The parameter was a non-integer value.
+                      message: The parameter was a non-integer value.
+                      reason: "The parameter value is invalid or incorrectly formatted."
                     - kind: NotFound
                       entity: Samples
+                      message: Samples not found.
+                      reason: "The requested resource does not exist."
                     - kind: UnshareableData
                       entity: Sample
-                      reason: Our agreement with data providers prohibits us from sharing line-level data.
+                      message: Our agreement with data providers prohibits us from sharing line-level data.
+                      reason: "Data sharing is restricted by agreement with data providers."
                     - kind: UnsupportedField
-                      field: field
-                      reason: The field was not found in the metadata object.
+                      field: "wrong field"
+                      message: "Field is not supported: a field is not present for subject."
+                      reason: "The requested field is not found."
                 invalidRoute:
                   summary: Invalid route error
                   value:
@@ -528,6 +533,7 @@ paths:
                     - kind: InvalidRoute
                       method: GET
                       route: /foobar
+                      message: 'Invalid route: GET /foobar'
                 invalidParameters:
                   summary: Invalid parameters error
                   value:
@@ -535,27 +541,32 @@ paths:
                     - kind: InvalidParameters
                       parameters:
                       - id
-                      reason: The parameter was a non-integer value.
+                      message: The parameter was a non-integer value.
+                      reason: "The parameter value is invalid or incorrectly formatted."
                 notFound:
                   summary: Not found error
                   value:
                     errors:
                     - kind: NotFound
                       entity: Samples
+                      message: Samples not found.
+                      reason: "The requested resource does not exist."
                 unshareableData:
                   summary: Unshareable data error
                   value:
                     errors:
                     - kind: UnshareableData
                       entity: Sample
-                      reason: Our agreement with data providers prohibits us from sharing line-level data.
+                      message: Our agreement with data providers prohibits us from sharing line-level data.
+                      reason: "Data sharing is restricted by agreement with data providers."
                 unsupportedField:
                   summary: Unsupported field error
                   value:
                     errors:
                     - kind: UnsupportedField
-                      field: field
-                      reason: The field was not found in the metadata object.
+                      field: "wrong field"
+                      message: "Field is not supported: a field is not present for subject."
+                      reason: "The requested field is not found."
   /namespace:
     get:
       tags:
@@ -569,7 +580,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/NamespacesResponse'
+                type: array
+                items:
+                  $ref: '#/components/schemas/NamespaceEntity'
         '500':
           description: Internal server error.
           content:
@@ -602,7 +615,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/NamespaceResponse'
+                $ref: '#/components/schemas/NamespaceEntity'
         '404':
           description: Namespace not found.
           content:
@@ -633,7 +646,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OrganizationsResponse'
+                type: array
+                items:
+                  $ref: '#/components/schemas/OrganizationEntity'
         '500':
           description: Internal server error.
           content:
@@ -660,9 +675,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OrganizationResponse'
+                $ref: '#/components/schemas/OrganizationEntity'
         '404':
-          description: Organization not found.
+          description: Not found.
           content:
             application/json:
               schema:
@@ -670,13 +685,8 @@ paths:
               example:
                 errors:
                 - kind: NotFound
-                  entity: Organization
-        '500':
-          description: Internal server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorsResponse'
+                  entity: Organizations
+                  message: Organizations not found.
 components:
   schemas:
     Subject:
@@ -860,9 +870,19 @@ components:
         name:
           type: string
           minLength: 1
+        type:
+          type: string
+          description: Identifier type
+          default: Linked
+          example: Linked
+        server:
+          type: string
+          description: Server URL
+          nullable: true
+          example: https://example.com/api/v1/subject/CCDI-DCC/phs002431/SUBJ-001
       required:
-      - namespace
-      - name
+        - namespace
+        - name
     AssociatedDiagnosisField:
       type: object
       description: Diagnosis term assigned to the participant with optional metadata.
@@ -940,7 +960,7 @@ components:
       properties:
         all:
           type: integer
-          example: 104496
+          example: 25696
         current:
           type: integer
           example: 20
@@ -959,7 +979,7 @@ components:
           example: 5225
         total_items:
           type: integer
-          example: 104496
+          example: 25696
         has_next:
           type: boolean
           example: true
@@ -1058,9 +1078,9 @@ components:
             type: string
           example:
           - id
-        reason:
+        message:
           type: string
-          description: Explanation for the error
+          description: Error message explaining what went wrong
           example: The parameter was a non-integer value.
         entity:
           type: string
@@ -1070,31 +1090,112 @@ components:
           type: string
           description: Field name (for UnsupportedField errors)
           example: field
+        reason:
+          type: string
+          description: Reason for the error (for UnsupportedField errors)
+          example: The requested field is not found.
       oneOf:
       - type: object
         required:
         - kind
         - method
         - route
+        - message
       - type: object
         required:
         - kind
         - parameters
+        - message
         - reason
       - type: object
         required:
         - kind
         - entity
+        - message
+        - reason
       - type: object
         required:
         - kind
         - entity
+        - message
         - reason
       - type: object
         required:
         - kind
         - field
+        - message
         - reason
+    DepositionAccession:
+      type: object
+      description: Deposition accession with repository kind and value.
+      properties:
+        kind:
+          type: string
+          description: Repository type
+          example: dbGaP
+        value:
+          type: string
+          description: Accession value
+          example: phs002356
+      required:
+        - kind
+        - value
+    NamespaceMetadata:
+      type: object
+      description: Namespace metadata with study information.
+      properties:
+        study_short_title:
+          type: object
+          description: Study short title
+          nullable: true
+          properties:
+            value:
+              type: string
+              example: "short title here"
+          required:
+            - value
+        study_name:
+          type: object
+          description: Study name
+          nullable: true
+          properties:
+            value:
+              type: string
+              example: "name here"
+          required:
+            - value
+        study_id:
+          type: object
+          description: Study identifier
+          nullable: true
+          properties:
+            value:
+              type: string
+              example: "phs002356"
+          required:
+            - value
+        study_funding_id:
+          type: array
+          description: Study funding identifiers
+          nullable: true
+          items:
+            type: object
+            properties:
+              value:
+                type: string
+                example: "fund here"
+            required:
+              - value
+        depositions:
+          type: array
+          description: Array of deposition objects containing study_id values
+          nullable: true
+          items:
+            $ref: '#/components/schemas/DepositionAccession'
+        deposition:
+          type: string
+          description: Deposition identifier
+          nullable: true
     NamespaceEntity:
       type: object
       description: Namespace entity with identifier, description, and metadata.
@@ -1111,8 +1212,7 @@ components:
           description: Contact email for namespace support
           example: support@ccdi.org
         metadata:
-          type: object
-          description: Additional namespace metadata
+          $ref: '#/components/schemas/NamespaceMetadata'
           nullable: true
       required:
       - id

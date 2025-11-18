@@ -11,6 +11,7 @@ from neo4j import AsyncSession
 from app.core.logging import get_logger
 from app.core.constants import Race
 from app.lib.field_allowlist import FieldAllowlist
+from app.lib.url_builder import build_identifier_server_url
 from app.models.dto import Subject
 from app.models.errors import UnsupportedFieldError
 
@@ -30,7 +31,8 @@ class SubjectRepository:
         self,
         filters: Dict[str, Any],
         offset: int = 0,
-        limit: int = 20
+        limit: int = 20,
+        base_url: Optional[str] = None
     ) -> List[Subject]:
         """
         Get paginated list of subjects with filtering.
@@ -310,10 +312,13 @@ class SubjectRepository:
             filters=filters
         )
         
-        # Execute query
+        # Execute query with proper result consumption
         try:
             result = await self.session.run(cypher, params)
-            records = await result.data()
+            # Ensure the result is fully consumed - use async iteration for reliability
+            records = []
+            async for record in result:
+                records.append(dict(record))
         except Exception as e:
             logger.error(
                 "Error executing get_subjects Cypher query",
@@ -327,7 +332,7 @@ class SubjectRepository:
         # Convert to Subject objects
         subjects = []
         for record in records:
-            subjects.append(self._record_to_subject(record))
+            subjects.append(self._record_to_subject(record, base_url=base_url))
         
         logger.debug(
             "Found subjects",
@@ -341,7 +346,8 @@ class SubjectRepository:
         self,
         organization: str,
         namespace: Optional[str],
-        name: str
+        name: str,
+        base_url: Optional[str] = None
     ) -> Optional[Subject]:
         """
         Get a specific subject by organization, namespace, and name.
@@ -534,16 +540,38 @@ class SubjectRepository:
             params=params
         )
 
-        # Execute query
-        result = await self.session.run(cypher, params)
-        records = await result.data()
+        # Execute query with proper error handling and result consumption
+        try:
+            result = await self.session.run(cypher, params)
+            # Ensure the result is fully consumed - use async iteration for reliability
+            # This ensures all records are fetched before proceeding
+            records = []
+            async for record in result:
+                records.append(dict(record))
+            
+            logger.debug(
+                "Query execution completed",
+                participant_id=name,
+                namespace=namespace,
+                records_count=len(records) if records else 0
+            )
+        except Exception as e:
+            logger.error(
+                "Error executing get_subject_by_identifier Cypher query",
+                error=str(e),
+                error_type=type(e).__name__,
+                participant_id=name,
+                namespace=namespace,
+                cypher=cypher[:500] if cypher else None
+            )
+            raise
         
         if not records:
             logger.debug("Subject not found", participant_id=name, namespace=namespace)
             return None
         
         # Convert to Subject object
-        subject = self._record_to_subject(records[0])
+        subject = self._record_to_subject(records[0], base_url=base_url)
         
         logger.debug("Found subject", participant_id=name, namespace=namespace, subject_data=getattr(subject, 'name', str(subject)[:50]))
         
@@ -896,17 +924,23 @@ WITH p, d, c, st,
             params_count=len(params)
         )
         
-        # Execute all three queries
+        # Execute all three queries with proper result consumption
         total_result = await self.session.run(total_cypher, params)
-        total_records = await total_result.data()
+        total_records = []
+        async for record in total_result:
+            total_records.append(dict(record))
         total_count = total_records[0].get("total", 0) if total_records else 0
         
         missing_result = await self.session.run(missing_cypher, params)
-        missing_records = await missing_result.data()
+        missing_records = []
+        async for record in missing_result:
+            missing_records.append(dict(record))
         missing_count = missing_records[0].get("missing", 0) if missing_records else 0
         
         values_result = await self.session.run(values_cypher, params)
-        values_records = await values_result.data()
+        values_records = []
+        async for record in values_result:
+            values_records.append(dict(record))
         
         # Format values results
         counts = []
@@ -1060,17 +1094,23 @@ WITH p, d, c, st,
             params_count=len(params)
         )
         
-        # Execute all three queries
+        # Execute all three queries with proper result consumption
         total_result = await self.session.run(total_cypher, params)
-        total_records = await total_result.data()
+        total_records = []
+        async for record in total_result:
+            total_records.append(dict(record))
         total_count = total_records[0].get("total", 0) if total_records else 0
         
         missing_result = await self.session.run(missing_cypher, params)
-        missing_records = await missing_result.data()
+        missing_records = []
+        async for record in missing_result:
+            missing_records.append(dict(record))
         missing_count = missing_records[0].get("missing", 0) if missing_records else 0
         
         values_result = await self.session.run(values_cypher, params)
-        values_records = await values_result.data()
+        values_records = []
+        async for record in values_result:
+            values_records.append(dict(record))
         
         # Format results - ensure all valid races are included (even with 0 count)
         counts_by_value = {record.get("value"): record.get("count", 0) for record in values_records}
@@ -1215,17 +1255,23 @@ WITH p, d, c, st,
             params_count=len(params)
         )
         
-        # Execute all three queries
+        # Execute all three queries with proper result consumption
         total_result = await self.session.run(total_cypher, params)
-        total_records = await total_result.data()
+        total_records = []
+        async for record in total_result:
+            total_records.append(dict(record))
         total_count = total_records[0].get("total", 0) if total_records else 0
         
         missing_result = await self.session.run(missing_cypher, params)
-        missing_records = await missing_result.data()
+        missing_records = []
+        async for record in missing_result:
+            missing_records.append(dict(record))
         missing_count = missing_records[0].get("missing", 0) if missing_records else 0
         
         values_result = await self.session.run(values_cypher, params)
-        values_records = await values_result.data()
+        values_records = []
+        async for record in values_result:
+            values_records.append(dict(record))
         
         # Format results - ensure both ethnicity options are included (even with 0 count)
         counts_by_value = {record.get("value"): record.get("count", 0) for record in values_records}
@@ -1398,17 +1444,23 @@ WITH p, d, c, st,
             has_where_clause=bool(where_clause)
         )
         
-        # Execute all three queries
+        # Execute all three queries with proper result consumption
         total_result = await self.session.run(total_cypher, params)
-        total_records = await total_result.data()
+        total_records = []
+        async for record in total_result:
+            total_records.append(dict(record))
         total_count = total_records[0].get("total", 0) if total_records else 0
         
         missing_result = await self.session.run(missing_cypher, params)
-        missing_records = await missing_result.data()
+        missing_records = []
+        async for record in missing_result:
+            missing_records.append(dict(record))
         missing_count = missing_records[0].get("missing", 0) if missing_records else 0
         
         values_result = await self.session.run(values_cypher, params)
-        values_records = await values_result.data()
+        values_records = []
+        async for record in values_result:
+            values_records.append(dict(record))
         
         # Format results
         counts = []
@@ -1823,9 +1875,11 @@ WITH p, d, c, st,
             cypher=cypher,
             params=params
         )
-        # Execute query
+        # Execute query with proper result consumption
         result = await self.session.run(cypher, params)
-        records = await result.data()
+        records = []
+        async for record in result:
+            records.append(dict(record))
         
         if not records:
             return {"total_count": 0}
@@ -1854,12 +1908,13 @@ WITH p, d, c, st,
             if not self.allowlist.is_field_allowed(entity_type, field):
                 raise UnsupportedFieldError(f"Field '{field}' is not supported for {entity_type} filtering")
     
-    def _record_to_subject(self, record: Dict[str, Any]) -> Subject:
+    def _record_to_subject(self, record: Dict[str, Any], base_url: Optional[str] = None) -> Subject:
         """
         Convert a database record to a Subject object with nested CCDI-DCC format.
         
         Args:
             record: Database record dictionary
+            base_url: Base URL for generating server URLs in identifiers (optional)
             
         Returns:
             Subject object with nested CCDI-DCC structure
@@ -1991,7 +2046,15 @@ WITH p, d, c, st,
                                     "organization": "CCDI-DCC",
                                     "name": study_id
                                 },
-                                "name": participant_id
+                                "name": participant_id,
+                                "type": "Linked",
+                                "server": build_identifier_server_url(
+                                    base_url=base_url or "",
+                                    entity_type="subject",
+                                    organization="CCDI-DCC",
+                                    study_id=study_id,
+                                    name=participant_id
+                                ) if base_url else None
                             }
                         }
                         for study_id in (study_ids if study_ids else [])

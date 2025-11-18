@@ -7,24 +7,28 @@ for querying the CCDI-DCC  graph database.
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, Request, status, Depends
 from fastapi.exceptions import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 import re
+from pathlib import Path
 
-from app.core.config import get_settings
+from app.core.config import get_settings, Settings
 from app.core.logging import configure_logging, get_logger
 from app.core.cache import redis_lifespan
-from app.db.memgraph import memgraph_lifespan
+from app.db.memgraph import memgraph_lifespan, DatabaseConnectionError
 from app.api.v1.endpoints.subjects import router as subjects_router
 from app.api.v1.endpoints.samples import router as samples_router
 from app.api.v1.endpoints.files import router as files_router
-# from app.api.v1.endpoints.metadata import router as metadata_router
+from app.api.v1.endpoints.metadata import router as metadata_router
 from app.api.v1.endpoints.namespaces import router as namespaces_router
 from app.api.v1.endpoints.errors import router as errors_router
+from app.api.v1.endpoints.root import router as root_router
+from app.api.v1.endpoints.info import router as info_router
+from app.api.v1.endpoints.organizations import router as organizations_router
 from app.models.errors import ErrorsResponse, ErrorDetail, ErrorKind, CCDIException
 
 # Configure logging before creating the logger
@@ -62,8 +66,8 @@ def create_app() -> FastAPI:
         description="REST API for querying CCDI-DCC  graph database",
         version="1.0.0",
         openapi_url="/openapi.json",
-        docs_url="/docs" if settings.app.debug else None,
-        redoc_url="/redoc" if settings.app.debug else None,
+        docs_url="/docs-api",  # Default FastAPI Swagger UI at /docs-api
+        redoc_url="/redoc",  # Enable ReDoc at /redoc
         lifespan=lifespan
     )
     
@@ -79,6 +83,9 @@ def create_app() -> FastAPI:
     # Add health check
     setup_health_check(app)
     
+    # Add custom docs endpoint (serves embedded.html with custom styling)
+    setup_custom_docs_endpoint(app)
+    
     logger.info("FastAPI application created")
     return app
 
@@ -91,6 +98,8 @@ def _suggest_correct_path(path: str) -> str:
     - /api/v1/subject/by2/race2/count -> /api/v1/subject/by/race/count
     - /api/v1/subject/by3/sex2/count -> /api/v1/subject/by/sex/count
     - /api/v1/subject/by2/race/count -> /api/v1/subject/by/race/count
+    - /api/v1/subject/b1y/sex/count -> /api/v1/subject/by/sex/count
+    - /api/v1/subject/by1/race/count -> /api/v1/subject/by/race/count
     """
     # Match pattern: /subject/by{number}/{field}{number}/count
     # Pattern: /api/v1/subject/by2/race2/count
@@ -113,6 +122,35 @@ def _suggest_correct_path(path: str) -> str:
         by_part = match_by.group(2)
         rest = match_by.group(4)
         return f"{prefix}{by_part}{rest}"
+    
+    # Handle cases where 'by' has a typo with number in middle: /subject/b1y/{field}/count
+    # Pattern: /api/v1/subject/b1y/sex/count or /api/v1/subject/by1/race/count
+    pattern_by_typo = r'(/api/v1/subject/)(b)(\d+)(y)(/[^/]+/count)'
+    match_typo = re.search(pattern_by_typo, path)
+    if match_typo:
+        prefix = match_typo.group(1)  # /api/v1/subject/
+        b_part = match_typo.group(2)  # b
+        number = match_typo.group(3)  # 1, 2, etc.
+        y_part = match_typo.group(4)  # y
+        rest = match_typo.group(5)  # /sex/count
+        return f"{prefix}{b_part}{y_part}{rest}"
+    
+    # Handle pattern: /subject/{typo}/field/count where typo looks like "by"
+    # Pattern: /api/v1/subject/b1y/sex/count
+    pattern_typo_field_count = r'(/api/v1/subject/)([^/]+)/([^/]+)/(count)'
+    match_typo_field = re.search(pattern_typo_field_count, path)
+    if match_typo_field:
+        prefix = match_typo_field.group(1)  # /api/v1/subject/
+        first_seg = match_typo_field.group(2)  # b1y, by2, etc.
+        field_seg = match_typo_field.group(3)  # sex, race, etc.
+        count_seg = match_typo_field.group(4)  # count
+        
+        # Check if first segment looks like a typo of "by" (contains 'b' and 'y' with numbers)
+        if re.match(r'^b.*y.*$', first_seg, re.IGNORECASE) and count_seg == "count":
+            # Valid field names for count endpoint
+            valid_fields = {"sex", "race", "ethnicity", "vital_status", "age_at_vital_status", "associated_diagnoses"}
+            if field_seg.lower() in valid_fields:
+                return f"{prefix}by/{field_seg}/{count_seg}"
     
     return None
 
@@ -149,13 +187,23 @@ def setup_routers(app: FastAPI) -> None:
     # app.include_router(files_router, prefix="/api/v1")
     
     # Add metadata routes
-    # app.include_router(metadata_router, prefix="/api/v1")
+    app.include_router(metadata_router, prefix="/api/v1")
     
     # Add namespace routes
     app.include_router(namespaces_router, prefix="/api/v1")
     
+    # Add organization routes
+    app.include_router(organizations_router, prefix="/api/v1")
+    
     # Add error examples routes
     app.include_router(errors_router, prefix="/api/v1")
+    
+    # Add root API routes - available at both /api/v1/ and /
+    app.include_router(root_router, prefix="/api/v1")
+    app.include_router(root_router)
+    
+    # Add info routes
+    app.include_router(info_router, prefix="/api/v1")
     
     logger.info("API routers configured")
 
@@ -163,22 +211,44 @@ def setup_routers(app: FastAPI) -> None:
 def setup_exception_handlers(app: FastAPI) -> None:
     """Set up global exception handlers for consistent error responses."""
     
+    @app.exception_handler(DatabaseConnectionError)
+    async def database_connection_error_handler(request: Request, exc: DatabaseConnectionError):
+        """Handle database connection errors - return 500 Internal Server Error."""
+        logger.error(
+            "Database connection error",
+            path=str(request.url.path),
+            method=request.method,
+            error=str(exc)
+        )
+        error_detail = ErrorDetail(
+            kind=ErrorKind.INTERNAL_SERVER_ERROR,
+            message="Database is not available. Please try again later."
+        )
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
+    
     @app.exception_handler(CCDIException)
     async def ccdi_exception_handler(request: Request, exc: CCDIException):
         """Handle CCDI custom exceptions - add path suggestions for InvalidRoute."""
         # If this is an InvalidRoute error, check if we can suggest a corrected path
         if exc.kind == ErrorKind.INVALID_ROUTE:
-            suggested_path = _suggest_correct_path(exc.route or str(request.url.path))
-            if suggested_path:
-                # Create error detail with suggestion
-                error_detail = ErrorDetail(
-                    kind=exc.kind,
-                    method=exc.method,
-                    route=exc.route,
-                    reason=f"Did you mean '{suggested_path}'?"
-                )
-            else:
+            # If message already contains a suggestion, use it; otherwise try to generate one
+            if exc.message and "Did you mean" in exc.message:
                 error_detail = exc.to_error_detail()
+            else:
+                suggested_path = _suggest_correct_path(exc.route or str(request.url.path))
+                if suggested_path:
+                    # Create error detail with suggestion
+                    error_detail = ErrorDetail(
+                        kind=exc.kind,
+                        method=exc.method,
+                        route=exc.route,
+                        message=f"Did you mean '{suggested_path}'?"
+                    )
+                else:
+                    error_detail = exc.to_error_detail()
         else:
             error_detail = exc.to_error_detail()
         
@@ -203,15 +273,18 @@ def setup_exception_handlers(app: FastAPI) -> None:
             suggested_path = _suggest_correct_path(str(request.url.path))
             
             # This is an invalid route
+            message = None
+            if suggested_path:
+                message = f"Did you mean '{suggested_path}'?"
+            else:
+                message = f"Invalid route: {request.method} {request.url.path}"
+            
             error_detail = ErrorDetail(
                 kind=ErrorKind.INVALID_ROUTE,
                 method=request.method,
-                route=str(request.url.path)
+                route=str(request.url.path),
+                message=message
             )
-            
-            # If we detected a typo, add a helpful reason
-            if suggested_path:
-                error_detail.reason = f"Did you mean '{suggested_path}'?"
             
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -223,7 +296,7 @@ def setup_exception_handlers(app: FastAPI) -> None:
             error_detail = ErrorDetail(
                 kind=ErrorKind.INVALID_PARAMETERS,
                 parameters=["request"],
-                reason=str(exc.detail) if exc.detail else "Invalid request parameters"
+                message=str(exc.detail) if exc.detail else "Invalid request parameters"
             )
             return JSONResponse(
                 status_code=exc.status_code,
@@ -244,7 +317,7 @@ def setup_exception_handlers(app: FastAPI) -> None:
         # For 500 errors, don't expose internal details
         error_detail = ErrorDetail(
             kind=ErrorKind.INTERNAL_SERVER_ERROR,
-            reason="An internal server error occurred"
+            message="An internal server error occurred"
         )
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -267,15 +340,18 @@ def setup_exception_handlers(app: FastAPI) -> None:
             suggested_path = _suggest_correct_path(str(request.url.path))
             
             # This is likely an invalid route
+            message = None
+            if suggested_path:
+                message = f"Did you mean '{suggested_path}'?"
+            else:
+                message = f"Invalid route: {request.method} {request.url.path}"
+            
             error_detail = ErrorDetail(
                 kind=ErrorKind.INVALID_ROUTE,
                 method=request.method,
-                route=str(request.url.path)
+                route=str(request.url.path),
+                message=message
             )
-            
-            # If we detected a typo, add a helpful reason
-            if suggested_path:
-                error_detail.reason = f"Did you mean '{suggested_path}'?"
             
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -294,7 +370,7 @@ def setup_exception_handlers(app: FastAPI) -> None:
                     kind=ErrorKind.INVALID_ROUTE,
                     method=request.method,
                     route=path,
-                    reason=f"Did you mean '{suggested_path}'?"
+                    message=f"Did you mean '{suggested_path}'?"
                 )
                 return JSONResponse(
                     status_code=status.HTTP_404_NOT_FOUND,
@@ -318,7 +394,7 @@ def setup_exception_handlers(app: FastAPI) -> None:
                                     kind=ErrorKind.INVALID_ROUTE,
                                     method=request.method,
                                     route=path,
-                                    reason=f"Did you mean '{suggested_path}'?"
+                                    message=f"Did you mean '{suggested_path}'?"
                                 )
                                 return JSONResponse(
                                     status_code=status.HTTP_404_NOT_FOUND,
@@ -328,7 +404,7 @@ def setup_exception_handlers(app: FastAPI) -> None:
             error_detail = ErrorDetail(
                 kind=ErrorKind.INVALID_PARAMETERS,
                 parameters=["request"],
-                reason=str(exc.detail) if exc.detail else "Invalid request parameters"
+                message=str(exc.detail) if exc.detail else "Invalid request parameters"
             )
             return JSONResponse(
                 status_code=exc.status_code,
@@ -339,7 +415,8 @@ def setup_exception_handlers(app: FastAPI) -> None:
         if 400 <= exc.status_code < 500:
             error_detail = ErrorDetail(
                 kind=ErrorKind.NOT_FOUND,
-                entity="Resource"
+                entity="Resource",
+                message="Resource not found."
             )
             return JSONResponse(
                 status_code=exc.status_code,
@@ -349,7 +426,7 @@ def setup_exception_handlers(app: FastAPI) -> None:
         # For 500 errors, don't expose internal details
         error_detail = ErrorDetail(
             kind=ErrorKind.INTERNAL_SERVER_ERROR,
-            reason="An internal server error occurred"
+            message="An internal server error occurred"
         )
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -372,17 +449,61 @@ def setup_health_check(app: FastAPI) -> None:
         """Health check endpoint."""
         return {"status": "pong"}
 
-    @app.get("/", tags=["health"])
-    async def root():
-        """Root endpoint."""
-        return {
-            "service": "CCDI Federation Service",
-            "version": "1.0.0",
-            "status": "running",
-            "docs": "/docs"
-        }
+    @app.get("/version", tags=["version"])
+    async def version(settings: Settings = Depends(get_settings)):
+        """Version endpoint."""
+        return {"version": settings.app_version}
+
+    # Root endpoint is now handled by root_router (returns API root JSON)
+    # Available at both /api/v1/ and /
     
     logger.info("Health check endpoints configured")
+
+
+def setup_custom_docs_endpoint(app: FastAPI) -> None:
+    """Set up custom Swagger documentation endpoint using embedded.html.
+    
+    This serves a self-contained Swagger UI with:
+    - Custom styling and branding
+    - Embedded OpenAPI spec (works standalone, e.g., for GitHub Pages)
+    - Custom Swagger UI configuration
+    """
+    
+    # Path to embedded.html - from app/main.py, go up 1 level to project root, then docs/
+    embedded_html_path = Path(__file__).resolve().parents[1] / "docs" / "embedded.html"
+    
+    @app.get("/docs", response_class=HTMLResponse, include_in_schema=False)
+    async def serve_custom_docs():
+        """
+        Serve the custom Swagger UI documentation page at /docs.
+        
+        This endpoint serves the embedded.html file which contains a self-contained
+        Swagger UI with the OpenAPI specification embedded inline.
+        Features:
+        - Custom styling and branding
+        - Embedded OpenAPI spec (works standalone, e.g., for GitHub Pages)
+        - Custom Swagger UI configuration
+        
+        The default FastAPI Swagger UI is also available at /docs-api.
+        """
+        try:
+            with embedded_html_path.open("r", encoding="utf-8") as f:
+                html_content = f.read()
+            return HTMLResponse(content=html_content)
+        except FileNotFoundError:
+            logger.error(f"Embedded HTML file not found at {embedded_html_path}")
+            raise HTTPException(
+                status_code=500,
+                detail="Documentation file not found"
+            )
+        except Exception as e:
+            logger.error(f"Error serving documentation: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail="Error loading documentation"
+            )
+    
+    logger.info("Custom /docs endpoint configured (default FastAPI docs available at /docs-api)")
 
 
 # Create the application instance

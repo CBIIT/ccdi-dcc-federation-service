@@ -2,7 +2,7 @@
 	"info": {
 		"_postman_id": "ccdi-federation-service",
 		"name": "CCDI Federation Service API",
-		"description": "REST API for querying CCDI graph database - Complete test collection for all endpoints",
+		"description": "REST API for querying CCDI-DCC graph database - Complete test collection for all endpoints",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
 		"_exporter_id": "ccdi-federation-service"
 	},
@@ -190,12 +190,56 @@
 					}
 				},
 				{
-					"name": "Get Subject by Identifier",
+					"name": "Get Subject by Identifier (CCDI-DCC)",
 					"request": {
 						"method": "GET",
 						"header": [],
 						"url": {
-							"raw": "{{base_url}}/api/{{api_version}}/subject/example-org/example-ns/subject-001",
+							"raw": "{{base_url}}/api/{{api_version}}/subject/CCDI-DCC/CCDI-DCC/TARGET-10-PAKKMW",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"subject",
+								"CCDI-DCC",
+								"CCDI-DCC",
+								"TARGET-10-PAKKMW"
+							]
+						},
+						"description": "Get specific subject by participant ID (works with CCDI-DCC/CCDI-DCC)"
+					}
+				},
+				{
+					"name": "Get Subject by Identifier (Multiple IDs)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/subject/CCDI-DCC/CCDI-DCC/TARGET-10-PAKKMW,TARGET-20-PAWUUE",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"subject",
+								"CCDI-DCC",
+								"CCDI-DCC",
+								"TARGET-10-PAKKMW,TARGET-20-PAWUUE"
+							]
+						},
+						"description": "Get specific subject by multiple participant IDs (returns first match)"
+					}
+				},
+				{
+					"name": "Get Subject by Identifier (Other Org)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/subject/example-org/example-namespace/subject-001",
 							"host": [
 								"{{base_url}}"
 							],
@@ -204,11 +248,131 @@
 								"{{api_version}}",
 								"subject",
 								"example-org",
-								"example-ns",
+								"example-namespace",
 								"subject-001"
 							]
 						},
-						"description": "Get specific subject by organization, namespace, and name"
+						"description": "Get specific subject by organization, namespace, and name (non-CCDI-DCC)"
+					}
+				},
+				{
+					"name": "Get Subject by Participant ID (Single)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/subject/CCDI-DCC/CCDI-DCC/subject-001",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"subject",
+								"CCDI-DCC",
+								"CCDI-DCC",
+								"subject-001"
+							]
+						},
+						"description": "Get a single subject by participant ID (org and namespace must be CCDI-DCC)"
+					}
+				},
+				{
+					"name": "Get Subject by Participant ID (Multiple)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/subject/CCDI-DCC/CCDI-DCC/subject-001,subject-002,subject-003",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+                                "subject",
+                                "CCDI-DCC",
+                                "CCDI-DCC",
+                                "subject-001,subject-002,subject-003"
+							]
+						},
+						"description": "Get multiple subjects by participant IDs separated by commas (org and namespace must be CCDI-DCC)"
+					}
+				},
+				{
+					"name": "Get Subject by Participant ID with Pagination",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/subject/CCDI-DCC/CCDI-DCC/subject-001,subject-002?page=1&per_page=10",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+                                "subject",
+                                "CCDI-DCC",
+                                "CCDI-DCC",
+                                "subject-001,subject-002"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "per_page",
+									"value": "10"
+								}
+							]
+						},
+						"description": "Get multiple subjects with pagination (org and namespace must be CCDI-DCC)"
+					}
+				},
+				{
+					"name": "Get Subject by Participant ID - Invalid Org",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/subject/wrong-org/CCDI-DCC/subject-001",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+                                "subject",
+                                "wrong-org",
+                                "CCDI-DCC",
+                                "subject-001"
+							]
+						},
+						"description": "Test error handling for invalid organization (should return 400 Bad Request)"
+					}
+				},
+				{
+					"name": "Get Subject by Participant ID - Invalid Namespace",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/subject/CCDI-DCC/wrong-namespace/subject-001",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+                                "subject",
+                                "CCDI-DCC",
+                                "wrong-namespace",
+                                "subject-001"
+							]
+						},
+						"description": "Test error handling for invalid namespace (should return 400 Bad Request)"
 					}
 				},
 				{
@@ -493,7 +657,7 @@
 						"method": "GET",
 						"header": [],
 						"url": {
-							"raw": "{{base_url}}/api/{{api_version}}/sample/example-org/example-ns/sample-001",
+							"raw": "{{base_url}}/api/{{api_version}}/sample/example-org/example-namespace/sample-001",
 							"host": [
 								"{{base_url}}"
 							],
@@ -502,7 +666,7 @@
 								"{{api_version}}",
 								"sample",
 								"example-org",
-								"example-ns",
+								"example-namespace",
 								"sample-001"
 							]
 						},
@@ -730,7 +894,7 @@
 						"method": "GET",
 						"header": [],
 						"url": {
-							"raw": "{{base_url}}/api/{{api_version}}/file/example-org/example-ns/file-001.bam",
+							"raw": "{{base_url}}/api/{{api_version}}/file/example-org/example-namespace/file-001.bam",
 							"host": [
 								"{{base_url}}"
 							],
@@ -739,7 +903,7 @@
 								"{{api_version}}",
 								"file",
 								"example-org",
-								"example-ns",
+								"example-namespace",
 								"file-001.bam"
 							]
 						},
@@ -942,7 +1106,7 @@
 						"method": "GET",
 						"header": [],
 						"url": {
-							"raw": "{{base_url}}/api/{{api_version}}/namespace/example-org/example-ns",
+							"raw": "{{base_url}}/api/{{api_version}}/namespace/example-org/example-namespace",
 							"host": [
 								"{{base_url}}"
 							],
@@ -951,7 +1115,7 @@
 								"{{api_version}}",
 								"namespace",
 								"example-org",
-								"example-ns"
+								"example-namespace"
 							]
 						},
 						"description": "Get details for a specific namespace"
@@ -1019,7 +1183,7 @@
 						"method": "GET",
 						"header": [],
 						"url": {
-							"raw": "{{base_url}}/api/{{api_version}}/subject/nonexistent-org/nonexistent-ns/nonexistent-subject",
+							"raw": "{{base_url}}/api/{{api_version}}/subject/nonexistent-org/nonexistent-namespace/nonexistent-subject",
 							"host": [
 								"{{base_url}}"
 							],
@@ -1028,7 +1192,7 @@
 								"{{api_version}}",
 								"subject",
 								"nonexistent-org",
-								"nonexistent-ns",
+								"nonexistent-namespace",
 								"nonexistent-subject"
 							]
 						},
@@ -1063,7 +1227,7 @@
 						"method": "GET",
 						"header": [],
 						"url": {
-							"raw": "{{base_url}}/api/{{api_version}}/namespace/nonexistent-org/nonexistent-ns",
+							"raw": "{{base_url}}/api/{{api_version}}/namespace/nonexistent-org/nonexistent-namespace",
 							"host": [
 								"{{base_url}}"
 							],
@@ -1072,7 +1236,7 @@
 								"{{api_version}}",
 								"namespace",
 								"nonexistent-org",
-								"nonexistent-ns"
+								"nonexistent-namespace"
 							]
 						},
 						"description": "Test 404 error handling for non-existent namespace"

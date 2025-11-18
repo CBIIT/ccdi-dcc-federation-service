@@ -936,6 +936,59 @@
                               }
                         }
                   }
+            },
+            "/info": {
+                  "get": {
+                        "tags": [
+                              "Info"
+                        ],
+                        "summary": "API info",
+                        "description": "Returns the API information including server, API, and data details.",
+                        "operationId": "api_info",
+                        "responses": {
+                              "200": {
+                                    "description": "Successful operation.",
+                                    "content": {
+                                          "application/json": {
+                                                "schema": {
+                                                      "$ref": "#/components/schemas/InfoResponse"
+                                                },
+                                                "example": {
+                                                      "server": {
+                                                            "name": "CCDI-DCC",
+                                                            "version": "v1.0",
+                                                            "owner": "Childhood Cancer Data Initiative Data Coordinating Center",
+                                                            "contact_email": "NCIChildhoodCancerDataInitiative@mail.nih.gov"
+                                                      },
+                                                      "api": {
+                                                            "api_version": "v1.2.0",
+                                                            "documentation_url": "https://cbiit.github.io/ccdi-federation-api/"
+                                                      },
+                                                      "data": {
+                                                            "version": {
+                                                                  "version": "3.1.0",
+                                                                  "about_url": "https://cbiit.github.io/crdc-data-model-navigator/?config=https://raw.githubusercontent.com/CBIIT/ccdi-dcc-model/refs/heads/main/"
+                                                            },
+                                                            "last_updated": "September 12, 2025",
+                                                            "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki",
+                                                            "documentation_url": "https://cbiit.github.io/ccdi-dcc-federation-service/docs/index.html"
+                                                      }
+                                                }
+                                          }
+                                    }
+                              },
+                              "500": {
+                                    "description": "Internal server error.",
+                                    "content": {
+                                          "application/json": {
+                                                "schema": {
+                                                      "$ref": "#/components/schemas/ErrorsResponse"
+                                                }
+                                          }
+                                    }
+                              }
+                        }
+                  }
             }
       },
       "components": {
@@ -1858,6 +1911,122 @@
                         "required": [
                               "fields"
                         ]
+                  },
+                  "InfoResponse": {
+                        "type": "object",
+                        "description": "API information response containing server, API, and data details.",
+                        "properties": {
+                              "server": {
+                                    "$ref": "#/components/schemas/ServerInfo"
+                              },
+                              "api": {
+                                    "$ref": "#/components/schemas/ApiInfo"
+                              },
+                              "data": {
+                                    "$ref": "#/components/schemas/DataInfo"
+                              }
+                        },
+                        "required": [
+                              "server",
+                              "api",
+                              "data"
+                        ]
+                  },
+                  "ServerInfo": {
+                        "type": "object",
+                        "description": "Server information.",
+                        "properties": {
+                              "name": {
+                                    "type": "string",
+                                    "example": "CCDI-DCC"
+                              },
+                              "version": {
+                                    "type": "string",
+                                    "example": "v1.0"
+                              },
+                              "owner": {
+                                    "type": "string",
+                                    "example": "Childhood Cancer Data Initiative Data Coordinating Center"
+                              },
+                              "contact_email": {
+                                    "type": "string",
+                                    "format": "email",
+                                    "example": "NCIChildhoodCancerDataInitiative@mail.nih.gov"
+                              }
+                        },
+                        "required": [
+                              "name",
+                              "version",
+                              "owner",
+                              "contact_email"
+                        ]
+                  },
+                  "ApiInfo": {
+                        "type": "object",
+                        "description": "API information.",
+                        "properties": {
+                              "api_version": {
+                                    "type": "string",
+                                    "example": "v1.2.0"
+                              },
+                              "documentation_url": {
+                                    "type": "string",
+                                    "format": "uri",
+                                    "example": "https://cbiit.github.io/ccdi-federation-api/"
+                              }
+                        },
+                        "required": [
+                              "api_version",
+                              "documentation_url"
+                        ]
+                  },
+                  "DataInfo": {
+                        "type": "object",
+                        "description": "Data information.",
+                        "properties": {
+                              "version": {
+                                    "$ref": "#/components/schemas/DataVersion"
+                              },
+                              "last_updated": {
+                                    "type": "string",
+                                    "example": "September 12, 2025"
+                              },
+                              "wiki_url": {
+                                    "type": "string",
+                                    "format": "uri",
+                                    "example": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki"
+                              },
+                              "documentation_url": {
+                                    "type": "string",
+                                    "format": "uri",
+                                    "example": "https://cbiit.github.io/ccdi-dcc-federation-service/docs/index.html"
+                              }
+                        },
+                        "required": [
+                              "version",
+                              "last_updated",
+                              "wiki_url",
+                              "documentation_url"
+                        ]
+                  },
+                  "DataVersion": {
+                        "type": "object",
+                        "description": "Data version information.",
+                        "properties": {
+                              "version": {
+                                    "type": "string",
+                                    "example": "3.1.0"
+                              },
+                              "about_url": {
+                                    "type": "string",
+                                    "format": "uri",
+                                    "example": "https://cbiit.github.io/crdc-data-model-navigator/?config=https://raw.githubusercontent.com/CBIIT/ccdi-dcc-model/refs/heads/main/"
+                              }
+                        },
+                        "required": [
+                              "version",
+                              "about_url"
+                        ]
                   }
             }
       },
@@ -1877,6 +2046,10 @@
             {
                   "name": "Organization",
                   "description": "List and describe organizations known by this server."
+            },
+            {
+                  "name": "Info",
+                  "description": "API information including server, API, and data details."
             },
             {
                   "name": "Errors",

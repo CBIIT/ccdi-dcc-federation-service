@@ -68,12 +68,15 @@ def create_app() -> FastAPI:
         version="1.0.0",
         openapi_url="/openapi.json",
         docs_url="/docs-api",  # Default FastAPI Swagger UI at /docs-api
-        redoc_url="/redoc",  # Enable ReDoc at /redoc
+        redoc_url=None,  # Disable default ReDoc, using custom endpoint instead
         lifespan=lifespan
     )
     
     # Add middleware
     setup_middleware(app, settings)
+    
+    # Add custom docs endpoints FIRST (before exception handlers and routers) to ensure they're registered
+    setup_custom_docs_endpoint(app)
     
     # Add exception handlers
     setup_exception_handlers(app)
@@ -83,9 +86,6 @@ def create_app() -> FastAPI:
     
     # Add health check
     setup_health_check(app)
-    
-    # Add custom docs endpoint (serves embedded.html with custom styling)
-    setup_custom_docs_endpoint(app)
     
     logger.info("FastAPI application created")
     return app
@@ -286,6 +286,12 @@ def setup_exception_handlers(app: FastAPI) -> None:
                 content=exc.detail
             )
         
+        # Exclude documentation endpoints from 404 handling
+        path = str(request.url.path)
+        if path in ["/redoc", "/docs", "/docs-api", "/openapi.json"]:
+            # Let FastAPI handle these routes normally
+            raise exc
+        
         # Handle 404 errors - all 404s are treated as InvalidRoute
         if exc.status_code == 404:
             # Log the full details (including the actual route)
@@ -357,6 +363,12 @@ def setup_exception_handlers(app: FastAPI) -> None:
                 status_code=exc.status_code,
                 content=exc.detail
             )
+        
+        # Exclude documentation endpoints from 404 handling
+        path = str(request.url.path)
+        if path in ["/redoc", "/docs", "/docs-api", "/openapi.json"]:
+            # Let FastAPI handle these routes normally
+            raise exc
         
         # Handle 404 errors - check if invalid route or missing resource
         if exc.status_code == 404:
@@ -569,7 +581,94 @@ def setup_custom_docs_endpoint(app: FastAPI) -> None:
                 detail="Error loading documentation"
             )
     
+    # Custom ReDoc endpoint to ensure it works properly
+    @app.get("/redoc", include_in_schema=False)
+    async def serve_redoc(request: Request):
+        """
+        Serve ReDoc documentation page at /redoc.
+        
+        This is a custom implementation to ensure ReDoc works properly
+        with the OpenAPI 3.1.0 specification.
+        """
+        logger.debug(f"Serving ReDoc at /redoc, base_url: {request.base_url}")
+        try:
+            # Build absolute OpenAPI URL from the request
+            openapi_url = app.openapi_url
+            if not openapi_url.startswith("http"):
+                # Make it absolute based on the request
+                base_url = str(request.base_url).rstrip("/")
+                openapi_url = f"{base_url}{openapi_url}"
+            
+            logger.debug(f"ReDoc OpenAPI URL: {openapi_url}")
+            
+            # Create custom ReDoc HTML with explicit configuration
+            # Using ReDoc latest version with JavaScript API for better OpenAPI 3.1.0 support
+            redoc_html = f"""<!DOCTYPE html>
+<html>
+  <head>
+    <title>{app.title} - ReDoc</title>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link href="https://fonts.googleapis.com/css?family=Montserrat:300,400,700|Roboto:300,400,700" rel="stylesheet">
+    <style>
+      body {{
+        margin: 0;
+        padding: 0;
+      }}
+    </style>
+  </head>
+  <body>
+    <div id="redoc-container"></div>
+    <script src="https://cdn.jsdelivr.net/npm/redoc@latest/bundles/redoc.standalone.js"></script>
+    <script>
+      // Initialize ReDoc with JavaScript API
+      window.addEventListener('load', function() {{
+        try {{
+          Redoc.init("{openapi_url}", {{
+            scrollYOffset: 0,
+            hideDownloadButton: false,
+            expandResponses: "200,201",
+            pathInMiddlePanel: true,
+            theme: {{
+              typography: {{
+                fontSize: "14px",
+                lineHeight: "1.5em",
+                code: {{
+                  fontSize: "13px"
+                }}
+              }},
+              colors: {{
+                primary: {{
+                  main: "#32329f"
+                }}
+              }}
+            }}
+          }}, document.getElementById("redoc-container"));
+          console.log("ReDoc initialized successfully");
+        }} catch (error) {{
+          console.error("Error initializing ReDoc:", error);
+          document.getElementById("redoc-container").innerHTML = 
+            '<div style="padding: 20px; color: red;">Error loading ReDoc documentation. Please check the console for details.</div>';
+        }}
+      }});
+      
+      // Error handling for ReDoc
+      window.addEventListener('error', function(e) {{
+        console.error('ReDoc error:', e);
+      }});
+    </script>
+  </body>
+</html>"""
+            return HTMLResponse(content=redoc_html)
+        except Exception as e:
+            logger.error(f"Error serving ReDoc: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail="Error loading ReDoc documentation"
+            )
+    
     logger.info("Custom /docs endpoint configured (default FastAPI docs available at /docs-api)")
+    logger.info("Custom /redoc endpoint configured")
 
 
 # Create the application instance

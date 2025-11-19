@@ -464,7 +464,7 @@ paths:
                     example: "CCDI DCC Federation API Server"
                   version:
                     type: string
-                    example: "v1.2.0"
+                    example: "v1.0.0"
                   description:
                     type: string
                     example: "CCDI DCC Federation API Implementation"
@@ -505,7 +505,7 @@ paths:
                 properties:
                   version:
                     type: string
-                    example: "v1.2.0"
+                    example: "v1.0.0"
                 required:
                 - version
   /namespace:

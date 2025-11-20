@@ -539,37 +539,60 @@ def setup_health_check(app: FastAPI) -> None:
 
 
 def setup_custom_docs_endpoint(app: FastAPI) -> None:
-    """Set up custom Swagger documentation endpoint using embedded.html.
+    """Set up custom Swagger documentation endpoints.
     
-    This serves a self-contained Swagger UI with:
-    - Custom styling and branding
-    - Embedded OpenAPI spec (works standalone, e.g., for GitHub Pages)
-    - Custom Swagger UI configuration
+    Provides two options:
+    1. /docs - Dynamic version that loads spec from server's /openapi.json
+    2. /docs-embedded - Static version with spec embedded inline (self-contained)
     """
     
-    # Path to embedded.html - from app/main.py, go up 1 level to project root, then docs/
-    embedded_html_path = Path(__file__).resolve().parents[1] / "docs" / "embedded.html"
+    # Paths to HTML files - from app/main.py, go up 1 level to project root, then docs/
+    docs_dir = Path(__file__).resolve().parents[1] / "docs"
+    index_html_path = docs_dir / "index.html"
+    embedded_html_path = docs_dir / "embedded.html"
     
     @app.get("/docs", response_class=HTMLResponse, include_in_schema=False)
-    async def serve_custom_docs():
+    async def serve_custom_docs(request: Request):
         """
-        Serve the custom Swagger UI documentation page at /docs.
+        Serve the dynamic Swagger UI documentation page at /docs.
         
-        This endpoint serves the embedded.html file which contains a self-contained
-        Swagger UI with the OpenAPI specification embedded inline.
+        This endpoint serves the index.html file which contains a Swagger UI
+        that loads the OpenAPI specification from the server's /openapi.json endpoint.
+        
         Features:
         - Custom styling and branding
-        - Embedded OpenAPI spec (works standalone, e.g., for GitHub Pages)
+        - Dynamic OpenAPI spec loading from server (always up-to-date)
         - Custom Swagger UI configuration
+        - Same format as GitHub Pages for consistency
         
+        For a self-contained version with embedded spec, use /docs-embedded.
         The default FastAPI Swagger UI is also available at /docs-api.
         """
         try:
-            with embedded_html_path.open("r", encoding="utf-8") as f:
+            with index_html_path.open("r", encoding="utf-8") as f:
                 html_content = f.read()
+            
+            # Replace the GitHub Pages spec URL with the server's OpenAPI endpoint
+            # Build absolute OpenAPI URL from the request
+            openapi_url = app.openapi_url
+            if not openapi_url.startswith("http"):
+                base_url = str(request.base_url).rstrip("/")
+                openapi_url = f"{base_url}{openapi_url}"
+            
+            # Replace the hardcoded GitHub Pages URL with the server's OpenAPI URL
+            html_content = html_content.replace(
+                "url: 'https://cbiit.github.io/ccdi-dcc-federation-service/docs/swagger.yml',",
+                f"url: '{openapi_url}',"
+            )
+            # Also handle the alternative local file reference
+            html_content = html_content.replace(
+                "// url: './swagger.yml',",
+                f"// url: '{openapi_url}',"
+            )
+            
             return HTMLResponse(content=html_content)
         except FileNotFoundError:
-            logger.error(f"Embedded HTML file not found at {embedded_html_path}")
+            logger.error(f"Index HTML file not found at {index_html_path}")
             raise HTTPException(
                 status_code=500,
                 detail="Documentation file not found"
@@ -579,6 +602,40 @@ def setup_custom_docs_endpoint(app: FastAPI) -> None:
             raise HTTPException(
                 status_code=500,
                 detail="Error loading documentation"
+            )
+    
+    @app.get("/docs-embedded", response_class=HTMLResponse, include_in_schema=False)
+    async def serve_embedded_docs():
+        """
+        Serve the self-contained Swagger UI documentation page at /docs-embedded.
+        
+        This endpoint serves the embedded.html file which contains a Swagger UI
+        with the OpenAPI specification embedded inline in the HTML.
+        
+        Features:
+        - Self-contained (no external spec file needed)
+        - Works offline and can be downloaded as a single file
+        - No CORS issues
+        - Faster initial load (no spec fetch required)
+        - Portable and distributable
+        
+        For a dynamic version that loads the live spec from the server, use /docs.
+        """
+        try:
+            with embedded_html_path.open("r", encoding="utf-8") as f:
+                html_content = f.read()
+            return HTMLResponse(content=html_content)
+        except FileNotFoundError:
+            logger.error(f"Embedded HTML file not found at {embedded_html_path}")
+            raise HTTPException(
+                status_code=500,
+                detail="Embedded documentation file not found"
+            )
+        except Exception as e:
+            logger.error(f"Error serving embedded documentation: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail="Error loading embedded documentation"
             )
     
     # Custom ReDoc endpoint to ensure it works properly
@@ -667,7 +724,9 @@ def setup_custom_docs_endpoint(app: FastAPI) -> None:
                 detail="Error loading ReDoc documentation"
             )
     
-    logger.info("Custom /docs endpoint configured (default FastAPI docs available at /docs-api)")
+    logger.info("Custom /docs endpoint configured (dynamic, loads spec from server)")
+    logger.info("Custom /docs-embedded endpoint configured (static, self-contained)")
+    logger.info("Default FastAPI docs available at /docs-api")
     logger.info("Custom /redoc endpoint configured")
 
 

@@ -732,7 +732,20 @@ def setup_custom_docs_endpoint(app: FastAPI) -> None:
             
             # Use filtered OpenAPI endpoint for /docs (excludes certain endpoints)
             # /docs-api will use the full /openapi.json
-            base_url = str(request.base_url).rstrip("/")
+            # Determine the correct scheme (http vs https) - check X-Forwarded-Proto header for reverse proxy
+            # Also check X-Forwarded-Host for the correct host if behind a proxy
+            scheme = request.headers.get("X-Forwarded-Proto", request.url.scheme)
+            # Normalize scheme to lowercase and ensure it's https if X-Forwarded-Proto indicates it
+            if scheme:
+                scheme = scheme.lower()
+            else:
+                scheme = request.url.scheme
+            
+            # Use X-Forwarded-Host if available (for reverse proxy), otherwise use request.url.netloc
+            host = request.headers.get("X-Forwarded-Host", request.url.netloc)
+            
+            # Build base URL with correct scheme and host
+            base_url = f"{scheme}://{host}".rstrip("/")
             filtered_openapi_url = f"{base_url}/openapi-filtered.json"
             
             # Replace the hardcoded GitHub Pages URL with the filtered OpenAPI URL

@@ -79,10 +79,21 @@ class SubjectRepository:
                     param_counter += 1
                     race_param = f"param_{param_counter}"
                     params[race_param] = race_list
+                    
+                    # Check if "Not Reported" is in the filter - if so, also match "Hispanic or Latino" only records
+                    includes_not_reported = any(r.strip() == "Not Reported" for r in race_list)
+                    
                     race_condition = f""",
                     ${race_param} AS race_tokens,
                     [pt IN SPLIT(COALESCE(p.race, ''), ';') | trim(pt)] AS pr_tokens"""
-                    race_filter_condition = "ANY(tok IN race_tokens WHERE tok IN pr_tokens)"
+                    
+                    if includes_not_reported:
+                        # Match either: "Not Reported" in original values OR "Hispanic or Latino" only (which converts to "Not Reported")
+                        race_filter_condition = """(ANY(tok IN race_tokens WHERE tok IN pr_tokens) OR 
+                        (size(pr_tokens) > 0 AND all(tok IN pr_tokens WHERE tok = 'Hispanic or Latino') AND 'Not Reported' IN race_tokens))"""
+                    else:
+                        # Normal matching - exclude "Hispanic or Latino" from matching since it's removed in conversion
+                        race_filter_condition = "ANY(tok IN race_tokens WHERE tok IN [r IN pr_tokens WHERE r <> 'Hispanic or Latino'])"
         
         # Handle identifiers parameter normalization
         identifiers_condition = ""
@@ -694,12 +705,23 @@ class SubjectRepository:
                     param_counter += 1
                     race_param = f"param_{param_counter}"
                     params[race_param] = race_list
+                    
+                    # Check if "Not Reported" is in the filter - if so, also match "Hispanic or Latino" only records
+                    includes_not_reported = any(r.strip() == "Not Reported" for r in race_list)
+                    
                     race_condition = f""",
                     // race tokens (already normalized to list in Python)
                     ${race_param} AS race_tokens,
                     // tokenize stored semicolon-separated race string
                     [pt IN SPLIT(COALESCE(p.race, ''), ';') | trim(pt)] AS pr_tokens"""
-                    base_where_conditions.append("ANY(tok IN race_tokens WHERE tok IN pr_tokens)")
+                    
+                    if includes_not_reported:
+                        # Match either: "Not Reported" in original values OR "Hispanic or Latino" only (which converts to "Not Reported")
+                        base_where_conditions.append("""(ANY(tok IN race_tokens WHERE tok IN pr_tokens) OR 
+                        (size(pr_tokens) > 0 AND all(tok IN pr_tokens WHERE tok = 'Hispanic or Latino') AND 'Not Reported' IN race_tokens))""")
+                    else:
+                        # Normal matching - exclude "Hispanic or Latino" from matching since it's removed in conversion
+                        base_where_conditions.append("ANY(tok IN race_tokens WHERE tok IN [r IN pr_tokens WHERE r <> 'Hispanic or Latino'])")
         
         # Handle identifiers parameter normalization
         identifiers_condition = ""
@@ -1529,10 +1551,21 @@ WITH p, d, c, st,
                     param_counter += 1
                     race_param = f"param_{param_counter}"
                     params[race_param] = race_list
+                    
+                    # Check if "Not Reported" is in the filter - if so, also match "Hispanic or Latino" only records
+                    includes_not_reported = any(r.strip() == "Not Reported" for r in race_list)
+                    
                     race_condition = f""",
                     ${race_param} AS race_tokens,
                     [pt IN SPLIT(COALESCE(p.race, ''), ';') | trim(pt)] AS pr_tokens"""
-                    race_filter_condition = "ANY(tok IN race_tokens WHERE tok IN pr_tokens)"
+                    
+                    if includes_not_reported:
+                        # Match either: "Not Reported" in original values OR "Hispanic or Latino" only (which converts to "Not Reported")
+                        race_filter_condition = """(ANY(tok IN race_tokens WHERE tok IN pr_tokens) OR 
+                        (size(pr_tokens) > 0 AND all(tok IN pr_tokens WHERE tok = 'Hispanic or Latino') AND 'Not Reported' IN race_tokens))"""
+                    else:
+                        # Normal matching - exclude "Hispanic or Latino" from matching since it's removed in conversion
+                        race_filter_condition = "ANY(tok IN race_tokens WHERE tok IN [r IN pr_tokens WHERE r <> 'Hispanic or Latino'])"
         
         # Handle identifiers parameter normalization
         identifiers_condition = ""

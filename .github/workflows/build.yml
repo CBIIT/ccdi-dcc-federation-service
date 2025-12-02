@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     env:
-        ECR_REPOSITORY: ccdi-dcc-federation-restapi
+        ECR_REPOSITORY: ccdi-federation-dcc
         SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         AWS_ROLE_TO_ASSUME: ${{ secrets.AWS_ROLE_TO_ASSUME }}
         AWS_REGION: ${{ secrets.AWS_REGION }}

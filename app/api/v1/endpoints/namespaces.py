@@ -31,7 +31,7 @@ from fastapi import status
 
 logger = get_logger(__name__)
 
-router = APIRouter(prefix="/namespace", tags=["namespaces"])
+router = APIRouter(prefix="/namespace", tags=["Namespace"])
 
 
 # ============================================================================

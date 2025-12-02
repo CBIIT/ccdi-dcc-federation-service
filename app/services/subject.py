@@ -7,6 +7,7 @@ repositories and API endpoints.
 """
 
 from typing import List, Dict, Any, Optional
+import asyncio
 from neo4j import AsyncSession
 
 from app.core.config import Settings
@@ -69,8 +70,35 @@ class SubjectService:
                 max_allowed=self.settings.pagination.max_per_page
             )
         
-        # Get data from repository
-        subjects = await self.repository.get_subjects(filters, offset, limit, base_url=base_url)
+        # Get data from repository with retry for transient errors
+        max_retries = 2
+        retry_delay = 0.1  # 100ms
+        
+        for attempt in range(max_retries + 1):
+            try:
+                subjects = await self.repository.get_subjects(filters, offset, limit, base_url=base_url)
+                break
+            except Exception as e:
+                # Check if this is a transient error that might benefit from retry
+                error_str = str(e).lower()
+                is_transient = any(keyword in error_str for keyword in [
+                    'timeout', 'connection', 'network', 'temporary', 'unavailable',
+                    'broken pipe', 'connection reset', 'connection closed'
+                ])
+                
+                if is_transient and attempt < max_retries:
+                    logger.warning(
+                        "Transient error detected, retrying",
+                        attempt=attempt + 1,
+                        max_retries=max_retries,
+                        error=str(e),
+                        error_type=type(e).__name__
+                    )
+                    await asyncio.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+                    continue
+                else:
+                    # Not a transient error or max retries reached, re-raise
+                    raise
         
         logger.info(
             "Retrieved subjects",
@@ -235,9 +263,36 @@ class SubjectService:
                         counts=SummaryCounts(total=cached_result.get("total_count", 0))
                     )
         
-        # Get summary from repository
+        # Get summary from repository with retry for transient errors
+        max_retries = 2
+        retry_delay = 0.1  # 100ms
+        
         logger.debug("Calling repository.get_subjects_summary", filters=filters)
-        summary_data = await self.repository.get_subjects_summary(filters)
+        for attempt in range(max_retries + 1):
+            try:
+                summary_data = await self.repository.get_subjects_summary(filters)
+                break
+            except Exception as e:
+                # Check if this is a transient error that might benefit from retry
+                error_str = str(e).lower()
+                is_transient = any(keyword in error_str for keyword in [
+                    'timeout', 'connection', 'network', 'temporary', 'unavailable',
+                    'broken pipe', 'connection reset', 'connection closed'
+                ])
+                
+                if is_transient and attempt < max_retries:
+                    logger.warning(
+                        "Transient error detected in get_subjects_summary, retrying",
+                        attempt=attempt + 1,
+                        max_retries=max_retries,
+                        error=str(e),
+                        error_type=type(e).__name__
+                    )
+                    await asyncio.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+                    continue
+                else:
+                    # Not a transient error or max retries reached, re-raise
+                    raise
         logger.debug("Repository returned", total_count=summary_data.get("total_count"))
         
         # Transform repository format to response format

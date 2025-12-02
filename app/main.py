@@ -23,6 +23,7 @@ from app.core.cache import redis_lifespan
 from app.db.memgraph import memgraph_lifespan, DatabaseConnectionError
 from app.api.v1.endpoints.subjects import router as subjects_router
 from app.api.v1.endpoints.samples import router as samples_router
+from app.api.v1.endpoints.experimental import router as experimental_router
 from app.api.v1.endpoints.files import router as files_router
 from app.api.v1.endpoints.metadata import router as metadata_router
 from app.api.v1.endpoints.namespaces import router as namespaces_router
@@ -69,8 +70,164 @@ def create_app() -> FastAPI:
         openapi_url="/openapi.json",
         docs_url="/docs-api",  # Default FastAPI Swagger UI at /docs-api
         redoc_url=None,  # Disable default ReDoc, using custom endpoint instead
-        lifespan=lifespan
+        lifespan=lifespan,
+        openapi_tags=[
+            {
+                "name": "Subject",
+                "description": "Subjects within the CCDI-DCC ecosystem."
+            },
+            {
+                "name": "Sample",
+                "description": "Samples within the CCDI-DCC ecosystem."
+            },
+            {
+                "name": "File",
+                "description": "Files within the CCDI-DCC ecosystem.-- (sequencing files only this release)"
+            },
+            {
+                "name": "Metadata",
+                "description": "List and describe provided metadata fields."
+            },
+            {
+                "name": "Namespace",
+                "description": "List and describe namespaces known by this server."
+            },
+            {
+                "name": "Organization",
+                "description": "List and describe organizations known by this server."
+            },
+            {
+                "name": "Info",
+                "description": "Information about the API implementation itself."
+            },
+            # {
+            #     "name": "Experimental",
+            #     "description": "Endpoints and features in an experimental phase."
+            # },
+            # {
+            #     "name": "Errors",
+            #     "description": "Errors within the CCDI-DCC ecosystem."
+            # },
+            # {
+            #     "name": "Root",
+            #     "description": "Root endpoints within the CCDI-DCC ecosystem."
+            # }
+        ]
     )
+    
+    # Customize OpenAPI schema to replace 422 "Validation Error" descriptions
+    def custom_openapi():
+        if app.openapi_schema:
+            return app.openapi_schema
+        from fastapi.openapi.utils import get_openapi
+        openapi_schema = get_openapi(
+            title=app.title,
+            version=app.version,
+            description=app.description,
+            routes=app.routes,
+        )
+        # Add tag descriptions from app.openapi_tags
+        if hasattr(app, 'openapi_tags') and app.openapi_tags:
+            openapi_schema["tags"] = app.openapi_tags
+        
+        # Replace "Validation Error" with "Invalid query or path parameters." in 422 responses
+        # Also remove 404 and 422 responses from /api/v1/sample/summary and /api/v1/file/summary endpoints
+        for path, path_item in openapi_schema.get("paths", {}).items():
+            for method, operation in path_item.items():
+                if isinstance(operation, dict) and "responses" in operation:
+                    # Remove 404 and 422 responses from /api/v1/sample/summary endpoint
+                    if path == "/api/v1/sample/summary" or path.endswith("/sample/summary"):
+                        if "404" in operation["responses"]:
+                            del operation["responses"]["404"]
+                        if "422" in operation["responses"]:
+                            del operation["responses"]["422"]
+                    # Remove 404 and 422 responses from /api/v1/file/summary endpoint
+                    elif path == "/api/v1/file/summary" or path.endswith("/file/summary"):
+                        if "404" in operation["responses"]:
+                            del operation["responses"]["404"]
+                        if "422" in operation["responses"]:
+                            del operation["responses"]["422"]
+                    # Remove 422 response from /api/v1/sample/by/{field}/count endpoint (uses 400 instead)
+                    elif "/sample/by/" in path and path.endswith("/count"):
+                        if "422" in operation["responses"]:
+                            del operation["responses"]["422"]
+                    # Remove 422 and 404 responses from /api/v1/file/by/{field}/count endpoint (uses 400 instead)
+                    elif "/file/by/" in path and path.endswith("/count"):
+                        if "422" in operation["responses"]:
+                            del operation["responses"]["422"]
+                        if "404" in operation["responses"]:
+                            del operation["responses"]["404"]
+                    elif "422" in operation["responses"]:
+                        response_422 = operation["responses"]["422"]
+                        if "description" in response_422:
+                            if response_422["description"] == "Validation Error":
+                                response_422["description"] = "Invalid query or path parameters."
+                        
+                        # Customize the 422 error example to use ErrorsResponse format
+                        if "content" in response_422 and "application/json" in response_422["content"]:
+                            content = response_422["content"]["application/json"]
+                            # Replace the default HTTPValidationError schema with ErrorsResponse
+                            if "schema" in content:
+                                # Change schema reference to ErrorsResponse
+                                content["schema"] = {"$ref": "#/components/schemas/ErrorsResponse"}
+                            # Add custom example
+                            if "example" not in content:
+                                content["example"] = {
+                                    "errors": [
+                                        {
+                                            "kind": "InvalidParameters",
+                                            "parameters": [],
+                                            "message": "Invalid query parameter(s) provided.",
+                                            "reason": "Unknown query parameter(s)"
+                                        }
+                                    ]
+                                }
+        
+        app.openapi_schema = openapi_schema
+        return app.openapi_schema
+    
+    app.openapi = custom_openapi
+    
+    # Create a filtered OpenAPI schema for /docs (excludes certain endpoints)
+    # This keeps endpoints visible in /docs-api but hides them from /docs
+    def get_filtered_openapi():
+        """Get filtered OpenAPI schema with certain endpoints excluded."""
+        # Get the full schema
+        full_schema = app.openapi()
+        
+        # Create a copy to avoid modifying the original
+        import copy
+        filtered_schema = copy.deepcopy(full_schema)
+        
+        # Define paths to exclude from /docs (but keep in /docs-api)
+        excluded_paths = [
+            # Add paths to exclude here (regex patterns supported)
+            "/health",  # Example: uncomment to hide this endpoint
+            "/ping",
+            "/version",
+            "/api/v1/errors/examples",
+            # "/api/v1/experimental/.*",  # Example: uncomment to hide all experimental endpoints
+        ]
+        
+        if excluded_paths:
+            paths_to_remove = []
+            for path in filtered_schema.get("paths", {}):
+                for excluded_pattern in excluded_paths:
+                    import re
+                    if re.match(excluded_pattern.replace("*", ".*"), path):
+                        paths_to_remove.append(path)
+                        break
+            
+            for path in paths_to_remove:
+                del filtered_schema["paths"][path]
+        
+        return filtered_schema
+    
+    # Add filtered OpenAPI endpoint for /docs
+    @app.get("/openapi-filtered.json", include_in_schema=False)
+    async def get_filtered_openapi_schema():
+        """Get filtered OpenAPI schema (excludes certain endpoints for /docs)."""
+        return get_filtered_openapi()
     
     # Add middleware
     setup_middleware(app, settings)
@@ -181,11 +338,12 @@ def setup_routers(app: FastAPI) -> None:
     # Add subject routes
     app.include_router(subjects_router, prefix="/api/v1")
     
-    # Add sample routes (commented out - not shown in Swagger docs)
-    # app.include_router(samples_router, prefix="/api/v1")
+    # Add sample routes
+    app.include_router(samples_router, prefix="/api/v1")
+    app.include_router(experimental_router, prefix="/api/v1")
     
-    # Add file routes (commented out - not shown in Swagger docs)
-    # app.include_router(files_router, prefix="/api/v1")
+    # Add file routes
+    app.include_router(files_router, prefix="/api/v1")
     
     # Add metadata routes
     app.include_router(metadata_router, prefix="/api/v1")
@@ -572,22 +730,20 @@ def setup_custom_docs_endpoint(app: FastAPI) -> None:
             with index_html_path.open("r", encoding="utf-8") as f:
                 html_content = f.read()
             
-            # Replace the GitHub Pages spec URL with the server's OpenAPI endpoint
-            # Build absolute OpenAPI URL from the request
-            openapi_url = app.openapi_url
-            if not openapi_url.startswith("http"):
-                base_url = str(request.base_url).rstrip("/")
-                openapi_url = f"{base_url}{openapi_url}"
+            # Use filtered OpenAPI endpoint for /docs (excludes certain endpoints)
+            # /docs-api will use the full /openapi.json
+            base_url = str(request.base_url).rstrip("/")
+            filtered_openapi_url = f"{base_url}/openapi-filtered.json"
             
-            # Replace the hardcoded GitHub Pages URL with the server's OpenAPI URL
+            # Replace the hardcoded GitHub Pages URL with the filtered OpenAPI URL
             html_content = html_content.replace(
                 "url: 'https://cbiit.github.io/ccdi-dcc-federation-service/docs/swagger.yml',",
-                f"url: '{openapi_url}',"
+                f"url: '{filtered_openapi_url}',"
             )
             # Also handle the alternative local file reference
             html_content = html_content.replace(
                 "// url: './swagger.yml',",
-                f"// url: '{openapi_url}',"
+                f"// url: '{filtered_openapi_url}',"
             )
             
             return HTMLResponse(content=html_content)

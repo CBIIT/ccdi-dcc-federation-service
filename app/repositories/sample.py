@@ -12,6 +12,8 @@ from app.core.logging import get_logger
 from app.lib.field_allowlist import FieldAllowlist
 from app.models.dto import Sample
 from app.models.errors import UnsupportedFieldError
+from app.core.config import Settings
+from app.core.constants import Race
 
 logger = get_logger(__name__)
 
@@ -19,16 +21,46 @@ logger = get_logger(__name__)
 class SampleRepository:
     """Repository for sample data operations."""
     
-    def __init__(self, session: AsyncSession, allowlist: FieldAllowlist):
+    def __init__(self, session: AsyncSession, allowlist: FieldAllowlist, settings: Optional[Settings] = None):
         """Initialize repository with database session and field allowlist."""
         self.session = session
         self.allowlist = allowlist
+        self.settings = settings
+    
+    def _build_sex_normalization_case(self, field: str) -> str:
+        """
+        Build Cypher CASE statement for sex value normalization from config.
+        
+        Args:
+            field: Field name to check
+            
+        Returns:
+            Cypher CASE statement string for sex normalization, or empty string if not sex field
+        """
+        if field != "sex" or not self.settings or not hasattr(self.settings, 'sex_value_mappings'):
+            return ""
+        
+        mappings = self.settings.sex_value_mappings
+        if not mappings:
+            return ""
+        
+        # Build CASE statement from config mappings
+        case_parts = []
+        for db_value, normalized_value in mappings.items():
+            case_parts.append(f"WHEN toString(value) = '{db_value}' OR toString(value) = '{normalized_value}' THEN '{normalized_value}'")
+        
+        # Default fallback (prefer 'U' for unknown/Not Reported if available)
+        default_value = mappings.get("Not Reported", "U") if "Not Reported" in mappings else list(mappings.values())[0] if mappings else "U"
+        case_parts.append(f"ELSE '{default_value}'")
+        
+        return f"CASE {' '.join(case_parts)} END"
         
     async def get_samples(
         self,
         filters: Dict[str, Any],
         offset: int = 0,
-        limit: int = 20
+        limit: int = 20,
+        base_url: Optional[str] = None
     ) -> List[Sample]:
         """
         Get paginated list of samples with filtering.
@@ -56,37 +88,190 @@ class SampleRepository:
         params = {"offset": offset, "limit": limit}
         param_counter = 0
         
+        # Build filter conditions - these will be applied in the WITH clause after collecting diagnoses
+        with_conditions = []
+        
         # Handle diagnosis search
         if "_diagnosis_search" in filters:
             search_term = filters.pop("_diagnosis_search")
-            where_conditions.append("""(
-                toLower(toString(s.diagnosis)) CONTAINS toLower($diagnosis_search_term)
-                OR ANY(key IN keys(s.metadata.unharmonized) 
-                       WHERE toLower(key) CONTAINS 'diagnos' 
-                       AND toLower(toString(s.metadata.unharmonized[key])) CONTAINS toLower($diagnosis_search_term))
-            )""")
+            with_conditions.append("""diagnoses IS NOT NULL AND toLower(toString(diagnoses.diagnosis)) CONTAINS toLower($diagnosis_search_term)""")
             params["diagnosis_search_term"] = search_term
         
-        # Add regular filters
+        # Add regular filters - map to correct nodes based on field
         for field, value in filters.items():
             param_counter += 1
             param_name = f"param_{param_counter}"
             
-            if isinstance(value, list):
-                where_conditions.append(f"s.{field} IN ${param_name}")
+            # Map fields to their source nodes (after WITH clause, so we can reference them directly)
+            if field == "disease_phase":
+                # Filter on diagnosis with matching disease_phase
+                with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase = ${param_name}")
+            elif field == "anatomical_sites":
+                # anatomical_sites can be either a list or a string
+                # Build filter condition for list (will try this first)
+                # Store both versions - will be handled in query execution
+                with_conditions.append(("anatomical_sites_list", param_name))
+                # Also store string version for fallback
+                with_conditions.append(("anatomical_sites_string", param_name))
+            elif field == "library_selection_method":
+                with_conditions.append(f"sf IS NOT NULL AND sf.library_selection = ${param_name}")
+            elif field == "library_strategy":
+                with_conditions.append(f"sf IS NOT NULL AND sf.library_strategy = ${param_name}")
+            elif field == "library_source_material":
+                with_conditions.append(f"sf IS NOT NULL AND sf.library_source_material = ${param_name}")
+            elif field == "preservation_method":
+                with_conditions.append(f"pf IS NOT NULL AND pf.fixation_embedding_method = ${param_name}")
+            elif field == "tumor_grade":
+                with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_grade = ${param_name}")
+            elif field == "age_at_diagnosis":
+                with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.age_at_diagnosis = ${param_name}")
+                # Convert value to number for numeric comparison
+                try:
+                    params[param_name] = int(value) if value is not None else None
+                except (ValueError, TypeError):
+                    params[param_name] = value
+            elif field == "age_at_collection":
+                with_conditions.append(f"sa.participant_age_at_collection = ${param_name}")
+                # Convert value to number for numeric comparison
+                try:
+                    params[param_name] = int(value) if value is not None else None
+                except (ValueError, TypeError):
+                    params[param_name] = value
+            elif field == "depositions":
+                with_conditions.append(f"st IS NOT NULL AND st.study_id = ${param_name}")
+            elif field == "diagnosis":
+                # Check both diagnoses.diagnosis and diagnoses.diagnosis_comment (for "see diagnosis_comment" cases)
+                # If diagnosis is "see diagnosis_comment", check the comment field instead
+                diagnosis_condition = (
+                    f"(diagnoses IS NOT NULL AND "
+                    f"(diagnoses.diagnosis = ${param_name} OR "
+                    f"(toLower(trim(toString(diagnoses.diagnosis))) = 'see diagnosis_comment' AND "
+                    f"diagnoses.diagnosis_comment IS NOT NULL AND "
+                    f"trim(toString(diagnoses.diagnosis_comment)) = ${param_name})))"
+                )
+                with_conditions.append(diagnosis_condition)
             else:
-                where_conditions.append(f"s.{field} = ${param_name}")
-            params[param_name] = value
+                # Default to sample node
+                if isinstance(value, list):
+                    with_conditions.append(f"sa.{field} IN ${param_name}")
+                else:
+                    with_conditions.append(f"sa.{field} = ${param_name}")
+            
+            if field not in ["disease_phase", "tumor_grade", "age_at_diagnosis", "age_at_collection", "diagnosis"]:
+                # For non-diagnosis fields, handle list values
+                if isinstance(value, list):
+                    # Replace the condition we just added with IN version
+                    with_conditions[-1] = with_conditions[-1].replace(f"= ${param_name}", f"IN ${param_name}")
+            
+            # Only set param if not already set (age fields set it above)
+            if param_name not in params:
+                params[param_name] = value
         
-        # Build final query
-        where_clause = ""
-        if where_conditions:
-            where_clause = "WHERE " + " AND ".join(where_conditions)
+        # Separate anatomical_sites conditions from regular conditions
+        anatomical_sites_param = None
+        anatomical_sites_list_condition = None
+        anatomical_sites_string_condition = None
+        regular_conditions = []
         
+        for condition in with_conditions:
+            if isinstance(condition, tuple) and condition[0] == "anatomical_sites_list":
+                anatomical_sites_param = condition[1]
+                anatomical_sites_list_condition = f"sa.anatomic_site IS NOT NULL AND ${condition[1]} IN sa.anatomic_site"
+            elif isinstance(condition, tuple) and condition[0] == "anatomical_sites_string":
+                anatomical_sites_string_condition = f"sa.anatomic_site IS NOT NULL AND ${condition[1]} = sa.anatomic_site"
+            else:
+                regular_conditions.append(condition)
+        
+        # Build WHERE clause conditions
+        all_conditions = regular_conditions.copy()
+        if anatomical_sites_list_condition:
+            all_conditions.append(anatomical_sites_list_condition)
+        
+        where_conditions = [
+            "sa.sample_id IS NOT NULL",
+            "toString(sa.sample_id) <> ''",
+            "st IS NOT NULL"  # Ensure sample has a path to a study
+        ]
+        if all_conditions:
+            where_conditions.extend(all_conditions)
+        
+        where_clause = "\n        WHERE " + " AND ".join(where_conditions) if where_conditions else ""
+        
+        # Determine which OPTIONAL MATCH clauses are needed based on filters
+        # Always include participant for identifiers
+        needs_participant = True  # Always needed for identifiers
+        needs_participant_for_filters = any(
+            field in filters for field in ["sex", "race", "ethnicity", "vital_status", "age_at_vital_status"]
+        ) or any("p." in str(cond) for cond in all_conditions if isinstance(cond, str))
+        
+        needs_diagnosis = any(
+            field in filters for field in ["disease_phase", "tumor_grade", "age_at_diagnosis", "diagnosis"]
+        ) or any("d." in str(cond) or "diagnoses" in str(cond) for cond in all_conditions if isinstance(cond, str))
+        
+        needs_pathology_file = any(
+            field in filters for field in ["preservation_method"]
+        ) or any("pf." in str(cond) for cond in all_conditions if isinstance(cond, str))
+        
+        needs_sequencing_file = any(
+            field in filters for field in ["library_selection_method", "library_strategy", "library_source_material"]
+        ) or any("sf." in str(cond) for cond in all_conditions if isinstance(cond, str))
+        
+        # Build OPTIONAL MATCH clauses
+        optional_matches = []
+        # Always include participant for identifiers
+        optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
+        if needs_diagnosis:
+            optional_matches.append("OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)")
+        if needs_pathology_file:
+            optional_matches.append("OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)")
+        if needs_sequencing_file:
+            optional_matches.append("OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)")
+        # Always include study paths
+        optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)")
+        optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)")
+        
+        optional_matches_str = "\n        ".join(optional_matches) if optional_matches else ""
+        
+        # Build WITH clause - only include variables that were matched
+        with_vars = ["sa", "p"]  # Always include participant for identifiers
+        with_collects = []
+        if needs_diagnosis:
+            with_collects.append("head(collect(DISTINCT d)) AS diagnoses")
+        if needs_pathology_file:
+            with_collects.append("head(collect(DISTINCT pf)) AS pf")
+        if needs_sequencing_file:
+            with_collects.append("head(collect(DISTINCT sf)) AS sf")
+        with_vars.append("coalesce(st1, st2) AS st")
+        
+        with_clause = ", ".join(with_vars)
+        if with_collects:
+            with_clause += ",\n             " + ",\n             ".join(with_collects)
+        
+        # Build RETURN clause - only include variables that were matched
+        return_vars = ["sa", "p", "st"]  # Always include participant for identifiers
+        if needs_sequencing_file:
+            return_vars.append("sf")
+        if needs_pathology_file:
+            return_vars.append("pf")
+        if needs_diagnosis:
+            return_vars.append("diagnoses")
+        
+        return_clause = ", ".join(return_vars)
+        
+        # Build unified query
+        # Only include samples that have a path to a study
+        # Path 1: sample -> cell_line -> study
+        # Path 2: sample -> participant -> consent_group -> study
+        # Build the DISTINCT clause with all return variables
+        distinct_vars = ", ".join(return_vars)
         cypher = f"""
-        MATCH (s:sample)
+        MATCH (sa:sample)
+        {optional_matches_str}
+        WITH {with_clause}
         {where_clause}
-        RETURN s
+        WITH DISTINCT {distinct_vars}
+        RETURN {return_clause}
+        ORDER BY sa.sample_id
         SKIP $offset
         LIMIT $limit
         """.strip()
@@ -94,26 +279,217 @@ class SampleRepository:
         logger.info(
             "Executing get_samples Cypher query",
             cypher=cypher,
-            params=params
+            params=params,
+            with_clause=with_clause,
+            where_clause=where_clause,
+            return_clause=return_clause
         )
         
         # Execute query with proper result consumption
-        result = await self.session.run(cypher, params)
+        # For anatomical_sites, try list version first, fallback to string if it fails
         records = []
-        async for record in result:
-            records.append(dict(record))
+        try:
+            result = await self.session.run(cypher, params)
+            async for record in result:
+                records.append(dict(record))
+            
+            logger.info(
+                "Query executed successfully",
+                records_count=len(records),
+                cypher=cypher[:500] if cypher else None,
+                sample_records=records[:3] if records else []  # Log first 3 records for debugging
+            )
+        except Exception as e:
+            error_msg = str(e).lower()
+            logger.error(
+                "Error executing get_samples query",
+                error=str(e),
+                error_type=type(e).__name__,
+                filters=filters,
+                cypher=cypher[:500] if cypher else None,
+                exc_info=True
+            )
+            # If anatomical_sites filter is present and we got an IN error, try string version
+            if anatomical_sites_param and anatomical_sites_string_condition and ("in expected a list" in error_msg or "in expected" in error_msg):
+                logger.debug("List query failed for anatomical_sites, trying string version")
+                # Rebuild query with string version
+                all_conditions = regular_conditions.copy()
+                all_conditions.append(anatomical_sites_string_condition)  # Use string version
+                
+                # Build WHERE clause conditions - combine sample_id check with filter conditions
+                where_conditions = [
+                    "sa.sample_id IS NOT NULL",
+                    "toString(sa.sample_id) <> ''",
+                    "st IS NOT NULL"  # Ensure sample has a path to a study
+                ]
+                if all_conditions:
+                    where_conditions.extend(all_conditions)
+                
+                where_clause = "\n        WHERE " + " AND ".join(where_conditions) if where_conditions else ""
+                
+                # Use same conditional logic as main query
+                # Determine which OPTIONAL MATCH clauses are needed
+                needs_participant = any("p." in str(cond) for cond in all_conditions if isinstance(cond, str))
+                needs_diagnosis = any("d." in str(cond) or "diagnoses" in str(cond) for cond in all_conditions if isinstance(cond, str))
+                needs_pathology_file = any("pf." in str(cond) for cond in all_conditions if isinstance(cond, str))
+                needs_sequencing_file = any("sf." in str(cond) for cond in all_conditions if isinstance(cond, str))
+                
+                optional_matches = []
+                # Always include participant for identifiers
+                optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
+                if needs_diagnosis:
+                    optional_matches.append("OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)")
+                if needs_pathology_file:
+                    optional_matches.append("OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)")
+                if needs_sequencing_file:
+                    optional_matches.append("OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)")
+                optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)")
+                optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)")
+                
+                optional_matches_str = "\n                ".join(optional_matches) if optional_matches else ""
+                
+                with_vars = ["sa", "p"]  # Always include participant for identifiers
+                with_collects = []
+                if needs_diagnosis:
+                    with_collects.append("head(collect(DISTINCT d)) AS diagnoses")
+                if needs_pathology_file:
+                    with_collects.append("head(collect(DISTINCT pf)) AS pf")
+                if needs_sequencing_file:
+                    with_collects.append("head(collect(DISTINCT sf)) AS sf")
+                with_vars.append("coalesce(st1, st2) AS st")
+                
+                with_clause = ", ".join(with_vars)
+                if with_collects:
+                    with_clause += ",\n                     " + ",\n                     ".join(with_collects)
+                
+                return_vars = ["sa", "p", "st"]  # Always include participant for identifiers
+                if needs_sequencing_file:
+                    return_vars.append("sf")
+                if needs_pathology_file:
+                    return_vars.append("pf")
+                if needs_diagnosis:
+                    return_vars.append("diagnoses")
+                
+                return_clause = ", ".join(return_vars)
+                
+                cypher = f"""
+                MATCH (sa:sample)
+                {optional_matches_str}
+                WITH {with_clause}
+                {where_clause}
+                WITH DISTINCT {return_clause}
+                RETURN {return_clause}
+                ORDER BY sa.sample_id
+                SKIP $offset
+                LIMIT $limit
+                """.strip()
+                
+                try:
+                    result = await self.session.run(cypher, params)
+                    async for record in result:
+                        records.append(dict(record))
+                    logger.debug("Successfully executed anatomical_sites query as string")
+                    logger.info(
+                        "Query executed successfully (string version)",
+                        records_count=len(records),
+                        cypher=cypher[:200] if cypher else None
+                    )
+                except Exception as e2:
+                    logger.error(
+                        "Error executing get_samples Cypher query (both list and string failed for anatomical_sites)",
+                        error=str(e2),
+                        error_type=type(e2).__name__,
+                        cypher=cypher[:500],
+                        exc_info=True
+                )
+                raise
+            else:
+                # Different error, re-raise
+                logger.error(
+                    "Error executing get_samples Cypher query",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    cypher=cypher[:500] if cypher else None,
+                    exc_info=True
+                )
+                raise
         
-        # Convert to Sample objects
+        # Convert to Sample objects (this code runs after successful query execution)
         samples = []
-        for record in records:
-            sample_data = record.get("s", {})
-            samples.append(self._record_to_sample(sample_data))
+        skipped_count = 0
+        for idx, record in enumerate(records):
+            try:
+                # Extract nodes from record
+                sa_node = record.get("sa")
+                p_node = record.get("p")
+                st_node = record.get("st")
+                sf_node = record.get("sf")
+                pf_node = record.get("pf")
+                diagnoses_node = record.get("diagnoses")
+                
+                # Convert Memgraph/Neo4j Node objects to dictionaries
+                # Node objects can be converted using dict() or by accessing .items()
+                def node_to_dict(node):
+                    """Convert a Node object to a dictionary."""
+                    if node is None:
+                        return {}
+                    if isinstance(node, dict):
+                        return node
+                    # Try dict() conversion first (works for Neo4j/Memgraph Node objects)
+                    try:
+                        return dict(node)
+                    except (TypeError, ValueError):
+                        # Fall back to accessing properties
+                        if hasattr(node, 'properties'):
+                            return node.properties
+                        elif hasattr(node, 'items'):
+                            return dict(node.items())
+                        else:
+                            # Last resort: try to get all attributes
+                            return {k: getattr(node, k) for k in dir(node) if not k.startswith('_')}
+                
+                sa = node_to_dict(sa_node)
+                p = node_to_dict(p_node)
+                st = node_to_dict(st_node)
+                sf = node_to_dict(sf_node)
+                pf = node_to_dict(pf_node)
+                # diagnoses is now a single node (or None) - convert to dict
+                diagnoses = node_to_dict(diagnoses_node) if diagnoses_node else None
+                
+                sample = self._record_to_sample(sa, p, st, sf, pf, diagnoses, base_url=base_url)
+                samples.append(sample)
+            except Exception as e:
+                skipped_count += 1
+                logger.warning(
+                    "Error converting record to sample, skipping",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    record_idx=idx,
+                    skipped_count=skipped_count,
+                    record_keys=list(record.keys()) if record else [],
+                    sa_node_type=type(sa_node).__name__ if 'sa_node' in locals() and sa_node else None
+                )
+                # Continue processing other records instead of failing completely
+                continue
         
-        logger.debug(
+        if skipped_count > 0:
+            logger.warning(
+                "Some records were skipped during conversion",
+                total_records=len(records),
+                successful=len(samples),
+                skipped=skipped_count
+            )
+        
+        logger.info(
             "Found samples",
             count=len(samples),
-            filters=filters
+            filters=filters,
+            records_count=len(records) if 'records' in locals() else 0
         )
+        
+        # If no samples found, return empty list (not an error)
+        if not samples:
+            logger.info("No samples found matching criteria", filters=filters)
         
         return samples
     
@@ -121,7 +497,8 @@ class SampleRepository:
         self,
         organization: str,
         namespace: str,
-        name: str
+        name: str,
+        base_url: Optional[str] = None
     ) -> Optional[Sample]:
         """
         Get a specific sample by organization, namespace, and name.
@@ -141,17 +518,30 @@ class SampleRepository:
             name=name
         )
         
-        # Build query to find sample by identifier
+        # Build query to find sample by identifier using relationships
+        # Samples can be connected to studies via:
+        # 1. sample -> participant -> consent_group -> study
+        # 2. sample -> cell_line -> study
         cypher = """
-        MATCH (s:Sample)
-        WHERE s.identifiers CONTAINS $identifier
-        RETURN s
+        MATCH (sa:sample)
+        WHERE sa.sample_id = $sample_name
+        OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+        OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st1:study)
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st2:study)
+        WITH sa, p, coalesce(st1, st2) AS st
+        WHERE st IS NOT NULL AND st.study_id = $namespace
+        OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
+        OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)
+        OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
+        WITH sa, p, st, sf, pf, collect(DISTINCT d) AS diagnoses
+        RETURN sa, p, st, sf, pf, diagnoses
         LIMIT 1
         """
         
-        # Build the full identifier
-        identifier = f"{organization}.{namespace}.{name}"
-        params = {"identifier": identifier}
+        params = {
+            "sample_name": name,
+            "namespace": namespace
+        }
         
         logger.info(
             "Executing get_sample_by_identifier Cypher query",
@@ -166,14 +556,33 @@ class SampleRepository:
             records.append(dict(record))
         
         if not records:
-            logger.debug("Sample not found", identifier=identifier)
+            logger.debug("Sample not found", organization=organization, namespace=namespace, name=name)
             return None
         
         # Convert to Sample object
-        sample_data = records[0].get("s", {})
-        sample = self._record_to_sample(sample_data)
+        record = records[0]
+        # Convert Neo4j Node objects to dictionaries
+        sa_node = record.get("sa")
+        p_node = record.get("p")
+        st_node = record.get("st")
+        sf_node = record.get("sf")
+        pf_node = record.get("pf")
+        diagnoses_nodes = record.get("diagnoses", [])
         
-        logger.debug("Found sample", identifier=identifier, id=sample.id)
+        # Convert nodes to dictionaries
+        sa = dict(sa_node) if sa_node else {}
+        p = dict(p_node) if p_node else {}
+        st = dict(st_node) if st_node else {}
+        sf = dict(sf_node) if sf_node else {}
+        pf = dict(pf_node) if pf_node else {}
+        diagnoses = [dict(d) if d else {} for d in diagnoses_nodes]
+        
+        # Handle diagnoses - take first one if it's a list
+        diagnoses_dict = diagnoses[0] if diagnoses and isinstance(diagnoses, list) and len(diagnoses) > 0 else (diagnoses if isinstance(diagnoses, dict) else None)
+        
+        sample = self._record_to_sample(sa, p, st, sf, pf, diagnoses_dict, base_url=base_url)
+        
+        logger.debug("Found sample", organization=organization, namespace=namespace, name=name)
         
         return sample
     
@@ -181,7 +590,7 @@ class SampleRepository:
         self,
         field: str,
         filters: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         """
         Count samples grouped by a specific field value.
         
@@ -201,77 +610,1554 @@ class SampleRepository:
             filters=filters
         )
         
-        # Build WHERE conditions and parameters
-        where_conditions = [f"s.{field} IS NOT NULL"]
+        # Special handling for diagnosis field - use dedicated method with conversion logic
+        if field == "diagnosis":
+            return await self._count_samples_by_associated_diagnoses(filters)
+        
+        # Validate field is allowed for count operations
+        # Only sample-specific metadata fields are allowed (participant fields are not supported for samples)
+        sample_metadata_fields = {
+            "disease_phase", "anatomical_sites", "library_selection_method", "library_strategy",
+            "library_source_material", "preservation_method", "tumor_grade", "specimen_molecular_analyte_type",
+            "tissue_type", "tumor_classification", "age_at_diagnosis", "age_at_collection",
+            "tumor_tissue_morphology", "diagnosis"
+        }
+        allowed_fields = sample_metadata_fields
+        if field not in allowed_fields:
+            raise UnsupportedFieldError(
+                field=field,
+                entity_type="sample"
+            )
+        
+        # Note: Participant fields (race, ethnicity, associated_diagnoses, sex, vital_status, age_at_vital_status)
+        # are not supported for sample count endpoints - only sample metadata fields are allowed
+        
+        # Build WHERE conditions and parameters with relationships
+        # Map field to correct node based on field type
+        # Participant fields come from participant node
+        # Sample metadata fields come from sample, sequencing_file, pathology_file, diagnosis, or study nodes
+        participant_field_mapping = {
+            "sex": "p.sex_at_birth",
+            "race": "p.race",
+            "ethnicity": "p.ethnicity",
+            "vital_status": "p.vital_status",
+            "age_at_vital_status": "p.age_at_vital_status",
+            "associated_diagnoses": "d.diagnosis"  # Special case - from diagnosis nodes
+        }
+        
+        # Sample metadata field mapping - maps to the actual node and property
+        sample_metadata_field_mapping = {
+            "disease_phase": ("d", "disease_phase"),  # From diagnosis node
+            "anatomical_sites": ("sa", "anatomic_site"),  # From sample node
+            "library_selection_method": ("sf", "library_selection"),  # From sequencing_file node
+            "library_strategy": ("sf", "library_strategy"),  # From sequencing_file node
+            "library_source_material": ("sf", "library_source_material"),  # From sequencing_file node
+            "preservation_method": ("pf", "fixation_embedding_method"),  # From pathology_file node
+            "tumor_grade": ("d", "tumor_grade"),  # From diagnosis node
+            "specimen_molecular_analyte_type": ("sa", "specimen_molecular_analyte_type"),  # From sample node (if exists)
+            "tissue_type": ("sa", "tissue_type"),  # From sample node (if exists)
+            "tumor_classification": ("sa", "tumor_classification"),  # From sample node (if exists)
+            "age_at_diagnosis": ("d", "age_at_diagnosis"),  # From diagnosis node
+            "age_at_collection": ("sa", "participant_age_at_collection"),  # From sample node
+            "tumor_tissue_morphology": ("sa", "tumor_tissue_morphology"),  # From sample node (if exists)
+            "depositions": ("st", "study_id"),  # From study node
+            "diagnosis": ("d", "diagnosis")  # From diagnosis node
+        }
+        
+        # Determine if this is a participant field or sample metadata field
+        is_participant_field = field in participant_field_mapping
+        is_sample_metadata_field = field in sample_metadata_field_mapping
+        
+        if is_participant_field:
+            node_field = participant_field_mapping[field]
+        elif is_sample_metadata_field:
+            node_alias, property_name = sample_metadata_field_mapping[field]
+            node_field = f"{node_alias}.{property_name}"
+        else:
+            # Fallback (should not reach here due to validation above)
+            node_field = f"p.{field}"
+        
+        # Build base WHERE conditions for filtering
+        base_where_conditions = []
         params = {}
         param_counter = 0
+        
+        # Handle race parameter normalization (same as subjects)
+        if "race" in filters:
+            race_value = filters.pop("race")
+            if race_value is not None:
+                if isinstance(race_value, str):
+                    race_list = [race_value.strip()] if race_value.strip() else []
+                elif isinstance(race_value, list):
+                    race_list = [str(r).strip() for r in race_value if r and str(r).strip()]
+                else:
+                    race_list = []
+                
+                if race_list:
+                    param_counter += 1
+                    race_param = f"param_{param_counter}"
+                    params[race_param] = race_list
+                    base_where_conditions.append(f"""ANY(tok IN ${race_param} WHERE tok IN [pt IN SPLIT(COALESCE(p.race, ''), ';') | trim(pt)])""")
+        
+        # Handle identifiers parameter
+        if "identifiers" in filters:
+            identifiers_value = filters.pop("identifiers")
+            if identifiers_value is not None and str(identifiers_value).strip():
+                param_counter += 1
+                id_param = f"param_{param_counter}"
+                params[id_param] = identifiers_value
+                if isinstance(identifiers_value, list):
+                    base_where_conditions.append(f"sa.sample_id IN ${id_param}")
+                else:
+                    base_where_conditions.append(f"sa.sample_id = ${id_param}")
+        
+        # Handle depositions filter (study_id)
+        if "depositions" in filters:
+            depositions_value = filters.pop("depositions")
+            if depositions_value is not None and str(depositions_value).strip():
+                param_counter += 1
+                dep_param = f"param_{param_counter}"
+                params[dep_param] = str(depositions_value).strip()
+                base_where_conditions.append(f"st.study_id = ${dep_param}")
+        
+        # Handle diagnosis search
+        if "_diagnosis_search" in filters:
+            search_term = filters.pop("_diagnosis_search")
+            base_where_conditions.append("""(
+                ANY(diag IN d.diagnosis WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))
+                OR ANY(key IN keys(p.metadata.unharmonized) 
+                       WHERE toLower(key) CONTAINS 'diagnos' 
+                       AND toLower(toString(p.metadata.unharmonized[key])) CONTAINS toLower($diagnosis_search_term))
+            )""")
+            params["diagnosis_search_term"] = search_term
+        
+        # Handle anatomical_sites filter (sample field, not participant field)
+        if "anatomical_sites" in filters:
+            anatomical_sites_value = filters.pop("anatomical_sites")
+            if anatomical_sites_value is not None:
+                param_counter += 1
+                param_name = f"param_{param_counter}"
+                params[param_name] = anatomical_sites_value
+                # anatomical_sites can be either a list or a string
+                # Handle both cases: if it's a list, use IN; if it's a string, use equality
+                # Use OR to handle both cases (one will match depending on the data type)
+                base_where_conditions.append(f"""sa.anatomic_site IS NOT NULL AND (
+                    ${param_name} IN sa.anatomic_site OR 
+                    ${param_name} = sa.anatomic_site
+                )""")
+        
+        # Add regular filters (participant fields)
+        for filter_field, value in filters.items():
+            param_counter += 1
+            param_name = f"param_{param_counter}"
+            
+            # Map filter field names to actual database fields
+            # For sex filter, use sex_at_birth in the query
+            db_field = "sex_at_birth" if filter_field == "sex" else filter_field
+            
+            if isinstance(value, list):
+                base_where_conditions.append(f"p.{db_field} IN ${param_name}")
+            else:
+                base_where_conditions.append(f"p.{db_field} = ${param_name}")
+            params[param_name] = value
+        
+        # Build base WHERE clause (for filtering)
+        base_where_clause = "WHERE " + " AND ".join(base_where_conditions) if base_where_conditions else ""
+        
+        # Standard field handling (sex, vital_status, age_at_vital_status)
+        # For sex field, use simplified direct query with normalization
+        if field == "sex":
+            # Build sex normalization CASE statement from config
+            sex_normalization = self._build_sex_normalization_case(field)
+            
+            # Build WHERE clause with field filter
+            # Note: We add IS NOT NULL filter for the main query, but total/missing queries use base_where_clause
+            field_where_conditions = base_where_conditions.copy() if base_where_conditions else []
+            field_where_conditions.append(f"{node_field} IS NOT NULL")
+            field_where_conditions.append("st IS NOT NULL")  # Ensure sample has a path to a study
+            field_where_clause = "WHERE " + " AND ".join(field_where_conditions) if field_where_conditions else f"WHERE {node_field} IS NOT NULL AND st IS NOT NULL"
+            
+            if sex_normalization:
+                # Use normalization CASE statement (it already includes CASE/END)
+                # Group by sample_id first to get one sex value per sample (using head to pick first)
+                # This ensures each sample is counted only once, even if it has multiple participants
+                # Only include samples that have a path to a study
+                # Path 1: sample -> cell_line -> study
+                # Path 2: sample -> participant -> consent_group -> study
+                cypher = f"""
+                MATCH (sa:sample)-[:of_sample]->(p:participant)
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, p, coalesce(st1, st2) AS st
+                {field_where_clause}
+                WITH DISTINCT sa.sample_id as sample_id, 
+                     head(collect(DISTINCT p.sex_at_birth)) as value
+                WITH sample_id, value,
+                     {sex_normalization} as normalized_value
+                RETURN normalized_value AS sex_at_birth,
+                       count(DISTINCT sample_id) AS sample_count
+                ORDER BY sample_count DESC, sex_at_birth ASC
+                """.strip()
+            else:
+                # Fallback without normalization
+                # Group by sample_id first to get one sex value per sample
+                # Only include samples that have a path to a study
+                # Path 1: sample -> cell_line -> study
+                # Path 2: sample -> participant -> consent_group -> study
+                cypher = f"""
+                MATCH (sa:sample)-[:of_sample]->(p:participant)
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, p, coalesce(st1, st2) AS st
+                {field_where_clause}
+                WITH DISTINCT sa.sample_id as sample_id, 
+                     head(collect(DISTINCT p.sex_at_birth)) as value
+                RETURN value AS sex_at_birth,
+                       count(DISTINCT sample_id) AS sample_count
+                ORDER BY sample_count DESC, sex_at_birth ASC
+                """.strip()
+        elif field == "anatomical_sites":
+            # Special handling for anatomical_sites - it's an array field in sample node
+            # Need to unwind the array and count each value
+            # Build WHERE clause - always include anatomic_site check and study path check
+            field_where_conditions = base_where_conditions.copy() if base_where_conditions else []
+            field_where_conditions.append("sa.anatomic_site IS NOT NULL")
+            field_where_conditions.append("st IS NOT NULL")  # Ensure sample has a path to a study
+            field_where_clause = "WHERE " + " AND ".join(field_where_conditions)
+            
+            # Build query - handle both cases with and without base filters
+            # Always include study paths to ensure samples have a path to a study
+            # Path 1: sample -> cell_line -> study
+            # Path 2: sample -> participant -> consent_group -> study
+            # Check if we need to join with participant/study nodes (only if we have base filters that reference them)
+            has_participant_filters = any(
+                "p." in cond or "st." in cond or "d." in cond 
+                for cond in base_where_conditions
+            ) if base_where_conditions else False
+            
+            # Build queries for both list and string cases
+            # We'll try list first, and if it fails, try string
+            # Store both queries as a tuple for anatomical_sites
+            if has_participant_filters:
+                # Has base filters - need to join with participant/study nodes
+                # Determine which joins are actually needed based on base filters
+                needs_participant = any("p." in cond for cond in base_where_conditions)
+                needs_study = any("st." in cond for cond in base_where_conditions)
+                needs_diagnosis = any("d." in cond or "diagnoses" in cond for cond in base_where_conditions)
+                
+                optional_matches = []
+                if needs_participant:
+                    optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
+                # Always include study paths
+                optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)")
+                optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)")
+                if needs_diagnosis:
+                    optional_matches.append("OPTIONAL MATCH (sa)<-[:of_diagnosis]-(d:diagnosis)")
+                
+                optional_matches_str = "\n                ".join(optional_matches) if optional_matches else ""
+                
+                # Query 1: Assume it's a list
+                cypher_list = f"""
+                MATCH (sa:sample)
+                {optional_matches_str}
+                WITH sa, coalesce(st1, st2) AS st
+                {field_where_clause}
+                WITH DISTINCT sa.sample_id as sample_id, sa.anatomic_site as sites
+                WHERE sites IS NOT NULL
+                UNWIND sites AS site_value
+                WITH DISTINCT sample_id, site_value
+                WHERE site_value IS NOT NULL 
+                  AND toString(site_value) <> ''
+                  AND trim(toString(site_value)) <> ''
+                  AND toLower(trim(toString(site_value))) <> 'invalid value'
+                RETURN toString(site_value) as value, count(DISTINCT sample_id) AS count
+                ORDER BY count DESC, value ASC
+                """.strip()
+                
+                # Query 2: Assume it's a string (reuse same optional_matches_str)
+                cypher_string = f"""
+                MATCH (sa:sample)
+                {optional_matches_str}
+                WITH sa, coalesce(st1, st2) AS st
+                {field_where_clause}
+                WITH DISTINCT sa.sample_id as sample_id, sa.anatomic_site as sites
+                WHERE sites IS NOT NULL
+                UNWIND [sites] AS site_value
+                WITH DISTINCT sample_id, site_value
+                WHERE site_value IS NOT NULL 
+                  AND toString(site_value) <> ''
+                  AND trim(toString(site_value)) <> ''
+                  AND toLower(trim(toString(site_value))) <> 'invalid value'
+                RETURN toString(site_value) as value, count(DISTINCT sample_id) AS count
+                ORDER BY count DESC, value ASC
+                """.strip()
+            else:
+                # No base filters - simpler query but still need study paths
+                # Query 1: Assume it's a list
+                cypher_list = f"""
+                MATCH (sa:sample)
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, coalesce(st1, st2) AS st
+                {field_where_clause}
+                WITH DISTINCT sa.sample_id as sample_id, sa.anatomic_site as sites
+                WHERE sites IS NOT NULL
+                UNWIND sites AS site_value
+                WITH DISTINCT sample_id, site_value
+                WHERE site_value IS NOT NULL 
+                  AND toString(site_value) <> ''
+                  AND trim(toString(site_value)) <> ''
+                  AND toLower(trim(toString(site_value))) <> 'invalid value'
+                RETURN toString(site_value) as value, count(DISTINCT sample_id) AS count
+                ORDER BY count DESC, value ASC
+                """.strip()
+                
+                # Query 2: Assume it's a string
+                cypher_string = f"""
+                MATCH (sa:sample)
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, coalesce(st1, st2) AS st
+                {field_where_clause}
+                WITH DISTINCT sa.sample_id as sample_id, sa.anatomic_site as sites
+                WHERE sites IS NOT NULL
+                UNWIND [sites] AS site_value
+                WITH DISTINCT sample_id, site_value
+                WHERE site_value IS NOT NULL 
+                  AND toString(site_value) <> ''
+                  AND trim(toString(site_value)) <> ''
+                  AND toLower(trim(toString(site_value))) <> 'invalid value'
+                RETURN toString(site_value) as value, count(DISTINCT sample_id) AS count
+                ORDER BY count DESC, value ASC
+                """.strip()
+            
+            # Store both queries as a tuple for anatomical_sites (will be handled in execution)
+            cypher = (cypher_list, cypher_string)
+        else:
+            # Other standard fields (vital_status, age_at_vital_status, or sample metadata fields)
+            # Use similar pattern to sex: group by sample_id to get one value per sample
+            field_where_conditions = base_where_conditions.copy() if base_where_conditions else []
+            field_where_conditions.append(f"{node_field} IS NOT NULL")
+            
+            # Build combined WHERE clause - include study path check
+            all_where_conditions = [
+                "sa.sample_id IS NOT NULL",
+                "toString(sa.sample_id) <> ''",
+                "st IS NOT NULL"  # Ensure sample has a path to a study
+            ]
+            all_where_conditions.extend(field_where_conditions)
+            combined_where_clause = "WHERE " + " AND ".join(all_where_conditions)
+            
+            # For sample metadata fields, we need to include OPTIONAL MATCH for related nodes
+            if is_sample_metadata_field:
+                node_alias, _ = sample_metadata_field_mapping[field]
+                # Build query with necessary OPTIONAL MATCH clauses
+                optional_matches = []
+                
+                # Check if base filters need participant or study nodes
+                needs_participant = any("p." in cond for cond in base_where_conditions) if base_where_conditions else False
+                needs_study = any("st." in cond for cond in base_where_conditions) if base_where_conditions else False
+                
+                # Always include the node needed for the field
+                if node_alias == "sf":  # sequencing_file
+                    optional_matches.append("OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)")
+                if node_alias == "pf":  # pathology_file
+                    optional_matches.append("OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)")
+                if node_alias == "d":  # diagnosis
+                    optional_matches.append("OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)")
+                if node_alias == "st":  # study
+                    optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)")
+                
+                # Include participant if needed for base filters
+                if needs_participant:
+                    optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
+                
+                # Always include study paths to ensure samples have a path to a study
+                # Path 1: sample -> cell_line -> study
+                # Path 2: sample -> participant -> consent_group -> study
+                if node_alias != "st":
+                    # Only add if not already included above
+                    optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)")
+                    if not needs_study:
+                        optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p3:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)")
+                    else:
+                        # If st was already included, we still need st2 for the coalesce
+                        optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p3:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)")
+                else:
+                    # st was already included, but we need both paths for coalesce
+                    optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)")
+                
+                optional_matches_str = "\n            ".join(optional_matches) if optional_matches else ""
+                
+                # Use coalesce for study if we have both paths
+                study_var = "coalesce(st1, st2) AS st" if node_alias == "st" or (not needs_study and node_alias != "st") else "coalesce(st, st1) AS st" if node_alias != "st" and needs_study else "st"
+                
+                cypher = f"""
+                MATCH (sa:sample)
+                {optional_matches_str}
+                WITH sa, {study_var}
+                {combined_where_clause}
+                WITH DISTINCT sa.sample_id as sample_id, 
+                     head(collect(DISTINCT {node_field})) as value
+                WHERE value IS NOT NULL
+                  AND toString(value) <> ''
+                  AND trim(toString(value)) <> ''
+                  AND toString(value) <> '-999'
+                  AND trim(toString(value)) <> '-999'
+                RETURN toString(value) as value, count(DISTINCT sample_id) AS count
+                ORDER BY count DESC, value ASC
+                """.strip()
+            else:
+                # Participant fields - use existing pattern but ensure study paths
+                # Only include samples that have a path to a study
+                # Path 1: sample -> cell_line -> study
+                # Path 2: sample -> participant -> consent_group -> study
+                cypher = f"""
+                MATCH (sa:sample)-[:of_sample]->(p:participant)
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, p, coalesce(st1, st2) AS st
+                {field_where_clause}
+                WITH DISTINCT sa.sample_id as sample_id, 
+                     head(collect(DISTINCT {node_field})) as value
+                WHERE value IS NOT NULL
+                  AND toString(value) <> ''
+                  AND trim(toString(value)) <> ''
+                  AND toString(value) <> '-999'
+                  AND trim(toString(value)) <> '-999'
+                RETURN toString(value) as value, count(DISTINCT sample_id) AS count
+                ORDER BY count DESC, value ASC
+                """.strip()
+        
+        logger.info(
+            "Executing count_samples_by_field Cypher query",
+            cypher=cypher[:200] if isinstance(cypher, str) else "multiple queries",
+            params=params,
+            field=field
+        )
+        
+        # Execute query with proper result consumption
+        # For anatomical_sites, try list query first, fallback to string query if it fails
+        records = []
+        if field == "anatomical_sites" and isinstance(cypher, tuple):
+            cypher_list, cypher_string = cypher
+            try:
+                # Try list query first
+                result = await self.session.run(cypher_list, params)
+                async for record in result:
+                    records.append(dict(record))
+                logger.debug("Successfully executed anatomical_sites query as list")
+            except Exception as e:
+                error_msg = str(e).lower()
+                if "unwind" in error_msg and ("list" in error_msg or "string" in error_msg):
+                    # It's a string, try the string query
+                    logger.debug("List query failed, trying string query for anatomical_sites")
+                    try:
+                        result = await self.session.run(cypher_string, params)
+                        async for record in result:
+                            records.append(dict(record))
+                        logger.debug("Successfully executed anatomical_sites query as string")
+                    except Exception as e2:
+                        logger.error(
+                            "Error executing count_samples_by_field Cypher query (both list and string failed)",
+                            error=str(e2),
+                            error_type=type(e2).__name__,
+                            field=field,
+                            cypher=cypher_string[:500],
+                            params=params,
+                            exc_info=True
+                        )
+                        raise
+                else:
+                    # Different error, re-raise
+                    logger.error(
+                        "Error executing count_samples_by_field Cypher query",
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        field=field,
+                        cypher=cypher_list[:500],
+                        params=params,
+                        exc_info=True
+                    )
+                    raise
+        else:
+            # Regular query execution
+            try:
+                result = await self.session.run(cypher, params)
+                async for record in result:
+                    records.append(dict(record))
+            except Exception as e:
+                logger.error(
+                    "Error executing count_samples_by_field Cypher query",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    field=field,
+                    cypher=cypher[:500] if isinstance(cypher, str) else str(cypher)[:500],
+                    params=params,
+                    exc_info=True
+                )
+                raise
+        
+        logger.info(
+            "Count query results",
+            field=field,
+            records_count=len(records),
+            sample_records=records[:5] if records else [],
+            query=cypher[:500] if field == "anatomical_sites" else None
+        )
+        
+        # Format results
+        counts = []
+        for record in records:
+            # Handle both formats: sex returns sex_at_birth/sample_count, others return value/count
+            if field == "sex" and "sex_at_birth" in record:
+                value = record.get("sex_at_birth")
+                # Filter out empty strings - skip them (they should be counted as missing)
+                if value == "" or (isinstance(value, str) and value.strip() == ""):
+                    continue  # Skip empty values
+                counts.append({
+                    "value": value,
+                    "count": record.get("sample_count", 0)
+                })
+            else:
+                value = record.get("value")
+                # Filter out empty strings and "-999" - skip them (they should be counted as missing)
+                if value == "" or (isinstance(value, str) and value.strip() == ""):
+                    continue  # Skip empty values
+                # Filter out "-999" for age fields (sentinel value for missing data)
+                if str(value) == "-999" or (isinstance(value, str) and value.strip() == "-999"):
+                    continue  # Skip "-999" values
+                counts.append({
+                    "value": value,
+                    "count": record.get("count", 0)
+                })
+        
+        # Calculate total and missing counts
+        # Total: count of all distinct samples matching filters
+        if field == "sex":
+            # Total: all samples (matching /sample/summary - 51772 when no filters)
+            # This should match the total from /sample/summary endpoint
+            # When no filters, count all samples. When filters exist, they may reference participants,
+            # so we need to handle that case - but for sex count, we want to count ALL samples as total
+            if not base_where_clause:
+                # No filters - count all samples directly (matches /sample/summary)
+                total_cypher = """
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                RETURN count(DISTINCT sa.sample_id) as total
+                """.strip()
+            else:
+                # Has filters - need to apply them, but still count all samples that match
+                # Filters that reference p (participant) will exclude samples without participants
+                # This is expected behavior when filters are applied
+                # Only include joins that are actually needed based on base filters
+                needs_participant = any("p." in cond for cond in base_where_conditions)
+                needs_study = any("st." in cond for cond in base_where_conditions)
+                
+                optional_matches = []
+                if needs_participant:
+                    optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
+                if needs_study:
+                    optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)")
+                
+                optional_matches_str = "\n                ".join(optional_matches) if optional_matches else ""
+                
+                total_cypher = f"""
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                {optional_matches_str}
+                {base_where_clause}
+                RETURN count(DISTINCT sa.sample_id) as total
+                """.strip()
+            
+            # Missing: samples without participants OR samples with participants but sex_at_birth IS NULL
+            # This includes:
+            # 1. Samples without any participant relationship
+            # 2. Samples with participants but NULL sex_at_birth
+            if not base_where_clause:
+                # No filters - count samples without participants or with NULL sex
+                missing_cypher = """
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+                WITH DISTINCT sa.sample_id as sample_id, p
+                WHERE p IS NULL OR p.sex_at_birth IS NULL
+                RETURN count(sample_id) as missing
+                """.strip()
+            else:
+                # Has filters - apply them, but also check for missing sex
+                missing_where_conditions = base_where_conditions.copy() if base_where_conditions else []
+                missing_where_conditions.append("(p IS NULL OR p.sex_at_birth IS NULL)")
+                missing_where_clause = "WHERE " + " AND ".join(missing_where_conditions) if missing_where_conditions else "WHERE (p IS NULL OR p.sex_at_birth IS NULL)"
+                
+                missing_cypher = f"""
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+                OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
+                {missing_where_clause}
+                RETURN count(DISTINCT sa.sample_id) as missing
+                """.strip()
+            
+            # Execute total and missing queries
+            total_result = await self.session.run(total_cypher, params)
+            total_records = []
+            async for record in total_result:
+                total_records.append(dict(record))
+            total = total_records[0].get("total", 0) if total_records else 0
+            
+            missing_result = await self.session.run(missing_cypher, params)
+            missing_records = []
+            async for record in missing_result:
+                missing_records.append(dict(record))
+            missing = missing_records[0].get("missing", 0) if missing_records else 0
+            
+            # Verify: total should equal sum of values + missing
+            values_sum = sum(item["count"] for item in counts)
+            if total != values_sum + missing:
+                logger.warning(
+                    "Total count mismatch for sex field",
+                    total=total,
+                    values_sum=values_sum,
+                    missing=missing,
+                    difference=total - (values_sum + missing)
+                )
+        elif field == "anatomical_sites":
+            # Total: all samples (matching /sample/summary - 51772 when no filters)
+            if not base_where_clause:
+                total_cypher = """
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                RETURN count(DISTINCT sa.sample_id) as total
+                """.strip()
+            else:
+                total_cypher = f"""
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+                OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
+                {base_where_clause}
+                RETURN count(DISTINCT sa.sample_id) as total
+                """.strip()
+            
+            # Missing: samples with NULL or empty anatomical_sites, or all values are "Invalid value"
+            # Handle both list and string cases without APOC
+            # Build two queries: one for list, one for string
+            if not base_where_clause:
+                # No base filters - build queries for both list and string cases
+                missing_cypher_list = """
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                WITH sa.sample_id as sample_id, sa.anatomic_site as sites
+                WHERE sites IS NULL 
+                   OR size(sites) = 0
+                   OR ALL(site IN sites WHERE site IS NULL OR toString(site) = '' OR toLower(trim(toString(site))) = 'invalid value')
+                RETURN count(DISTINCT sample_id) as missing
+                """.strip()
+                
+                missing_cypher_string = """
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                WITH sa.sample_id as sample_id, sa.anatomic_site as sites
+                WHERE sites IS NULL 
+                   OR toString(sites) = ''
+                   OR toLower(trim(toString(sites))) = 'invalid value'
+                RETURN count(DISTINCT sample_id) as missing
+                """.strip()
+            else:
+                # Has base filters - build queries for both list and string cases
+                missing_cypher_list = f"""
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+                OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
+                {base_where_clause}
+                WITH DISTINCT sa.sample_id as sample_id, sa.anatomic_site as sites
+                WHERE sites IS NULL 
+                   OR size(sites) = 0
+                   OR ALL(site IN sites WHERE site IS NULL OR toString(site) = '' OR toLower(trim(toString(site))) = 'invalid value')
+                RETURN count(DISTINCT sample_id) as missing
+                """.strip()
+                
+                missing_cypher_string = f"""
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+                OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
+                {base_where_clause}
+                WITH DISTINCT sa.sample_id as sample_id, sa.anatomic_site as sites
+                WHERE sites IS NULL 
+                   OR toString(sites) = ''
+                   OR toLower(trim(toString(sites))) = 'invalid value'
+                RETURN count(DISTINCT sample_id) as missing
+                """.strip()
+            
+            # Store both queries as a tuple (will be handled in execution)
+            missing_cypher = (missing_cypher_list, missing_cypher_string)
+            
+            # Execute total and missing queries
+            total_result = await self.session.run(total_cypher, params)
+            total_records = []
+            async for record in total_result:
+                total_records.append(dict(record))
+            total = total_records[0].get("total", 0) if total_records else 0
+            
+            # For anatomical_sites, try list query first, fallback to string query if it fails
+            missing = 0
+            if isinstance(missing_cypher, tuple):
+                missing_cypher_list, missing_cypher_string = missing_cypher
+                try:
+                    # Try list query first
+                    missing_result = await self.session.run(missing_cypher_list, params)
+                    missing_records = []
+                    async for record in missing_result:
+                        missing_records.append(dict(record))
+                    missing = missing_records[0].get("missing", 0) if missing_records else 0
+                    logger.debug("Successfully executed anatomical_sites missing query as list")
+                except Exception as e:
+                    error_msg = str(e).lower()
+                    if "all" in error_msg and ("list" in error_msg or "string" in error_msg):
+                        # It's a string, try the string query
+                        logger.debug("List missing query failed, trying string query for anatomical_sites")
+                        try:
+                            missing_result = await self.session.run(missing_cypher_string, params)
+                            missing_records = []
+                            async for record in missing_result:
+                                missing_records.append(dict(record))
+                            missing = missing_records[0].get("missing", 0) if missing_records else 0
+                            logger.debug("Successfully executed anatomical_sites missing query as string")
+                        except Exception as e2:
+                            logger.error(
+                                "Error executing anatomical_sites missing query (both list and string failed)",
+                                error=str(e2),
+                                error_type=type(e2).__name__,
+                                field=field,
+                                exc_info=True
+                            )
+                            # Default to 0 if both fail
+                            missing = 0
+                    else:
+                        logger.error(
+                            "Error executing anatomical_sites missing query",
+                            error=str(e),
+                            error_type=type(e).__name__,
+                            field=field,
+                            exc_info=True
+                        )
+                        # Default to 0 on error
+                        missing = 0
+            else:
+                # Regular missing query execution
+                missing_result = await self.session.run(missing_cypher, params)
+                missing_records = []
+                async for record in missing_result:
+                    missing_records.append(dict(record))
+                missing = missing_records[0].get("missing", 0) if missing_records else 0
+        else:
+            # For other standard fields (vital_status, age_at_vital_status, or sample metadata fields)
+            # Total: all samples (matching /sample/summary - 51772 when no filters)
+            if not base_where_clause:
+                # No filters - count all samples directly (matches /sample/summary)
+                total_cypher = """
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                RETURN count(DISTINCT sa.sample_id) as total
+                """.strip()
+            else:
+                # Has filters - need to apply them
+                if is_sample_metadata_field:
+                    # For sample metadata fields, include necessary OPTIONAL MATCH clauses
+                    node_alias, _ = sample_metadata_field_mapping[field]
+                    optional_matches = []
+                    if node_alias == "sf":
+                        optional_matches.append("OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)")
+                    if node_alias == "pf":
+                        optional_matches.append("OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)")
+                    if node_alias == "d":
+                        optional_matches.append("OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)")
+                    if node_alias == "st":
+                        optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)")
+                    # Also include participant for filters that might reference it
+                    optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
+                    optional_matches_str = "\n                ".join(optional_matches) if optional_matches else ""
+                    
+                    total_cypher = f"""
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                {optional_matches_str}
+                {base_where_clause}
+                RETURN count(DISTINCT sa.sample_id) as total
+                """.strip()
+                else:
+                    # Participant fields
+                    total_cypher = f"""
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+                {base_where_clause}
+                RETURN count(DISTINCT sa.sample_id) as total
+                """.strip()
+            
+            # Missing: samples without the field value (NULL or missing relationship)
+            if not base_where_clause:
+                # No filters - count samples with NULL field
+                if is_sample_metadata_field:
+                    node_alias, _ = sample_metadata_field_mapping[field]
+                    optional_matches = []
+                    # Only add OPTIONAL MATCH if field is on a related node (not on sample node itself)
+                    # If node_alias == "sa", no joins needed - field is directly on sample node
+                    if node_alias == "sf":
+                        optional_matches.append("OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)")
+                    if node_alias == "pf":
+                        optional_matches.append("OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)")
+                    if node_alias == "d":
+                        optional_matches.append("OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)")
+                    if node_alias == "st":
+                        optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)")
+                    # Note: if node_alias == "sa", optional_matches stays empty (no joins needed)
+                    optional_matches_str = "\n                ".join(optional_matches) if optional_matches else ""
+                    
+                    # For diagnosis fields (d.*), we need to check if ALL diagnoses have NULL/empty values
+                    # For other fields, check if the field is NULL/empty
+                    if node_alias == "d":
+                        # Diagnosis fields: count as missing if sample has NO diagnoses with valid values
+                        # i.e., all diagnoses have NULL/empty, OR no diagnoses exist
+                        optional_matches_str = "\n                ".join(optional_matches) if optional_matches else ""
+                        
+                        missing_cypher = f"""
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                {optional_matches_str}
+                WITH DISTINCT sa.sample_id as sample_id, collect(DISTINCT {node_field}) as field_values
+                WHERE size(field_values) = 0 
+                   OR ALL(val IN field_values WHERE val IS NULL OR toString(val) = '' OR trim(toString(val)) = '' OR toString(val) = '-999' OR trim(toString(val)) = '-999')
+                RETURN count(DISTINCT sample_id) as missing
+                """.strip()
+                    else:
+                        # Non-diagnosis fields: check if field is NULL/empty or "-999"
+                        optional_matches_str = "\n                ".join(optional_matches) if optional_matches else ""
+                        
+                        missing_cypher = f"""
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                {optional_matches_str}
+                WITH DISTINCT sa.sample_id as sample_id, {node_field} as field_value
+                WHERE field_value IS NULL 
+                   OR toString(field_value) = '' 
+                   OR trim(toString(field_value)) = ''
+                   OR toString(field_value) = '-999'
+                   OR trim(toString(field_value)) = '-999'
+                RETURN count(DISTINCT sample_id) as missing
+                """.strip()
+                else:
+                    # Participant fields
+                    missing_cypher = f"""
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+                WITH DISTINCT sa.sample_id as sample_id, p, {node_field} as field_value
+                WHERE p IS NULL 
+                   OR field_value IS NULL 
+                   OR toString(field_value) = '' 
+                   OR trim(toString(field_value)) = ''
+                   OR toString(field_value) = '-999'
+                   OR trim(toString(field_value)) = '-999'
+                RETURN count(sample_id) as missing
+                """.strip()
+            else:
+                # Has filters - apply them, but also check for missing field
+                if is_sample_metadata_field:
+                    node_alias, _ = sample_metadata_field_mapping[field]
+                    optional_matches = []
+                    if node_alias == "sf":
+                        optional_matches.append("OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)")
+                    if node_alias == "pf":
+                        optional_matches.append("OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)")
+                    if node_alias == "d":
+                        optional_matches.append("OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)")
+                    if node_alias == "st":
+                        optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)")
+                    optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
+                    optional_matches_str = "\n                ".join(optional_matches) if optional_matches else ""
+                    
+                    # For diagnosis fields (d.*), we need to check if ALL diagnoses have NULL/empty values
+                    # For other fields, check if the field is NULL/empty
+                    if node_alias == "d":
+                        # Diagnosis fields: count as missing if sample has NO diagnoses with valid values
+                        # i.e., all diagnoses have NULL/empty, OR no diagnoses exist
+                        missing_where_conditions = base_where_conditions.copy() if base_where_conditions else []
+                        missing_where_clause = "WHERE " + " AND ".join(missing_where_conditions) if missing_where_conditions else ""
+                        
+                        missing_cypher = f"""
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                {optional_matches_str}
+                {missing_where_clause}
+                WITH DISTINCT sa.sample_id as sample_id, collect(DISTINCT {node_field}) as field_values
+                WHERE size(field_values) = 0 
+                   OR ALL(val IN field_values WHERE val IS NULL OR toString(val) = '' OR trim(toString(val)) = '' OR toString(val) = '-999' OR trim(toString(val)) = '-999')
+                RETURN count(DISTINCT sample_id) as missing
+                """.strip()
+                    else:
+                        # Non-diagnosis fields: check if field is NULL/empty or "-999"
+                        missing_where_conditions = base_where_conditions.copy() if base_where_conditions else []
+                        missing_where_conditions.append(f"({node_field} IS NULL OR toString({node_field}) = '' OR trim(toString({node_field})) = '' OR toString({node_field}) = '-999' OR trim(toString({node_field})) = '-999')")
+                        missing_where_clause = "WHERE " + " AND ".join(missing_where_conditions) if missing_where_conditions else f"WHERE ({node_field} IS NULL OR toString({node_field}) = '' OR trim(toString({node_field})) = '')"
+                        
+                        missing_cypher = f"""
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                {optional_matches_str}
+                {missing_where_clause}
+                RETURN count(DISTINCT sa.sample_id) as missing
+                """.strip()
+                else:
+                    # Participant fields
+                    missing_where_conditions = base_where_conditions.copy() if base_where_conditions else []
+                    # Count as missing: no participant OR NULL or empty string or "-999"
+                    missing_where_conditions.append(f"(p IS NULL OR {node_field} IS NULL OR toString({node_field}) = '' OR trim(toString({node_field})) = '' OR toString({node_field}) = '-999' OR trim(toString({node_field})) = '-999')")
+                    missing_where_clause = "WHERE " + " AND ".join(missing_where_conditions) if missing_where_conditions else f"WHERE (p IS NULL OR {node_field} IS NULL OR toString({node_field}) = '' OR trim(toString({node_field})) = '' OR toString({node_field}) = '-999' OR trim(toString({node_field})) = '-999')"
+                    
+                    missing_cypher = f"""
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+                OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
+                {missing_where_clause}
+                RETURN count(DISTINCT sa.sample_id) as missing
+                """.strip()
+            
+            # Execute total and missing queries
+            total_result = await self.session.run(total_cypher, params)
+            total_records = []
+            async for record in total_result:
+                total_records.append(dict(record))
+            total = total_records[0].get("total", 0) if total_records else 0
+            
+            missing_result = await self.session.run(missing_cypher, params)
+            missing_records = []
+            async for record in missing_result:
+                missing_records.append(dict(record))
+            missing = missing_records[0].get("missing", 0) if missing_records else 0
+        
+        logger.debug(
+            "Completed sample count by field",
+            field=field,
+            results_count=len(counts),
+            total=total,
+            missing=missing
+        )
+        
+        return {
+            "total": total,
+            "missing": missing,
+            "values": counts  # counts already has format [{"value": ..., "count": ...}]
+        }
+    
+    async def _count_samples_by_race(
+        self,
+        filters: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Count distinct samples by race.
+        
+        For race values like "Asian;White", the sample is counted
+        for both "Asian" and "White".
+        
+        Args:
+            filters: Additional filters to apply
+            
+        Returns:
+            Dictionary with total, missing, and values (list of race counts)
+        """
+        logger.debug("Counting samples by race with enum validation", filters=filters)
+        
+        # Get all valid race enum values
+        valid_races = Race.values()
+        
+        # Build WHERE conditions and parameters
+        where_conditions = []
+        params = {}
+        param_counter = 0
+        
+        # Handle identifiers parameter
+        if "identifiers" in filters:
+            identifiers_value = filters.pop("identifiers")
+            if identifiers_value is not None and str(identifiers_value).strip():
+                param_counter += 1
+                id_param = f"param_{param_counter}"
+                params[id_param] = identifiers_value
+                if isinstance(identifiers_value, list):
+                    where_conditions.append(f"p.participant_id IN ${id_param}")
+                else:
+                    where_conditions.append(f"p.participant_id = ${id_param}")
         
         # Handle diagnosis search
         if "_diagnosis_search" in filters:
             search_term = filters.pop("_diagnosis_search")
             where_conditions.append("""(
-                toLower(toString(s.diagnosis)) CONTAINS toLower($diagnosis_search_term)
-                OR ANY(key IN keys(s.metadata.unharmonized) 
+                ANY(diag IN d.diagnosis WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))
+                OR ANY(key IN keys(p.metadata.unharmonized) 
                        WHERE toLower(key) CONTAINS 'diagnos' 
-                       AND toLower(toString(s.metadata.unharmonized[key])) CONTAINS toLower($diagnosis_search_term))
+                       AND toLower(toString(p.metadata.unharmonized[key])) CONTAINS toLower($diagnosis_search_term))
             )""")
             params["diagnosis_search_term"] = search_term
         
-        # Add regular filters
+        # Add regular filters (excluding race since we're counting by race)
         for filter_field, value in filters.items():
+            if filter_field == "race":
+                continue  # Skip race filter when counting by race
             param_counter += 1
             param_name = f"param_{param_counter}"
             
+            db_field = "sex_at_birth" if filter_field == "sex" else filter_field
             if isinstance(value, list):
-                where_conditions.append(f"s.{filter_field} IN ${param_name}")
+                where_conditions.append(f"p.{db_field} IN ${param_name}")
             else:
-                where_conditions.append(f"s.{filter_field} = ${param_name}")
+                where_conditions.append(f"p.{db_field} = ${param_name}")
             params[param_name] = value
         
-        # Build final query
-        where_clause = "WHERE " + " AND ".join(where_conditions)
+        # Build WHERE clause
+        where_clause = "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
         
-        cypher = f"""
-        MATCH (s:Sample)
-        {where_clause}
-        WITH s, 
-             CASE 
-               WHEN s.{field} IS NULL THEN []
-               WHEN NOT apoc.meta.type(s.{field}) = 'LIST' THEN [s.{field}]
-               ELSE s.{field}
-             END as field_values
-        UNWIND field_values as value
-        RETURN toString(value) as value, count(*) as count
-        ORDER BY count DESC, value ASC
-        """.strip()
+        # Query 1: Get total count of all unique samples matching filters
+        if not where_clause:
+            total_cypher = """
+            MATCH (sa:sample)
+            WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+            RETURN count(DISTINCT sa.sample_id) as total
+            """.strip()
+        else:
+            total_cypher = f"""
+            MATCH (sa:sample)
+            WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+            OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+            OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
+            OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
+            {where_clause}
+            RETURN count(DISTINCT sa.sample_id) as total
+            """.strip()
+        
+        # Query 2: Get count of samples with null race value (missing)
+        if not where_clause:
+            missing_cypher = """
+            MATCH (sa:sample)
+            WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+            OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+            WITH DISTINCT sa.sample_id as sample_id, p
+            WHERE p IS NULL OR p.race IS NULL
+            RETURN count(sample_id) as missing
+            """.strip()
+        else:
+            missing_where_conditions = where_conditions.copy()
+            missing_where_conditions.append("(p IS NULL OR p.race IS NULL)")
+            missing_where_clause = "WHERE " + " AND ".join(missing_where_conditions)
+            missing_cypher = f"""
+            MATCH (sa:sample)
+            WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+            OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+            OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
+            OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
+            {missing_where_clause}
+            RETURN count(DISTINCT sa.sample_id) as missing
+            """.strip()
+        
+        # Query 3: Create a single query that counts distinct samples for each valid race
+        params["valid_races"] = valid_races
+        
+        if not where_clause:
+            values_cypher = f"""
+            MATCH (sa:sample)-[:of_sample]->(p:participant)
+            WHERE p.race IS NOT NULL
+            WITH DISTINCT sa.sample_id as sample_id, 
+                 head(collect(DISTINCT p.race)) as race
+            WITH sample_id, race,
+                 [r IN SPLIT(race, ';') | trim(r)] as race_parts
+            WITH sample_id, race, race_parts,
+                 [r IN race_parts WHERE r <> 'Hispanic or Latino'] as race_list_filtered
+            WITH sample_id, race, race_list_filtered,
+                 CASE 
+                   WHEN size(race_list_filtered) = 0 THEN ['Not Reported']
+                   ELSE [r IN race_list_filtered WHERE r IN $valid_races]
+                 END as matching_races
+            UNWIND matching_races as race_value
+            RETURN race_value as value, count(DISTINCT sample_id) as count
+            ORDER BY count DESC, value ASC
+            """.strip()
+        else:
+            values_cypher = f"""
+            MATCH (sa:sample)-[:of_sample]->(p:participant)
+            OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
+            OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
+            {where_clause}
+            WITH DISTINCT sa.sample_id as sample_id, 
+                 head(collect(DISTINCT p.race)) as race
+            WHERE race IS NOT NULL
+            WITH sample_id, race,
+                 [r IN SPLIT(race, ';') | trim(r)] as race_parts
+            WITH sample_id, race, race_parts,
+                 [r IN race_parts WHERE r <> 'Hispanic or Latino'] as race_list_filtered
+            WITH sample_id, race, race_list_filtered,
+                 CASE 
+                   WHEN size(race_list_filtered) = 0 THEN ['Not Reported']
+                   ELSE [r IN race_list_filtered WHERE r IN $valid_races]
+                 END as matching_races
+            UNWIND matching_races as race_value
+            RETURN race_value as value, count(DISTINCT sample_id) as count
+            ORDER BY count DESC, value ASC
+            """.strip()
         
         logger.info(
-            "Executing count_samples_by_field Cypher query",
-            cypher=cypher,
-            params=params
+            "Executing count_samples_by_race Cypher queries",
+            race_count=len(valid_races),
+            params_count=len(params)
         )
         
-        # Execute query with proper result consumption
-        result = await self.session.run(cypher, params)
-        records = []
-        async for record in result:
-            records.append(dict(record))
+        # Execute all three queries with proper result consumption
+        total_result = await self.session.run(total_cypher, params)
+        total_records = []
+        async for record in total_result:
+            total_records.append(dict(record))
+        total_count = total_records[0].get("total", 0) if total_records else 0
+        
+        missing_result = await self.session.run(missing_cypher, params)
+        missing_records = []
+        async for record in missing_result:
+            missing_records.append(dict(record))
+        missing_count = missing_records[0].get("missing", 0) if missing_records else 0
+        
+        values_result = await self.session.run(values_cypher, params)
+        values_records = []
+        async for record in values_result:
+            values_records.append(dict(record))
+        
+        # Format results - ensure all valid races are included (even with 0 count)
+        counts_by_value = {record.get("value"): record.get("count", 0) for record in values_records}
+        
+        # Build final counts list with all valid races
+        counts = []
+        for race_value in valid_races:
+            counts.append({
+                "value": race_value,
+                "count": counts_by_value.get(race_value, 0)
+            })
+        
+        # Sort by count descending (numeric), then by value ascending
+        counts.sort(key=lambda x: (-x["count"], x["value"]))
+        
+        logger.info(
+            "Completed sample count by race",
+            total=total_count,
+            missing=missing_count,
+            values_count=len(counts)
+        )
+        
+        return {
+            "total": total_count,
+            "missing": missing_count,
+            "values": counts
+        }
+    
+    async def _count_samples_by_ethnicity(
+        self,
+        filters: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Count distinct samples by ethnicity (derived from race field).
+        
+        Ethnicity is determined from race:
+        - If race contains 'Hispanic or Latino' → 'Hispanic or Latino'
+        - Otherwise → 'Not reported'
+        
+        Args:
+            filters: Additional filters to apply
+            
+        Returns:
+            Dictionary with total, missing, and values (list with only 2 ethnicity options)
+        """
+        logger.debug("Counting samples by ethnicity (derived from race)", filters=filters)
+        
+        # Build WHERE conditions and parameters
+        where_conditions = []
+        params = {}
+        param_counter = 0
+        
+        # Handle identifiers parameter
+        if "identifiers" in filters:
+            identifiers_value = filters.pop("identifiers")
+            if identifiers_value is not None and str(identifiers_value).strip():
+                param_counter += 1
+                id_param = f"param_{param_counter}"
+                params[id_param] = identifiers_value
+                if isinstance(identifiers_value, list):
+                    where_conditions.append(f"p.participant_id IN ${id_param}")
+                else:
+                    where_conditions.append(f"p.participant_id = ${id_param}")
+        
+        # Handle diagnosis search
+        if "_diagnosis_search" in filters:
+            search_term = filters.pop("_diagnosis_search")
+            where_conditions.append("""(
+                ANY(diag IN d.diagnosis WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))
+                OR ANY(key IN keys(p.metadata.unharmonized) 
+                       WHERE toLower(key) CONTAINS 'diagnos' 
+                       AND toLower(toString(p.metadata.unharmonized[key])) CONTAINS toLower($diagnosis_search_term))
+            )""")
+            params["diagnosis_search_term"] = search_term
+        
+        # Add regular filters (excluding ethnicity since we're counting by ethnicity)
+        for filter_field, value in filters.items():
+            if filter_field == "ethnicity":
+                continue  # Skip ethnicity filter when counting by ethnicity
+            param_counter += 1
+            param_name = f"param_{param_counter}"
+            
+            db_field = "sex_at_birth" if filter_field == "sex" else filter_field
+            if isinstance(value, list):
+                where_conditions.append(f"p.{db_field} IN ${param_name}")
+            else:
+                where_conditions.append(f"p.{db_field} = ${param_name}")
+            params[param_name] = value
+        
+        # Build WHERE clause
+        where_clause = "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
+        
+        # Query 1: Get total count of all unique samples matching filters
+        if not where_clause:
+            total_cypher = """
+            MATCH (sa:sample)
+            WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+            RETURN count(DISTINCT sa.sample_id) as total
+            """.strip()
+        else:
+            total_cypher = f"""
+            MATCH (sa:sample)
+            WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+            OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+            OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
+            OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
+            {where_clause}
+            RETURN count(DISTINCT sa.sample_id) as total
+            """.strip()
+        
+        # Query 2: Get count of samples with null race (missing ethnicity)
+        if not where_clause:
+            missing_cypher = """
+            MATCH (sa:sample)
+            WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+            OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+            WITH DISTINCT sa.sample_id as sample_id, p
+            WHERE p IS NULL OR p.race IS NULL
+            RETURN count(sample_id) as missing
+            """.strip()
+        else:
+            missing_where_conditions = where_conditions.copy()
+            missing_where_conditions.append("(p IS NULL OR p.race IS NULL)")
+            missing_where_clause = "WHERE " + " AND ".join(missing_where_conditions)
+            missing_cypher = f"""
+            MATCH (sa:sample)
+            WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+            OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+            OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
+            OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
+            {missing_where_clause}
+            RETURN count(DISTINCT sa.sample_id) as missing
+            """.strip()
+        
+        # Query 3: Count by ethnicity (derived from race)
+        if not where_clause:
+            values_cypher = """
+            MATCH (sa:sample)-[:of_sample]->(p:participant)
+            WHERE p.race IS NOT NULL
+            WITH DISTINCT sa.sample_id as sample_id, 
+                 head(collect(DISTINCT p.race)) as race
+            WITH sample_id, race,
+                 CASE 
+                   WHEN race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
+                   ELSE 'Not reported'
+                 END as ethnicity_value
+            RETURN ethnicity_value as value, count(DISTINCT sample_id) as count
+            ORDER BY value ASC
+            """.strip()
+        else:
+            values_cypher = f"""
+            MATCH (sa:sample)-[:of_sample]->(p:participant)
+            OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
+            OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
+            {where_clause}
+            WITH DISTINCT sa.sample_id as sample_id, 
+                 head(collect(DISTINCT p.race)) as race
+            WHERE race IS NOT NULL
+            WITH sample_id, race,
+                 CASE 
+                   WHEN race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
+                   ELSE 'Not reported'
+                 END as ethnicity_value
+            RETURN ethnicity_value as value, count(DISTINCT sample_id) as count
+            ORDER BY value ASC
+            """.strip()
+        
+        logger.info(
+            "Executing count_samples_by_ethnicity Cypher queries",
+            params_count=len(params)
+        )
+        
+        # Execute all three queries with proper result consumption
+        total_result = await self.session.run(total_cypher, params)
+        total_records = []
+        async for record in total_result:
+            total_records.append(dict(record))
+        total_count = total_records[0].get("total", 0) if total_records else 0
+        
+        missing_result = await self.session.run(missing_cypher, params)
+        missing_records = []
+        async for record in missing_result:
+            missing_records.append(dict(record))
+        missing_count = missing_records[0].get("missing", 0) if missing_records else 0
+        
+        values_result = await self.session.run(values_cypher, params)
+        values_records = []
+        async for record in values_result:
+            values_records.append(dict(record))
         
         # Format results
         counts = []
-        for record in records:
+        for record in values_records:
             counts.append({
                 "value": record.get("value"),
                 "count": record.get("count", 0)
             })
         
-        logger.debug(
-            "Completed sample count by field",
-            field=field,
-            results_count=len(counts)
+        logger.info(
+            "Completed sample count by ethnicity",
+            total=total_count,
+            missing=missing_count,
+            values_count=len(counts)
         )
         
-        return counts
+        return {
+            "total": total_count,
+            "missing": missing_count,
+            "values": counts
+        }
+    
+    async def _count_samples_by_associated_diagnoses(
+        self,
+        filters: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Count distinct samples by associated diagnoses.
+        
+        For samples with multiple diagnoses, the sample is counted
+        for each diagnosis they have.
+        
+        Args:
+            filters: Additional filters to apply
+            
+        Returns:
+            Dictionary with total, missing, and values (list of diagnosis counts)
+        """
+        logger.debug("Counting samples by associated diagnoses", filters=filters)
+        
+        # Build WHERE conditions and parameters
+        where_conditions = []
+        params = {}
+        param_counter = 0
+        
+        # Handle identifiers parameter
+        if "identifiers" in filters:
+            identifiers_value = filters.pop("identifiers")
+            if identifiers_value is not None and str(identifiers_value).strip():
+                param_counter += 1
+                id_param = f"param_{param_counter}"
+                params[id_param] = identifiers_value
+                if isinstance(identifiers_value, list):
+                    where_conditions.append(f"p.participant_id IN ${id_param}")
+                else:
+                    where_conditions.append(f"p.participant_id = ${id_param}")
+        
+        # Handle diagnosis search - we skip this for diagnosis counting since we're counting by diagnosis
+        if "_diagnosis_search" in filters:
+            filters.pop("_diagnosis_search")  # Remove it to avoid circular filtering
+        
+        # Add regular filters (excluding associated_diagnoses since we're counting by it)
+        for filter_field, value in filters.items():
+            if filter_field == "associated_diagnoses":
+                continue  # Skip diagnosis filter when counting by diagnosis
+            param_counter += 1
+            param_name = f"param_{param_counter}"
+            
+            db_field = "sex_at_birth" if filter_field == "sex" else filter_field
+            if isinstance(value, list):
+                where_conditions.append(f"p.{db_field} IN ${param_name}")
+            else:
+                where_conditions.append(f"p.{db_field} = ${param_name}")
+            params[param_name] = value
+        
+        # Build WHERE clause
+        where_clause = "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
+        
+        # Query 1: Get total count of all unique samples matching filters
+        if not where_clause:
+            total_cypher = """
+            MATCH (sa:sample)
+            WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+            RETURN count(DISTINCT sa.sample_id) as total
+            """.strip()
+        else:
+            total_cypher = f"""
+            MATCH (sa:sample)
+            WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+            OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+            OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
+            OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
+            {where_clause}
+            RETURN count(DISTINCT sa.sample_id) as total
+            """.strip()
+        
+        # Query 2: Get count of samples with no diagnoses (missing)
+        if not where_clause:
+            missing_cypher = """
+            MATCH (sa:sample)
+            WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+            OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
+            WITH DISTINCT sa.sample_id as sample_id, collect(d) as diagnoses
+            WHERE size([d IN diagnoses WHERE d IS NOT NULL]) = 0
+            RETURN count(DISTINCT sample_id) as missing
+            """.strip()
+        else:
+            missing_cypher = f"""
+            MATCH (sa:sample)
+            WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+            OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+            OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
+            OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
+            {where_clause}
+            WITH DISTINCT sa.sample_id as sample_id, collect(d) as diagnoses
+            WHERE size([d IN diagnoses WHERE d IS NOT NULL]) = 0
+            RETURN count(DISTINCT sample_id) as missing
+            """.strip()
+        
+        # Query 3: Count by diagnosis values
+        # d.diagnosis is a STRING (not a list) - each diagnosis node has one diagnosis value
+        # Multiple diagnosis nodes can link to one sample, so each contributes one value
+        # Relationship direction: (d:diagnosis)-[:of_diagnosis]->(sa:sample)
+        # If diagnosis is "see diagnosis_comment", use diagnosis_comment as the value
+        # Filter out "see diagnosis_comment" if diagnosis_comment is NULL or empty
+        if not where_clause:
+            values_cypher = """
+            MATCH (d:diagnosis)-[:of_diagnosis]->(sa:sample)
+            WHERE d.diagnosis IS NOT NULL
+              AND sa.sample_id IS NOT NULL 
+              AND toString(sa.sample_id) <> ''
+            OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH sa.sample_id as sample_id, d, sa, p,
+                 coalesce(st1, st2) AS st,
+                 CASE 
+                   WHEN toLower(trim(toString(d.diagnosis))) = 'see diagnosis_comment' 
+                        AND d.diagnosis_comment IS NOT NULL 
+                        AND trim(toString(d.diagnosis_comment)) <> ''
+                   THEN d.diagnosis_comment
+                   WHEN toLower(trim(toString(d.diagnosis))) = 'see diagnosis_comment'
+                   THEN null
+                   ELSE d.diagnosis
+                 END as diagnosis_value
+            WHERE diagnosis_value IS NOT NULL 
+              AND toString(diagnosis_value) <> '' 
+              AND trim(toString(diagnosis_value)) <> ''
+            WITH DISTINCT sample_id, diagnosis_value
+            RETURN toString(diagnosis_value) as value, count(DISTINCT sample_id) as count
+            ORDER BY count DESC, value ASC
+            """.strip()
+        else:
+            values_cypher = f"""
+            MATCH (d:diagnosis)-[:of_diagnosis]->(sa:sample)
+            WHERE d.diagnosis IS NOT NULL
+              AND sa.sample_id IS NOT NULL 
+              AND toString(sa.sample_id) <> ''
+            OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH sa.sample_id as sample_id, d, sa, p,
+                 coalesce(st1, st2) AS st,
+                 CASE 
+                   WHEN toLower(trim(toString(d.diagnosis))) = 'see diagnosis_comment' 
+                        AND d.diagnosis_comment IS NOT NULL 
+                        AND trim(toString(d.diagnosis_comment)) <> ''
+                   THEN d.diagnosis_comment
+                   WHEN toLower(trim(toString(d.diagnosis))) = 'see diagnosis_comment'
+                   THEN null
+                   ELSE d.diagnosis
+                 END as diagnosis_value
+            WHERE diagnosis_value IS NOT NULL 
+              AND toString(diagnosis_value) <> '' 
+              AND trim(toString(diagnosis_value)) <> ''
+            WITH DISTINCT sample_id, diagnosis_value
+            MATCH (sa2:sample {{sample_id: sample_id}})
+            OPTIONAL MATCH (sa2)-[:of_sample]->(p2:participant)
+            {where_clause}
+            RETURN toString(diagnosis_value) as value, count(DISTINCT sample_id) as count
+            ORDER BY count DESC, value ASC
+            """.strip()
+        
+        logger.info(
+            "Executing count_samples_by_associated_diagnoses Cypher queries",
+            params_count=len(params),
+            values_query=values_cypher
+        )
+        
+        # Execute all three queries with proper result consumption
+        total_result = await self.session.run(total_cypher, params)
+        total_records = []
+        async for record in total_result:
+            total_records.append(dict(record))
+        total_count = total_records[0].get("total", 0) if total_records else 0
+        
+        missing_result = await self.session.run(missing_cypher, params)
+        missing_records = []
+        async for record in missing_result:
+            missing_records.append(dict(record))
+        missing_count = missing_records[0].get("missing", 0) if missing_records else 0
+        
+        values_result = await self.session.run(values_cypher, params)
+        values_records = []
+        async for record in values_result:
+            values_records.append(dict(record))
+        
+        # Format results and filter out any "see diagnosis_comment" that might have slipped through
+        counts = []
+        for record in values_records:
+            value = record.get("value")
+            # Additional safety check: filter out "see diagnosis_comment" if it somehow appears
+            if value and "see diagnosis_comment" in str(value).lower():
+                logger.warning(
+                    "Filtering out 'see diagnosis_comment' from results",
+                    value=value,
+                    count=record.get("count", 0)
+                )
+                continue
+            counts.append({
+                "value": value,
+                "count": record.get("count", 0)
+            })
+        
+        # Sort by count descending, then by value ascending
+        counts.sort(key=lambda x: (-x["count"], x["value"]))
+        
+        logger.info(
+            "Completed sample count by associated diagnoses",
+            total=total_count,
+            missing=missing_count,
+            values_count=len(counts)
+        )
+        
+        return {
+            "total": total_count,
+            "missing": missing_count,
+            "values": counts
+        }
     
     async def get_samples_summary(
         self,
@@ -288,42 +2174,199 @@ class SampleRepository:
         """
         logger.debug("Getting samples summary", filters=filters)
         
-        # Build WHERE conditions and parameters
-        where_conditions = []
+        # Build filter conditions similar to get_samples
         params = {}
         param_counter = 0
+        with_conditions = []
         
         # Handle diagnosis search
         if "_diagnosis_search" in filters:
             search_term = filters.pop("_diagnosis_search")
-            where_conditions.append("""(
-                toLower(toString(s.diagnosis)) CONTAINS toLower($diagnosis_search_term)
-                OR ANY(key IN keys(s.metadata.unharmonized) 
-                       WHERE toLower(key) CONTAINS 'diagnos' 
-                       AND toLower(toString(s.metadata.unharmonized[key])) CONTAINS toLower($diagnosis_search_term))
-            )""")
+            with_conditions.append("""diagnoses IS NOT NULL AND toLower(toString(diagnoses.diagnosis)) CONTAINS toLower($diagnosis_search_term)""")
             params["diagnosis_search_term"] = search_term
         
-        # Add regular filters
+        # Add regular filters - map to correct nodes based on field
         for field, value in filters.items():
             param_counter += 1
             param_name = f"param_{param_counter}"
             
-            if isinstance(value, list):
-                where_conditions.append(f"s.{field} IN ${param_name}")
+            # Map fields to their source nodes (same as get_samples)
+            if field == "disease_phase":
+                with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase = ${param_name}")
+            elif field == "anatomical_sites":
+                # anatomical_sites can be either a list or a string
+                # Store both filter conditions - will be handled in query execution
+                # We'll try list version first, fallback to string if it fails
+                with_conditions.append(("anatomical_sites_list", param_name))
+                with_conditions.append(("anatomical_sites_string", param_name))
+            elif field == "library_selection_method":
+                with_conditions.append(f"sf IS NOT NULL AND sf.library_selection = ${param_name}")
+            elif field == "library_strategy":
+                with_conditions.append(f"sf IS NOT NULL AND sf.library_strategy = ${param_name}")
+            elif field == "library_source_material":
+                with_conditions.append(f"sf IS NOT NULL AND sf.library_source_material = ${param_name}")
+            elif field == "preservation_method":
+                with_conditions.append(f"pf IS NOT NULL AND pf.fixation_embedding_method = ${param_name}")
+            elif field == "tumor_grade":
+                with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_grade = ${param_name}")
+            elif field == "age_at_diagnosis":
+                with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.age_at_diagnosis = ${param_name}")
+                # Convert value to number for numeric comparison
+                try:
+                    params[param_name] = int(value) if value is not None else None
+                except (ValueError, TypeError):
+                    params[param_name] = value
+            elif field == "age_at_collection":
+                with_conditions.append(f"sa.participant_age_at_collection = ${param_name}")
+                # Convert value to number for numeric comparison
+                try:
+                    params[param_name] = int(value) if value is not None else None
+                except (ValueError, TypeError):
+                    params[param_name] = value
+            elif field == "depositions":
+                with_conditions.append(f"st IS NOT NULL AND st.study_id = ${param_name}")
+            elif field == "diagnosis":
+                # Check both diagnoses.diagnosis and diagnoses.diagnosis_comment (for "see diagnosis_comment" cases)
+                # If diagnosis is "see diagnosis_comment", check the comment field instead
+                diagnosis_condition = (
+                    f"(diagnoses IS NOT NULL AND "
+                    f"(diagnoses.diagnosis = ${param_name} OR "
+                    f"(toLower(trim(toString(diagnoses.diagnosis))) = 'see diagnosis_comment' AND "
+                    f"diagnoses.diagnosis_comment IS NOT NULL AND "
+                    f"trim(toString(diagnoses.diagnosis_comment)) = ${param_name})))"
+                )
+                with_conditions.append(diagnosis_condition)
             else:
-                where_conditions.append(f"s.{field} = ${param_name}")
-            params[param_name] = value
+                # Default to sample node
+                if isinstance(value, list):
+                    with_conditions.append(f"sa.{field} IN ${param_name}")
+                else:
+                    with_conditions.append(f"sa.{field} = ${param_name}")
+            
+            if field not in ["disease_phase", "tumor_grade", "age_at_diagnosis", "age_at_collection", "diagnosis"]:
+                # For non-diagnosis fields, handle list values
+                if isinstance(value, list):
+                    # Replace the condition we just added with IN version
+                    with_conditions[-1] = with_conditions[-1].replace(f"= ${param_name}", f"IN ${param_name}")
+            
+            # Only set param if not already set (age fields set it above)
+            if param_name not in params:
+                params[param_name] = value
         
-        # Build final query
+        # Build WHERE clause - handle anatomical_sites filter specially
+        anatomical_sites_param = None
+        anatomical_sites_list_condition = None
+        anatomical_sites_string_condition = None
+        regular_conditions = []
+        
+        for condition in with_conditions:
+            if isinstance(condition, tuple) and condition[0] == "anatomical_sites_list":
+                anatomical_sites_param = condition[1]
+                # List version: use IN
+                anatomical_sites_list_condition = f"sa.anatomic_site IS NOT NULL AND ${condition[1]} IN sa.anatomic_site"
+            elif isinstance(condition, tuple) and condition[0] == "anatomical_sites_string":
+                # String version: use equality (will be used as fallback)
+                anatomical_sites_string_condition = f"sa.anatomic_site IS NOT NULL AND ${condition[1]} = sa.anatomic_site"
+            else:
+                regular_conditions.append(condition)
+        
+        # Build WHERE clause - use list version for anatomical_sites if present
+        all_conditions = regular_conditions.copy()
+        if anatomical_sites_list_condition:
+            # Use list version first (will try string version if it fails)
+            all_conditions.append(anatomical_sites_list_condition)
+        
         where_clause = ""
-        if where_conditions:
-            where_clause = "WHERE " + " AND ".join(where_conditions)
+        if all_conditions:
+            where_clause = "WHERE " + " AND ".join(all_conditions)
+        
+        # Determine which OPTIONAL MATCH clauses are needed based on filters
+        needs_participant = any(
+            field in filters for field in ["sex", "race", "ethnicity", "vital_status", "age_at_vital_status"]
+        ) or any("p." in str(cond) for cond in all_conditions if isinstance(cond, str))
+        
+        needs_diagnosis = any(
+            field in filters for field in ["disease_phase", "tumor_grade", "age_at_diagnosis", "diagnosis"]
+        ) or any("d." in str(cond) or "diagnoses" in str(cond) for cond in all_conditions if isinstance(cond, str))
+        
+        needs_pathology_file = any(
+            field in filters for field in ["preservation_method"]
+        ) or any("pf." in str(cond) for cond in all_conditions if isinstance(cond, str))
+        
+        needs_sequencing_file = any(
+            field in filters for field in ["library_selection_method", "library_strategy", "library_source_material"]
+        ) or any("sf." in str(cond) for cond in all_conditions if isinstance(cond, str))
+        
+        needs_study = any(
+            field in filters for field in ["depositions"]
+        ) or any("st." in str(cond) for cond in all_conditions if isinstance(cond, str))
+        
+        # Build OPTIONAL MATCH clauses
+        optional_matches = []
+        # Need participant if filtering by participant fields OR if we need study paths
+        if needs_participant or needs_study:
+            optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
+        if needs_diagnosis:
+            optional_matches.append("OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)")
+        if needs_pathology_file:
+            optional_matches.append("OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)")
+        if needs_sequencing_file:
+            optional_matches.append("OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)")
+        
+        # Check if where_clause references st (e.g., for depositions filter)
+        needs_st_for_where = any("st." in str(cond) or "st IS NOT NULL" in str(cond) for cond in all_conditions if isinstance(cond, str))
+        
+        # Study paths - ALWAYS include to ensure samples have a path to a study
+        # Path 1: sample -> cell_line -> study
+        # Path 2: sample -> participant -> consent_group -> study
+        study_paths = []
+        # Need participant for path2
+        if not needs_participant:
+            optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
+        study_paths.append("OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)")
+        study_paths.append("OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)")
+        
+        optional_matches_str = "\n        ".join(optional_matches) if optional_matches else ""
+        study_paths_str = "\n        ".join(study_paths) if study_paths else ""
+        
+        # Build WITH clause - only include variables that were matched
+        with_vars = ["sa"]
+        with_collects = []
+        if needs_participant or needs_study or needs_st_for_where:
+            with_vars.append("p")
+        if needs_diagnosis:
+            with_vars.append("head(collect(DISTINCT d)) AS diagnoses")
+        if needs_pathology_file:
+            with_collects.append("head(collect(DISTINCT pf)) AS pf")
+        if needs_sequencing_file:
+            with_collects.append("head(collect(DISTINCT sf)) AS sf")
+        
+        # Always include study (coalesce both paths)
+        with_vars.append("coalesce(st1, st2) AS st")
+        
+        with_clause = ", ".join(with_vars)
+        if with_collects:
+            with_clause += ",\n             " + ",\n             ".join(with_collects)
+        
+        # Build WHERE clause - include filter conditions AND ensure sample has path to study
+        final_where_conditions = ["st IS NOT NULL"]
+        if where_clause:
+            # Extract conditions from where_clause (remove "WHERE " prefix)
+            where_conditions_str = where_clause.replace("WHERE ", "")
+            final_where_conditions.append(where_conditions_str)
+        
+        final_where_clause = "\n        WHERE " + " AND ".join(final_where_conditions) if final_where_conditions else ""
         
         cypher = f"""
-        MATCH (s:Sample)
-        {where_clause}
-        RETURN count(s) as total_count
+        MATCH (sa:sample)
+        WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+        {optional_matches_str}
+        // Try multiple paths to get study - collect all possible studies
+        {study_paths_str}
+        WITH {with_clause}
+        {final_where_clause}
+        WITH DISTINCT sa
+        RETURN count(DISTINCT sa) as total_count
         """.strip()
         
         logger.info(
@@ -333,18 +2376,100 @@ class SampleRepository:
         )
         
         # Execute query with proper result consumption
-        result = await self.session.run(cypher, params)
+        # For anatomical_sites, try list version first, fallback to string if it fails
         records = []
-        async for record in result:
-            records.append(dict(record))
-        
-        if not records:
-            return {"total_count": 0}
-        
-        summary = records[0]
-        logger.debug("Completed samples summary", total_count=summary.get("total_count", 0))
-        
-        return summary
+        try:
+            result = await self.session.run(cypher, params)
+            async for record in result:
+                records.append(dict(record))
+            
+            logger.debug(
+                "Query executed successfully",
+                records_count=len(records),
+                cypher=cypher[:200] if cypher else None
+            )
+            
+            if not records:
+                logger.warning("No records returned from summary query")
+                return {"total_count": 0}
+            
+            summary = records[0]
+            total_count = summary.get("total_count", 0)
+            logger.info("Completed samples summary", total_count=total_count)
+            
+            return {"total_count": total_count}
+        except Exception as e:
+            error_msg = str(e).lower()
+            # If anatomical_sites filter is present and we got an IN error, try string version
+            if anatomical_sites_param and anatomical_sites_string_condition and ("in expected a list" in error_msg or "in expected" in error_msg):
+                logger.debug("List query failed for anatomical_sites in summary, trying string version")
+                # Rebuild query with string version
+                all_conditions = regular_conditions.copy()
+                all_conditions.append(anatomical_sites_string_condition)  # Use string version
+                
+                # Build WHERE clause - include filter conditions AND ensure sample has path to study
+                final_where_conditions = ["st IS NOT NULL"]
+                if all_conditions:
+                    final_where_conditions.extend(all_conditions)
+                where_clause = "WHERE " + " AND ".join(final_where_conditions)
+                
+                cypher = f"""
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+                OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
+                OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)
+                OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
+                // Try multiple paths to get study
+                // Path 1: sample -> cell_line -> study
+                // Path 2: sample -> participant -> consent_group -> study
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, p, 
+                     coalesce(st1, st2) AS st,
+                     head(collect(DISTINCT sf)) AS sf,
+                     head(collect(DISTINCT pf)) AS pf,
+                     head(collect(DISTINCT d)) AS diagnoses
+                {where_clause}
+                WITH DISTINCT sa
+                RETURN count(DISTINCT sa) as total_count
+                """.strip()
+                
+                try:
+                    result = await self.session.run(cypher, params)
+                    async for record in result:
+                        records.append(dict(record))
+                    logger.debug("Successfully executed anatomical_sites summary query as string")
+                    
+                    if not records:
+                        logger.warning("No records returned from summary query")
+                        return {"total_count": 0}
+                    
+                    summary = records[0]
+                    total_count = summary.get("total_count", 0)
+                    logger.info("Completed samples summary (string version)", total_count=total_count)
+                    
+                    return {"total_count": total_count}
+                except Exception as e2:
+                    logger.error(
+                        "Error executing get_samples_summary Cypher query (both list and string failed for anatomical_sites)",
+                        error=str(e2),
+                        error_type=type(e2).__name__,
+                        cypher=cypher[:500],
+                        exc_info=True
+                    )
+                    raise
+            else:
+                # Different error, re-raise
+                logger.error(
+                    "Error executing get_samples_summary Cypher query",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    cypher=cypher[:500] if cypher else None,
+                    params_keys=list(params.keys()) if params else [],
+                    exc_info=True
+                )
+                raise
     
     def _validate_filters(self, filters: Dict[str, Any], entity_type: str) -> None:
         """
@@ -363,18 +2488,291 @@ class SampleRepository:
                 continue
                 
             if not self.allowlist.is_field_allowed(entity_type, field):
-                raise UnsupportedFieldError(f"Field '{field}' is not supported for {entity_type} filtering")
+                # Log the invalid field but don't include it in the error message
+                logger.warning(
+                    "Unsupported field in filter",
+                    field=field,
+                    entity_type=entity_type
+                )
+                raise UnsupportedFieldError(field, entity_type)
     
-    def _record_to_sample(self, record: Dict[str, Any]) -> Sample:
+    def _record_to_sample(
+        self, 
+        sa: Dict[str, Any], 
+        p: Dict[str, Any], 
+        st: Dict[str, Any], 
+        sf: Dict[str, Any], 
+        pf: Dict[str, Any], 
+        diagnoses: Optional[Dict[str, Any]],
+        base_url: Optional[str] = None
+    ) -> Sample:
         """
-        Convert a database record to a flexible Sample object.
+        Convert database records to a Sample object with proper field mappings.
         
         Args:
-            record: Database record dictionary
+            sa: Sample node dictionary
+            p: Participant node dictionary
+            st: Study node dictionary
+            sf: Sequencing file node dictionary
+            pf: Pathology file node dictionary
+            diagnoses: Single diagnosis node dictionary (or None)
             
         Returns:
-            Sample object with flexible structure
+            Sample object with proper structure
         """
-        # Create a Sample object with all fields from the record
-        # This allows for any field structure to be returned
-        return Sample(**record)
+        from app.models.dto import (
+            Sample, SampleIdentifier, NamespaceIdentifier, SubjectId,
+            SampleMetadata, DiagnosisField
+        )
+        
+        # Build sample ID: namespace from study, name from sample_id
+        # Handle case where sa might be empty or None
+        if not sa:
+            logger.warning("Sample node (sa) is empty or None, skipping record")
+            raise ValueError("Sample node (sa) is required but was empty or None")
+        
+        # Try to get study_id from multiple sources
+        study_id = ""
+        if st and isinstance(st, dict):
+            study_id = st.get("study_id", "")
+        
+        # If study_id is still empty, try to get it from the sample node itself
+        if not study_id and sa and isinstance(sa, dict):
+            study_id = sa.get("study_id", "")
+        
+        # If still empty, try to get it from participant
+        if not study_id and p and isinstance(p, dict):
+            study_id = p.get("study_id", "")
+        
+        sample_id = sa.get("sample_id", "") if isinstance(sa, dict) else ""
+        
+        # If sample_id is not available, try other possible fields
+        if not sample_id:
+            sample_id = sa.get("id", "") if isinstance(sa, dict) else ""
+        if not sample_id:
+            sample_id = sa.get("name", "") if isinstance(sa, dict) else ""
+        
+        # Validate required fields - both study_id and sample_id are required
+        if not study_id or not study_id.strip():
+            logger.warning(
+                "Sample record missing study_id (namespace), skipping",
+                sa_keys=list(sa.keys()) if isinstance(sa, dict) else [],
+                st_keys=list(st.keys()) if st and isinstance(st, dict) else [],
+                p_keys=list(p.keys()) if p and isinstance(p, dict) else [],
+                sample_id=sample_id
+            )
+            raise ValueError(f"Sample record missing required study_id (namespace). Sample ID: {sample_id}")
+        
+        if not sample_id or not sample_id.strip():
+            logger.warning(
+                "Sample node missing sample_id field, skipping",
+                sa_keys=list(sa.keys()) if isinstance(sa, dict) else [],
+                study_id=study_id
+            )
+            raise ValueError(f"Sample record missing required sample_id. Study ID: {study_id}")
+        
+        # Create namespace and sample identifier
+        # Pass as dictionary to avoid Pydantic validation issues
+        sample_identifier = SampleIdentifier(
+            namespace={
+                "organization": "CCDI-DCC",
+                "name": study_id.strip()
+            },
+            name=sample_id.strip()
+        )
+        
+        # Build subject reference: name from participant, namespace from study
+        subject = None
+        if p and isinstance(p, dict) and st and isinstance(st, dict):
+            participant_id = p.get("participant_id", "")
+            if not participant_id:
+                participant_id = p.get("id", "") if isinstance(p, dict) else ""
+            if participant_id:
+                subject_namespace = NamespaceIdentifier(
+                    organization="CCDI-DCC",
+                    name=study_id
+                )
+                subject = SubjectId(
+                    namespace=subject_namespace,
+                    name=participant_id
+                )
+        
+        # Build metadata with proper field mappings
+        def _null_if_invalid(value):
+            """Replace 'Invalid value' with None, and -999 with None."""
+            if value is None:
+                return None
+            if isinstance(value, (int, float)) and value == -999:
+                return None
+            if isinstance(value, str) and value.strip().lower() == "invalid value":
+                return None
+            # Handle arrays/lists - filter out "Invalid value" entries
+            if isinstance(value, (list, tuple)):
+                filtered = [v for v in value if v is not None and str(v).strip().lower() != "invalid value"]
+                # Return None if all values were invalid, otherwise return the filtered list
+                return filtered if filtered else None
+            return value
+        
+        def _null_if_neg999(value):
+            """Replace -999 with None, return value as-is (not converted to string)."""
+            if value is None:
+                return None
+            if isinstance(value, (int, float)) and value == -999:
+                return None
+            return value  # Return as-is, not as string
+        
+        # Get depositions from study - format as objects with kind and value
+        depositions = None
+        if st and isinstance(st, dict) and st.get("study_id"):
+            study_id = st.get("study_id")
+            if study_id:
+                depositions = [{"kind": "dbGaP", "value": study_id}]
+        
+        # Build diagnosis field
+        # If empty data, return null; otherwise return {value: diagnosis, comment: diagnosis_comment}
+        diagnosis_field = None
+        if diagnoses and isinstance(diagnoses, dict):
+            # diagnoses is now a single node (or None)
+            diagnosis_value = diagnoses.get("diagnosis")
+            diagnosis_comment = diagnoses.get("diagnosis_comment")
+            
+            # Check if diagnosis_value is empty/null/whitespace
+            if diagnosis_value and str(diagnosis_value).strip():
+                # Has diagnosis value - return object with value and comment
+                diagnosis_field = DiagnosisField(
+                    value=str(diagnosis_value).strip(),
+                    comment=str(diagnosis_comment).strip() if diagnosis_comment and str(diagnosis_comment).strip() else None
+                )
+            # If diagnosis_value is empty/null/whitespace, diagnosis_field remains None (returns null)
+        
+        # Helper function to wrap value in ValueField if not None and not empty
+        def _wrap_value(value):
+            """Wrap value in ValueField if not None and not empty, otherwise return None."""
+            if value is None:
+                return None
+            # Convert to string and check if it's empty or just whitespace
+            str_value = str(value).strip()
+            if not str_value:
+                return None
+            from app.models.dto import ValueField
+            return ValueField(value=str_value)
+        
+        # Helper function to wrap integer value in IntegerValueField if not None
+        def _wrap_integer_value(value):
+            """Wrap integer value in IntegerValueField if not None, otherwise return None."""
+            if value is None:
+                return None
+            # Convert to int, handling both int and float values
+            try:
+                int_value = int(float(value))  # Convert float to int (e.g., 10.0 -> 10)
+                from app.models.dto import IntegerValueField
+                return IntegerValueField(value=int_value)
+            except (ValueError, TypeError):
+                return None
+        
+        # Helper function to handle anatomical_sites (may be array or string)
+        def _process_anatomical_sites(value):
+            """Process anatomical_sites - handle arrays and filter out 'Invalid value', replacing with None."""
+            if value is None:
+                return None
+            # If it's an array/list, filter out "Invalid value" entries (case-insensitive)
+            if isinstance(value, (list, tuple)):
+                filtered = [
+                    v for v in value 
+                    if v is not None 
+                    and str(v).strip() != "" 
+                    and str(v).strip().lower() != "invalid value"
+                ]
+                # Return None if all values were invalid or empty
+                if not filtered:
+                    return None
+                # Based on the model, it's a single ValueField, so we'll take the first valid value
+                return str(filtered[0]).strip() if filtered else None
+            # If it's a string, check for "Invalid value" (case-insensitive)
+            if isinstance(value, str):
+                value_stripped = value.strip()
+                if not value_stripped or value_stripped.lower() == "invalid value":
+                    return None
+                return value_stripped
+            # For other types, convert to string and check
+            value_str = str(value).strip() if value else ""
+            if not value_str or value_str.lower() == "invalid value":
+                return None
+            return value_str
+        
+        # Build identifiers - reference the subject (participant)
+        identifiers = None
+        # Ensure we have study_id from st if not already set
+        if not study_id and st and isinstance(st, dict):
+            study_id = st.get("study_id", "")
+        
+        if p and isinstance(p, dict) and study_id and sample_id:
+            participant_id = p.get("participant_id", "")
+            if not participant_id:
+                participant_id = p.get("id", "") if isinstance(p, dict) else ""
+            
+            if participant_id and study_id and sample_id:
+                from app.models.dto import IdentifierField, IdentifierValue
+                
+                # Build server URL - format: /api/v1/sample/CCDI-DCC/{study_id}/{sample_id}
+                # Note: This format doesn't include entity type, matching user's example
+                server_url = None
+                if base_url:
+                    server_url = f"{base_url}/api/v1/sample/CCDI-DCC/{study_id}/{sample_id}"
+                
+                identifier_value = IdentifierValue(
+                    namespace={
+                        "organization": "CCDI-DCC",
+                        "name": study_id
+                    },
+                    name=sample_id,
+                    type="Linked",
+                    server=server_url
+                )
+                identifiers = [IdentifierField(value=identifier_value)]
+            else:
+                logger.debug(
+                    "Cannot build identifier - missing participant_id, study_id, or sample_id",
+                    has_participant_id=bool(participant_id),
+                    has_study_id=bool(study_id),
+                    has_sample_id=bool(sample_id),
+                    p_keys=list(p.keys()) if isinstance(p, dict) else []
+                )
+        else:
+            logger.debug(
+                "Cannot build identifier - missing participant, study, or sample_id",
+                has_p=bool(p),
+                p_is_dict=isinstance(p, dict) if p else False,
+                has_st=bool(st),
+                study_id=study_id,
+                sample_id=sample_id
+            )
+        
+        # Build metadata
+        metadata = SampleMetadata(
+            disease_phase=_wrap_value(_null_if_invalid(sa.get("disease_phase"))),
+            anatomical_sites=_wrap_value(_process_anatomical_sites(sa.get("anatomic_site"))),
+            library_selection_method=_wrap_value(_null_if_invalid(sf.get("library_selection")) if sf else None),
+            library_strategy=_wrap_value(_null_if_invalid(sf.get("library_strategy")) if sf else None),
+            library_source_material=_wrap_value(_null_if_invalid(sf.get("library_source_material")) if sf else None),
+            preservation_method=_wrap_value(_null_if_invalid(pf.get("fixation_embedding_method")) if pf else None),
+            tumor_grade=_wrap_value(_null_if_invalid(diagnoses.get("tumor_grade")) if diagnoses and isinstance(diagnoses, dict) else None),
+            specimen_molecular_analyte_type=None,  # Not in the provided mapping
+            tissue_type=None,  # Not in the provided mapping
+            tumor_classification=None,  # Not in the provided mapping
+            age_at_diagnosis=_wrap_integer_value(_null_if_neg999(diagnoses.get("age_at_diagnosis")) if diagnoses and isinstance(diagnoses, dict) else None),
+            age_at_collection=_wrap_integer_value(_null_if_neg999(sa.get("participant_age_at_collection"))),
+            tumor_tissue_morphology=None,  # Not in the provided mapping
+            depositions=depositions,
+            diagnosis=diagnosis_field,
+            identifiers=identifiers
+        )
+        
+        # Create Sample object
+        sample = Sample(
+            id=sample_identifier,
+            subject=subject,
+            metadata=metadata
+        )
+        
+        return sample

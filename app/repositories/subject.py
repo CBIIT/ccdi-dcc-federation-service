@@ -1076,11 +1076,15 @@ WITH p, d, c, st,
              // Split race by semicolon and trim each part
              [r IN SPLIT(race, ';') | trim(r)] as race_parts
         WITH participant_id, race, race_parts,
+             // Check if original race contained "Hispanic or Latino"
+             any(r IN race_parts WHERE r = 'Hispanic or Latino') as had_hispanic,
              // Filter out "Hispanic or Latino" - it's not a valid race value
              [r IN race_parts WHERE r <> 'Hispanic or Latino'] as race_list_filtered
-        WITH participant_id, race, race_list_filtered,
+        WITH participant_id, race, race_list_filtered, had_hispanic,
              CASE 
-               WHEN size(race_list_filtered) = 0 THEN ['Not Reported']
+               // If race was only "Hispanic or Latino", replace with "Not Reported"
+               WHEN size(race_list_filtered) = 0 AND had_hispanic THEN ['Not Reported']
+               // Otherwise, use the filtered race values that are valid
                ELSE [r IN race_list_filtered WHERE r IN $valid_races]
              END as matching_races
         UNWIND matching_races as race_value
@@ -1906,7 +1910,13 @@ WITH p, d, c, st,
                 continue
                 
             if not self.allowlist.is_field_allowed(entity_type, field):
-                raise UnsupportedFieldError(f"Field '{field}' is not supported for {entity_type} filtering")
+                # Log the invalid field but don't include it in the error message
+                logger.warning(
+                    "Unsupported field in filter",
+                    field=field,
+                    entity_type=entity_type
+                )
+                raise UnsupportedFieldError(field, entity_type)
     
     def _record_to_subject(self, record: Dict[str, Any], base_url: Optional[str] = None) -> Subject:
         """
@@ -1978,6 +1988,13 @@ WITH p, d, c, st,
         # Remove 'Hispanic or Latino' from reported race values
         race_list = [r for r in original_race_list if r != 'Hispanic or Latino']
         
+        # If race value was only "Hispanic or Latino", replace with "Not Reported"
+        # If race value contains "Hispanic or Latino" and other values, keep current behavior (already removed)
+        if not race_list and original_race_list:
+            # Check if original only had "Hispanic or Latino" (exact match)
+            if all(race.strip() == 'Hispanic or Latino' for race in original_race_list):
+                race_list = ['Not Reported']
+        
         # Normalize sex using config mappings
         sex_value = None
         if sex_value_raw is not None:
@@ -2031,7 +2048,7 @@ WITH p, d, c, st,
             "metadata": {
                 "sex": {"value": sex_value} if sex_value else None,
                 # Race reporting rule: remove 'Hispanic or Latino'. If only that term was present,
-                # return an empty list []; if race was entirely missing, keep it as None.
+                # replace with "Not Reported"; if race was entirely missing, keep it as None.
                 "race": (
                     [{"value": race} for race in race_list]
                     if race_value is not None

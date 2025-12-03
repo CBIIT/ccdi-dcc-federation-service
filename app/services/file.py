@@ -184,7 +184,7 @@ class FileService:
                 filters=filters
             )
             raise ValidationError(
-                f"Query execution exceeded timeout of {query_timeout} seconds. "
+                "Query execution exceeded the allowed timeout. "
                 "The request may be too complex or the database is under heavy load."
             )
         

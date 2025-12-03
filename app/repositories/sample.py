@@ -5,6 +5,7 @@ This module provides data access operations for samples
 using Cypher queries to Memgraph.
 """
 
+import asyncio
 from typing import List, Dict, Any, Optional, Tuple
 from neo4j import AsyncSession
 
@@ -285,14 +286,41 @@ class SampleRepository:
             return_clause=return_clause
         )
         
-        # Execute query with proper result consumption
+        # Execute query with proper result consumption and retry logic
         # For anatomical_sites, try list version first, fallback to string if it fails
+        max_retries = 2
+        retry_count = 0
         records = []
+        
+        while retry_count <= max_retries:
+            try:
+                result = await self.session.run(cypher, params)
+                records = []
+                async for record in result:
+                    records.append(dict(record))
+                
+                # Ensure result is fully consumed
+                await result.consume()
+                
+                # If we got results or it's the last retry, break out of retry loop
+                if records or retry_count >= max_retries:
+                    break
+                
+                # If no results and not the last retry, wait a bit and retry
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))  # Exponential backoff: 0.1s, 0.2s
+                    retry_count += 1
+                    logger.debug(f"Retrying get_samples query (attempt {retry_count + 1})")
+            except Exception as e:
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))
+                    retry_count += 1
+                    logger.warning(f"Error in get_samples query, retrying (attempt {retry_count + 1})", error=str(e))
+                else:
+                    # Re-raise to be handled by outer try-except
+                    raise
+        
         try:
-            result = await self.session.run(cypher, params)
-            async for record in result:
-                records.append(dict(record))
-            
             logger.info(
                 "Query executed successfully",
                 records_count=len(records),
@@ -1713,23 +1741,52 @@ class SampleRepository:
             params_count=len(params)
         )
         
-        # Execute all three queries with proper result consumption
-        total_result = await self.session.run(total_cypher, params)
-        total_records = []
-        async for record in total_result:
-            total_records.append(dict(record))
-        total_count = total_records[0].get("total", 0) if total_records else 0
-        
-        missing_result = await self.session.run(missing_cypher, params)
-        missing_records = []
-        async for record in missing_result:
-            missing_records.append(dict(record))
-        missing_count = missing_records[0].get("missing", 0) if missing_records else 0
-        
-        values_result = await self.session.run(values_cypher, params)
+        # Execute all three queries with proper result consumption and retry logic
+        max_retries = 2
+        retry_count = 0
+        total_count = 0
+        missing_count = 0
         values_records = []
-        async for record in values_result:
-            values_records.append(dict(record))
+        
+        while retry_count <= max_retries:
+            try:
+                total_result = await self.session.run(total_cypher, params)
+                total_records = []
+                async for record in total_result:
+                    total_records.append(dict(record))
+                await total_result.consume()
+                total_count = total_records[0].get("total", 0) if total_records else 0
+                
+                missing_result = await self.session.run(missing_cypher, params)
+                missing_records = []
+                async for record in missing_result:
+                    missing_records.append(dict(record))
+                await missing_result.consume()
+                missing_count = missing_records[0].get("missing", 0) if missing_records else 0
+                
+                values_result = await self.session.run(values_cypher, params)
+                values_records = []
+                async for record in values_result:
+                    values_records.append(dict(record))
+                await values_result.consume()
+                
+                # If we got results or it's the last retry, break out of retry loop
+                if (total_count > 0 or len(values_records) > 0) or retry_count >= max_retries:
+                    break
+                
+                # If no results and not the last retry, wait a bit and retry
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))  # Exponential backoff: 0.1s, 0.2s
+                    retry_count += 1
+                    logger.debug(f"Retrying count_samples_by_race query (attempt {retry_count + 1})")
+            except Exception as e:
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))
+                    retry_count += 1
+                    logger.warning(f"Error in count_samples_by_race query, retrying (attempt {retry_count + 1})", error=str(e))
+                else:
+                    logger.error("Error in count_samples_by_race query after retries", error=str(e), exc_info=True)
+                    raise
         
         # Format results - ensure all valid races are included (even with 0 count)
         counts_by_value = {record.get("value"): record.get("count", 0) for record in values_records}
@@ -1902,23 +1959,52 @@ class SampleRepository:
             params_count=len(params)
         )
         
-        # Execute all three queries with proper result consumption
-        total_result = await self.session.run(total_cypher, params)
-        total_records = []
-        async for record in total_result:
-            total_records.append(dict(record))
-        total_count = total_records[0].get("total", 0) if total_records else 0
-        
-        missing_result = await self.session.run(missing_cypher, params)
-        missing_records = []
-        async for record in missing_result:
-            missing_records.append(dict(record))
-        missing_count = missing_records[0].get("missing", 0) if missing_records else 0
-        
-        values_result = await self.session.run(values_cypher, params)
+        # Execute all three queries with proper result consumption and retry logic
+        max_retries = 2
+        retry_count = 0
+        total_count = 0
+        missing_count = 0
         values_records = []
-        async for record in values_result:
-            values_records.append(dict(record))
+        
+        while retry_count <= max_retries:
+            try:
+                total_result = await self.session.run(total_cypher, params)
+                total_records = []
+                async for record in total_result:
+                    total_records.append(dict(record))
+                await total_result.consume()
+                total_count = total_records[0].get("total", 0) if total_records else 0
+                
+                missing_result = await self.session.run(missing_cypher, params)
+                missing_records = []
+                async for record in missing_result:
+                    missing_records.append(dict(record))
+                await missing_result.consume()
+                missing_count = missing_records[0].get("missing", 0) if missing_records else 0
+                
+                values_result = await self.session.run(values_cypher, params)
+                values_records = []
+                async for record in values_result:
+                    values_records.append(dict(record))
+                await values_result.consume()
+                
+                # If we got results or it's the last retry, break out of retry loop
+                if (total_count > 0 or len(values_records) > 0) or retry_count >= max_retries:
+                    break
+                
+                # If no results and not the last retry, wait a bit and retry
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))  # Exponential backoff: 0.1s, 0.2s
+                    retry_count += 1
+                    logger.debug(f"Retrying count_samples_by_field query (attempt {retry_count + 1})")
+            except Exception as e:
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))
+                    retry_count += 1
+                    logger.warning(f"Error in count_samples_by_field query, retrying (attempt {retry_count + 1})", error=str(e))
+                else:
+                    logger.error("Error in count_samples_by_field query after retries", error=str(e), exc_info=True)
+                    raise
         
         # Format results
         counts = []
@@ -2108,23 +2194,52 @@ class SampleRepository:
             values_query=values_cypher
         )
         
-        # Execute all three queries with proper result consumption
-        total_result = await self.session.run(total_cypher, params)
-        total_records = []
-        async for record in total_result:
-            total_records.append(dict(record))
-        total_count = total_records[0].get("total", 0) if total_records else 0
-        
-        missing_result = await self.session.run(missing_cypher, params)
-        missing_records = []
-        async for record in missing_result:
-            missing_records.append(dict(record))
-        missing_count = missing_records[0].get("missing", 0) if missing_records else 0
-        
-        values_result = await self.session.run(values_cypher, params)
+        # Execute all three queries with proper result consumption and retry logic
+        max_retries = 2
+        retry_count = 0
+        total_count = 0
+        missing_count = 0
         values_records = []
-        async for record in values_result:
-            values_records.append(dict(record))
+        
+        while retry_count <= max_retries:
+            try:
+                total_result = await self.session.run(total_cypher, params)
+                total_records = []
+                async for record in total_result:
+                    total_records.append(dict(record))
+                await total_result.consume()
+                total_count = total_records[0].get("total", 0) if total_records else 0
+                
+                missing_result = await self.session.run(missing_cypher, params)
+                missing_records = []
+                async for record in missing_result:
+                    missing_records.append(dict(record))
+                await missing_result.consume()
+                missing_count = missing_records[0].get("missing", 0) if missing_records else 0
+                
+                values_result = await self.session.run(values_cypher, params)
+                values_records = []
+                async for record in values_result:
+                    values_records.append(dict(record))
+                await values_result.consume()
+                
+                # If we got results or it's the last retry, break out of retry loop
+                if (total_count > 0 or len(values_records) > 0) or retry_count >= max_retries:
+                    break
+                
+                # If no results and not the last retry, wait a bit and retry
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))  # Exponential backoff: 0.1s, 0.2s
+                    retry_count += 1
+                    logger.debug(f"Retrying count_samples_by_field query (attempt {retry_count + 1})")
+            except Exception as e:
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))
+                    retry_count += 1
+                    logger.warning(f"Error in count_samples_by_field query, retrying (attempt {retry_count + 1})", error=str(e))
+                else:
+                    logger.error("Error in count_samples_by_field query after retries", error=str(e), exc_info=True)
+                    raise
         
         # Format results and filter out any "see diagnosis_comment" that might have slipped through
         counts = []
@@ -2375,14 +2490,41 @@ class SampleRepository:
             params=params
         )
         
-        # Execute query with proper result consumption
+        # Execute query with proper result consumption and retry logic
         # For anatomical_sites, try list version first, fallback to string if it fails
+        max_retries = 2
+        retry_count = 0
         records = []
+        
+        while retry_count <= max_retries:
+            try:
+                result = await self.session.run(cypher, params)
+                records = []
+                async for record in result:
+                    records.append(dict(record))
+                
+                # Ensure result is fully consumed
+                await result.consume()
+                
+                # If we got results or it's the last retry, break out of retry loop
+                if records or retry_count >= max_retries:
+                    break
+                
+                # If no results and not the last retry, wait a bit and retry
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))  # Exponential backoff: 0.1s, 0.2s
+                    retry_count += 1
+                    logger.debug(f"Retrying get_samples_summary query (attempt {retry_count + 1})")
+            except Exception as e:
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))
+                    retry_count += 1
+                    logger.warning(f"Error in get_samples_summary query, retrying (attempt {retry_count + 1})", error=str(e))
+                else:
+                    # Re-raise to be handled by outer try-except
+                    raise
+        
         try:
-            result = await self.session.run(cypher, params)
-            async for record in result:
-                records.append(dict(record))
-            
             logger.debug(
                 "Query executed successfully",
                 records_count=len(records),

@@ -5,6 +5,7 @@ This module provides data access operations for subjects
 using Cypher queries to Memgraph.
 """
 
+import asyncio
 from typing import List, Dict, Any, Optional, Tuple
 from neo4j import AsyncSession
 
@@ -323,22 +324,46 @@ class SubjectRepository:
             filters=filters
         )
         
-        # Execute query with proper result consumption
-        try:
-            result = await self.session.run(cypher, params)
-            # Ensure the result is fully consumed - use async iteration for reliability
-            records = []
-            async for record in result:
-                records.append(dict(record))
-        except Exception as e:
-            logger.error(
-                "Error executing get_subjects Cypher query",
-                error=str(e),
-                error_type=type(e).__name__,
-                cypher=cypher[:500] if cypher else None,
-                params_keys=list(params.keys()) if params else []
-            )
-            raise
+        # Execute query with proper result consumption and retry logic
+        max_retries = 2
+        retry_count = 0
+        records = []
+        
+        while retry_count <= max_retries:
+            try:
+                result = await self.session.run(cypher, params)
+                # Ensure the result is fully consumed - use async iteration for reliability
+                records = []
+                async for record in result:
+                    records.append(dict(record))
+                
+                # Ensure result is fully consumed
+                await result.consume()
+                
+                # If we got results or it's the last retry, break out of retry loop
+                if records or retry_count >= max_retries:
+                    break
+                
+                # If no results and not the last retry, wait a bit and retry
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))  # Exponential backoff: 0.1s, 0.2s
+                    retry_count += 1
+                    logger.debug(f"Retrying get_subjects query (attempt {retry_count + 1})")
+            except Exception as e:
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))
+                    retry_count += 1
+                    logger.warning(f"Error in get_subjects query, retrying (attempt {retry_count + 1})", error=str(e))
+                else:
+                    logger.error(
+                        "Error executing get_subjects Cypher query after retries",
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        cypher=cypher[:500] if cypher else None,
+                        params_keys=list(params.keys()) if params else [],
+                        exc_info=True
+                    )
+                    raise
         
         # Convert to Subject objects
         subjects = []
@@ -551,31 +576,55 @@ class SubjectRepository:
             params=params
         )
 
-        # Execute query with proper error handling and result consumption
-        try:
-            result = await self.session.run(cypher, params)
-            # Ensure the result is fully consumed - use async iteration for reliability
-            # This ensures all records are fetched before proceeding
-            records = []
-            async for record in result:
-                records.append(dict(record))
-            
-            logger.debug(
-                "Query execution completed",
-                participant_id=name,
-                namespace=namespace,
-                records_count=len(records) if records else 0
-            )
-        except Exception as e:
-            logger.error(
-                "Error executing get_subject_by_identifier Cypher query",
-                error=str(e),
-                error_type=type(e).__name__,
-                participant_id=name,
-                namespace=namespace,
-                cypher=cypher[:500] if cypher else None
-            )
-            raise
+        # Execute query with proper error handling, result consumption, and retry logic
+        max_retries = 2
+        retry_count = 0
+        records = []
+        
+        while retry_count <= max_retries:
+            try:
+                result = await self.session.run(cypher, params)
+                # Ensure the result is fully consumed - use async iteration for reliability
+                # This ensures all records are fetched before proceeding
+                records = []
+                async for record in result:
+                    records.append(dict(record))
+                
+                # Ensure result is fully consumed
+                await result.consume()
+                
+                # If we got results or it's the last retry, break out of retry loop
+                if records or retry_count >= max_retries:
+                    break
+                
+                # If no results and not the last retry, wait a bit and retry
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))  # Exponential backoff: 0.1s, 0.2s
+                    retry_count += 1
+                    logger.debug(f"Retrying get_subject_by_identifier query (attempt {retry_count + 1})")
+            except Exception as e:
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))
+                    retry_count += 1
+                    logger.warning(f"Error in get_subject_by_identifier query, retrying (attempt {retry_count + 1})", error=str(e))
+                else:
+                    logger.error(
+                        "Error executing get_subject_by_identifier Cypher query after retries",
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        participant_id=name,
+                        namespace=namespace,
+                        cypher=cypher[:500] if cypher else None,
+                        exc_info=True
+                    )
+                    raise
+        
+        logger.debug(
+            "Query execution completed",
+            participant_id=name,
+            namespace=namespace,
+            records_count=len(records) if records else 0
+        )
         
         if not records:
             logger.debug("Subject not found", participant_id=name, namespace=namespace)
@@ -946,23 +995,52 @@ WITH p, d, c, st,
             params_count=len(params)
         )
         
-        # Execute all three queries with proper result consumption
-        total_result = await self.session.run(total_cypher, params)
-        total_records = []
-        async for record in total_result:
-            total_records.append(dict(record))
-        total_count = total_records[0].get("total", 0) if total_records else 0
-        
-        missing_result = await self.session.run(missing_cypher, params)
-        missing_records = []
-        async for record in missing_result:
-            missing_records.append(dict(record))
-        missing_count = missing_records[0].get("missing", 0) if missing_records else 0
-        
-        values_result = await self.session.run(values_cypher, params)
+        # Execute all three queries with proper result consumption and retry logic
+        max_retries = 2
+        retry_count = 0
+        total_count = 0
+        missing_count = 0
         values_records = []
-        async for record in values_result:
-            values_records.append(dict(record))
+        
+        while retry_count <= max_retries:
+            try:
+                total_result = await self.session.run(total_cypher, params)
+                total_records = []
+                async for record in total_result:
+                    total_records.append(dict(record))
+                await total_result.consume()
+                total_count = total_records[0].get("total", 0) if total_records else 0
+                
+                missing_result = await self.session.run(missing_cypher, params)
+                missing_records = []
+                async for record in missing_result:
+                    missing_records.append(dict(record))
+                await missing_result.consume()
+                missing_count = missing_records[0].get("missing", 0) if missing_records else 0
+                
+                values_result = await self.session.run(values_cypher, params)
+                values_records = []
+                async for record in values_result:
+                    values_records.append(dict(record))
+                await values_result.consume()
+                
+                # If we got results or it's the last retry, break out of retry loop
+                if (total_count > 0 or len(values_records) > 0) or retry_count >= max_retries:
+                    break
+                
+                # If no results and not the last retry, wait a bit and retry
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))  # Exponential backoff: 0.1s, 0.2s
+                    retry_count += 1
+                    logger.debug(f"Retrying count_subjects_by_field query (attempt {retry_count + 1})")
+            except Exception as e:
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))
+                    retry_count += 1
+                    logger.warning(f"Error in count_subjects_by_field query, retrying (attempt {retry_count + 1})", error=str(e))
+                else:
+                    logger.error("Error in count_subjects_by_field query after retries", error=str(e), exc_info=True)
+                    raise
         
         # Format values results
         counts = []
@@ -1120,23 +1198,52 @@ WITH p, d, c, st,
             params_count=len(params)
         )
         
-        # Execute all three queries with proper result consumption
-        total_result = await self.session.run(total_cypher, params)
-        total_records = []
-        async for record in total_result:
-            total_records.append(dict(record))
-        total_count = total_records[0].get("total", 0) if total_records else 0
-        
-        missing_result = await self.session.run(missing_cypher, params)
-        missing_records = []
-        async for record in missing_result:
-            missing_records.append(dict(record))
-        missing_count = missing_records[0].get("missing", 0) if missing_records else 0
-        
-        values_result = await self.session.run(values_cypher, params)
+        # Execute all three queries with proper result consumption and retry logic
+        max_retries = 2
+        retry_count = 0
+        total_count = 0
+        missing_count = 0
         values_records = []
-        async for record in values_result:
-            values_records.append(dict(record))
+        
+        while retry_count <= max_retries:
+            try:
+                total_result = await self.session.run(total_cypher, params)
+                total_records = []
+                async for record in total_result:
+                    total_records.append(dict(record))
+                await total_result.consume()
+                total_count = total_records[0].get("total", 0) if total_records else 0
+                
+                missing_result = await self.session.run(missing_cypher, params)
+                missing_records = []
+                async for record in missing_result:
+                    missing_records.append(dict(record))
+                await missing_result.consume()
+                missing_count = missing_records[0].get("missing", 0) if missing_records else 0
+                
+                values_result = await self.session.run(values_cypher, params)
+                values_records = []
+                async for record in values_result:
+                    values_records.append(dict(record))
+                await values_result.consume()
+                
+                # If we got results or it's the last retry, break out of retry loop
+                if (total_count > 0 or len(values_records) > 0) or retry_count >= max_retries:
+                    break
+                
+                # If no results and not the last retry, wait a bit and retry
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))  # Exponential backoff: 0.1s, 0.2s
+                    retry_count += 1
+                    logger.debug(f"Retrying count_subjects_by_field query (attempt {retry_count + 1})")
+            except Exception as e:
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))
+                    retry_count += 1
+                    logger.warning(f"Error in count_subjects_by_field query, retrying (attempt {retry_count + 1})", error=str(e))
+                else:
+                    logger.error("Error in count_subjects_by_field query after retries", error=str(e), exc_info=True)
+                    raise
         
         # Format results - ensure all valid races are included (even with 0 count)
         counts_by_value = {record.get("value"): record.get("count", 0) for record in values_records}
@@ -1281,23 +1388,52 @@ WITH p, d, c, st,
             params_count=len(params)
         )
         
-        # Execute all three queries with proper result consumption
-        total_result = await self.session.run(total_cypher, params)
-        total_records = []
-        async for record in total_result:
-            total_records.append(dict(record))
-        total_count = total_records[0].get("total", 0) if total_records else 0
-        
-        missing_result = await self.session.run(missing_cypher, params)
-        missing_records = []
-        async for record in missing_result:
-            missing_records.append(dict(record))
-        missing_count = missing_records[0].get("missing", 0) if missing_records else 0
-        
-        values_result = await self.session.run(values_cypher, params)
+        # Execute all three queries with proper result consumption and retry logic
+        max_retries = 2
+        retry_count = 0
+        total_count = 0
+        missing_count = 0
         values_records = []
-        async for record in values_result:
-            values_records.append(dict(record))
+        
+        while retry_count <= max_retries:
+            try:
+                total_result = await self.session.run(total_cypher, params)
+                total_records = []
+                async for record in total_result:
+                    total_records.append(dict(record))
+                await total_result.consume()
+                total_count = total_records[0].get("total", 0) if total_records else 0
+                
+                missing_result = await self.session.run(missing_cypher, params)
+                missing_records = []
+                async for record in missing_result:
+                    missing_records.append(dict(record))
+                await missing_result.consume()
+                missing_count = missing_records[0].get("missing", 0) if missing_records else 0
+                
+                values_result = await self.session.run(values_cypher, params)
+                values_records = []
+                async for record in values_result:
+                    values_records.append(dict(record))
+                await values_result.consume()
+                
+                # If we got results or it's the last retry, break out of retry loop
+                if (total_count > 0 or len(values_records) > 0) or retry_count >= max_retries:
+                    break
+                
+                # If no results and not the last retry, wait a bit and retry
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))  # Exponential backoff: 0.1s, 0.2s
+                    retry_count += 1
+                    logger.debug(f"Retrying count_subjects_by_field query (attempt {retry_count + 1})")
+            except Exception as e:
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))
+                    retry_count += 1
+                    logger.warning(f"Error in count_subjects_by_field query, retrying (attempt {retry_count + 1})", error=str(e))
+                else:
+                    logger.error("Error in count_subjects_by_field query after retries", error=str(e), exc_info=True)
+                    raise
         
         # Format results - ensure both ethnicity options are included (even with 0 count)
         counts_by_value = {record.get("value"): record.get("count", 0) for record in values_records}
@@ -1470,23 +1606,52 @@ WITH p, d, c, st,
             has_where_clause=bool(where_clause)
         )
         
-        # Execute all three queries with proper result consumption
-        total_result = await self.session.run(total_cypher, params)
-        total_records = []
-        async for record in total_result:
-            total_records.append(dict(record))
-        total_count = total_records[0].get("total", 0) if total_records else 0
-        
-        missing_result = await self.session.run(missing_cypher, params)
-        missing_records = []
-        async for record in missing_result:
-            missing_records.append(dict(record))
-        missing_count = missing_records[0].get("missing", 0) if missing_records else 0
-        
-        values_result = await self.session.run(values_cypher, params)
+        # Execute all three queries with proper result consumption and retry logic
+        max_retries = 2
+        retry_count = 0
+        total_count = 0
+        missing_count = 0
         values_records = []
-        async for record in values_result:
-            values_records.append(dict(record))
+        
+        while retry_count <= max_retries:
+            try:
+                total_result = await self.session.run(total_cypher, params)
+                total_records = []
+                async for record in total_result:
+                    total_records.append(dict(record))
+                await total_result.consume()
+                total_count = total_records[0].get("total", 0) if total_records else 0
+                
+                missing_result = await self.session.run(missing_cypher, params)
+                missing_records = []
+                async for record in missing_result:
+                    missing_records.append(dict(record))
+                await missing_result.consume()
+                missing_count = missing_records[0].get("missing", 0) if missing_records else 0
+                
+                values_result = await self.session.run(values_cypher, params)
+                values_records = []
+                async for record in values_result:
+                    values_records.append(dict(record))
+                await values_result.consume()
+                
+                # If we got results or it's the last retry, break out of retry loop
+                if (total_count > 0 or len(values_records) > 0) or retry_count >= max_retries:
+                    break
+                
+                # If no results and not the last retry, wait a bit and retry
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))  # Exponential backoff: 0.1s, 0.2s
+                    retry_count += 1
+                    logger.debug(f"Retrying count_subjects_by_field query (attempt {retry_count + 1})")
+            except Exception as e:
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))
+                    retry_count += 1
+                    logger.warning(f"Error in count_subjects_by_field query, retrying (attempt {retry_count + 1})", error=str(e))
+                else:
+                    logger.error("Error in count_subjects_by_field query after retries", error=str(e), exc_info=True)
+                    raise
         
         # Format results
         counts = []
@@ -1912,11 +2077,38 @@ WITH p, d, c, st,
             cypher=cypher,
             params=params
         )
-        # Execute query with proper result consumption
-        result = await self.session.run(cypher, params)
+        # Execute query with proper result consumption and retry logic
+        max_retries = 2
+        retry_count = 0
         records = []
-        async for record in result:
-            records.append(dict(record))
+        
+        while retry_count <= max_retries:
+            try:
+                result = await self.session.run(cypher, params)
+                records = []
+                async for record in result:
+                    records.append(dict(record))
+                
+                # Ensure result is fully consumed
+                await result.consume()
+                
+                # If we got results or it's the last retry, break out of retry loop
+                if records or retry_count >= max_retries:
+                    break
+                
+                # If no results and not the last retry, wait a bit and retry
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))  # Exponential backoff: 0.1s, 0.2s
+                    retry_count += 1
+                    logger.debug(f"Retrying get_subjects_summary query (attempt {retry_count + 1})")
+            except Exception as e:
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))
+                    retry_count += 1
+                    logger.warning(f"Error in get_subjects_summary query, retrying (attempt {retry_count + 1})", error=str(e))
+                else:
+                    logger.error("Error in get_subjects_summary query after retries", error=str(e), exc_info=True)
+                    raise
         
         if not records:
             return {"total_count": 0}

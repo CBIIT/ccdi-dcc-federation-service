@@ -5,6 +5,7 @@ This module provides data access operations for sequencing files
 using Cypher queries to Memgraph.
 """
 
+import asyncio
 from typing import List, Dict, Any, Optional, Tuple
 from neo4j import AsyncSession
 
@@ -137,11 +138,38 @@ class FileRepository:
             params=params
         )
         
-        # Execute query with proper result consumption
-        result = await self.session.run(cypher, params)
+        # Execute query with proper result consumption and retry logic
+        max_retries = 2
+        retry_count = 0
         records = []
-        async for record in result:
-            records.append(dict(record))
+        
+        while retry_count <= max_retries:
+            try:
+                result = await self.session.run(cypher, params)
+                records = []
+                async for record in result:
+                    records.append(dict(record))
+                
+                # Ensure result is fully consumed
+                await result.consume()
+                
+                # If we got results or it's the last retry, break out of retry loop
+                if records or retry_count >= max_retries:
+                    break
+                
+                # If no results and not the last retry, wait a bit and retry
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))  # Exponential backoff: 0.1s, 0.2s
+                    retry_count += 1
+                    logger.debug(f"Retrying get_files query (attempt {retry_count + 1})")
+            except Exception as e:
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))
+                    retry_count += 1
+                    logger.warning(f"Error in get_files query, retrying (attempt {retry_count + 1})", error=str(e))
+                else:
+                    logger.error("Error in get_files query after retries", error=str(e), exc_info=True)
+                    raise
         
         # Convert to File objects
         files = []
@@ -391,25 +419,55 @@ class FileRepository:
             values_cypher=values_cypher
         )
         
-        # Execute total query
-        total_result = await self.session.run(total_cypher, params)
-        total_records = []
-        async for record in total_result:
-            total_records.append(dict(record))
-        total = total_records[0].get("total", 0) if total_records else 0
-        
-        # Execute missing query
-        missing_result = await self.session.run(missing_cypher, params)
-        missing_records = []
-        async for record in missing_result:
-            missing_records.append(dict(record))
-        missing = missing_records[0].get("missing", 0) if missing_records else 0
-        
-        # Execute values query
-        values_result = await self.session.run(values_cypher, params)
+        # Execute queries with retry logic
+        max_retries = 2
+        retry_count = 0
+        total = 0
+        missing = 0
         values_records = []
-        async for record in values_result:
-            values_records.append(dict(record))
+        
+        while retry_count <= max_retries:
+            try:
+                # Execute total query
+                total_result = await self.session.run(total_cypher, params)
+                total_records = []
+                async for record in total_result:
+                    total_records.append(dict(record))
+                await total_result.consume()
+                total = total_records[0].get("total", 0) if total_records else 0
+                
+                # Execute missing query
+                missing_result = await self.session.run(missing_cypher, params)
+                missing_records = []
+                async for record in missing_result:
+                    missing_records.append(dict(record))
+                await missing_result.consume()
+                missing = missing_records[0].get("missing", 0) if missing_records else 0
+                
+                # Execute values query
+                values_result = await self.session.run(values_cypher, params)
+                values_records = []
+                async for record in values_result:
+                    values_records.append(dict(record))
+                await values_result.consume()
+                
+                # If we got results or it's the last retry, break out of retry loop
+                if (total > 0 or len(values_records) > 0) or retry_count >= max_retries:
+                    break
+                
+                # If no results and not the last retry, wait a bit and retry
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))  # Exponential backoff: 0.1s, 0.2s
+                    retry_count += 1
+                    logger.debug(f"Retrying count_files_by_field query (attempt {retry_count + 1})")
+            except Exception as e:
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))
+                    retry_count += 1
+                    logger.warning(f"Error in count_files_by_field query, retrying (attempt {retry_count + 1})", error=str(e))
+                else:
+                    logger.error("Error in count_files_by_field query after retries", error=str(e), exc_info=True)
+                    raise
         
         # Format results
         counts = []
@@ -647,13 +705,43 @@ class FileRepository:
             params=params
         )
         
-        # Execute query with proper result consumption
-        result = await self.session.run(cypher, params)
+        # Execute query with proper result consumption and retry logic
+        max_retries = 2
+        retry_count = 0
         records = []
-        async for record in result:
-            records.append(dict(record))
+        
+        while retry_count <= max_retries:
+            try:
+                result = await self.session.run(cypher, params)
+                records = []
+                async for record in result:
+                    records.append(dict(record))
+                
+                # Ensure result is fully consumed
+                await result.consume()
+                
+                # If we got results, break out of retry loop
+                if records:
+                    break
+                
+                # If no results and not the last retry, wait a bit and retry
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))  # Exponential backoff: 0.1s, 0.2s
+                    retry_count += 1
+                    logger.debug(f"Retrying get_files_summary query (attempt {retry_count + 1})")
+                else:
+                    break
+            except Exception as e:
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))
+                    retry_count += 1
+                    logger.warning(f"Error in get_files_summary query, retrying (attempt {retry_count + 1})", error=str(e))
+                else:
+                    logger.error("Error in get_files_summary query after retries", error=str(e), exc_info=True)
+                    raise
         
         if not records:
+            logger.debug("No records returned from get_files_summary query")
             return {"total_count": 0}
         
         summary = records[0]

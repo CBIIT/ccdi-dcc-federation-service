@@ -5,6 +5,7 @@ This module provides REST endpoints for namespace operations
 including listing namespaces and getting individual namespace details.
 """
 
+import asyncio
 from typing import List, Dict, Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, Request
@@ -72,11 +73,38 @@ class NamespaceService:
         ORDER BY st.study_id
         """
         
-        # Execute query with proper async result consumption
-        result = await self.session.run(cypher)
+        # Execute query with proper async result consumption and retry logic
+        max_retries = 2
+        retry_count = 0
         records = []
-        async for record in result:
-            records.append(dict(record))
+        
+        while retry_count <= max_retries:
+            try:
+                result = await self.session.run(cypher)
+                records = []
+                async for record in result:
+                    records.append(dict(record))
+                
+                # Ensure result is fully consumed
+                await result.consume()
+                
+                # If we got results or it's the last retry, break out of retry loop
+                if records or retry_count >= max_retries:
+                    break
+                
+                # If no results and not the last retry, wait a bit and retry
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))  # Exponential backoff: 0.1s, 0.2s
+                    retry_count += 1
+                    logger.debug(f"Retrying get_namespaces query (attempt {retry_count + 1})")
+            except Exception as e:
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))
+                    retry_count += 1
+                    logger.warning(f"Error in get_namespaces query, retrying (attempt {retry_count + 1})", error=str(e))
+                else:
+                    logger.error("Error in get_namespaces query after retries", error=str(e), exc_info=True)
+                    raise
         
         # Build namespace objects
         namespaces = []
@@ -164,10 +192,38 @@ class NamespaceService:
         """
         
         # Execute query with proper async result consumption
-        result = await self.session.run(cypher, {"study_id": namespace})
+        # Execute query with retry logic
+        max_retries = 2
+        retry_count = 0
         records = []
-        async for record in result:
-            records.append(dict(record))
+        
+        while retry_count <= max_retries:
+            try:
+                result = await self.session.run(cypher, {"study_id": namespace})
+                records = []
+                async for record in result:
+                    records.append(dict(record))
+                
+                # Ensure result is fully consumed
+                await result.consume()
+                
+                # If we got results or it's the last retry, break out of retry loop
+                if records or retry_count >= max_retries:
+                    break
+                
+                # If no results and not the last retry, wait a bit and retry
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))  # Exponential backoff: 0.1s, 0.2s
+                    retry_count += 1
+                    logger.debug(f"Retrying get_namespace_by_name query (attempt {retry_count + 1})")
+            except Exception as e:
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))
+                    retry_count += 1
+                    logger.warning(f"Error in get_namespace_by_name query, retrying (attempt {retry_count + 1})", error=str(e))
+                else:
+                    logger.error("Error in get_namespace_by_name query after retries", error=str(e), exc_info=True)
+                    raise
         
         if not records or not records[0].get("study_id"):
             logger.debug("Study ID not found", study_id=namespace)

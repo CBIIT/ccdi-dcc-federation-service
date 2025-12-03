@@ -6,6 +6,7 @@ This module provides the organizations endpoint that returns organization inform
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import List
@@ -61,10 +62,38 @@ async def get_organizations(
         ORDER BY sp.institution
         """
         
-        result = await session.run(cypher)
+        # Execute query with retry logic
+        max_retries = 2
+        retry_count = 0
         records = []
-        async for record in result:
-            records.append(dict(record))
+        
+        while retry_count <= max_retries:
+            try:
+                result = await session.run(cypher)
+                records = []
+                async for record in result:
+                    records.append(dict(record))
+                
+                # Ensure result is fully consumed
+                await result.consume()
+                
+                # If we got results or it's the last retry, break out of retry loop
+                if records or retry_count >= max_retries:
+                    break
+                
+                # If no results and not the last retry, wait a bit and retry
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))  # Exponential backoff: 0.1s, 0.2s
+                    retry_count += 1
+                    logger.debug(f"Retrying get_organizations query (attempt {retry_count + 1})")
+            except Exception as e:
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))
+                    retry_count += 1
+                    logger.warning(f"Error in get_organizations query, retrying (attempt {retry_count + 1})", error=str(e))
+                else:
+                    logger.error("Error in get_organizations query after retries", error=str(e), exc_info=True)
+                    raise
         
         # Build institution array with {"value": "institution_string"} format
         institutions = [
@@ -194,10 +223,38 @@ async def get_organization_by_name(
     ORDER BY sp.institution
     """
     
-    result = await session.run(cypher)
+    # Execute query with retry logic
+    max_retries = 2
+    retry_count = 0
     records = []
-    async for record in result:
-        records.append(dict(record))
+    
+    while retry_count <= max_retries:
+        try:
+            result = await session.run(cypher)
+            records = []
+            async for record in result:
+                records.append(dict(record))
+            
+            # Ensure result is fully consumed
+            await result.consume()
+            
+            # If we got results or it's the last retry, break out of retry loop
+            if records or retry_count >= max_retries:
+                break
+            
+            # If no results and not the last retry, wait a bit and retry
+            if retry_count < max_retries:
+                await asyncio.sleep(0.1 * (retry_count + 1))  # Exponential backoff: 0.1s, 0.2s
+                retry_count += 1
+                logger.debug(f"Retrying get_organization_by_name query (attempt {retry_count + 1})")
+        except Exception as e:
+            if retry_count < max_retries:
+                await asyncio.sleep(0.1 * (retry_count + 1))
+                retry_count += 1
+                logger.warning(f"Error in get_organization_by_name query, retrying (attempt {retry_count + 1})", error=str(e))
+            else:
+                logger.error("Error in get_organization_by_name query after retries", error=str(e), exc_info=True)
+                raise
     
     # Build institution array with {"value": "institution_string"} format
     institutions = [

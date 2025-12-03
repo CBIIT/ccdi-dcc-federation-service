@@ -237,8 +237,7 @@ class SampleService:
         )
         
         return response
-        
-        return response
+    
     
     def _validate_identifier_params(self, organization: str, namespace: str, name: str) -> None:
         """

@@ -419,7 +419,7 @@ def get_sample_filters_no_descriptions(
             elif key == "anatomical_site":
                 from app.models.errors import InvalidParametersError
                 raise InvalidParametersError(
-                    parameters=[f"Use 'anatomical_sites' (plural) instead of 'anatomical_site' (singular)"]
+                    parameters=[]
                 )
     
     return filters

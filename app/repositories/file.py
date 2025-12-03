@@ -813,7 +813,7 @@ class FileRepository:
         # Build file identifier
         file_identifier = {
             "namespace": {
-                "organization": "CCDI_DCC",
+                "organization": "CCDI-DCC",
                 "name": study_id
             },
             "name": file_id
@@ -828,7 +828,7 @@ class FileRepository:
                 if sample_id and study_id:
                     samples_list.append({
                         "namespace": {
-                            "organization": "CCDI_DCC",
+                            "organization": "CCDI-DCC",
                             "name": study_id
                         },
                         "name": sample_id

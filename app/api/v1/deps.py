@@ -49,12 +49,12 @@ def get_pagination_params(
     page: Optional[int] = Query(
         default=1,
         ge=1,
-        description="Page number (1-based)"
+        description="The page to retrieve.\n\nThis is a 1-based index of a page within a page set. The value of page must default to 1 when this parameter is not provided."
     ),
     per_page: Optional[int] = Query(
         default=None,
         ge=1,
-        description="Items per page"
+        description="The number of results per page.\n\nEach server can select its own default value for per_page when this parameter is not provided. \n\nThat said, the convention within the community is to use 100 as a default value if any value is equally reasonable."
     )
 ) -> PaginationParams:
     """
@@ -245,21 +245,66 @@ def get_subject_filters(
 
 
 def get_sample_filters(
-    disease_phase: Optional[str] = Query(None, description="Filter by disease phase"),
-    anatomical_sites: Optional[str] = Query(None, description="Filter by anatomical sites"),
-    library_selection_method: Optional[str] = Query(None, description="Filter by library selection method"),
-    library_strategy: Optional[str] = Query(None, description="Filter by library strategy"),
-    library_source_material: Optional[str] = Query(None, description="Filter by library source material"),
-    preservation_method: Optional[str] = Query(None, description="Filter by preservation method"),
-    tumor_grade: Optional[str] = Query(None, description="Filter by tumor grade"),
-    specimen_molecular_analyte_type: Optional[str] = Query(None, description="Filter by specimen molecular analyte type"),
-    tissue_type: Optional[str] = Query(None, description="Filter by tissue type"),
-    tumor_classification: Optional[str] = Query(None, description="Filter by tumor classification"),
-    age_at_diagnosis: Optional[str] = Query(None, description="Filter by age at diagnosis"),
-    age_at_collection: Optional[str] = Query(None, description="Filter by age at collection"),
-    tumor_tissue_morphology: Optional[str] = Query(None, description="Filter by tumor tissue morphology"),
-    depositions: Optional[str] = Query(None, description="Filter by depositions"),
-    diagnosis: Optional[str] = Query(None, description="Filter by diagnosis"),
+    disease_phase: Optional[str] = Query(
+        None, 
+        description="Matches any sample where the `disease_phase` field matches the string provided."
+    ),
+    anatomical_sites: Optional[str] = Query(
+        None, 
+        description="Matches any sample where the `anatomical_sites` field matches the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the subject should be included in the results."
+    ),
+    library_selection_method: Optional[str] = Query(
+        None, 
+        description="Matches any sample where the `library_selection_method` field matches the string provided."
+    ),
+    library_strategy: Optional[str] = Query(
+        None, 
+        description="Matches any sample where the `library_strategy` field matches the string provided."
+    ),
+    library_source_material: Optional[str] = Query(
+        None, 
+        description="Matches any sample where the `library_source_material` field matches the string provided."
+    ),
+    preservation_method: Optional[str] = Query(
+        None, 
+        description="Matches any sample where the `preservation_method` field matches the string provided."
+    ),
+    tumor_grade: Optional[str] = Query(
+        None, 
+        description="Matches any sample where the `tumor_grade` field matches the string provided."
+    ),
+    specimen_molecular_analyte_type: Optional[str] = Query(
+        None, 
+        description="Matches any sample where the `specimen_molecular_analyte_type` field matches the string provided."
+    ),
+    tissue_type: Optional[str] = Query(
+        None, 
+        description="Matches any sample where the `tissue_type` field matches the string provided."
+    ),
+    tumor_classification: Optional[str] = Query(
+        None, 
+        description="Matches any sample where the `tumor_classification` field matches the string provided."
+    ),
+    age_at_diagnosis: Optional[str] = Query(
+        None, 
+        description="Matches any sample where the `age_at_diagnosis` field matches the string provided."
+    ),
+    age_at_collection: Optional[str] = Query(
+        None, 
+        description="Matches any sample where the `age_at_collection` field matches the string provided."
+    ),
+    tumor_tissue_morphology: Optional[str] = Query(
+        None, 
+        description="Matches any sample where the `tumor_tissue_morphology` field matches the string provided."
+    ),
+    depositions: Optional[str] = Query(
+        None, 
+        description="Matches any sample where any member of the `depositions` fields match the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the sample should be included in the results."
+    ),
+    diagnosis: Optional[str] = Query(
+        None, 
+        description="Matches any sample where the `diagnosis` field matches the string provided."
+    ),
     request: Request = None
 ) -> Dict[str, Any]:
     """Get sample filter parameters."""
@@ -302,38 +347,148 @@ def get_sample_filters(
         for key, value in request.query_params.items():
             if key.startswith("metadata.unharmonized."):
                 filters[key] = value
+            # Reject singular form - only accept plural
+            elif key == "anatomical_site":
+                from app.models.errors import InvalidParametersError
+                raise InvalidParametersError(
+                    parameters=[]
+                )
     
     return filters
 
 
-def get_file_filters(
-    type: Optional[str] = Query(None, description="Filter by file type", alias="type"),
-    size: Optional[str] = Query(None, description="Filter by file size"),
-    checksums: Optional[str] = Query(None, description="Filter by checksums"),
-    description: Optional[str] = Query(None, description="Filter by description"),
-    depositions: Optional[str] = Query(None, description="Filter by depositions"),
+def get_sample_filters_no_descriptions(
+    disease_phase: Optional[str] = Query(None, include_in_schema=False),
+    anatomical_sites: Optional[str] = Query(None, include_in_schema=False),
+    library_selection_method: Optional[str] = Query(None, include_in_schema=False),
+    library_strategy: Optional[str] = Query(None, include_in_schema=False),
+    library_source_material: Optional[str] = Query(None, include_in_schema=False),
+    preservation_method: Optional[str] = Query(None, include_in_schema=False),
+    tumor_grade: Optional[str] = Query(None, include_in_schema=False),
+    specimen_molecular_analyte_type: Optional[str] = Query(None, include_in_schema=False),
+    tissue_type: Optional[str] = Query(None, include_in_schema=False),
+    tumor_classification: Optional[str] = Query(None, include_in_schema=False),
+    age_at_diagnosis: Optional[str] = Query(None, include_in_schema=False),
+    age_at_collection: Optional[str] = Query(None, include_in_schema=False),
+    tumor_tissue_morphology: Optional[str] = Query(None, include_in_schema=False),
+    depositions: Optional[str] = Query(None, include_in_schema=False),
+    diagnosis: Optional[str] = Query(None, include_in_schema=False),
     request: Request = None
 ) -> Dict[str, Any]:
-    """Get file filter parameters."""
+    """Get sample filter parameters without descriptions (for count endpoint)."""
     filters = {}
     
     # Add non-null filters
-    if type is not None:
-        filters["type"] = type
-    if size is not None:
-        filters["size"] = size
-    if checksums is not None:
-        filters["checksums"] = checksums
-    if description is not None:
-        filters["description"] = description
+    if disease_phase is not None:
+        filters["disease_phase"] = disease_phase
+    if anatomical_sites is not None:
+        filters["anatomical_sites"] = anatomical_sites
+    if library_selection_method is not None:
+        filters["library_selection_method"] = library_selection_method
+    if library_strategy is not None:
+        filters["library_strategy"] = library_strategy
+    if library_source_material is not None:
+        filters["library_source_material"] = library_source_material
+    if preservation_method is not None:
+        filters["preservation_method"] = preservation_method
+    if tumor_grade is not None:
+        filters["tumor_grade"] = tumor_grade
+    if specimen_molecular_analyte_type is not None:
+        filters["specimen_molecular_analyte_type"] = specimen_molecular_analyte_type
+    if tissue_type is not None:
+        filters["tissue_type"] = tissue_type
+    if tumor_classification is not None:
+        filters["tumor_classification"] = tumor_classification
+    if age_at_diagnosis is not None:
+        filters["age_at_diagnosis"] = age_at_diagnosis
+    if age_at_collection is not None:
+        filters["age_at_collection"] = age_at_collection
+    if tumor_tissue_morphology is not None:
+        filters["tumor_tissue_morphology"] = tumor_tissue_morphology
     if depositions is not None:
         filters["depositions"] = depositions
+    if diagnosis is not None:
+        filters["diagnosis"] = diagnosis
     
     # Handle unharmonized fields from query parameters
     if request:
         for key, value in request.query_params.items():
             if key.startswith("metadata.unharmonized."):
                 filters[key] = value
+            # Reject singular form - only accept plural
+            elif key == "anatomical_site":
+                from app.models.errors import InvalidParametersError
+                raise InvalidParametersError(
+                    parameters=[]
+                )
+    
+    return filters
+
+
+def get_file_filters(
+    type: Optional[str] = Query(
+        None, 
+        description="Matches any sequencing file where the `file_type` field matches the string provided.",
+        alias="type"
+    ),
+    size: Optional[str] = Query(
+        None, 
+        description="Matches any sequencing file where the `file_size` field matches the string provided."
+    ),
+    checksums: Optional[str] = Query(
+        None, 
+        description="Matches any sequencing file where the `md5sum` or `checksum_value` field matches the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the file should be included in the results."
+    ),
+    description: Optional[str] = Query(
+        None, 
+        description="Matches any sequencing file where the `file_description` field matches the string provided.\n\n**Note:** a file is returned if the value provided is a substring of the description."
+    ),
+    depositions: Optional[str] = Query(
+        None, 
+        description="Matches any sequencing file where any member of the `depositions` fields match the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the file should be included in the results."
+    )
+) -> Dict[str, Any]:
+    """Get sequencing file filter parameters."""
+    filters = {}
+    
+    # Map generic field names to sequencing_file field names
+    if type is not None:
+        filters["file_type"] = type
+    if size is not None:
+        filters["file_size"] = size
+    if checksums is not None:
+        # For checksums, check both md5sum and checksum_value fields
+        # This will be handled in the repository query
+        filters["md5sum"] = checksums
+    if description is not None:
+        filters["file_description"] = description
+    if depositions is not None:
+        filters["depositions"] = depositions
+    
+    return filters
+
+
+def get_file_filters_no_descriptions(
+    type: Optional[str] = Query(None, include_in_schema=False, alias="type"),
+    size: Optional[str] = Query(None, include_in_schema=False),
+    checksums: Optional[str] = Query(None, include_in_schema=False),
+    description: Optional[str] = Query(None, include_in_schema=False),
+    depositions: Optional[str] = Query(None, include_in_schema=False)
+) -> Dict[str, Any]:
+    """Get sequencing file filter parameters without descriptions (for count endpoint)."""
+    filters = {}
+    
+    # Map generic field names to sequencing_file field names
+    if type is not None:
+        filters["file_type"] = type
+    if size is not None:
+        filters["file_size"] = size
+    if checksums is not None:
+        filters["md5sum"] = checksums
+    if description is not None:
+        filters["file_description"] = description
+    if depositions is not None:
+        filters["depositions"] = depositions
     
     return filters
 

@@ -7,7 +7,7 @@ including listing, individual retrieval, counting, and summaries.
 
 from typing import Dict, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status, Path
 from neo4j import AsyncSession
 
 from app.api.v1.deps import (
@@ -16,7 +16,7 @@ from app.api.v1.deps import (
     get_allowlist,
     get_pagination_params,
     get_sample_filters,
-    get_sample_diagnosis_filters,
+    get_sample_filters_no_descriptions,
     check_rate_limit
 )
 from app.core.config import Settings
@@ -31,12 +31,12 @@ from app.models.dto import (
     CountResponse,
     SummaryResponse
 )
-from app.models.errors import NotFoundError, ErrorDetail, ErrorsResponse, ErrorKind
+from app.models.errors import NotFoundError, ErrorDetail, ErrorsResponse, ErrorKind, InvalidParametersError
 from app.services.sample import SampleService
 
 logger = get_logger(__name__)
 
-router = APIRouter(prefix="/sample", tags=["samples"])
+router = APIRouter(prefix="/sample", tags=["Sample"])
 
 
 # ============================================================================
@@ -46,8 +46,111 @@ router = APIRouter(prefix="/sample", tags=["samples"])
 @router.get(
     "",
     response_model=SamplesResponse,
-    summary="List samples",
-    description="Get a paginated list of samples with optional filtering"
+    summary="Gets the samples known by this server.",
+    description="""Gets the samples known by this server.
+
+### Pagination
+
+This endpoint is paginated. Users may override the default pagination
+parameters by providing one or more of the pagination-related query
+parameters below.
+
+### Filtering
+
+All harmonized (top-level) and unharmonized (nested under the
+`metadata.unharmonized` key) metadata fields are filterable. To achieve
+this, you can provide the field name as a [`String`]. Filtering follows the
+following rules:
+
+* For single-value metadata field, the sample is included in the results if
+its value _exactly_ matches the query string. Matches are case-sensitive.
+* For multiple-value metadata fields, the sample is included in the results
+if any of its values for the field _exactly_ match the query string (a
+logical OR (`||`)). Matches are case-sensitive.
+* When the metadata field is `null` (in the case of singular or
+multiple-valued metadata fields) or empty, the sample is not included.
+* When multiple fields are provided as filters, a logical AND (`&&`) strings
+together the predicates. In other words, all filters must match for a
+sample to be returned. Note that this means that servers do not natively
+support logical OR (`||`) across multiple fields: that must be done by
+calling this endpoint with each of your desired queries and performing a
+set union of those samples out of band.
+
+### Ordering
+
+This endpoint has default ordering requirements—those details are documented
+in the `responses::Samples` schema.""",
+    operation_id="sample_index",
+    responses={
+        200: {
+            "description": "Successful operation.",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "summary": {
+                            "counts": {
+                                "all": 500,
+                                "current": 20
+                            }
+                        },
+                        "data": [
+                            {
+                                "id": {
+                                    "namespace": {
+                                        "organization": "CCDI-DCC",
+                                        "name": "phs002430"
+                                    },
+                                    "name": "TARGET-10-DCC001-03A-01R"
+                                },
+                                "subject": {
+                                    "namespace": {
+                                        "organization": "CCDI-DCC",
+                                        "name": "phs002430"
+                                    },
+                                    "name": "TARGET-10-DCC001"
+                                },
+                                "metadata": {
+                                    "disease_phase": {"value": "Primary"},
+                                    "anatomical_sites": {"value": "Brain"},
+                                    "identifiers": [
+                                        {
+                                            "value": {
+                                                "namespace": {
+                                                    "organization": "CCDI-DCC",
+                                                    "name": "phs002430"
+                                                },
+                                                "name": "TARGET-10-DCC001",
+                                                "server": "https://dcc.ccdi.cancer.gov/api/v1/CCDI-DCC/phs002430/TARGET-10-DCC001",
+                                                "type": "Linked"
+                                            }
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                }
+            }
+        },
+        404: {
+            "description": "Not found.",
+            "content": {
+                "application/json": {
+                    "schema": {"$ref": "#/components/schemas/ErrorsResponse"},
+                    "example": {
+                        "errors": [
+                            {
+                                "kind": "NotFound",
+                                "entity": "Samples",
+                                "message": "Unable to find data for your request.",
+                                "reason": "No data found."
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+    }
 )
 async def list_samples(
     request: Request,
@@ -80,6 +183,10 @@ async def list_samples(
             limit=pagination.per_page
         )
         
+        # Get total count for summary
+        summary_result = await service.get_samples_summary(filters)
+        total_count = summary_result.counts.total
+        
         # Build pagination info
         pagination_info = PaginationInfo(
             page=pagination.page,
@@ -109,9 +216,15 @@ async def list_samples(
         # Exclude gateways from individual samples (keep as placeholder in code)
         samples_dicts = [sample.model_dump(exclude={'gateways'}) if hasattr(sample, 'model_dump') else {k: v for k, v in (sample if isinstance(sample, dict) else sample.__dict__).items() if k != 'gateways'} for sample in samples]
         
-        # Build response
+        # Build response with summary first, then data
         result = SamplesResponse(
-            samples=samples_dicts
+            summary={
+                "counts": {
+                    "all": total_count,  # Total number of unique samples
+                    "current": len(samples)
+                }
+            },
+            data=samples_dicts
         )
         
         return result
@@ -134,14 +247,180 @@ async def list_samples(
 
 
 # ============================================================================
+# Sample Counting by Field
+# ============================================================================
+
+@router.get(
+    "/by/{field}/count",
+    response_model=CountResponse,
+    summary="Groups the samples by the specified metadata field and returns counts.",
+    description="Groups the samples by the specified metadata field and returns counts.",
+    operation_id="samples_by_count",
+    responses={
+        200: {
+            "description": "Successful operation.",
+            "content": {
+                "application/json": {
+                    "schema": {"$ref": "#/components/schemas/CountResponse"}
+                }
+            }
+        },
+        400: {
+            "description": "Unsupported field.",
+            "content": {
+                "application/json": {
+                    "schema": {"$ref": "#/components/schemas/ErrorsResponse"},
+                    "example": {
+                        "errors": [
+                            {
+                                "kind": "UnsupportedField",
+                                "field": "handedness",
+                                "message": "Field 'handedness' is not supported: this field is not present for samples."
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+    }
+)
+async def count_samples_by_field(
+    request: Request,
+    field: str = Path(
+        ...,
+        description="The field to group by and count with.",
+        enum=[
+            # Sample metadata fields only
+            "disease_phase", "anatomical_sites", "library_selection_method", "library_strategy",
+            "library_source_material", "preservation_method", "tumor_grade", "specimen_molecular_analyte_type",
+            "tissue_type", "tumor_classification", "age_at_diagnosis", "age_at_collection",
+            "tumor_tissue_morphology", "diagnosis"
+        ],
+    ),
+    filters: Dict[str, Any] = Depends(get_sample_filters_no_descriptions),
+    session: AsyncSession = Depends(get_database_session),
+    settings: Settings = Depends(get_app_settings),
+    allowlist: FieldAllowlist = Depends(get_allowlist),
+    _rate_limit: None = Depends(check_rate_limit)
+):
+    """Count samples grouped by a specific field."""
+    logger.info(
+        "Count samples by field request",
+        field=field,
+        filters=filters,
+        path=request.url.path
+    )
+    
+    try:
+        # Create service
+        cache_service = get_cache_service()
+        service = SampleService(session, allowlist, settings, cache_service)
+        
+        # Get counts
+        result = await service.count_samples_by_field(field, filters)
+        
+        logger.info(
+            "Count samples by field response",
+            field=field,
+            count_items=len(result.values)
+        )
+        
+        return result
+        
+    except Exception as e:
+        logger.error(
+            "Error counting samples by field", 
+            error=str(e), 
+            error_type=type(e).__name__,
+            field=field,
+            filters=filters,
+            exc_info=True
+        )
+        if hasattr(e, 'to_http_exception'):
+            raise e.to_http_exception()
+        # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Samples",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
+
+
+# ============================================================================
 # Individual Sample Retrieval
 # ============================================================================
 
 @router.get(
     "/{organization}/{namespace}/{name}",
     response_model=Sample,
-    summary="Get sample by identifier",
-    description="Get a specific sample by organization, namespace, and name"
+    summary="Gets the sample matching the provided name (if the sample exists).",
+    description="Gets the sample matching the provided name (if the sample exists). Organization defaults to CCDI-DCC.",
+    operation_id="sample_show",
+    responses={
+        200: {
+            "description": "Successful operation.",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "id": {
+                            "namespace": {
+                                "organization": "CCDI-DCC",
+                                "name": "phs002430"
+                            },
+                            "name": "TARGET-10-DCC001-03A-01R"
+                        },
+                        "subject": {
+                            "namespace": {
+                                "organization": "CCDI-DCC",
+                                "name": "phs002430"
+                            },
+                            "name": "TARGET-10-DCC001"
+                        },
+                        "metadata": {
+                            "disease_phase": {"value": "Primary"},
+                            "anatomical_sites": {"value": "Brain"},
+                            "identifiers": [
+                                {
+                                    "value": {
+                                        "namespace": {
+                                            "organization": "CCDI-DCC",
+                                            "name": "phs002430"
+                                        },
+                                        "name": "TARGET-10-DCC001",
+                                        "server": "https://dcc.ccdi.cancer.gov/api/v1/CCDI-DCC/phs002430/TARGET-10-DCC001",
+                                        "type": "Linked"
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        404: {
+            "description": "Not found.",
+            "content": {
+                "application/json": {
+                    "schema": {"$ref": "#/components/schemas/ErrorsResponse"},
+                    "example": {
+                        "errors": [
+                            {
+                                "kind": "NotFound",
+                                "entity": "Samples",
+                                "message": "Unable to find data for your request.",
+                                "reason": "No data found."
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+    }
 )
 async def get_sample(
     organization: str,
@@ -153,7 +432,12 @@ async def get_sample(
     allowlist: FieldAllowlist = Depends(get_allowlist),
     _rate_limit: None = Depends(check_rate_limit)
 ):
-    """Get a specific sample by identifier."""
+    """Get a specific sample by identifier. Organization must be CCDI-DCC."""
+    # Validate organization - must be CCDI-DCC
+    if organization != "CCDI-DCC":
+        from app.models.errors import InvalidParametersError
+        raise InvalidParametersError(parameters=[])
+    
     logger.info(
         "Get sample request",
         organization=organization,
@@ -203,78 +487,29 @@ async def get_sample(
 
 
 # ============================================================================
-# Sample Counting by Field
-# ============================================================================
-
-@router.get(
-    "/by/{field}/count",
-    response_model=CountResponse,
-    summary="Count samples by field",
-    description="Get counts of samples grouped by a specific field value"
-)
-async def count_samples_by_field(
-    field: str,
-    request: Request,
-    filters: Dict[str, Any] = Depends(get_sample_filters),
-    session: AsyncSession = Depends(get_database_session),
-    settings: Settings = Depends(get_app_settings),
-    allowlist: FieldAllowlist = Depends(get_allowlist),
-    _rate_limit: None = Depends(check_rate_limit)
-):
-    """Count samples grouped by a specific field."""
-    logger.info(
-        "Count samples by field request",
-        field=field,
-        filters=filters,
-        path=request.url.path
-    )
-    
-    try:
-        # Create service
-        cache_service = get_cache_service()
-        service = SampleService(session, allowlist, settings, cache_service)
-        
-        # Get counts
-        result = await service.count_samples_by_field(field, filters)
-        
-        logger.info(
-            "Count samples by field response",
-            field=field,
-            count_items=len(result.counts)
-        )
-        
-        return result
-        
-    except Exception as e:
-        logger.error("Error counting samples by field", error=str(e), exc_info=True)
-        if hasattr(e, 'to_http_exception'):
-            raise e.to_http_exception()
-        # Return 404 instead of 500 - no 500 errors allowed
-        error_detail = ErrorDetail(
-            kind=ErrorKind.NOT_FOUND,
-            entity="Samples",
-            message="Unable to find data for your request.",
-            reason="No data found."
-        )
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
-        )
-
-
-# ============================================================================
 # Sample Summary
 # ============================================================================
 
 @router.get(
     "/summary",
     response_model=SummaryResponse,
-    summary="Get samples summary",
-    description="Get summary statistics for samples"
+    summary="Reports summary information for the samples known by this server.",
+    description="Reports summary information for the samples known by this server.",
+    operation_id="sample_summary",
+    responses={
+        200: {
+            "description": "Successful operation.",
+            "content": {
+                "application/json": {
+                    "schema": {"$ref": "#/components/schemas/SummaryResponse"}
+                }
+            }
+        }
+    }
 )
 async def get_samples_summary(
     request: Request,
-    filters: Dict[str, Any] = Depends(get_sample_filters),
+    filters: Dict[str, Any] = Depends(get_sample_filters_no_descriptions),
     session: AsyncSession = Depends(get_database_session),
     settings: Settings = Depends(get_app_settings),
     allowlist: FieldAllowlist = Depends(get_allowlist),
@@ -297,211 +532,13 @@ async def get_samples_summary(
         
         logger.info(
             "Get samples summary response",
-            total_count=result.total_count
+            total_count=result.counts.total
         )
         
         return result
         
     except Exception as e:
         logger.error("Error getting samples summary", error=str(e), exc_info=True)
-        if hasattr(e, 'to_http_exception'):
-            raise e.to_http_exception()
-        # Return 404 instead of 500 - no 500 errors allowed
-        error_detail = ErrorDetail(
-            kind=ErrorKind.NOT_FOUND,
-            entity="Samples",
-            message="Unable to find data for your request.",
-            reason="No data found."
-        )
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
-        )
-
-
-# ============================================================================
-# Sample Diagnosis Search Endpoints
-# ============================================================================
-
-@router.get(
-    "/diagnosis/search",
-    response_model=SampleResponse,
-    summary="Search samples by diagnosis",
-    description="Search samples with diagnosis filtering"
-)
-async def search_samples_by_diagnosis(
-    request: Request,
-    response: Response,
-    filters: Dict[str, Any] = Depends(get_sample_diagnosis_filters),
-    pagination: PaginationParams = Depends(get_pagination_params),
-    session: AsyncSession = Depends(get_database_session),
-    settings: Settings = Depends(get_app_settings),
-    allowlist: FieldAllowlist = Depends(get_allowlist),
-    _rate_limit: None = Depends(check_rate_limit)
-):
-    """Search samples with diagnosis filtering."""
-    logger.info(
-        "Search samples by diagnosis request",
-        filters=filters,
-        page=pagination.page,
-        per_page=pagination.per_page,
-        path=request.url.path
-    )
-    
-    try:
-        # Create service
-        cache_service = get_cache_service()
-        service = SampleService(session, allowlist, settings, cache_service)
-        
-        # Get samples
-        samples = await service.get_samples(
-            filters=filters,
-            offset=pagination.offset,
-            limit=pagination.per_page
-        )
-        
-        # Build pagination info
-        pagination_info = PaginationInfo(
-            page=pagination.page,
-            per_page=pagination.per_page,
-            total_pages=None,
-            total_count=None
-        )
-        
-        # Add Link header
-        link_header = build_link_header(
-            request=request,
-            pagination=pagination_info
-        )
-        
-        if link_header:
-            response.headers["Link"] = link_header
-        
-        # Build response
-        result = SampleResponse(
-            samples=samples,
-            pagination=pagination_info
-        )
-        
-        logger.info(
-            "Search samples by diagnosis response",
-            sample_count=len(samples),
-            page=pagination.page
-        )
-        
-        return result
-        
-    except Exception as e:
-        logger.error("Error searching samples by diagnosis", error=str(e), exc_info=True)
-        if hasattr(e, 'to_http_exception'):
-            raise e.to_http_exception()
-        # Return 404 instead of 500 - no 500 errors allowed
-        error_detail = ErrorDetail(
-            kind=ErrorKind.NOT_FOUND,
-            entity="Samples",
-            message="Unable to find data for your request.",
-            reason="No data found."
-        )
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
-        )
-
-
-@router.get(
-    "/diagnosis/by/{field}/count",
-    response_model=CountResponse,
-    summary="Count samples by field with diagnosis search",
-    description="Count samples by field with diagnosis filtering"
-)
-async def count_samples_by_field_with_diagnosis(
-    field: str,
-    request: Request,
-    filters: Dict[str, Any] = Depends(get_sample_diagnosis_filters),
-    session: AsyncSession = Depends(get_database_session),
-    settings: Settings = Depends(get_app_settings),
-    allowlist: FieldAllowlist = Depends(get_allowlist),
-    _rate_limit: None = Depends(check_rate_limit)
-):
-    """Count samples by field with diagnosis filtering."""
-    logger.info(
-        "Count samples by field with diagnosis request",
-        field=field,
-        filters=filters,
-        path=request.url.path
-    )
-    
-    try:
-        # Create service
-        cache_service = get_cache_service()
-        service = SampleService(session, allowlist, settings, cache_service)
-        
-        # Get counts
-        result = await service.count_samples_by_field(field, filters)
-        
-        logger.info(
-            "Count samples by field with diagnosis response",
-            field=field,
-            count_items=len(result.counts)
-        )
-        
-        return result
-        
-    except Exception as e:
-        logger.error("Error counting samples by field with diagnosis", error=str(e), exc_info=True)
-        if hasattr(e, 'to_http_exception'):
-            raise e.to_http_exception()
-        # Return 404 instead of 500 - no 500 errors allowed
-        error_detail = ErrorDetail(
-            kind=ErrorKind.NOT_FOUND,
-            entity="Samples",
-            message="Unable to find data for your request.",
-            reason="No data found."
-        )
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
-        )
-
-
-@router.get(
-    "/diagnosis/summary",
-    response_model=SummaryResponse,
-    summary="Get samples summary with diagnosis search",
-    description="Get summary statistics for samples with diagnosis filtering"
-)
-async def get_samples_summary_with_diagnosis(
-    request: Request,
-    filters: Dict[str, Any] = Depends(get_sample_diagnosis_filters),
-    session: AsyncSession = Depends(get_database_session),
-    settings: Settings = Depends(get_app_settings),
-    allowlist: FieldAllowlist = Depends(get_allowlist),
-    _rate_limit: None = Depends(check_rate_limit)
-):
-    """Get summary statistics for samples with diagnosis filtering."""
-    logger.info(
-        "Get samples summary with diagnosis request",
-        filters=filters,
-        path=request.url.path
-    )
-    
-    try:
-        # Create service
-        cache_service = get_cache_service()
-        service = SampleService(session, allowlist, settings, cache_service)
-        
-        # Get summary
-        result = await service.get_samples_summary(filters)
-        
-        logger.info(
-            "Get samples summary with diagnosis response",
-            total_count=result.total_count
-        )
-        
-        return result
-        
-    except Exception as e:
-        logger.error("Error getting samples summary with diagnosis", error=str(e), exc_info=True)
         if hasattr(e, 'to_http_exception'):
             raise e.to_http_exception()
         # Return 404 instead of 500 - no 500 errors allowed

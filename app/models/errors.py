@@ -212,6 +212,9 @@ class UnsupportedFieldError(CCDIException):
         if reason is None:
             reason = f"This field is not present for {entity_type}."
         
+        # Store entity_type for use in to_error_detail
+        self._entity_type = entity_type
+        
         super().__init__(
             kind=ErrorKind.UNSUPPORTED_FIELD,
             status_code=status_code,
@@ -221,15 +224,19 @@ class UnsupportedFieldError(CCDIException):
         )
     
     def to_error_detail(self) -> ErrorDetail:
-        """Convert exception to error detail, using 'wrong field' instead of actual field value."""
+        """Convert exception to error detail, sanitizing field name and message."""
+        # Sanitize message to remove field name references
+        # Use stored entity_type to generate sanitized message
+        sanitized_message = f"Field is not supported: this field is not present for {self._entity_type}."
+        
         return ErrorDetail(
             kind=self.kind,
             method=self.method,
             route=self.route,
             parameters=self.parameters if self.parameters else None,
-            field="wrong field",  # Use "wrong field" instead of actual field value
+            field=None,  # Don't expose the field name in the response
             entity=self.entity,
-            message=self.message,
+            message=sanitized_message,
             reason=self.reason
         )
 
@@ -325,11 +332,13 @@ def create_entity_not_found_error(
     namespace: Optional[str] = None, 
     name: Optional[str] = None
 ) -> NotFoundError:
-    """Create an entity not found error."""
-    if organization and namespace and name:
-        entity = f"{entity_type} with namespace '{namespace}' and name '{name}'"
-    else:
-        entity = entity_type.title() + "s"
+    """Create an entity not found error.
+    
+    Note: Invalid values (organization, namespace, name) are not included in the error message
+    to avoid exposing user input. They should be logged separately.
+    """
+    # Don't include invalid values in the entity description
+    entity = entity_type.title() + "s"
     
     return NotFoundError(entity)
 

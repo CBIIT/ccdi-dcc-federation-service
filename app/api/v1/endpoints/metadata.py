@@ -21,7 +21,7 @@ from fastapi import status
 
 logger = get_logger(__name__)
 
-router = APIRouter(prefix="/metadata", tags=["metadata"])
+router = APIRouter(prefix="/metadata", tags=["Metadata"])
 
 # Expect the file at: app/config_data/metadata_fields.json
 # From app/api/v1/endpoints/metadata.py, go up 3 levels to reach app/, then config_data/
@@ -84,31 +84,16 @@ def convert_to_response(data: Dict[str, Any]) -> MetadataFieldsInfoResponse:
     return MetadataFieldsInfoResponse(fields=fields)
 
 
-@router.get(
-    "/fields/{field_type}",
-    response_model=MetadataFieldsInfoResponse,
-    summary="Get metadata fields",
-    description="Get metadata fields for the specified entity type (subjects, samples, or file). Returns empty array if field_type doesn't match."
-)
-async def get_metadata_fields(
-    request: Request,
-    field_type: str = PathParam(
-        ...,
-        description="Entity type: subjects, samples, or file",
-        examples={
-            "subjects": {"value": "subjects", "summary": "Get subject metadata fields"},
-            "samples": {"value": "samples", "summary": "Get sample metadata fields"},
-            "file": {"value": "file", "summary": "Get file metadata fields"}
-        }
-    )
-):
+def _get_metadata_fields_for_type(field_type: str, request: Request) -> MetadataFieldsInfoResponse:
     """
-    Get metadata fields for the specified entity type.
+    Helper function to get metadata fields for a specific entity type.
     
-    Returns the list of metadata fields with their harmonization status,
-    wiki URLs, and standard information.
+    Args:
+        field_type: The normalized entity type ("subjects", "samples", or "file")
+        request: The request object for logging
     
-    Returns empty array [] if field_type is not subjects, samples, or file.
+    Returns:
+        MetadataFieldsInfoResponse with the fields for the specified type
     """
     logger.info(
         "Get metadata fields request",
@@ -116,39 +101,19 @@ async def get_metadata_fields(
         path=request.url.path
     )
     
-    # Normalize field_type (handle plural/singular variations)
-    field_type_map = {
-        "subject": "subjects",
-        "subjects": "subjects",
-        "sample": "samples",
-        "samples": "samples",
-        "file": "file",
-        "files": "file"
-    }
-    
-    normalized_type = field_type_map.get(field_type.lower())
-    if not normalized_type:
-        # Return empty array for invalid field types
-        logger.info(
-            "Get metadata fields response - invalid field type",
-            field_type=field_type
-        )
-        return MetadataFieldsInfoResponse(fields=[])
-    
     try:
         # Load metadata fields from config
         metadata_data = load_metadata_fields()
         
         # Get fields for the requested type
-        if normalized_type not in metadata_data:
+        if field_type not in metadata_data:
             logger.info(
                 "Get metadata fields response - type not found in config",
-                field_type=field_type,
-                normalized_type=normalized_type
+                field_type=field_type
             )
             return MetadataFieldsInfoResponse(fields=[])
         
-        entity_data = metadata_data[normalized_type]
+        entity_data = metadata_data[field_type]
         
         # Convert to response model
         response = convert_to_response(entity_data)
@@ -165,3 +130,57 @@ async def get_metadata_fields(
         logger.error("Error getting metadata fields", error=str(e), exc_info=True)
         # Return empty array on any error
         return MetadataFieldsInfoResponse(fields=[])
+
+
+@router.get(
+    "/fields/subject",
+    response_model=MetadataFieldsInfoResponse,
+    summary="Get subject metadata fields",
+    description="Get metadata fields for subjects. Returns the list of metadata fields with their harmonization status, wiki URLs, and standard information."
+)
+async def get_subject_metadata_fields(
+    request: Request
+):
+    """
+    Get metadata fields for subjects.
+    
+    Returns the list of metadata fields with their harmonization status,
+    wiki URLs, and standard information.
+    """
+    return _get_metadata_fields_for_type("subjects", request)
+
+
+@router.get(
+    "/fields/sample",
+    response_model=MetadataFieldsInfoResponse,
+    summary="Get sample metadata fields",
+    description="Get metadata fields for samples. Returns the list of metadata fields with their harmonization status, wiki URLs, and standard information."
+)
+async def get_sample_metadata_fields(
+    request: Request
+):
+    """
+    Get metadata fields for samples.
+    
+    Returns the list of metadata fields with their harmonization status,
+    wiki URLs, and standard information.
+    """
+    return _get_metadata_fields_for_type("samples", request)
+
+
+@router.get(
+    "/fields/file",
+    response_model=MetadataFieldsInfoResponse,
+    summary="Get file metadata fields",
+    description="Get metadata fields for files. Returns the list of metadata fields with their harmonization status, wiki URLs, and standard information."
+)
+async def get_file_metadata_fields(
+    request: Request
+):
+    """
+    Get metadata fields for files.
+    
+    Returns the list of metadata fields with their harmonization status,
+    wiki URLs, and standard information.
+    """
+    return _get_metadata_fields_for_type("file", request)

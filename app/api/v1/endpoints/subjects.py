@@ -38,7 +38,7 @@ from app.services.subject import SubjectService
 
 logger = get_logger(__name__)
 
-router = APIRouter(prefix="/subject", tags=["subjects"])
+router = APIRouter(prefix="/subject", tags=["Subject"])
 
 
 def prepare_subjects_for_response(subjects: List[Subject]) -> List[Dict[str, Any]]:
@@ -69,7 +69,78 @@ def prepare_subjects_for_response(subjects: List[Subject]) -> List[Dict[str, Any
     "",
     response_model=SubjectResponse,
     summary="List subjects",
-    description="Get a paginated list of subjects with optional filtering"
+    description="Get a paginated list of subjects with optional filtering",
+    responses={
+        200: {
+            "description": "Successful operation.",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "summary": {
+                            "counts": {
+                                "all": 500,
+                                "current": 20
+                            }
+                        },
+                        "data": [
+                            {
+                                "id": {
+                                    "namespace": {
+                                        "organization": "CCDI-DCC",
+                                        "name": "phs002430"
+                                    },
+                                    "name": "SUBJECT-001"
+                                },
+                                "kind": "Participant",
+                                "metadata": {
+                                    "sex": {"value": "F"},
+                                    "race": [
+                                        {"value": "White"}
+                                    ],
+                                    "ethnicity": {"value": "Not reported"},
+                                    "identifiers": [
+                                        {
+                                            "namespace": {
+                                                "organization": "CCDI-DCC",
+                                                "name": "phs002430"
+                                            },
+                                            "name": "SUBJECT-001"
+                                        }
+                                    ],
+                                    "vital_status": {"value": "Alive"},
+                                    "age_at_vital_status": {"value": 45},
+                                    "depositions": [
+                                        {
+                                            "kind": "dbGaP",
+                                            "value": "phs002430"
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                }
+            }
+        },
+        404: {
+            "description": "Not found.",
+            "content": {
+                "application/json": {
+                    "schema": {"$ref": "#/components/schemas/ErrorsResponse"},
+                    "example": {
+                        "errors": [
+                            {
+                                "kind": "NotFound",
+                                "entity": "Subjects",
+                                "message": "Unable to find data for your request.",
+                                "reason": "No data found."
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+    }
 )
 async def list_subjects(
     request: Request,
@@ -400,10 +471,17 @@ async def get_subject(
                 if namespace.lower() in valid_fields:
                     # This is likely a typo for /subject/by/{field}/count
                     suggested_path = f"/api/v1/subject/by/{namespace}/count"
+                    # Log the suggested path but don't include it in the response
+                    logger.info(
+                        "Invalid route detected, possible typo",
+                        method=request.method,
+                        route=str(request.url.path),
+                        suggested_path=suggested_path
+                    )
                     raise InvalidRouteError(
                         method=request.method,
                         route=str(request.url.path),
-                        message=f"Invalid route. Did you mean '{suggested_path}'?"
+                        message="Invalid route requested."
                     )
         
         # Normalize and validate organization (defaults to CCDI-DCC)

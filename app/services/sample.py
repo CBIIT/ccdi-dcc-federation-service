@@ -31,7 +31,7 @@ class SampleService:
         cache_service: Optional[CacheService] = None
     ):
         """Initialize service with dependencies."""
-        self.repository = SampleRepository(session, allowlist)
+        self.repository = SampleRepository(session, allowlist, settings)
         self.settings = settings
         self.cache_service = cache_service
         
@@ -68,8 +68,11 @@ class SampleService:
                 max_allowed=self.settings.pagination.max_per_page
             )
         
+        # Get base URL from settings
+        base_url = self.settings.identifier_server_url.rstrip("/") if hasattr(self.settings, 'identifier_server_url') and self.settings.identifier_server_url else None
+        
         # Get data from repository
-        samples = await self.repository.get_samples(filters, offset, limit)
+        samples = await self.repository.get_samples(filters, offset, limit, base_url=base_url)
         
         logger.info(
             "Retrieved samples",
@@ -110,8 +113,11 @@ class SampleService:
         # Validate parameters
         self._validate_identifier_params(organization, namespace, name)
         
+        # Get base URL from settings
+        base_url = self.settings.identifier_server_url.rstrip("/") if hasattr(self.settings, 'identifier_server_url') and self.settings.identifier_server_url else None
+        
         # Get from repository
-        sample = await self.repository.get_sample_by_identifier(organization, namespace, name)
+        sample = await self.repository.get_sample_by_identifier(organization, namespace, name, base_url=base_url)
         
         if not sample:
             raise NotFoundError("Samples")
@@ -157,12 +163,13 @@ class SampleService:
                 return CountResponse(**cached_result)
         
         # Get counts from repository
-        counts = await self.repository.count_samples_by_field(field, filters)
+        result = await self.repository.count_samples_by_field(field, filters)
         
         # Build response
         response = CountResponse(
-            field=field,
-            counts=counts
+            total=result.get("total", 0),
+            missing=result.get("missing", 0),
+            values=result.get("values", [])
         )
         
         # Cache result
@@ -176,7 +183,9 @@ class SampleService:
         logger.info(
             "Completed sample count by field",
             field=field,
-            result_count=len(counts)
+            total=response.total,
+            missing=response.missing,
+            values_count=len(response.values)
         )
         
         return response
@@ -208,23 +217,27 @@ class SampleService:
         # Get summary from repository
         summary_data = await self.repository.get_samples_summary(filters)
         
-        # Build response
-        response = SummaryResponse(**summary_data)
+        # Transform repository format to response format
+        from app.models.dto import SummaryCounts
+        response = SummaryResponse(
+            counts=SummaryCounts(total=summary_data.get("total_count", 0))
+        )
         
         # Cache result
         if self.cache_service and cache_key:
             await self.cache_service.set(
                 cache_key,
-                response.dict(),
-                ttl=self.settings.cache.summary_ttl
+                response.model_dump(),
+                ttl=self.settings.cache_ttl_summary_endpoints
             )
         
         logger.info(
             "Completed samples summary",
-            total_count=response.total_count
+            total_count=response.counts.total
         )
         
         return response
+    
     
     def _validate_identifier_params(self, organization: str, namespace: str, name: str) -> None:
         """

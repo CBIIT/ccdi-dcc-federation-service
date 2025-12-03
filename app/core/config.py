@@ -218,6 +218,7 @@ class Settings(BaseSettings):
     cache_redis_password: Optional[str] = Field(default="", description="Redis password")
     cache_count_ttl: Optional[int] = Field(default=300, description="Cache TTL for count queries")
     cache_summary_ttl: Optional[int] = Field(default=600, description="Cache TTL for summary queries")
+    query_timeout: Optional[int] = Field(default=60, description="Query timeout in seconds")
     
     # CORS settings
     cors_enabled: Optional[bool] = Field(default=True, description="Enable CORS")

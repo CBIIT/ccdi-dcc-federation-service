@@ -23,6 +23,7 @@ from app.core.cache import redis_lifespan
 from app.db.memgraph import memgraph_lifespan, DatabaseConnectionError
 from app.api.v1.endpoints.subjects import router as subjects_router
 from app.api.v1.endpoints.samples import router as samples_router
+from app.api.v1.endpoints.experimental import router as experimental_router
 from app.api.v1.endpoints.files import router as files_router
 from app.api.v1.endpoints.metadata import router as metadata_router
 from app.api.v1.endpoints.namespaces import router as namespaces_router
@@ -68,12 +69,171 @@ def create_app() -> FastAPI:
         version="1.0.0",
         openapi_url="/openapi.json",
         docs_url="/docs-api",  # Default FastAPI Swagger UI at /docs-api
-        redoc_url="/redoc",  # Enable ReDoc at /redoc
-        lifespan=lifespan
+        redoc_url=None,  # Disable default ReDoc, using custom endpoint instead
+        lifespan=lifespan,
+        openapi_tags=[
+            {
+                "name": "Subject",
+                "description": "Subjects within the CCDI-DCC ecosystem."
+            },
+            {
+                "name": "Sample",
+                "description": "Samples within the CCDI-DCC ecosystem."
+            },
+            {
+                "name": "File",
+                "description": "Files within the CCDI-DCC ecosystem.-- (sequencing files only this release)"
+            },
+            {
+                "name": "Metadata",
+                "description": "List and describe provided metadata fields."
+            },
+            {
+                "name": "Namespace",
+                "description": "List and describe namespaces known by this server."
+            },
+            {
+                "name": "Organization",
+                "description": "List and describe organizations known by this server."
+            },
+            {
+                "name": "Info",
+                "description": "Information about the API implementation itself."
+            },
+            # {
+            #     "name": "Experimental",
+            #     "description": "Endpoints and features in an experimental phase."
+            # },
+            # {
+            #     "name": "Errors",
+            #     "description": "Errors within the CCDI-DCC ecosystem."
+            # },
+            # {
+            #     "name": "Root",
+            #     "description": "Root endpoints within the CCDI-DCC ecosystem."
+            # }
+        ]
     )
+    
+    # Customize OpenAPI schema to replace 422 "Validation Error" descriptions
+    def custom_openapi():
+        if app.openapi_schema:
+            return app.openapi_schema
+        from fastapi.openapi.utils import get_openapi
+        openapi_schema = get_openapi(
+            title=app.title,
+            version=app.version,
+            description=app.description,
+            routes=app.routes,
+        )
+        # Add tag descriptions from app.openapi_tags
+        if hasattr(app, 'openapi_tags') and app.openapi_tags:
+            openapi_schema["tags"] = app.openapi_tags
+        
+        # Replace "Validation Error" with "Invalid query or path parameters." in 422 responses
+        # Also remove 404 and 422 responses from /api/v1/sample/summary and /api/v1/file/summary endpoints
+        for path, path_item in openapi_schema.get("paths", {}).items():
+            for method, operation in path_item.items():
+                if isinstance(operation, dict) and "responses" in operation:
+                    # Remove 404 and 422 responses from /api/v1/sample/summary endpoint
+                    if path == "/api/v1/sample/summary" or path.endswith("/sample/summary"):
+                        if "404" in operation["responses"]:
+                            del operation["responses"]["404"]
+                        if "422" in operation["responses"]:
+                            del operation["responses"]["422"]
+                    # Remove 404 and 422 responses from /api/v1/file/summary endpoint
+                    elif path == "/api/v1/file/summary" or path.endswith("/file/summary"):
+                        if "404" in operation["responses"]:
+                            del operation["responses"]["404"]
+                        if "422" in operation["responses"]:
+                            del operation["responses"]["422"]
+                    # Remove 422 response from /api/v1/sample/by/{field}/count endpoint (uses 400 instead)
+                    elif "/sample/by/" in path and path.endswith("/count"):
+                        if "422" in operation["responses"]:
+                            del operation["responses"]["422"]
+                    # Remove 422 and 404 responses from /api/v1/file/by/{field}/count endpoint (uses 400 instead)
+                    elif "/file/by/" in path and path.endswith("/count"):
+                        if "422" in operation["responses"]:
+                            del operation["responses"]["422"]
+                        if "404" in operation["responses"]:
+                            del operation["responses"]["404"]
+                    elif "422" in operation["responses"]:
+                        response_422 = operation["responses"]["422"]
+                        if "description" in response_422:
+                            if response_422["description"] == "Validation Error":
+                                response_422["description"] = "Invalid query or path parameters."
+                        
+                        # Customize the 422 error example to use ErrorsResponse format
+                        if "content" in response_422 and "application/json" in response_422["content"]:
+                            content = response_422["content"]["application/json"]
+                            # Replace the default HTTPValidationError schema with ErrorsResponse
+                            if "schema" in content:
+                                # Change schema reference to ErrorsResponse
+                                content["schema"] = {"$ref": "#/components/schemas/ErrorsResponse"}
+                            # Add custom example
+                            if "example" not in content:
+                                content["example"] = {
+                                    "errors": [
+                                        {
+                                            "kind": "InvalidParameters",
+                                            "parameters": [],
+                                            "message": "Invalid query parameter(s) provided.",
+                                            "reason": "Unknown query parameter(s)"
+                                        }
+                                    ]
+                                }
+        
+        app.openapi_schema = openapi_schema
+        return app.openapi_schema
+    
+    app.openapi = custom_openapi
+    
+    # Create a filtered OpenAPI schema for /docs (excludes certain endpoints)
+    # This keeps endpoints visible in /docs-api but hides them from /docs
+    def get_filtered_openapi():
+        """Get filtered OpenAPI schema with certain endpoints excluded."""
+        # Get the full schema
+        full_schema = app.openapi()
+        
+        # Create a copy to avoid modifying the original
+        import copy
+        filtered_schema = copy.deepcopy(full_schema)
+        
+        # Define paths to exclude from /docs (but keep in /docs-api)
+        excluded_paths = [
+            # Add paths to exclude here (regex patterns supported)
+            "/health",  # Example: uncomment to hide this endpoint
+            "/ping",
+            "/version",
+            "/api/v1/errors/examples",
+            # "/api/v1/experimental/.*",  # Example: uncomment to hide all experimental endpoints
+        ]
+        
+        if excluded_paths:
+            paths_to_remove = []
+            for path in filtered_schema.get("paths", {}):
+                for excluded_pattern in excluded_paths:
+                    import re
+                    if re.match(excluded_pattern.replace("*", ".*"), path):
+                        paths_to_remove.append(path)
+                        break
+            
+            for path in paths_to_remove:
+                del filtered_schema["paths"][path]
+        
+        return filtered_schema
+    
+    # Add filtered OpenAPI endpoint for /docs
+    @app.get("/openapi-filtered.json", include_in_schema=False)
+    async def get_filtered_openapi_schema():
+        """Get filtered OpenAPI schema (excludes certain endpoints for /docs)."""
+        return get_filtered_openapi()
     
     # Add middleware
     setup_middleware(app, settings)
+    
+    # Add custom docs endpoints FIRST (before exception handlers and routers) to ensure they're registered
+    setup_custom_docs_endpoint(app)
     
     # Add exception handlers
     setup_exception_handlers(app)
@@ -83,9 +243,6 @@ def create_app() -> FastAPI:
     
     # Add health check
     setup_health_check(app)
-    
-    # Add custom docs endpoint (serves embedded.html with custom styling)
-    setup_custom_docs_endpoint(app)
     
     logger.info("FastAPI application created")
     return app
@@ -181,11 +338,12 @@ def setup_routers(app: FastAPI) -> None:
     # Add subject routes
     app.include_router(subjects_router, prefix="/api/v1")
     
-    # Add sample routes (commented out - not shown in Swagger docs)
-    # app.include_router(samples_router, prefix="/api/v1")
+    # Add sample routes
+    app.include_router(samples_router, prefix="/api/v1")
+    app.include_router(experimental_router, prefix="/api/v1")
     
-    # Add file routes (commented out - not shown in Swagger docs)
-    # app.include_router(files_router, prefix="/api/v1")
+    # Add file routes
+    app.include_router(files_router, prefix="/api/v1")
     
     # Add metadata routes
     app.include_router(metadata_router, prefix="/api/v1")
@@ -286,6 +444,12 @@ def setup_exception_handlers(app: FastAPI) -> None:
                 content=exc.detail
             )
         
+        # Exclude documentation endpoints from 404 handling
+        path = str(request.url.path)
+        if path in ["/redoc", "/docs", "/docs-api", "/openapi.json"]:
+            # Let FastAPI handle these routes normally
+            raise exc
+        
         # Handle 404 errors - all 404s are treated as InvalidRoute
         if exc.status_code == 404:
             # Log the full details (including the actual route)
@@ -357,6 +521,12 @@ def setup_exception_handlers(app: FastAPI) -> None:
                 status_code=exc.status_code,
                 content=exc.detail
             )
+        
+        # Exclude documentation endpoints from 404 handling
+        path = str(request.url.path)
+        if path in ["/redoc", "/docs", "/docs-api", "/openapi.json"]:
+            # Let FastAPI handle these routes normally
+            raise exc
         
         # Handle 404 errors - check if invalid route or missing resource
         if exc.status_code == 404:
@@ -527,37 +697,71 @@ def setup_health_check(app: FastAPI) -> None:
 
 
 def setup_custom_docs_endpoint(app: FastAPI) -> None:
-    """Set up custom Swagger documentation endpoint using embedded.html.
+    """Set up custom Swagger documentation endpoints.
     
-    This serves a self-contained Swagger UI with:
-    - Custom styling and branding
-    - Embedded OpenAPI spec (works standalone, e.g., for GitHub Pages)
-    - Custom Swagger UI configuration
+    Provides two options:
+    1. /docs - Dynamic version that loads spec from server's /openapi.json
+    2. /docs-embedded - Static version with spec embedded inline (self-contained)
     """
     
-    # Path to embedded.html - from app/main.py, go up 1 level to project root, then docs/
-    embedded_html_path = Path(__file__).resolve().parents[1] / "docs" / "embedded.html"
+    # Paths to HTML files - from app/main.py, go up 1 level to project root, then docs/
+    docs_dir = Path(__file__).resolve().parents[1] / "docs"
+    index_html_path = docs_dir / "index.html"
+    embedded_html_path = docs_dir / "embedded.html"
     
     @app.get("/docs", response_class=HTMLResponse, include_in_schema=False)
-    async def serve_custom_docs():
+    async def serve_custom_docs(request: Request):
         """
-        Serve the custom Swagger UI documentation page at /docs.
+        Serve the dynamic Swagger UI documentation page at /docs.
         
-        This endpoint serves the embedded.html file which contains a self-contained
-        Swagger UI with the OpenAPI specification embedded inline.
+        This endpoint serves the index.html file which contains a Swagger UI
+        that loads the OpenAPI specification from the server's /openapi.json endpoint.
+        
         Features:
         - Custom styling and branding
-        - Embedded OpenAPI spec (works standalone, e.g., for GitHub Pages)
+        - Dynamic OpenAPI spec loading from server (always up-to-date)
         - Custom Swagger UI configuration
+        - Same format as GitHub Pages for consistency
         
+        For a self-contained version with embedded spec, use /docs-embedded.
         The default FastAPI Swagger UI is also available at /docs-api.
         """
         try:
-            with embedded_html_path.open("r", encoding="utf-8") as f:
+            with index_html_path.open("r", encoding="utf-8") as f:
                 html_content = f.read()
+            
+            # Use filtered OpenAPI endpoint for /docs (excludes certain endpoints)
+            # /docs-api will use the full /openapi.json
+            # Determine the correct scheme (http vs https) - check X-Forwarded-Proto header for reverse proxy
+            # Also check X-Forwarded-Host for the correct host if behind a proxy
+            scheme = request.headers.get("X-Forwarded-Proto", request.url.scheme)
+            # Normalize scheme to lowercase and ensure it's https if X-Forwarded-Proto indicates it
+            if scheme:
+                scheme = scheme.lower()
+            else:
+                scheme = request.url.scheme
+            
+            # Use X-Forwarded-Host if available (for reverse proxy), otherwise use request.url.netloc
+            host = request.headers.get("X-Forwarded-Host", request.url.netloc)
+            
+            # Build base URL with correct scheme and host
+            base_url = f"{scheme}://{host}".rstrip("/")
+            filtered_openapi_url = f"{base_url}/openapi-filtered.json"
+            
+            # Replace the hardcoded GitHub Pages URL with the filtered OpenAPI URL
+            html_content = html_content.replace(
+                "url: 'https://cbiit.github.io/ccdi-dcc-federation-service/docs/swagger.yml',",
+                f"url: '{filtered_openapi_url}',"
+            )
+            # Also handle the alternative local file reference
+            html_content = html_content.replace(
+                "// url: './swagger.yml',",
+                f"// url: '{filtered_openapi_url}',"
+            )
+            
             return HTMLResponse(content=html_content)
         except FileNotFoundError:
-            logger.error(f"Embedded HTML file not found at {embedded_html_path}")
+            logger.error(f"Index HTML file not found at {index_html_path}")
             raise HTTPException(
                 status_code=500,
                 detail="Documentation file not found"
@@ -569,7 +773,130 @@ def setup_custom_docs_endpoint(app: FastAPI) -> None:
                 detail="Error loading documentation"
             )
     
-    logger.info("Custom /docs endpoint configured (default FastAPI docs available at /docs-api)")
+    @app.get("/docs-embedded", response_class=HTMLResponse, include_in_schema=False)
+    async def serve_embedded_docs():
+        """
+        Serve the self-contained Swagger UI documentation page at /docs-embedded.
+        
+        This endpoint serves the embedded.html file which contains a Swagger UI
+        with the OpenAPI specification embedded inline in the HTML.
+        
+        Features:
+        - Self-contained (no external spec file needed)
+        - Works offline and can be downloaded as a single file
+        - No CORS issues
+        - Faster initial load (no spec fetch required)
+        - Portable and distributable
+        
+        For a dynamic version that loads the live spec from the server, use /docs.
+        """
+        try:
+            with embedded_html_path.open("r", encoding="utf-8") as f:
+                html_content = f.read()
+            return HTMLResponse(content=html_content)
+        except FileNotFoundError:
+            logger.error(f"Embedded HTML file not found at {embedded_html_path}")
+            raise HTTPException(
+                status_code=500,
+                detail="Embedded documentation file not found"
+            )
+        except Exception as e:
+            logger.error(f"Error serving embedded documentation: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail="Error loading embedded documentation"
+            )
+    
+    # Custom ReDoc endpoint to ensure it works properly
+    @app.get("/redoc", include_in_schema=False)
+    async def serve_redoc(request: Request):
+        """
+        Serve ReDoc documentation page at /redoc.
+        
+        This is a custom implementation to ensure ReDoc works properly
+        with the OpenAPI 3.1.0 specification.
+        """
+        logger.debug(f"Serving ReDoc at /redoc, base_url: {request.base_url}")
+        try:
+            # Build absolute OpenAPI URL from the request
+            openapi_url = app.openapi_url
+            if not openapi_url.startswith("http"):
+                # Make it absolute based on the request
+                base_url = str(request.base_url).rstrip("/")
+                openapi_url = f"{base_url}{openapi_url}"
+            
+            logger.debug(f"ReDoc OpenAPI URL: {openapi_url}")
+            
+            # Create custom ReDoc HTML with explicit configuration
+            # Using ReDoc latest version with JavaScript API for better OpenAPI 3.1.0 support
+            redoc_html = f"""<!DOCTYPE html>
+<html>
+  <head>
+    <title>{app.title} - ReDoc</title>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link href="https://fonts.googleapis.com/css?family=Montserrat:300,400,700|Roboto:300,400,700" rel="stylesheet">
+    <style>
+      body {{
+        margin: 0;
+        padding: 0;
+      }}
+    </style>
+  </head>
+  <body>
+    <div id="redoc-container"></div>
+    <script src="https://cdn.jsdelivr.net/npm/redoc@latest/bundles/redoc.standalone.js"></script>
+    <script>
+      // Initialize ReDoc with JavaScript API
+      window.addEventListener('load', function() {{
+        try {{
+          Redoc.init("{openapi_url}", {{
+            scrollYOffset: 0,
+            hideDownloadButton: false,
+            expandResponses: "200,201",
+            pathInMiddlePanel: true,
+            theme: {{
+              typography: {{
+                fontSize: "14px",
+                lineHeight: "1.5em",
+                code: {{
+                  fontSize: "13px"
+                }}
+              }},
+              colors: {{
+                primary: {{
+                  main: "#32329f"
+                }}
+              }}
+            }}
+          }}, document.getElementById("redoc-container"));
+          console.log("ReDoc initialized successfully");
+        }} catch (error) {{
+          console.error("Error initializing ReDoc:", error);
+          document.getElementById("redoc-container").innerHTML = 
+            '<div style="padding: 20px; color: red;">Error loading ReDoc documentation. Please check the console for details.</div>';
+        }}
+      }});
+      
+      // Error handling for ReDoc
+      window.addEventListener('error', function(e) {{
+        console.error('ReDoc error:', e);
+      }});
+    </script>
+  </body>
+</html>"""
+            return HTMLResponse(content=redoc_html)
+        except Exception as e:
+            logger.error(f"Error serving ReDoc: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail="Error loading ReDoc documentation"
+            )
+    
+    logger.info("Custom /docs endpoint configured (dynamic, loads spec from server)")
+    logger.info("Custom /docs-embedded endpoint configured (static, self-contained)")
+    logger.info("Default FastAPI docs available at /docs-api")
+    logger.info("Custom /redoc endpoint configured")
 
 
 # Create the application instance

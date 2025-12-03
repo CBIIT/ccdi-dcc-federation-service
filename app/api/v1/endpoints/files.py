@@ -522,15 +522,10 @@ async def get_file(
             path=request.url.path
         )
         # Return InvalidParameters error instead of organization-specific message
-        error_detail = ErrorDetail(
-            kind=ErrorKind.INVALID_PARAMETERS,
+        raise InvalidParametersError(
             entity="Files",
             message="Invalid query parameter(s) provided.",
             reason="Unknown query parameter(s)"
-        )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
         )
     
     try:

@@ -62,12 +62,12 @@ class FileService:
         )
         
         # Validate pagination limits
-        if limit > self.settings.pagination.max_per_page:
-            limit = self.settings.pagination.max_per_page
+        if limit > self.settings.pagination.max_page_size:
+            limit = self.settings.pagination.max_page_size
             logger.debug(
                 "Limiting page size",
                 requested=limit,
-                max_allowed=self.settings.pagination.max_per_page
+                max_allowed=self.settings.pagination.max_page_size
             )
         
         # Get data from repository

@@ -54,7 +54,8 @@ def get_pagination_params(
     per_page: Optional[int] = Query(
         default=None,
         ge=1,
-        description="The number of results per page.\n\nEach server can select its own default value for per_page when this parameter is not provided. \n\nThat said, the convention within the community is to use 100 as a default value if any value is equally reasonable."
+        le=1000,
+        description="The number of results per page.\n\nEach server can select its own default value for per_page when this parameter is not provided. \n\nThat said, the convention within the community is to use 100 as a default value if any value is equally reasonable.\n\nThe maximum allowed value is 1000."
     )
 ) -> PaginationParams:
     """

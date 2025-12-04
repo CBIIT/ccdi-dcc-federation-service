@@ -141,12 +141,11 @@ class InvalidRouteError(CCDIException):
     
     def to_error_detail(self) -> ErrorDetail:
         """Convert exception to error detail - sanitize route from response."""
-        # Return error detail without the route field and with generic message
+        # Return error detail with route set to "/api" and generic message
         return ErrorDetail(
             kind=self.kind,
             method=self.method,
-            # Don't include route in response - keep it generic
-            route=None,
+            route="/api",
             message="Invalid route requested.",
             reason=None
         )

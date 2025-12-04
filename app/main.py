@@ -460,11 +460,11 @@ def setup_exception_handlers(app: FastAPI) -> None:
                 path=str(request.url.path)
             )
             
-            # Return sanitized error detail (no route in response, generic message)
+            # Return sanitized error detail with route set to "/api"
             error_detail = ErrorDetail(
                 kind=ErrorKind.INVALID_ROUTE,
                 method=request.method,
-                route=None,  # Don't include route in response
+                route="/api",
                 message="Invalid route requested."
             )
             

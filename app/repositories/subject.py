@@ -243,11 +243,18 @@ class SubjectRepository:
                     END) AS max_age
         WITH p, d, c, st, survs,
              // Priority: If 'Dead' exists, use 'Dead'; otherwise use status with max age
+             // If no record matches max_age, fall back to first available status
              CASE 
                WHEN has_dead THEN 'Dead'
-               ELSE head([sr IN survs 
-                           WHERE sr.age_at_last_known_survival_status = max_age 
-                           | sr.last_known_survival_status])
+               ELSE CASE
+                 WHEN head([sr IN survs 
+                             WHERE sr.age_at_last_known_survival_status = max_age 
+                             | sr.last_known_survival_status]) IS NOT NULL
+                 THEN head([sr IN survs 
+                             WHERE sr.age_at_last_known_survival_status = max_age 
+                             | sr.last_known_survival_status])
+                 ELSE head([sr IN survs | sr.last_known_survival_status])
+               END
              END AS final_vital_status,
              // Age: If 'Dead' exists, use max Dead age; otherwise use max age
              CASE 
@@ -458,11 +465,18 @@ class SubjectRepository:
                     END) AS max_age
         WITH p, d, st, survs,
              // Priority: If 'Dead' exists, use 'Dead'; otherwise use status with max age
+             // If no record matches max_age, fall back to first available status
              CASE 
                WHEN has_dead THEN 'Dead'
-               ELSE head([sr IN survs 
-                           WHERE sr.age_at_last_known_survival_status = max_age 
-                           | sr.last_known_survival_status])
+               ELSE CASE
+                 WHEN head([sr IN survs 
+                             WHERE sr.age_at_last_known_survival_status = max_age 
+                             | sr.last_known_survival_status]) IS NOT NULL
+                 THEN head([sr IN survs 
+                             WHERE sr.age_at_last_known_survival_status = max_age 
+                             | sr.last_known_survival_status])
+                 ELSE head([sr IN survs | sr.last_known_survival_status])
+               END
              END AS final_vital_status,
              // Age: If 'Dead' exists, use max Dead age; otherwise use max age
              CASE 
@@ -533,11 +547,18 @@ class SubjectRepository:
                     END) AS max_age
         WITH p, d, c, st, survs,
              // Priority: If 'Dead' exists, use 'Dead'; otherwise use status with max age
+             // If no record matches max_age, fall back to first available status
              CASE 
                WHEN has_dead THEN 'Dead'
-               ELSE head([sr IN survs 
-                           WHERE sr.age_at_last_known_survival_status = max_age 
-                           | sr.last_known_survival_status])
+               ELSE CASE
+                 WHEN head([sr IN survs 
+                             WHERE sr.age_at_last_known_survival_status = max_age 
+                             | sr.last_known_survival_status]) IS NOT NULL
+                 THEN head([sr IN survs 
+                             WHERE sr.age_at_last_known_survival_status = max_age 
+                             | sr.last_known_survival_status])
+                 ELSE head([sr IN survs | sr.last_known_survival_status])
+               END
              END AS final_vital_status,
              // Age: If 'Dead' exists, use max Dead age; otherwise use max age
              CASE 
@@ -859,20 +880,35 @@ WITH p, d, c, st, survs,
                    AND sr.age_at_last_known_survival_status > max_age
               THEN sr.age_at_last_known_survival_status 
               ELSE max_age 
-            END) AS max_age
+            END) AS max_age,
+     // Check if all ages are -999 (for counting as missing)
+     all(sr IN survs WHERE sr.age_at_last_known_survival_status = -999) AS all_ages_are_999,
+     // Check if Dead age is -999
+     any(sr IN survs WHERE sr.last_known_survival_status = 'Dead' AND sr.age_at_last_known_survival_status = -999) AS dead_age_is_999
 WITH p, d, c, st,
      // Priority: If 'Dead' exists, use 'Dead'; otherwise use status with max age
-     // If survs is empty or no matching record, return NULL
+     // If no record matches max_age, fall back to first available status
      CASE 
        WHEN size(survs) = 0 THEN NULL
        WHEN has_dead THEN 'Dead'
-       ELSE head([sr IN survs 
-                   WHERE sr.age_at_last_known_survival_status = max_age 
-                   | sr.last_known_survival_status])
+       ELSE CASE
+         WHEN head([sr IN survs 
+                     WHERE sr.age_at_last_known_survival_status = max_age 
+                     | sr.last_known_survival_status]) IS NOT NULL
+         THEN head([sr IN survs 
+                     WHERE sr.age_at_last_known_survival_status = max_age 
+                     | sr.last_known_survival_status])
+         ELSE head([sr IN survs | sr.last_known_survival_status])
+       END
      END AS final_vital_status,
-     // Age: If 'Dead' exists, use max Dead age; otherwise use max age
+     // Age: If no vital_status, age should also be NULL
+     // If all ages are -999, or Dead age is -999, set to NULL (count as missing)
+     // Otherwise use max Dead age or max age
      CASE 
+       WHEN size(survs) = 0 THEN NULL
+       WHEN has_dead AND dead_age_is_999 THEN NULL
        WHEN has_dead THEN max_dead_age
+       WHEN all_ages_are_999 THEN NULL
        ELSE max_age
      END AS final_age_at_vital_status"""
         else:
@@ -904,7 +940,27 @@ WITH p, d, c, st,
         # Query 2: Get count of participants with null field value
         null_check = f"{field_access} IS NULL" if not is_survival_field else f"final_{field} IS NULL"
         if is_survival_field:
-            missing_cypher = f"""
+            # For survival fields, missing logic depends on the field:
+            # - vital_status: missing when final_vital_status IS NULL
+            # - age_at_vital_status: missing when final_age_at_vital_status IS NULL (includes -999 cases)
+            if field == "age_at_vital_status":
+                missing_cypher = f"""
+        MATCH (p:participant)
+        OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
+        OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
+        OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
+        WITH p, s, d, c, st{race_condition}{identifiers_condition}
+        {base_where_clause}{survival_processing}
+        WITH p.participant_id as participant_id, final_vital_status, final_age_at_vital_status
+        WITH participant_id, 
+             head(collect(final_vital_status)) as final_vital_status,
+             head(collect(final_age_at_vital_status)) as final_age_at_vital_status
+        WHERE final_age_at_vital_status IS NULL
+        RETURN count(DISTINCT participant_id) as missing
+        """.strip()
+            else:
+                # For vital_status, missing means no vital_status
+                missing_cypher = f"""
         MATCH (p:participant)
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
@@ -2317,7 +2373,15 @@ WITH p, d, c, st,
                 ) if associated_diagnoses else None,
                 "unharmonized": None,
                 "vital_status": {"value": vital_status} if vital_status else None,
-                "age_at_vital_status": {"value": int(age_at_vital_status)} if age_at_vital_status is not None else None,
+                # Convert -999 to null for age_at_vital_status in response (count endpoints keep -999 as-is)
+                # Also convert 0 to null if vital_status exists (0 likely came from -999 when all ages were -999)
+                "age_at_vital_status": (
+                    {"value": int(age_at_vital_status)} 
+                    if age_at_vital_status is not None 
+                       and age_at_vital_status != -999 
+                       and not (age_at_vital_status == 0 and vital_status is not None)
+                    else None
+                ),
                 "depositions": sorted(
                     [
                         {"kind": "dbGaP", "value": study_id}

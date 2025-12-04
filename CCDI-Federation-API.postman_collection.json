@@ -426,6 +426,50 @@
 					}
 				},
 				{
+					"name": "Count Subjects by Vital Status",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/subject/by/vital_status/count",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"subject",
+								"by",
+								"vital_status",
+								"count"
+							]
+						},
+						"description": "Count subjects grouped by vital status (Alive, Dead, etc.). Missing includes participants with no survival records or all records have NULL status."
+					}
+				},
+				{
+					"name": "Count Subjects by Age at Vital Status",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/{{api_version}}/subject/by/age_at_vital_status/count",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"{{api_version}}",
+								"subject",
+								"by",
+								"age_at_vital_status",
+								"count"
+							]
+						},
+						"description": "Count subjects grouped by age at vital status. Missing includes participants with no survival records, all records have NULL status, or all ages are -999, or Dead age is -999."
+					}
+				},
+				{
 					"name": "Subject Summary",
 					"request": {
 						"method": "GET",

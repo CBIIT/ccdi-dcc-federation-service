@@ -5,7 +5,7 @@ This module provides REST endpoints for sequencing file operations
 including listing, individual retrieval, counting, and summaries.
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status, Path
 from neo4j import AsyncSession
@@ -322,7 +322,7 @@ async def list_files(
 )
 async def count_files_by_field(
     request: Request,
-    field: str = Path(
+    field: Literal["type", "depositions"] = Path(
         ...,
         description="The field to group by and count. Only 'type' and 'depositions' are supported.",
         example="type"

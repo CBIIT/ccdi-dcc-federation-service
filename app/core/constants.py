@@ -5,7 +5,9 @@ This module contains valid values and enums for various data fields used through
 the application, such as race, ethnicity, sex, etc.
 """
 
+import json
 from enum import Enum
+from pathlib import Path
 
 
 class Race(str, Enum):
@@ -119,4 +121,135 @@ class VitalStatus(str, Enum):
             True if the value is valid, False otherwise
         """
         return value in cls.values()
+
+
+def load_file_enum() -> list[str]:
+    """
+    Load file type enum values from config_data/file_enum.json.
+    
+    Returns:
+        List of file type strings. Returns empty list if file not found or invalid.
+    """
+    # From app/core/constants.py, go up 1 level to reach app/, then config_data/
+    file_enum_path = Path(__file__).resolve().parents[1] / "config_data" / "file_enum.json"
+    
+    try:
+        with file_enum_path.open("r", encoding="utf-8") as f:
+            file_types = json.load(f)
+            if isinstance(file_types, list):
+                return file_types
+            return []
+    except (FileNotFoundError, json.JSONDecodeError):
+        # Return empty list if file doesn't exist or is invalid
+        return []
+
+
+# Load file types from config file
+_file_type_values = load_file_enum()
+
+
+def _to_enum_name(value: str) -> str:
+    """
+    Convert a file type string value to a valid Python enum member name.
+    
+    Args:
+        value: The file type string value
+        
+    Returns:
+        A valid Python identifier for use as an enum member name
+    """
+    # Replace spaces, slashes, and special characters with underscores
+    name = value.replace(" ", "_").replace("/", "_").replace("-", "_")
+    # Remove any remaining special characters and ensure it starts with a letter
+    name = "".join(c if c.isalnum() or c == "_" else "" for c in name)
+    # Ensure it starts with a letter or underscore
+    if name and not (name[0].isalpha() or name[0] == "_"):
+        name = "_" + name
+    # Handle empty names
+    if not name:
+        name = "UNNAMED"
+    # Convert to uppercase for enum naming convention
+    return name.upper()
+
+
+# Dynamically create FileType enum from loaded values
+if _file_type_values:
+    # Create enum members dictionary: {enum_name: enum_value}
+    enum_members = {_to_enum_name(ft): ft for ft in _file_type_values}
+    
+    # Create the enum using functional API
+    FileType = Enum("FileType", enum_members, type=str)
+    
+    # Add helper methods to the dynamically created enum
+    def values(cls) -> list[str]:
+        """
+        Get a list of all valid file type values as strings.
+        
+        Returns:
+            List of all valid file type values
+        """
+        return [file_type.value for file_type in cls]
+    
+    def is_valid(cls, value: str) -> bool:
+        """
+        Check if a given value is a valid file type value.
+        
+        Args:
+            value: The file type value to validate
+            
+        Returns:
+            True if the value is valid, False otherwise
+        """
+        return value in cls.values()
+    
+    # Attach methods as classmethods to the enum class
+    FileType.values = classmethod(values)
+    FileType.is_valid = classmethod(is_valid)
+    
+    # Add docstring
+    FileType.__doc__ = """
+    Valid file type values for sequencing files.
+    
+    This enum represents the standard file type categories used in the CCDI-DCC
+    federation service. All file type values in the system should conform to one
+    of these values.
+    
+    Note: File types are loaded from config_data/file_enum.json.
+    """
+else:
+    # Fallback: create empty enum if file couldn't be loaded
+    class FileType(str, Enum):
+        """
+        Valid file type values for sequencing files.
+        
+        This enum represents the standard file type categories used in the CCDI-DCC
+        federation service. All file type values in the system should conform to one
+        of these values.
+        
+        Note: File types are loaded from config_data/file_enum.json.
+        If the file cannot be loaded, this enum will be empty.
+        """
+        
+        @classmethod
+        def values(cls) -> list[str]:
+            """
+            Get a list of all valid file type values as strings.
+            
+            Returns:
+                List of all valid file type values
+            """
+            return [file_type.value for file_type in cls]
+
+        @classmethod
+        def is_valid(cls, value: str) -> bool:
+            """
+            Check if a given value is a valid file type value.
+            
+            Args:
+                value: The file type value to validate
+                
+            Returns:
+                True if the value is valid, False otherwise
+            """
+            return value in cls.values()
 

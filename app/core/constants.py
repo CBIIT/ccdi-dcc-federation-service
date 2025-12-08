@@ -125,19 +125,28 @@ class VitalStatus(str, Enum):
 
 def load_file_enum() -> list[str]:
     """
-    Load file type enum values from config_data/file_enum.json.
+    Load file type enum values from config_data/file_type_enum.json.
+    
+    The file structure is: { "file_type": ["value1", "value2", ...] }
+    Also supports legacy format: ["value1", "value2", ...] (for backward compatibility)
     
     Returns:
         List of file type strings. Returns empty list if file not found or invalid.
     """
     # From app/core/constants.py, go up 1 level to reach app/, then config_data/
-    file_enum_path = Path(__file__).resolve().parents[1] / "config_data" / "file_enum.json"
+    file_enum_path = Path(__file__).resolve().parents[1] / "config_data" / "file_type_enum.json"
     
     try:
         with file_enum_path.open("r", encoding="utf-8") as f:
-            file_types = json.load(f)
-            if isinstance(file_types, list):
-                return file_types
+            data = json.load(f)
+            # New format: { "file_type": [...] }
+            if isinstance(data, dict) and "file_type" in data:
+                file_types = data["file_type"]
+                if isinstance(file_types, list):
+                    return file_types
+            # Legacy format: [...] (for backward compatibility)
+            elif isinstance(data, list):
+                return data
             return []
     except (FileNotFoundError, json.JSONDecodeError):
         # Return empty list if file doesn't exist or is invalid
@@ -214,7 +223,7 @@ if _file_type_values:
     federation service. All file type values in the system should conform to one
     of these values.
     
-    Note: File types are loaded from config_data/file_enum.json.
+    Note: File types are loaded from config_data/file_type_enum.json.
     """
 else:
     # Fallback: create empty enum if file couldn't be loaded
@@ -226,7 +235,7 @@ else:
         federation service. All file type values in the system should conform to one
         of these values.
         
-        Note: File types are loaded from config_data/file_enum.json.
+        Note: File types are loaded from config_data/file_type_enum.json.
         If the file cannot be loaded, this enum will be empty.
         """
         

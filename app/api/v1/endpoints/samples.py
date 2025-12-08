@@ -31,7 +31,7 @@ from app.models.dto import (
     CountResponse,
     SummaryResponse
 )
-from app.models.errors import NotFoundError, ErrorDetail, ErrorsResponse, ErrorKind, InvalidParametersError
+from app.models.errors import NotFoundError, ErrorDetail, ErrorsResponse, ErrorKind, InvalidParametersError, UnsupportedFieldError
 from app.services.sample import SampleService
 
 logger = get_logger(__name__)
@@ -327,28 +327,79 @@ async def count_samples_by_field(
         
         return result
         
+    except UnsupportedFieldError as e:
+        # Re-raise UnsupportedFieldError with proper HTTP exception
+        raise e.to_http_exception()
     except Exception as e:
-        logger.error(
-            "Error counting samples by field", 
-            error=str(e), 
-            error_type=type(e).__name__,
-            field=field,
-            filters=filters,
-            exc_info=True
-        )
-        if hasattr(e, 'to_http_exception'):
-            raise e.to_http_exception()
-        # Return 404 instead of 500 - no 500 errors allowed
-        error_detail = ErrorDetail(
-            kind=ErrorKind.NOT_FOUND,
-            entity="Samples",
-            message="Unable to find data for your request.",
-            reason="No data found."
-        )
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
-        )
+        # Check if this is a query error (like UnboundVariable) that indicates a real problem
+        # vs a scenario where we should return empty results
+        error_str = str(e).lower()
+        is_query_error = any(keyword in error_str for keyword in [
+            "unbound variable", "syntax error", "type error"
+        ])
+        
+        if is_query_error:
+            # This is an actual query error - log and return 404
+            logger.error(
+                "Query error counting samples by field", 
+                error=str(e), 
+                error_type=type(e).__name__,
+                field=field,
+                filters=filters,
+                exc_info=True
+            )
+            if hasattr(e, 'to_http_exception'):
+                raise e.to_http_exception()
+            # Return 404 instead of 500 - no 500 errors allowed
+            error_detail = ErrorDetail(
+                kind=ErrorKind.NOT_FOUND,
+                entity="Samples",
+                message="Unable to find data for your request.",
+                reason="No data found."
+            )
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+            )
+        else:
+            # For other errors, try to return empty result with all counted as missing
+            # This handles cases where the field is valid but has no data
+            logger.warning(
+                "Error in count_samples_by_field, attempting to return empty result",
+                error=str(e),
+                error_type=type(e).__name__,
+                field=field
+            )
+            try:
+                # Try to get total count from summary
+                cache_service = get_cache_service()
+                service = SampleService(session, allowlist, settings, cache_service)
+                summary_result = await service.get_samples_summary({})
+                total = summary_result.counts.total if summary_result else 0
+                
+                # Return empty result with all counted as missing
+                return CountResponse(
+                    total=total,
+                    missing=total,
+                    values=[]
+                )
+            except Exception as e2:
+                # If we can't even get the total, return 404
+                logger.error(
+                    "Error getting summary for empty result fallback", 
+                    error=str(e2),
+                    exc_info=True
+                )
+                error_detail = ErrorDetail(
+                    kind=ErrorKind.NOT_FOUND,
+                    entity="Samples",
+                    message="Unable to find data for your request.",
+                    reason="No data found."
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+                )
 
 
 # ============================================================================

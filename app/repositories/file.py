@@ -65,17 +65,28 @@ class FileRepository:
         
         # Validate type filter - must match enum value exactly (case-sensitive)
         # Note: filter key is "file_type" because get_file_filters() maps "type" -> "file_type"
+        # After validation, use case-insensitive matching in the query to handle database case variations
+        type_filter_param = None
         if "file_type" in filters_copy:
-            type_value = filters_copy["file_type"]
+            type_value = filters_copy.pop("file_type")  # Remove from filters_copy to handle separately
             # Check if the type value exactly matches an enum value (case-sensitive)
             if type_value not in FileType.values():
                 # Type doesn't match any enum value, return empty results
-                logger.debug(
-                    "Type filter value does not match any enum value (case-sensitive)",
+                logger.info(
+                    "Type filter value does not match any enum value (case-sensitive) - returning empty results",
                     type_value=type_value,
                     valid_values=FileType.values()[:5]  # Log first 5 for reference
                 )
                 return []
+            # Use case-insensitive matching in the query (toLower for both sides)
+            # This allows matching database values regardless of case, while still validating input case-sensitively
+            param_counter += 1
+            type_filter_param = f"param_{param_counter}"
+            params[type_filter_param] = type_value
+            logger.debug(
+                "Type filter validated successfully, will use case-insensitive matching in query",
+                type_value=type_value
+            )
         
         # Add regular filters
         for field, value in filters_copy.items():
@@ -97,6 +108,10 @@ class FileRepository:
             else:
                 where_conditions.append(f"sf.{field} = ${param_name}")
             params[param_name] = value
+        
+        # Add case-insensitive type filter if present
+        if type_filter_param:
+            where_conditions.append(f"toLower(sf.file_type) = toLower(${type_filter_param})")
         
         # Build final query
         # Only include sequencing_files that have a path to a study
@@ -348,8 +363,14 @@ class FileRepository:
         
         # Validate type filter - must match enum value exactly (case-sensitive)
         # Note: filter key is "file_type" because get_file_filters() maps "type" -> "file_type"
-        if "file_type" in filters:
-            type_value = filters["file_type"]
+        # After validation, use case-insensitive matching in the query to handle database case variations
+        type_filter_param = None
+        filters_copy = filters.copy()
+        params = {}  # Initialize params dict
+        param_counter = 0
+        
+        if "file_type" in filters_copy:
+            type_value = filters_copy.pop("file_type")  # Remove from filters_copy to handle separately
             # Check if the type value exactly matches an enum value (case-sensitive)
             if type_value not in FileType.values():
                 # Type doesn't match any enum value, return empty results
@@ -363,14 +384,16 @@ class FileRepository:
                     "missing": 0,
                     "values": []
                 }
+            # Use case-insensitive matching in the query (toLower for both sides)
+            param_counter += 1
+            type_filter_param = f"param_{param_counter}"
+            params[type_filter_param] = type_value
         
         # Build WHERE conditions and parameters for filters (excluding field-specific conditions)
         base_where_conditions = []
-        params = {}
-        param_counter = 0
         
         # Add regular filters
-        for filter_field, value in filters.items():
+        for filter_field, value in filters_copy.items():
             param_counter += 1
             param_name = f"param_{param_counter}"
             
@@ -379,6 +402,10 @@ class FileRepository:
             else:
                 base_where_conditions.append(f"sf.{filter_field} = ${param_name}")
             params[param_name] = value
+        
+        # Add case-insensitive type filter if present
+        if type_filter_param:
+            base_where_conditions.append(f"toLower(sf.file_type) = toLower(${type_filter_param})")
         
         # Build base WHERE clause (for filtering)
         base_where_clause = "WHERE " + " AND ".join(base_where_conditions) if base_where_conditions else ""
@@ -713,6 +740,30 @@ class FileRepository:
         filters_copy = filters.copy()
         depositions_value = filters_copy.pop("depositions", None)
         
+        # Validate type filter - must match enum value exactly (case-sensitive)
+        # Note: filter key is "file_type" because get_file_filters() maps "type" -> "file_type"
+        # After validation, use case-insensitive matching in the query to handle database case variations
+        type_filter_param = None
+        if "file_type" in filters_copy:
+            type_value = filters_copy.pop("file_type")  # Remove from filters_copy to handle separately
+            # Check if the type value exactly matches an enum value (case-sensitive)
+            if type_value not in FileType.values():
+                # Type doesn't match any enum value, return empty results
+                logger.info(
+                    "Type filter value does not match any enum value (case-sensitive) - returning empty summary",
+                    type_value=type_value,
+                    valid_values=FileType.values()[:5]  # Log first 5 for reference
+                )
+                return {"total_count": 0}
+            # Use case-insensitive matching in the query (toLower for both sides)
+            param_counter += 1
+            type_filter_param = f"param_{param_counter}"
+            params[type_filter_param] = type_value
+            logger.debug(
+                "Type filter validated successfully for summary, will use case-insensitive matching in query",
+                type_value=type_value
+            )
+        
         # Add regular filters
         for field, value in filters_copy.items():
             param_counter += 1
@@ -733,6 +784,10 @@ class FileRepository:
             else:
                 where_conditions.append(f"sf.{field} = ${param_name}")
             params[param_name] = value
+        
+        # Add case-insensitive type filter if present
+        if type_filter_param:
+            where_conditions.append(f"toLower(sf.file_type) = toLower(${type_filter_param})")
         
         # Build final query
         # Only include sequencing_files that have a path to a study

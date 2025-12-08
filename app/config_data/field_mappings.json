@@ -1,0 +1,58 @@
+{
+  "sequencing_file": {
+    "library_selection_method": {
+      "description": "Maps database values to API values for library_selection_method field",
+      "source_property": "library_selection",
+      "mappings": {
+        "PolyA": "Poly-A Enriched Genomic Library",
+        "Not Applicable": "Not applicable"
+      },
+      "null_mappings": [],
+      "reverse_mappings": {
+        "Poly-A Enriched Genomic Library": "PolyA",
+        "Not applicable": "Not Applicable"
+      }
+    },
+    "library_source_material": {
+      "description": "Maps database values to API values for library_source_material field",
+      "source_property": "library_source_material",
+      "mappings": {},
+      "null_mappings": ["Other"],
+      "reverse_mappings": {}
+    },
+    "specimen_molecular_analyte_type": {
+      "description": "Maps database values to API values for specimen_molecular_analyte_type field (from library_source_molecule property)",
+      "source_property": "library_source_molecule",
+      "mappings": {
+        "Transcriptomic": "RNA",
+        "Genomic": "DNA",
+        "Viral RNA": "RNA"
+      },
+      "null_mappings": ["Not Reported"],
+      "reverse_mappings": {
+        "RNA": ["Transcriptomic", "Viral RNA"],
+        "DNA": "Genomic"
+      }
+    }
+  },
+  "diagnosis": {
+    "disease_phase": {
+      "description": "Maps database values to API values for disease_phase field",
+      "source_property": "disease_phase",
+      "mappings": {
+        "Recurrent Disease": "Relapse"
+      },
+      "null_mappings": [],
+      "reverse_mappings": {
+        "Relapse": ["Recurrent Disease", "Relapse"]
+      }
+    },
+    "tumor_classification": {
+      "description": "Maps database values to API values for tumor_classification field",
+      "source_property": "tumor_classification",
+      "mappings": {},
+      "null_mappings": ["non-malignant"],
+      "reverse_mappings": {}
+    }
+  }
+}

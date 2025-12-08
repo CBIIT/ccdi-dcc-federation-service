@@ -1609,9 +1609,9 @@ WITH p, d, c, st,
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         WITH p, s, d, c, st{identifiers_condition}
         {where_clause}
-        WITH DISTINCT p.participant_id as participant_id, collect(d) as diagnoses
+        WITH DISTINCT p, collect(d) as diagnoses
         WHERE size([d IN diagnoses WHERE d IS NOT NULL]) = 0
-        RETURN count(DISTINCT participant_id) as missing
+        RETURN count(DISTINCT p) as missing
         """.strip()
         else:
             # No filters - simple check for missing diagnoses

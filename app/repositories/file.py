@@ -10,6 +10,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from neo4j import AsyncSession
 
 from app.core.logging import get_logger
+from app.core.constants import FileType
 from app.lib.field_allowlist import FieldAllowlist
 from app.models.dto import File
 from app.models.errors import UnsupportedFieldError
@@ -62,6 +63,31 @@ class FileRepository:
         filters_copy = filters.copy()
         depositions_value = filters_copy.pop("depositions", None)
         
+        # Validate type filter - must match enum value exactly (case-sensitive)
+        # Note: filter key is "file_type" because get_file_filters() maps "type" -> "file_type"
+        # After validation, use case-insensitive matching in the query to handle database case variations
+        type_filter_param = None
+        if "file_type" in filters_copy:
+            type_value = filters_copy.pop("file_type")  # Remove from filters_copy to handle separately
+            # Check if the type value exactly matches an enum value (case-sensitive)
+            if type_value not in FileType.values():
+                # Type doesn't match any enum value, return empty results
+                logger.info(
+                    "Type filter value does not match any enum value (case-sensitive) - returning empty results",
+                    type_value=type_value,
+                    valid_values=FileType.values()[:5]  # Log first 5 for reference
+                )
+                return []
+            # Use case-insensitive matching in the query (toLower for both sides)
+            # This allows matching database values regardless of case, while still validating input case-sensitively
+            param_counter += 1
+            type_filter_param = f"param_{param_counter}"
+            params[type_filter_param] = type_value
+            logger.debug(
+                "Type filter validated successfully, will use case-insensitive matching in query",
+                type_value=type_value
+            )
+        
         # Add regular filters
         for field, value in filters_copy.items():
             param_counter += 1
@@ -82,6 +108,10 @@ class FileRepository:
             else:
                 where_conditions.append(f"sf.{field} = ${param_name}")
             params[param_name] = value
+        
+        # Add case-insensitive type filter if present
+        if type_filter_param:
+            where_conditions.append(f"toLower(sf.file_type) = toLower(${type_filter_param})")
         
         # Build final query
         # Only include sequencing_files that have a path to a study
@@ -331,13 +361,39 @@ class FileRepository:
         }
         db_field = field_mapping.get(field, field)
         
-        # Build WHERE conditions and parameters for filters (excluding field-specific conditions)
-        base_where_conditions = []
-        params = {}
+        # Validate type filter - must match enum value exactly (case-sensitive)
+        # Note: filter key is "file_type" because get_file_filters() maps "type" -> "file_type"
+        # After validation, use case-insensitive matching in the query to handle database case variations
+        type_filter_param = None
+        filters_copy = filters.copy()
+        params = {}  # Initialize params dict
         param_counter = 0
         
+        if "file_type" in filters_copy:
+            type_value = filters_copy.pop("file_type")  # Remove from filters_copy to handle separately
+            # Check if the type value exactly matches an enum value (case-sensitive)
+            if type_value not in FileType.values():
+                # Type doesn't match any enum value, return empty results
+                logger.debug(
+                    "Type filter value does not match any enum value (case-sensitive)",
+                    type_value=type_value,
+                    valid_values=FileType.values()[:5]  # Log first 5 for reference
+                )
+                return {
+                    "total": 0,
+                    "missing": 0,
+                    "values": []
+                }
+            # Use case-insensitive matching in the query (toLower for both sides)
+            param_counter += 1
+            type_filter_param = f"param_{param_counter}"
+            params[type_filter_param] = type_value
+        
+        # Build WHERE conditions and parameters for filters (excluding field-specific conditions)
+        base_where_conditions = []
+        
         # Add regular filters
-        for filter_field, value in filters.items():
+        for filter_field, value in filters_copy.items():
             param_counter += 1
             param_name = f"param_{param_counter}"
             
@@ -346,6 +402,10 @@ class FileRepository:
             else:
                 base_where_conditions.append(f"sf.{filter_field} = ${param_name}")
             params[param_name] = value
+        
+        # Add case-insensitive type filter if present
+        if type_filter_param:
+            base_where_conditions.append(f"toLower(sf.file_type) = toLower(${type_filter_param})")
         
         # Build base WHERE clause (for filtering)
         base_where_clause = "WHERE " + " AND ".join(base_where_conditions) if base_where_conditions else ""
@@ -470,12 +530,42 @@ class FileRepository:
                     raise
         
         # Format results
-        counts = []
-        for record in values_records:
-            counts.append({
-                "value": record.get("value"),
-                "count": record.get("count", 0)
-            })
+        # For "type" field, map file types to enum values and count non-matching as missing
+        if field == "type":
+            # Map file types to enum values and aggregate counts
+            enum_counts: Dict[str, int] = {}
+            non_matching_count = 0
+            
+            for record in values_records:
+                raw_value = record.get("value")
+                count = record.get("count", 0)
+                
+                # Map to enum value (case-insensitive)
+                mapped_value = self._map_file_type_to_enum(raw_value)
+                
+                if mapped_value:
+                    # Add to enum counts
+                    enum_counts[mapped_value] = enum_counts.get(mapped_value, 0) + count
+                else:
+                    # Count as missing (non-matching type)
+                    non_matching_count += count
+            
+            # Format results with enum values
+            counts = [
+                {"value": enum_value, "count": count}
+                for enum_value, count in sorted(enum_counts.items(), key=lambda x: (-x[1], x[0]))
+            ]
+            
+            # Add non-matching types to missing count
+            missing = missing + non_matching_count
+        else:
+            # For other fields, use results as-is
+            counts = []
+            for record in values_records:
+                counts.append({
+                    "value": record.get("value"),
+                    "count": record.get("count", 0)
+                })
         
         logger.debug(
             "Completed sequencing file count by field",
@@ -650,6 +740,30 @@ class FileRepository:
         filters_copy = filters.copy()
         depositions_value = filters_copy.pop("depositions", None)
         
+        # Validate type filter - must match enum value exactly (case-sensitive)
+        # Note: filter key is "file_type" because get_file_filters() maps "type" -> "file_type"
+        # After validation, use case-insensitive matching in the query to handle database case variations
+        type_filter_param = None
+        if "file_type" in filters_copy:
+            type_value = filters_copy.pop("file_type")  # Remove from filters_copy to handle separately
+            # Check if the type value exactly matches an enum value (case-sensitive)
+            if type_value not in FileType.values():
+                # Type doesn't match any enum value, return empty results
+                logger.info(
+                    "Type filter value does not match any enum value (case-sensitive) - returning empty summary",
+                    type_value=type_value,
+                    valid_values=FileType.values()[:5]  # Log first 5 for reference
+                )
+                return {"total_count": 0}
+            # Use case-insensitive matching in the query (toLower for both sides)
+            param_counter += 1
+            type_filter_param = f"param_{param_counter}"
+            params[type_filter_param] = type_value
+            logger.debug(
+                "Type filter validated successfully for summary, will use case-insensitive matching in query",
+                type_value=type_value
+            )
+        
         # Add regular filters
         for field, value in filters_copy.items():
             param_counter += 1
@@ -670,6 +784,10 @@ class FileRepository:
             else:
                 where_conditions.append(f"sf.{field} = ${param_name}")
             params[param_name] = value
+        
+        # Add case-insensitive type filter if present
+        if type_filter_param:
+            where_conditions.append(f"toLower(sf.file_type) = toLower(${type_filter_param})")
         
         # Build final query
         # Only include sequencing_files that have a path to a study
@@ -774,6 +892,32 @@ class FileRepository:
                 )
                 raise UnsupportedFieldError(field, entity_type)
     
+    def _map_file_type_to_enum(self, file_type: Any) -> Optional[str]:
+        """
+        Map a file type value to a FileType enum value (case-insensitive matching).
+        
+        Args:
+            file_type: The file type value from the database
+            
+        Returns:
+            The matching enum value if found, None otherwise
+        """
+        if file_type is None:
+            return None
+        
+        file_type_str = str(file_type).strip()
+        if not file_type_str:
+            return None
+        
+        # Case-insensitive matching against enum values
+        file_type_lower = file_type_str.lower()
+        for enum_value in FileType.values():
+            if enum_value.lower() == file_type_lower:
+                return enum_value
+        
+        # No match found
+        return None
+    
     def _record_to_file(self, record: Dict[str, Any], samples: List[Any] = None, study: Dict[str, Any] = None) -> File:
         """
         Convert a database record to a File object with proper structure.
@@ -849,9 +993,13 @@ class FileRepository:
             if study_id_value:
                 depositions = [{"kind": "dbGaP", "value": study_id_value}]
         
+        # Map file type to enum value (case-insensitive)
+        raw_file_type = sf.get("file_type") or sf.get("type")
+        mapped_file_type = self._map_file_type_to_enum(raw_file_type)
+        
         metadata = {
             "size": format_metadata_value(sf.get("file_size") or sf.get("size")),
-            "type": format_metadata_value(sf.get("file_type") or sf.get("type")),
+            "type": format_metadata_value(mapped_file_type),  # Use mapped enum value or None
             "checksums": format_metadata_value(sf.get("md5sum")),
             "description": format_metadata_value(sf.get("file_description")),
             "depositions": depositions

@@ -33,6 +33,17 @@
         "RNA": ["Transcriptomic", "Viral RNA"],
         "DNA": "Genomic"
       }
+    },
+    "library_strategy": {
+      "description": "Maps database values to API values for library_strategy field",
+      "source_property": "library_strategy",
+      "mappings": {
+        "Archer Fusion": "Other"
+      },
+      "null_mappings": [],
+      "reverse_mappings": {
+        "Other": "Archer Fusion"
+      }
     }
   },
   "diagnosis": {

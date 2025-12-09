@@ -2371,7 +2371,7 @@ WITH p, d, c, st,
                     ],
                     key=lambda x: x["value"]  # Sort by diagnosis value
                 ) if associated_diagnoses else None,
-                "unharmonized": None,
+                # "unharmonized": None,  # Commented out for now, reserved for future use
                 "vital_status": {"value": vital_status} if vital_status else None,
                 # Convert -999 to null for age_at_vital_status in response (count endpoints keep -999 as-is)
                 # Also convert 0 to null if vital_status exists (0 likely came from -999 when all ages were -999)

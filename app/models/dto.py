@@ -393,7 +393,11 @@ class SubjectMetadata(BaseModel):
     ethnicity: Optional[MetadataField] = None
     identifiers: Optional[List[IdentifierField]] = None
     associated_diagnoses: Optional[List[AssociatedDiagnosisField]] = None
-    unharmonized: Optional[Any] = None
+    unharmonized: Optional[Any] = Field(
+        default=None,
+        exclude=True,  # Exclude from serialization but keep as placeholder for future use
+        description="Unharmonized metadata fields (reserved for future use)"
+    )
     vital_status: Optional[MetadataField] = None
     age_at_vital_status: Optional[MetadataField] = None
     depositions: Optional[List[DepositionAccession]] = None

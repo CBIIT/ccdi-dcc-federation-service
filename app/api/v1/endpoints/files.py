@@ -113,7 +113,11 @@ in the `responses::Files` schema.""",
                                 "metadata": {
                                     "size": {"value": 74880783442},
                                     "type": {"value": "Sequence Record Format"},
-                                    "checksums": {"value": "2f6a4ef817eb907bdbeee8c35c40ca09"},
+                                    "checksums": {
+                                        "value": {
+                                            "md5": "2f6a4ef817eb907bdbeee8c35c40ca09"
+                                        }
+                                    },
                                     "description": {"value": "Sequence Record"},
                                     "depositions": [
                                         {
@@ -447,7 +451,11 @@ async def count_files_by_field(
                             ],
                             "type": {"value": "fastq"},
                             "size": {"value": 12340},
-                            "checksums": {"value": "608449b55fe5480b3562a967eb7dc2b0"},
+                            "checksums": {
+                                "value": {
+                                    "md5": "608449b55fe5480b3562a967eb7dc2b0"
+                                }
+                            },
                             "description": {"value": "WGS FASTQ Files R2"}
                         }
                     }

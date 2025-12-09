@@ -986,6 +986,17 @@ class FileRepository:
                 return None
             return {"value": value}
         
+        # Format checksums with nested md5 structure
+        def format_checksums(md5_value):
+            """Format checksums as nested structure with md5."""
+            if md5_value is None:
+                return None
+            return {
+                "value": {
+                    "md5": md5_value
+                }
+            }
+        
         # Get depositions from study - format as objects with kind and value
         depositions = None
         if study_dict and study_dict.get("study_id"):
@@ -1000,7 +1011,7 @@ class FileRepository:
         metadata = {
             "size": format_metadata_value(sf.get("file_size") or sf.get("size")),
             "type": format_metadata_value(mapped_file_type),  # Use mapped enum value or None
-            "checksums": format_metadata_value(sf.get("md5sum")),
+            "checksums": format_checksums(sf.get("md5sum")),
             "description": format_metadata_value(sf.get("file_description")),
             "depositions": depositions
         }

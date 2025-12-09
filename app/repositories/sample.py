@@ -133,7 +133,22 @@ class SampleRepository:
                 params[param_name] = db_value
                 with_conditions.append(f"sf IS NOT NULL AND sf.library_selection = ${param_name}")
             elif field == "library_strategy":
-                with_conditions.append(f"sf IS NOT NULL AND sf.library_strategy = ${param_name}")
+                # Apply reverse mapping for filtering (API value -> DB value)
+                # For "Other", we need to match both "Archer Fusion" (reverse mapped) and "Other" (direct match)
+                db_value = reverse_map_field_value("library_strategy", value)
+                if db_value is None:
+                    # If no reverse mapping, use the value as-is (for values not in mapping)
+                    params[param_name] = value
+                    with_conditions.append(f"sf IS NOT NULL AND sf.library_strategy = ${param_name}")
+                else:
+                    # We have a reverse mapping - need to match both the mapped value and the original value
+                    mapped_db_value = db_value if isinstance(db_value, str) else (db_value[0] if isinstance(db_value, list) and db_value else value)
+                    # Match either the reverse-mapped value OR the original value (in case DB already has "Other")
+                    param_counter += 1
+                    param_name_original = f"param_{param_counter}"
+                    params[param_name] = mapped_db_value
+                    params[param_name_original] = value
+                    with_conditions.append(f"sf IS NOT NULL AND (sf.library_strategy = ${param_name} OR sf.library_strategy = ${param_name_original})")
             elif field == "specimen_molecular_analyte_type":
                 # Apply reverse mapping for filtering (API value -> DB value(s))
                 # "RNA" can map to both "Transcriptomic" and "Viral RNA" in DB
@@ -2803,7 +2818,22 @@ class SampleRepository:
                 params[param_name] = db_value
                 with_conditions.append(f"sf IS NOT NULL AND sf.library_selection = ${param_name}")
             elif field == "library_strategy":
-                with_conditions.append(f"sf IS NOT NULL AND sf.library_strategy = ${param_name}")
+                # Apply reverse mapping for filtering (API value -> DB value)
+                # For "Other", we need to match both "Archer Fusion" (reverse mapped) and "Other" (direct match)
+                db_value = reverse_map_field_value("library_strategy", value)
+                if db_value is None:
+                    # If no reverse mapping, use the value as-is (for values not in mapping)
+                    params[param_name] = value
+                    with_conditions.append(f"sf IS NOT NULL AND sf.library_strategy = ${param_name}")
+                else:
+                    # We have a reverse mapping - need to match both the mapped value and the original value
+                    mapped_db_value = db_value if isinstance(db_value, str) else (db_value[0] if isinstance(db_value, list) and db_value else value)
+                    # Match either the reverse-mapped value OR the original value (in case DB already has "Other")
+                    param_counter += 1
+                    param_name_original = f"param_{param_counter}"
+                    params[param_name] = mapped_db_value
+                    params[param_name_original] = value
+                    with_conditions.append(f"sf IS NOT NULL AND (sf.library_strategy = ${param_name} OR sf.library_strategy = ${param_name_original})")
             elif field == "specimen_molecular_analyte_type":
                 # Apply reverse mapping for filtering (API value -> DB value(s))
                 # "RNA" can map to both "Transcriptomic" and "Viral RNA" in DB
@@ -3486,7 +3516,7 @@ class SampleRepository:
             disease_phase=_wrap_value(map_field_value("disease_phase", _null_if_invalid(disease_phase_value))),
             anatomical_sites=_wrap_value(_process_anatomical_sites(anatomical_sites_value)),
             library_selection_method=_wrap_value(_map_library_selection_method(_null_if_invalid(library_selection_value))),
-            library_strategy=_wrap_value(_null_if_invalid(library_strategy_value)),
+            library_strategy=_wrap_value(map_field_value("library_strategy", _null_if_invalid(library_strategy_value))),
             library_source_material=_wrap_value(map_field_value("library_source_material", _null_if_invalid(library_source_material_value))),
             preservation_method=_wrap_value(_null_if_invalid(preservation_method_value)),
             tumor_grade=_wrap_value(_null_if_invalid(tumor_grade_value)),

@@ -306,10 +306,28 @@ def get_sample_filters(
         None, 
         description="Matches any sample where the `diagnosis` field matches the string provided."
     ),
+    identifiers: Optional[str] = Query(
+        None,
+        description="Matches any sample where the `sample_id` field matches the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the sample should be included in the results."
+    ),
     request: Request = None
 ) -> Dict[str, Any]:
     """Get sample filter parameters."""
     filters = {}
+    
+    # Handle identifiers parameter (similar to subject endpoints)
+    if identifiers is not None:
+        identifiers_str = str(identifiers).strip() if identifiers else None
+        if identifiers_str:
+            # Check if multiple identifiers are provided (separated by '||')
+            if '||' in identifiers_str:
+                # Multiple identifiers - split and create list
+                identifiers_list = [id.strip() for id in identifiers_str.split('||') if id.strip()]
+                if identifiers_list:
+                    filters["identifiers"] = identifiers_list
+            else:
+                # No '||' delimiter found - treat as single identifier value
+                filters["identifiers"] = identifiers_str
     
     # Add non-null filters
     if disease_phase is not None:
@@ -374,10 +392,25 @@ def get_sample_filters_no_descriptions(
     tumor_tissue_morphology: Optional[str] = Query(None, include_in_schema=False),
     depositions: Optional[str] = Query(None, include_in_schema=False),
     diagnosis: Optional[str] = Query(None, include_in_schema=False),
+    identifiers: Optional[str] = Query(None, include_in_schema=False),
     request: Request = None
 ) -> Dict[str, Any]:
     """Get sample filter parameters without descriptions (for count endpoint)."""
     filters = {}
+    
+    # Handle identifiers parameter (similar to subject endpoints)
+    if identifiers is not None:
+        identifiers_str = str(identifiers).strip() if identifiers else None
+        if identifiers_str:
+            # Check if multiple identifiers are provided (separated by '||')
+            if '||' in identifiers_str:
+                # Multiple identifiers - split and create list
+                identifiers_list = [id.strip() for id in identifiers_str.split('||') if id.strip()]
+                if identifiers_list:
+                    filters["identifiers"] = identifiers_list
+            else:
+                # No '||' delimiter found - treat as single identifier value
+                filters["identifiers"] = identifiers_str
     
     # Add non-null filters
     if disease_phase is not None:

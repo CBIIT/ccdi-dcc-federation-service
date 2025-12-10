@@ -176,14 +176,18 @@ async def list_samples(
         cache_service = get_cache_service()
         service = SampleService(session, allowlist, settings, cache_service)
         
+        # Make a copy of filters for get_samples (it will modify the dict by popping identifiers)
+        # so that get_samples_summary gets the original filters dict
+        filters_copy = filters.copy()
+        
         # Get samples
         samples = await service.get_samples(
-            filters=filters,
+            filters=filters_copy,
             offset=pagination.offset,
             limit=pagination.per_page
         )
         
-        # Get total count for summary
+        # Get total count for summary (use original filters dict)
         summary_result = await service.get_samples_summary(filters)
         total_count = summary_result.counts.total
         

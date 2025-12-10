@@ -102,6 +102,24 @@ class SampleRepository:
         params = {"offset": offset, "limit": limit}
         param_counter = 0
         
+        # Handle identifiers parameter normalization
+        identifiers_condition = ""
+        if "identifiers" in filters:
+            identifiers_value = filters.pop("identifiers")
+            if identifiers_value is not None and str(identifiers_value).strip():
+                param_counter += 1
+                id_param = f"param_{param_counter}"
+                params[id_param] = identifiers_value
+                identifiers_condition = f""",
+                // normalize $identifiers: STRING -> [trimmed], LIST -> trimmed list
+                CASE
+                  WHEN ${id_param} IS NULL THEN NULL
+                  WHEN valueType(${id_param}) = 'LIST'   THEN [id IN ${id_param} | trim(id)]
+                  WHEN valueType(${id_param}) = 'STRING' THEN [trim(${id_param})]
+                  ELSE []
+                END AS id_list"""
+                where_conditions.append("sa.sample_id IN id_list")
+        
         # Build filter conditions - these will be applied in the WITH clause after collecting diagnoses
         with_conditions = []
         
@@ -264,11 +282,19 @@ class SampleRepository:
         if anatomical_sites_list_condition:
             all_conditions.append(anatomical_sites_list_condition)
         
-        where_conditions = [
+        # Start with base conditions (preserve any identifiers condition that was already added)
+        base_where_conditions = [
             "sa.sample_id IS NOT NULL",
             "toString(sa.sample_id) <> ''",
             "st IS NOT NULL"  # Ensure sample has a path to a study
         ]
+        # Preserve identifiers condition if it exists (it was added earlier)
+        where_conditions = where_conditions if where_conditions else []
+        # Add base conditions if not already present
+        for base_cond in base_where_conditions:
+            if base_cond not in where_conditions:
+                where_conditions.append(base_cond)
+        # Add filter conditions
         if all_conditions:
             where_conditions.extend(all_conditions)
         
@@ -328,6 +354,18 @@ class SampleRepository:
         with_clause = ", ".join(with_vars)
         if with_collects:
             with_clause += ",\n             " + ",\n             ".join(with_collects)
+        # Add identifiers_condition to WITH clause if present
+        if identifiers_condition:
+            with_clause += identifiers_condition
+        
+        # If identifiers are present, integrate WHERE clause into WITH clause
+        # Otherwise, apply WHERE clause separately
+        if identifiers_condition and where_clause:
+            # Remove "WHERE " prefix and integrate into WITH clause
+            where_conditions_str = where_clause.replace("WHERE ", "").strip()
+            if where_conditions_str:
+                with_clause += f"\n        WHERE {where_conditions_str}"
+                where_clause = ""  # Clear it since it's now in WITH clause
         
         # Build RETURN clause - always include diagnosis, pathology_file, and sequencing_file for metadata
         return_vars = ["sa", "p", "st", "sf", "pf", "diagnoses"]
@@ -458,6 +496,9 @@ class SampleRepository:
                 with_clause = ", ".join(with_vars)
                 if with_collects:
                     with_clause += ",\n                     " + ",\n                     ".join(with_collects)
+                # Add identifiers_condition to WITH clause if present
+                if identifiers_condition:
+                    with_clause += identifiers_condition
                 
                 # Always include diagnosis, pathology_file, and sequencing_file for metadata
                 return_vars = ["sa", "p", "st", "sf", "pf", "diagnoses"]
@@ -2790,6 +2831,26 @@ class SampleRepository:
         # Build filter conditions similar to get_samples
         params = {}
         param_counter = 0
+        where_conditions = []
+        
+        # Handle identifiers parameter normalization
+        identifiers_condition = ""
+        if "identifiers" in filters:
+            identifiers_value = filters.pop("identifiers")
+            if identifiers_value is not None and str(identifiers_value).strip():
+                param_counter += 1
+                id_param = f"param_{param_counter}"
+                params[id_param] = identifiers_value
+                identifiers_condition = f""",
+                // normalize $identifiers: STRING -> [trimmed], LIST -> trimmed list
+                CASE
+                  WHEN ${id_param} IS NULL THEN NULL
+                  WHEN valueType(${id_param}) = 'LIST'   THEN [id IN ${id_param} | trim(id)]
+                  WHEN valueType(${id_param}) = 'STRING' THEN [trim(${id_param})]
+                  ELSE []
+                END AS id_list"""
+                where_conditions.append("sa.sample_id IN id_list")
+        
         with_conditions = []
         
         # Handle diagnosis search
@@ -3023,15 +3084,33 @@ class SampleRepository:
         with_clause = ", ".join(with_vars)
         if with_collects:
             with_clause += ",\n             " + ",\n             ".join(with_collects)
+        # Add identifiers_condition to WITH clause if present
+        if identifiers_condition:
+            with_clause += identifiers_condition
         
         # Build WHERE clause - include filter conditions AND ensure sample has path to study
         final_where_conditions = ["st IS NOT NULL"]
+        # Add identifiers where conditions (must be added first so id_list is available)
+        if where_conditions:
+            final_where_conditions.extend(where_conditions)
         if where_clause:
             # Extract conditions from where_clause (remove "WHERE " prefix)
             where_conditions_str = where_clause.replace("WHERE ", "")
             final_where_conditions.append(where_conditions_str)
         
-        final_where_clause = "\n        WHERE " + " AND ".join(final_where_conditions) if final_where_conditions else ""
+        # If identifiers are present, integrate WHERE clause into WITH clause
+        # This ensures id_list is available when the WHERE condition is evaluated
+        if identifiers_condition:
+            # Integrate WHERE clause into WITH clause
+            where_conditions_str = " AND ".join(final_where_conditions)
+            if where_conditions_str:
+                with_clause += f"\n        WHERE {where_conditions_str}"
+                final_where_clause = ""
+            else:
+                final_where_clause = ""
+        else:
+            # No identifiers - apply WHERE clause separately
+            final_where_clause = "\n        WHERE " + " AND ".join(final_where_conditions) if final_where_conditions else ""
         
         cypher = f"""
         MATCH (sa:sample)
@@ -3048,7 +3127,11 @@ class SampleRepository:
         logger.info(
             "Executing get_samples_summary Cypher query",
             cypher=cypher,
-            params=params
+            params=params,
+            identifiers_condition=identifiers_condition if identifiers_condition else None,
+            where_conditions=where_conditions,
+            final_where_conditions=final_where_conditions if 'final_where_conditions' in locals() else None,
+            with_clause=with_clause
         )
         
         # Execute query with proper result consumption and retry logic

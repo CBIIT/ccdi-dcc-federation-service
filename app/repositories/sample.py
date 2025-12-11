@@ -140,11 +140,20 @@ class SampleRepository:
                 with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase = ${param_name}")
             elif field == "anatomical_sites":
                 # anatomical_sites can be either a list or a string
-                # Build filter condition for list (will try this first)
-                # Store both versions - will be handled in query execution
-                with_conditions.append(("anatomical_sites_list", param_name))
-                # Also store string version for fallback
-                with_conditions.append(("anatomical_sites_string", param_name))
+                # If it's a list, we need to check if ANY of the values match (OR logic)
+                # Normalize the value (trim whitespace) for consistent matching
+                if isinstance(value, list):
+                    # Multiple values - store as list for OR logic
+                    params[param_name] = [v.strip() if isinstance(v, str) else v for v in value]
+                    with_conditions.append(("anatomical_sites_list", param_name))
+                elif isinstance(value, str):
+                    value = value.strip()
+                    params[param_name] = value
+                    # Build filter condition for list (will try this first)
+                    # Store both versions - will be handled in query execution
+                    with_conditions.append(("anatomical_sites_list", param_name))
+                    # Also store string version for fallback
+                    with_conditions.append(("anatomical_sites_string", param_name))
             elif field == "library_selection_method":
                 # Apply reverse mapping for filtering (API value -> DB value)
                 db_value = SampleRepository._reverse_map_library_selection_method_static(value)
@@ -170,18 +179,19 @@ class SampleRepository:
             elif field == "specimen_molecular_analyte_type":
                 # Apply reverse mapping for filtering (API value -> DB value(s))
                 # "RNA" can map to both "Transcriptomic" and "Viral RNA" in DB
+                # Special handling: need to check if ANY sequencing_file matches, not just the first one
                 reverse_mapped = reverse_map_field_value("specimen_molecular_analyte_type", value)
                 if isinstance(reverse_mapped, list):
-                    # Multiple DB values map to this API value - use OR condition
-                    db_values_list = [f"sf.library_source_molecule = '{v}'" for v in reverse_mapped]
-                    db_values_str = " OR ".join(db_values_list)
-                    with_conditions.append(f"sf IS NOT NULL AND ({db_values_str})")
+                    # Multiple DB values map to this API value - store as special condition
+                    # Will be handled after collecting all sequencing_files
+                    with_conditions.append(("specimen_molecular_analyte_type_list", reverse_mapped))
                 elif reverse_mapped is None:
                     # Filter for null or "Not Reported"
                     with_conditions.append(f"(sf IS NULL OR sf.library_source_molecule IS NULL OR sf.library_source_molecule = 'Not Reported')")
                 else:
                     params[param_name] = reverse_mapped
-                    with_conditions.append(f"sf IS NOT NULL AND sf.library_source_molecule = ${param_name}")
+                    # Store as special condition - will be handled after collecting all sequencing_files
+                    with_conditions.append(("specimen_molecular_analyte_type_single", param_name))
             elif field == "disease_phase":
                 # Apply reverse mapping for filtering (API value -> DB value(s))
                 # "Relapse" can map to both "Recurrent Disease" and "Relapse" in DB
@@ -252,28 +262,69 @@ class SampleRepository:
                 else:
                     with_conditions.append(f"sa.{field} = ${param_name}")
             
-            if field not in ["disease_phase", "tumor_grade", "age_at_diagnosis", "age_at_collection", "diagnosis"]:
+            if field not in ["disease_phase", "tumor_grade", "age_at_diagnosis", "age_at_collection", "diagnosis", "anatomical_sites"]:
                 # For non-diagnosis fields, handle list values
+                # Skip anatomical_sites as it's handled specially with tuples
                 if isinstance(value, list):
-                    # Replace the condition we just added with IN version
-                    with_conditions[-1] = with_conditions[-1].replace(f"= ${param_name}", f"IN ${param_name}")
+                    # Only replace if the last condition is a string (not a tuple)
+                    if with_conditions and isinstance(with_conditions[-1], str):
+                        with_conditions[-1] = with_conditions[-1].replace(f"= ${param_name}", f"IN ${param_name}")
             
             # Only set param if not already set (age fields set it above)
             if param_name not in params:
                 params[param_name] = value
         
-        # Separate anatomical_sites conditions from regular conditions
+        # Separate anatomical_sites and specimen_molecular_analyte_type conditions from regular conditions
         anatomical_sites_param = None
         anatomical_sites_list_condition = None
         anatomical_sites_string_condition = None
+        specimen_molecular_analyte_type_list = None
+        specimen_molecular_analyte_type_single_param = None
         regular_conditions = []
         
         for condition in with_conditions:
             if isinstance(condition, tuple) and condition[0] == "anatomical_sites_list":
                 anatomical_sites_param = condition[1]
-                anatomical_sites_list_condition = f"sa.anatomic_site IS NOT NULL AND ${condition[1]} IN sa.anatomic_site"
+                # Check if the parameter value is a list (multiple values from || delimiter)
+                param_value = params.get(condition[1])
+                if isinstance(param_value, list):
+                    # Multiple values - check if ANY of them match (OR logic)
+                    # For each value in the list, check if it matches the anatomic_site (exact or in semicolon-separated list)
+                    # Build OR conditions for each value
+                    or_conditions = []
+                    for idx, val in enumerate(param_value):
+                        val_param = f"{condition[1]}_{idx}"
+                        params[val_param] = val
+                        or_conditions.append(f"""(
+                            ${val_param} = sa.anatomic_site OR
+                            reduce(found = false, tok IN SPLIT(toString(sa.anatomic_site), ';') | 
+                              CASE WHEN trim(tok) = trim(toString(${val_param})) THEN true ELSE found END
+                            ) = true
+                        )""")
+                    anatomical_sites_list_condition = f"""sa.anatomic_site IS NOT NULL AND ({' OR '.join(or_conditions)})"""
+                else:
+                    # Single value - handle both exact match and semicolon-separated string cases
+                    anatomical_sites_list_condition = f"""sa.anatomic_site IS NOT NULL AND (
+                        ${condition[1]} = sa.anatomic_site OR
+                        reduce(found = false, tok IN SPLIT(toString(sa.anatomic_site), ';') | 
+                          CASE WHEN trim(tok) = trim(toString(${condition[1]})) THEN true ELSE found END
+                        ) = true
+                    )"""
             elif isinstance(condition, tuple) and condition[0] == "anatomical_sites_string":
-                anatomical_sites_string_condition = f"sa.anatomic_site IS NOT NULL AND ${condition[1]} = sa.anatomic_site"
+                # Handle both exact match and semicolon-separated string cases
+                # Check exact match (trimmed) OR if the value matches exactly one element after splitting by ';'
+                anatomical_sites_string_condition = f"""sa.anatomic_site IS NOT NULL AND (
+                    trim(toString(sa.anatomic_site)) = trim(toString(${condition[1]})) OR
+                    reduce(found = false, tok IN SPLIT(toString(sa.anatomic_site), ';') | 
+                      CASE WHEN trim(tok) = trim(toString(${condition[1]})) THEN true ELSE found END
+                    ) = true
+                )"""
+            elif isinstance(condition, tuple) and condition[0] == "specimen_molecular_analyte_type_list":
+                # Store the list of DB values that map to the API value (e.g., ["Transcriptomic", "Viral RNA"] for "RNA")
+                specimen_molecular_analyte_type_list = condition[1]
+            elif isinstance(condition, tuple) and condition[0] == "specimen_molecular_analyte_type_single":
+                # Store the parameter name for single value mapping
+                specimen_molecular_analyte_type_single_param = condition[1]
             else:
                 regular_conditions.append(condition)
         
@@ -281,23 +332,46 @@ class SampleRepository:
         all_conditions = regular_conditions.copy()
         if anatomical_sites_list_condition:
             all_conditions.append(anatomical_sites_list_condition)
+        # Add specimen_molecular_analyte_type condition if present (will be checked after collecting all sequencing_files)
+        if specimen_molecular_analyte_type_list or specimen_molecular_analyte_type_single_param:
+            all_conditions.append("has_matching_sf = true")
         
-        # Start with base conditions (preserve any identifiers condition that was already added)
-        base_where_conditions = [
+        # Separate cheap filters (can be applied before OPTIONAL MATCHes) from expensive ones
+        # Cheap filters: sample_id, anatomic_site (sample node properties)
+        # Expensive filters: st IS NOT NULL (requires OPTIONAL MATCHes), participant/diagnosis filters
+        early_where_conditions = [
             "sa.sample_id IS NOT NULL",
-            "toString(sa.sample_id) <> ''",
-            "st IS NOT NULL"  # Ensure sample has a path to a study
+            "toString(sa.sample_id) <> ''"
         ]
+        late_where_conditions = [
+            "st IS NOT NULL"  # Ensure sample has a path to a study (requires OPTIONAL MATCHes)
+        ]
+        
+        # Extract anatomical_sites condition if present (can be applied early)
+        anatomical_sites_early_condition = None
+        if anatomical_sites_list_condition:
+            anatomical_sites_early_condition = anatomical_sites_list_condition
+            # Remove it from all_conditions since we'll apply it early
+            all_conditions = [c for c in all_conditions if c != anatomical_sites_list_condition]
+        
+        # Add anatomical_sites to early conditions if present
+        if anatomical_sites_early_condition:
+            early_where_conditions.append(anatomical_sites_early_condition)
+        
+        # Build early WHERE clause (applied before OPTIONAL MATCHes)
+        early_where_clause = "\n        WHERE " + " AND ".join(early_where_conditions) if early_where_conditions else ""
+        
         # Preserve identifiers condition if it exists (it was added earlier)
         where_conditions = where_conditions if where_conditions else []
-        # Add base conditions if not already present
-        for base_cond in base_where_conditions:
-            if base_cond not in where_conditions:
-                where_conditions.append(base_cond)
-        # Add filter conditions
+        # Add late conditions
+        for late_cond in late_where_conditions:
+            if late_cond not in where_conditions:
+                where_conditions.append(late_cond)
+        # Add filter conditions (excluding anatomical_sites which is already in early_where_clause)
         if all_conditions:
             where_conditions.extend(all_conditions)
         
+        # Build late WHERE clause (applied after OPTIONAL MATCHes and WITH)
         where_clause = "\n        WHERE " + " AND ".join(where_conditions) if where_conditions else ""
         
         # Determine which OPTIONAL MATCH clauses are needed based on filters
@@ -344,19 +418,45 @@ class SampleRepository:
         
         # Build WITH clause - always include diagnosis, pathology_file, and sequencing_file for metadata
         with_vars = ["sa", "p"]  # Always include participant for identifiers
-        with_collects = [
-            "head(collect(DISTINCT d)) AS diagnoses",
-            "head(collect(DISTINCT pf)) AS pf",
-            "head(collect(DISTINCT sf)) AS sf"
-        ]
+        # For specimen_molecular_analyte_type, collect ALL sequencing_files first to check if ANY match
+        if specimen_molecular_analyte_type_list or specimen_molecular_analyte_type_single_param:
+            with_collects = [
+                "head(collect(DISTINCT d)) AS diagnoses",
+                "head(collect(DISTINCT pf)) AS pf",
+                "collect(DISTINCT sf) AS all_sfs"  # Collect all sequencing_files
+            ]
+        else:
+            with_collects = [
+                "head(collect(DISTINCT d)) AS diagnoses",
+                "head(collect(DISTINCT pf)) AS pf",
+                "head(collect(DISTINCT sf)) AS sf"
+            ]
         with_vars.append("coalesce(st1, st2) AS st")
         
         with_clause = ", ".join(with_vars)
         if with_collects:
             with_clause += ",\n             " + ",\n             ".join(with_collects)
+        
         # Add identifiers_condition to WITH clause if present
         if identifiers_condition:
             with_clause += identifiers_condition
+        
+        # For specimen_molecular_analyte_type, we need a second WITH clause to use all_sfs
+        # (can't reference a variable in the same WITH clause where it's defined)
+        second_with_clause = None
+        if specimen_molecular_analyte_type_list:
+            # Build list of DB values for IN clause
+            db_values_str = ", ".join([f"'{v}'" for v in specimen_molecular_analyte_type_list])
+            second_with_vars = ["sa", "p", "st", "diagnoses", "pf"]
+            second_with_vars.append(f"size([sf IN all_sfs WHERE sf IS NOT NULL AND sf.library_source_molecule IN [{db_values_str}]]) > 0 AS has_matching_sf")
+            second_with_vars.append("head([sf IN all_sfs WHERE sf IS NOT NULL | sf]) AS sf")
+            second_with_clause = ", ".join(second_with_vars)
+        elif specimen_molecular_analyte_type_single_param:
+            # Single value mapping
+            second_with_vars = ["sa", "p", "st", "diagnoses", "pf"]
+            second_with_vars.append(f"size([sf IN all_sfs WHERE sf IS NOT NULL AND sf.library_source_molecule = ${specimen_molecular_analyte_type_single_param}]) > 0 AS has_matching_sf")
+            second_with_vars.append("head([sf IN all_sfs WHERE sf IS NOT NULL | sf]) AS sf")
+            second_with_clause = ", ".join(second_with_vars)
         
         # If identifiers are present, integrate WHERE clause into WITH clause
         # Otherwise, apply WHERE clause separately
@@ -378,25 +478,46 @@ class SampleRepository:
         # Path 2: sample -> participant -> consent_group -> study
         # Build the DISTINCT clause with all return variables
         distinct_vars = ", ".join(return_vars)
+        
+        # If we have a second WITH clause (for specimen_molecular_analyte_type), include it
+        second_with_str = ""
+        if second_with_clause:
+            # Apply WHERE clause after second WITH if present
+            second_with_str = f"WITH {second_with_clause}\n        {where_clause}\n        "
+            where_clause = ""  # Clear it since it's now in second WITH
+        elif where_clause:
+            # Apply WHERE clause after first WITH if no second WITH
+            where_clause = f"{where_clause}\n        "
+        else:
+            where_clause = ""
+        
         cypher = f"""
         MATCH (sa:sample)
+        {early_where_clause}
         {optional_matches_str}
         WITH {with_clause}
-        {where_clause}
-        WITH DISTINCT {distinct_vars}
+        {second_with_str}{where_clause}WITH DISTINCT {distinct_vars}
         RETURN {return_clause}
         ORDER BY sa.sample_id
         SKIP $offset
         LIMIT $limit
         """.strip()
         
+        # Build a debug version of the query with parameter values substituted for easier debugging
+        debug_cypher = cypher
+        for param_name, param_value in params.items():
+            # Replace parameter placeholders with actual values for debugging
+            debug_cypher = debug_cypher.replace(f"${param_name}", repr(param_value))
+        
         logger.info(
             "Executing get_samples Cypher query",
             cypher=cypher,
+            debug_cypher=debug_cypher,
             params=params,
             with_clause=with_clause,
             where_clause=where_clause,
-            return_clause=return_clause
+            return_clause=return_clause,
+            identifiers_condition=identifiers_condition if 'identifiers_condition' in locals() else None
         )
         
         # Execute query with proper result consumption and retry logic
@@ -517,15 +638,31 @@ class SampleRepository:
                 LIMIT $limit
                 """.strip()
                 
+                # Build debug version with parameter substitution
+                debug_cypher_string = cypher
+                for param_name, param_value in params.items():
+                    debug_cypher_string = debug_cypher_string.replace(f"${param_name}", repr(param_value))
+                
+                logger.info(
+                    "Retrying anatomical_sites query with string version",
+                    cypher=cypher,
+                    debug_cypher=debug_cypher_string,
+                    params=params,
+                    where_clause=where_clause
+                )
+                
                 try:
                     result = await self.session.run(cypher, params)
                     async for record in result:
                         records.append(dict(record))
+                    
                     logger.debug("Successfully executed anatomical_sites query as string")
                     logger.info(
                         "Query executed successfully (string version)",
                         records_count=len(records),
-                        cypher=cypher[:200] if cypher else None
+                        cypher=cypher,
+                        debug_cypher=debug_cypher_string,
+                        params=params
                     )
                 except Exception as e2:
                     logger.error(
@@ -870,14 +1007,50 @@ class SampleRepository:
             if anatomical_sites_value is not None:
                 param_counter += 1
                 param_name = f"param_{param_counter}"
-                params[param_name] = anatomical_sites_value
-                # anatomical_sites can be either a list or a string
-                # Handle both cases: if it's a list, use IN; if it's a string, use equality
-                # Use OR to handle both cases (one will match depending on the data type)
-                base_where_conditions.append(f"""sa.anatomic_site IS NOT NULL AND (
-                    ${param_name} IN sa.anatomic_site OR 
-                    ${param_name} = sa.anatomic_site
-                )""")
+                # Normalize the value (trim whitespace) for consistent matching
+                if isinstance(anatomical_sites_value, list):
+                    # Multiple values - check if ANY of them match (OR logic)
+                    params[param_name] = [v.strip() if isinstance(v, str) else v for v in anatomical_sites_value]
+                    # Build OR conditions for each value
+                    or_conditions = []
+                    for idx, val in enumerate(anatomical_sites_value):
+                        val_param = f"{param_name}_{idx}"
+                        params[val_param] = val.strip() if isinstance(val, str) else val
+                        or_conditions.append(f"""(
+                            ${val_param} = sa.anatomic_site OR 
+                            reduce(found = false, tok IN SPLIT(toString(sa.anatomic_site), ';') | 
+                              CASE WHEN trim(tok) = trim(toString(${val_param})) THEN true ELSE found END
+                            ) = true
+                        )""")
+                    anatomical_sites_condition = f"""sa.anatomic_site IS NOT NULL AND ({' OR '.join(or_conditions)})"""
+                elif isinstance(anatomical_sites_value, str):
+                    anatomical_sites_value = anatomical_sites_value.strip()
+                    params[param_name] = anatomical_sites_value
+                    # anatomical_sites can be either a list, a string, or a semicolon-separated string
+                    # Simplified condition: handle both list and string cases
+                    # For list: use IN operator
+                    # For string: split by ';', trim each element, and check if search value matches exactly one element
+                    anatomical_sites_condition = f"""sa.anatomic_site IS NOT NULL AND (
+                        ${param_name} = sa.anatomic_site OR 
+                        reduce(found = false, tok IN SPLIT(toString(sa.anatomic_site), ';') | 
+                          CASE WHEN trim(tok) = trim(toString(${param_name})) THEN true ELSE found END
+                        ) = true
+                    )"""
+                else:
+                    params[param_name] = anatomical_sites_value
+                    anatomical_sites_condition = f"""sa.anatomic_site IS NOT NULL AND (
+                        ${param_name} = sa.anatomic_site OR 
+                        reduce(found = false, tok IN SPLIT(toString(sa.anatomic_site), ';') | 
+                          CASE WHEN trim(tok) = trim(toString(${param_name})) THEN true ELSE found END
+                        ) = true
+                    )"""
+                base_where_conditions.append(anatomical_sites_condition)
+                logger.debug(
+                    "Added anatomical_sites filter condition",
+                    param_name=param_name,
+                    param_value=anatomical_sites_value,
+                    condition=anatomical_sites_condition
+                )
         
         # Add regular filters (participant fields)
         for filter_field, value in filters.items():
@@ -989,7 +1162,8 @@ class SampleRepository:
                 
                 optional_matches_str = "\n                ".join(optional_matches) if optional_matches else ""
                 
-                # Query 1: Assume it's a list
+                # Query 1: Assume it's a list (or could be semicolon-separated string)
+                # Handle both list and semicolon-separated string cases
                 cypher_list = f"""
                 MATCH (sa:sample)
                 {optional_matches_str}
@@ -997,17 +1171,24 @@ class SampleRepository:
                 {field_where_clause}
                 WITH DISTINCT sa.sample_id as sample_id, sa.anatomic_site as sites
                 WHERE sites IS NOT NULL
-                UNWIND sites AS site_value
-                WITH DISTINCT sample_id, site_value
-                WHERE site_value IS NOT NULL 
-                  AND toString(site_value) <> ''
-                  AND trim(toString(site_value)) <> ''
-                  AND toLower(trim(toString(site_value))) <> 'invalid value'
-                RETURN toString(site_value) as value, count(DISTINCT sample_id) AS count
+                WITH sample_id,
+                     CASE 
+                       WHEN valueType(sites) = 'LIST' THEN sites
+                       WHEN toString(sites) CONTAINS ';' THEN SPLIT(toString(sites), ';')
+                       ELSE [toString(sites)]
+                     END AS site_values
+                UNWIND site_values AS site_value
+                WITH sample_id, trim(toString(site_value)) AS trimmed_value
+                WHERE trimmed_value IS NOT NULL 
+                  AND trimmed_value <> ''
+                  AND toLower(trimmed_value) <> 'invalid value'
+                WITH DISTINCT sample_id, trimmed_value
+                RETURN trimmed_value as value, count(DISTINCT sample_id) AS count
                 ORDER BY count DESC, value ASC
                 """.strip()
                 
-                # Query 2: Assume it's a string (reuse same optional_matches_str)
+                # Query 2: Assume it's a string (could be semicolon-separated)
+                # Split by semicolon if it contains ';', otherwise treat as single value
                 cypher_string = f"""
                 MATCH (sa:sample)
                 {optional_matches_str}
@@ -1015,13 +1196,18 @@ class SampleRepository:
                 {field_where_clause}
                 WITH DISTINCT sa.sample_id as sample_id, sa.anatomic_site as sites
                 WHERE sites IS NOT NULL
-                UNWIND [sites] AS site_value
-                WITH DISTINCT sample_id, site_value
-                WHERE site_value IS NOT NULL 
-                  AND toString(site_value) <> ''
-                  AND trim(toString(site_value)) <> ''
-                  AND toLower(trim(toString(site_value))) <> 'invalid value'
-                RETURN toString(site_value) as value, count(DISTINCT sample_id) AS count
+                WITH sample_id, 
+                     CASE 
+                       WHEN toString(sites) CONTAINS ';' THEN SPLIT(toString(sites), ';')
+                       ELSE [toString(sites)]
+                     END AS site_values
+                UNWIND site_values AS site_value
+                WITH sample_id, trim(toString(site_value)) AS trimmed_value
+                WHERE trimmed_value IS NOT NULL 
+                  AND trimmed_value <> ''
+                  AND toLower(trimmed_value) <> 'invalid value'
+                WITH DISTINCT sample_id, trimmed_value
+                RETURN trimmed_value as value, count(DISTINCT sample_id) AS count
                 ORDER BY count DESC, value ASC
                 """.strip()
             else:
@@ -1035,13 +1221,19 @@ class SampleRepository:
                 {field_where_clause}
                 WITH DISTINCT sa.sample_id as sample_id, sa.anatomic_site as sites
                 WHERE sites IS NOT NULL
-                UNWIND sites AS site_value
-                WITH DISTINCT sample_id, site_value
-                WHERE site_value IS NOT NULL 
-                  AND toString(site_value) <> ''
-                  AND trim(toString(site_value)) <> ''
-                  AND toLower(trim(toString(site_value))) <> 'invalid value'
-                RETURN toString(site_value) as value, count(DISTINCT sample_id) AS count
+                WITH sample_id,
+                     CASE 
+                       WHEN valueType(sites) = 'LIST' THEN sites
+                       WHEN toString(sites) CONTAINS ';' THEN SPLIT(toString(sites), ';')
+                       ELSE [toString(sites)]
+                     END AS site_values
+                UNWIND site_values AS site_value
+                WITH sample_id, trim(toString(site_value)) AS trimmed_value
+                WHERE trimmed_value IS NOT NULL 
+                  AND trimmed_value <> ''
+                  AND toLower(trimmed_value) <> 'invalid value'
+                WITH DISTINCT sample_id, trimmed_value
+                RETURN trimmed_value as value, count(DISTINCT sample_id) AS count
                 ORDER BY count DESC, value ASC
                 """.strip()
                 
@@ -1054,13 +1246,18 @@ class SampleRepository:
                 {field_where_clause}
                 WITH DISTINCT sa.sample_id as sample_id, sa.anatomic_site as sites
                 WHERE sites IS NOT NULL
-                UNWIND [sites] AS site_value
-                WITH DISTINCT sample_id, site_value
-                WHERE site_value IS NOT NULL 
-                  AND toString(site_value) <> ''
-                  AND trim(toString(site_value)) <> ''
-                  AND toLower(trim(toString(site_value))) <> 'invalid value'
-                RETURN toString(site_value) as value, count(DISTINCT sample_id) AS count
+                WITH sample_id, 
+                     CASE 
+                       WHEN toString(sites) CONTAINS ';' THEN SPLIT(toString(sites), ';')
+                       ELSE [toString(sites)]
+                     END AS site_values
+                UNWIND site_values AS site_value
+                WITH sample_id, trim(toString(site_value)) AS trimmed_value
+                WHERE trimmed_value IS NOT NULL 
+                  AND trimmed_value <> ''
+                  AND toLower(trimmed_value) <> 'invalid value'
+                WITH DISTINCT sample_id, trimmed_value
+                RETURN trimmed_value as value, count(DISTINCT sample_id) AS count
                 ORDER BY count DESC, value ASC
                 """.strip()
             
@@ -1147,30 +1344,107 @@ class SampleRepository:
                 # 2. Then find sequencing_file associated with these samples
                 # 3. Then categorize by specimen_molecular_analyte_type per sample
                 if field == "specimen_molecular_analyte_type":
-                    # For specimen_molecular_analyte_type:
-                    # 1. First find all samples matching to a study
-                    # 2. Then find all sequencing_files matching to these samples
-                    # 3. Categorize sequencing_files by specimen_molecular_analyte_type (library_source_molecule)
-                    # 4. Count samples that have at least one sequencing_file with each specific type
-                    # Note: If a sample has multiple sequencing_files with different types, it will be counted in multiple categories
+                    # Optimized query for specimen_molecular_analyte_type:
+                    # 1. Start from sample (to match search query logic)
+                    # 2. Collect all sequencing_files per sample
+                    # 3. Check study path
+                    # 4. Return sample_id and all molecule values for Python-side mapping and deduplication
+                    # IMPORTANT: Must match search query logic - collect ALL sequencing_files per sample
+                    # and check if ANY match, to avoid double-counting samples with multiple matching values
                     cypher = f"""
                 MATCH (sa:sample)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+                WHERE sa.sample_id IS NOT NULL 
+                  AND sa.sample_id <> ''
+                OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
                 OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, p, coalesce(st1, st2) AS st
+                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa.sample_id as sample_id, 
+                     collect(DISTINCT sf.library_source_molecule) as molecule_values, 
+                     coalesce(st1, st2) AS st
                 WHERE st IS NOT NULL
-                MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
-                WHERE sf.library_source_molecule IS NOT NULL
-                  AND toString(sf.library_source_molecule) <> ''
-                  AND trim(toString(sf.library_source_molecule)) <> ''
-                  AND toString(sf.library_source_molecule) <> '-999'
-                  AND trim(toString(sf.library_source_molecule)) <> '-999'
-                  AND toString(sf.library_source_molecule) <> 'Not Reported'
-                  AND trim(toString(sf.library_source_molecule)) <> 'Not Reported'
-                WITH DISTINCT sa.sample_id as sample_id, sf.library_source_molecule as molecule_value
-                RETURN toString(molecule_value) as value, count(DISTINCT sample_id) AS count
+                  AND size([val IN molecule_values WHERE val IS NOT NULL 
+                            AND val <> '' 
+                            AND val <> '-999'
+                            AND val <> 'Not Reported']) > 0
+                UNWIND [val IN molecule_values WHERE val IS NOT NULL 
+                        AND val <> '' 
+                        AND val <> '-999'
+                        AND val <> 'Not Reported'] as molecule_value
+                RETURN sample_id, molecule_value as value
+                """.strip()
+                elif node_alias == "sf" and not base_where_clause:
+                    # Optimized query for other sequencing_file fields (library_selection_method, library_strategy, library_source_material):
+                    # 1. Start from sequencing_file (more selective) and filter invalid values early
+                    # 2. Match to sample and check study path
+                    # 3. Group by field value and count distinct samples
+                    # Performance improvements:
+                    # - Start from sequencing_file instead of sample (fewer nodes to process)
+                    # - Filter invalid values early before study path check
+                    # - Remove unnecessary participant match
+                    # - Simplify redundant WHERE conditions (assume string fields)
+                    cypher = f"""
+                MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
+                WHERE sa.sample_id IS NOT NULL 
+                  AND sa.sample_id <> ''
+                  AND {node_field} IS NOT NULL
+                  AND {node_field} <> ''
+                  AND {node_field} <> '-999'
+                  AND {node_field} <> 'Not Reported'
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH DISTINCT sa.sample_id as sample_id, {node_field} as value, coalesce(st1, st2) AS st
+                WHERE st IS NOT NULL
+                RETURN value, count(DISTINCT sample_id) AS count
+                ORDER BY count DESC, value ASC
+                """.strip()
+                elif node_alias == "pf" and not base_where_clause:
+                    # Optimized query for pathology_file fields (preservation_method):
+                    # 1. Start from pathology_file (more selective) and filter invalid values early
+                    # 2. Match to sample and check study path
+                    # 3. Group by field value and count distinct samples
+                    # Performance improvements:
+                    # - Start from pathology_file instead of sample (fewer nodes to process)
+                    # - Filter invalid values early before study path check
+                    # - Remove unnecessary participant match
+                    # - Simplify redundant WHERE conditions (assume string fields)
+                    cypher = f"""
+                MATCH (pf:pathology_file)-[:of_pathology_file]->(sa:sample)
+                WHERE sa.sample_id IS NOT NULL 
+                  AND sa.sample_id <> ''
+                  AND {node_field} IS NOT NULL
+                  AND {node_field} <> ''
+                  AND {node_field} <> '-999'
+                  AND {node_field} <> 'Not Reported'
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH DISTINCT sa.sample_id as sample_id, {node_field} as value, coalesce(st1, st2) AS st
+                WHERE st IS NOT NULL
+                RETURN value, count(DISTINCT sample_id) AS count
+                ORDER BY count DESC, value ASC
+                """.strip()
+                elif node_alias == "d" and not base_where_clause:
+                    # Optimized query for diagnosis fields (disease_phase, tumor_grade, etc.):
+                    # 1. Start from diagnosis (more selective) and filter invalid values early
+                    # 2. Match to sample and check study path
+                    # 3. Use head() to get one diagnosis per sample, then group by field value
+                    # Performance improvements:
+                    # - Start from diagnosis instead of sample (fewer nodes to process)
+                    # - Filter invalid values early before study path check
+                    # - Remove unnecessary participant match
+                    # - Simplify redundant WHERE conditions (assume string fields)
+                    cypher = f"""
+                MATCH (d:diagnosis)-[:of_diagnosis]->(sa:sample)
+                WHERE sa.sample_id IS NOT NULL 
+                  AND sa.sample_id <> ''
+                  AND {node_field} IS NOT NULL
+                  AND {node_field} <> ''
+                  AND {node_field} <> '-999'
+                  AND {node_field} <> 'Not Reported'
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH DISTINCT sa.sample_id as sample_id, head(collect(DISTINCT {node_field})) as value, coalesce(st1, st2) AS st
+                WHERE st IS NOT NULL
+                RETURN value, count(DISTINCT sample_id) AS count
                 ORDER BY count DESC, value ASC
                 """.strip()
                 else:
@@ -1292,50 +1566,89 @@ class SampleRepository:
         
         # Format results
         counts = []
-        for record in records:
-            # Handle both formats: sex returns sex_at_birth/sample_count, others return value/count
-            if field == "sex" and "sex_at_birth" in record:
-                value = record.get("sex_at_birth")
-                # Filter out empty strings - skip them (they should be counted as missing)
-                if value == "" or (isinstance(value, str) and value.strip() == ""):
-                    continue  # Skip empty values
-                counts.append({
-                    "value": value,
-                    "count": record.get("sample_count", 0)
-                })
-            else:
-                value = record.get("value")
-                # Filter out empty strings and "-999" - skip them (they should be counted as missing)
-                if value == "" or (isinstance(value, str) and value.strip() == ""):
-                    continue  # Skip empty values
-                # Filter out "-999" for age fields (sentinel value for missing data)
-                if str(value) == "-999" or (isinstance(value, str) and value.strip() == "-999"):
-                    continue  # Skip "-999" values
+        
+        # Special handling for specimen_molecular_analyte_type to avoid double-counting
+        # Query returns sample_id and value (molecule_value) - need to map to API values
+        # and count distinct samples per API value (not per DB value)
+        if field == "specimen_molecular_analyte_type" and records and "sample_id" in records[0]:
+            # Group by sample_id and collect all API values (after mapping)
+            sample_to_api_values = {}
+            for record in records:
+                sample_id = record.get("sample_id")
+                db_value = record.get("value")
                 
-                # Apply field mapping (DB value -> API value) using centralized mappings
-                mapped_value = map_field_value(field, value)
-                
-                # If mapping returns None, skip this value (it should be counted as missing)
-                # This handles null_mappings (e.g., "Not Reported" for specimen_molecular_analyte_type)
-                if mapped_value is None:
+                if not sample_id or not db_value:
                     continue
                 
+                # Map DB value to API value
+                api_value = map_field_value(field, db_value)
+                if api_value is None:
+                    continue
+                
+                # Collect distinct API values per sample
+                if sample_id not in sample_to_api_values:
+                    sample_to_api_values[sample_id] = set()
+                sample_to_api_values[sample_id].add(api_value)
+            
+            # Count samples per API value
+            api_value_counts = {}
+            for sample_id, api_values in sample_to_api_values.items():
+                for api_value in api_values:
+                    api_value_counts[api_value] = api_value_counts.get(api_value, 0) + 1
+            
+            # Convert to counts list
+            for api_value, count in api_value_counts.items():
                 counts.append({
-                    "value": mapped_value,
-                    "count": record.get("count", 0)
+                    "value": api_value,
+                    "count": count
                 })
-        
-        # Aggregate counts for fields where multiple DB values map to the same API value
-        # (e.g., disease_phase: "Recurrent Disease" and "Relapse" both map to "Relapse")
-        # (e.g., specimen_molecular_analyte_type: "Transcriptomic" and "Viral RNA" both map to "RNA")
-        aggregated_counts = {}
-        for item in counts:
-            val = item["value"]
-            cnt = item["count"]
-            if val in aggregated_counts:
-                aggregated_counts[val] += cnt
-            else:
-                aggregated_counts[val] = cnt
+            counts.sort(key=lambda x: (-x["count"], x["value"]))
+        else:
+            # Standard processing for other fields
+            for record in records:
+                # Handle both formats: sex returns sex_at_birth/sample_count, others return value/count
+                if field == "sex" and "sex_at_birth" in record:
+                    value = record.get("sex_at_birth")
+                    # Filter out empty strings - skip them (they should be counted as missing)
+                    if value == "" or (isinstance(value, str) and value.strip() == ""):
+                        continue  # Skip empty values
+                    counts.append({
+                        "value": value,
+                        "count": record.get("sample_count", 0)
+                    })
+                else:
+                    value = record.get("value")
+                    # Filter out empty strings and "-999" - skip them (they should be counted as missing)
+                    if value == "" or (isinstance(value, str) and value.strip() == ""):
+                        continue  # Skip empty values
+                    # Filter out "-999" for age fields (sentinel value for missing data)
+                    if str(value) == "-999" or (isinstance(value, str) and value.strip() == "-999"):
+                        continue  # Skip "-999" values
+                    
+                    # Apply field mapping (DB value -> API value) using centralized mappings
+                    mapped_value = map_field_value(field, value)
+                    
+                    # If mapping returns None, skip this value (it should be counted as missing)
+                    # This handles null_mappings (e.g., "Not Reported" for specimen_molecular_analyte_type)
+                    if mapped_value is None:
+                        continue
+                    
+                    counts.append({
+                        "value": mapped_value,
+                        "count": record.get("count", 0)
+                    })
+            
+            # Aggregate counts for fields where multiple DB values map to the same API value
+            # (e.g., disease_phase: "Recurrent Disease" and "Relapse" both map to "Relapse")
+            # Note: specimen_molecular_analyte_type is handled above, so this is for other fields
+            aggregated_counts = {}
+            for item in counts:
+                val = item["value"]
+                cnt = item["count"]
+                if val in aggregated_counts:
+                    aggregated_counts[val] += cnt
+                else:
+                    aggregated_counts[val] = cnt
             # Rebuild counts list and sort
             counts = [{"value": val, "count": cnt} for val, cnt in aggregated_counts.items()]
             counts.sort(key=lambda x: (-x["count"], x["value"]))
@@ -1848,24 +2161,84 @@ class SampleRepository:
                             # Missing: samples with study path that either:
                             # 1. Don't have any sequencing_file, OR
                             # 2. Have sequencing_file(s) but all have null/invalid/Not Reported values
+                            # Optimized: filter invalid values early, remove redundant toString/trim calls
                             missing_cypher = f"""
                 MATCH (sa:sample)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
                 OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, p, coalesce(st1, st2) AS st
+                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, coalesce(st1, st2) AS st
                 WHERE st IS NOT NULL
                 OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
                 WITH DISTINCT sa, 
                      collect(DISTINCT sf.library_source_molecule) as molecule_values
                 WHERE size([val IN molecule_values WHERE val IS NOT NULL 
-                             AND toString(val) <> '' 
-                             AND trim(toString(val)) <> ''
-                             AND toString(val) <> '-999'
-                             AND trim(toString(val)) <> '-999'
-                             AND toString(val) <> 'Not Reported'
-                             AND trim(toString(val)) <> 'Not Reported']) = 0
+                             AND val <> '' 
+                             AND val <> '-999'
+                             AND val <> 'Not Reported']) = 0
+                RETURN count(DISTINCT sa) as missing
+                """.strip()
+                        elif node_alias == "sf" and not base_where_clause:
+                            # Optimized missing count for other sequencing_file fields
+                            # Missing: samples with study path that either:
+                            # 1. Don't have any sequencing_file, OR
+                            # 2. Have sequencing_file(s) but all have null/invalid/Not Reported values
+                            missing_cypher = f"""
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, coalesce(st1, st2) AS st
+                WHERE st IS NOT NULL
+                OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
+                WITH DISTINCT sa, 
+                     collect(DISTINCT {node_field}) as field_values
+                WHERE size([val IN field_values WHERE val IS NOT NULL 
+                             AND val <> '' 
+                             AND val <> '-999'
+                             AND val <> 'Not Reported']) = 0
+                RETURN count(DISTINCT sa) as missing
+                """.strip()
+                        elif node_alias == "pf" and not base_where_clause:
+                            # Optimized missing count for pathology_file fields
+                            # Missing: samples with study path that either:
+                            # 1. Don't have any pathology_file, OR
+                            # 2. Have pathology_file(s) but all have null/invalid/Not Reported values
+                            missing_cypher = f"""
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, coalesce(st1, st2) AS st
+                WHERE st IS NOT NULL
+                OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)
+                WITH DISTINCT sa, 
+                     collect(DISTINCT {node_field}) as field_values
+                WHERE size([val IN field_values WHERE val IS NOT NULL 
+                             AND val <> '' 
+                             AND val <> '-999'
+                             AND val <> 'Not Reported']) = 0
+                RETURN count(DISTINCT sa) as missing
+                """.strip()
+                        elif node_alias == "d" and not base_where_clause:
+                            # Optimized missing count for diagnosis fields
+                            # Missing: samples with study path that either:
+                            # 1. Don't have any diagnosis, OR
+                            # 2. Have diagnosis(es) but all have null/invalid/Not Reported values
+                            missing_cypher = f"""
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, coalesce(st1, st2) AS st
+                WHERE st IS NOT NULL
+                OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
+                WITH DISTINCT sa, 
+                     collect(DISTINCT {node_field}) as field_values
+                WHERE size([val IN field_values WHERE val IS NOT NULL 
+                             AND val <> '' 
+                             AND val <> '-999'
+                             AND val <> 'Not Reported']) = 0
                 RETURN count(DISTINCT sa) as missing
                 """.strip()
                         else:
@@ -2828,6 +3201,37 @@ class SampleRepository:
         """
         logger.debug("Getting samples summary", filters=filters)
         
+        # If no filters, use simple optimized query (matches the structure used in count queries)
+        # Check if filters dict is empty or only contains None values
+        has_real_filters = any(v is not None and v != "" for v in filters.values()) if filters else False
+        
+        if not has_real_filters:
+            cypher = """
+        MATCH (sa:sample)
+        WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+        OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+        WITH sa, p, coalesce(st1, st2) AS st
+        WHERE st IS NOT NULL
+        WITH DISTINCT sa
+        RETURN count(DISTINCT sa) as total_count
+        """.strip()
+            
+            result = await self.session.run(cypher, {})
+            records = []
+            async for record in result:
+                records.append(dict(record))
+            await result.consume()
+            
+            total_count = records[0].get("total_count", 0) if records else 0
+            
+            return {
+                "counts": {
+                    "total": total_count
+                }
+            }
+        
         # Build filter conditions similar to get_samples
         params = {}
         param_counter = 0
@@ -2898,18 +3302,19 @@ class SampleRepository:
             elif field == "specimen_molecular_analyte_type":
                 # Apply reverse mapping for filtering (API value -> DB value(s))
                 # "RNA" can map to both "Transcriptomic" and "Viral RNA" in DB
+                # Special handling: need to check if ANY sequencing_file matches, not just the first one
                 reverse_mapped = reverse_map_field_value("specimen_molecular_analyte_type", value)
                 if isinstance(reverse_mapped, list):
-                    # Multiple DB values map to this API value - use OR condition
-                    db_values_list = [f"sf.library_source_molecule = '{v}'" for v in reverse_mapped]
-                    db_values_str = " OR ".join(db_values_list)
-                    with_conditions.append(f"sf IS NOT NULL AND ({db_values_str})")
+                    # Multiple DB values map to this API value - store as special condition
+                    # Will be handled after collecting all sequencing_files
+                    with_conditions.append(("specimen_molecular_analyte_type_list", reverse_mapped))
                 elif reverse_mapped is None:
                     # Filter for null or "Not Reported"
                     with_conditions.append(f"(sf IS NULL OR sf.library_source_molecule IS NULL OR sf.library_source_molecule = 'Not Reported')")
                 else:
                     params[param_name] = reverse_mapped
-                    with_conditions.append(f"sf IS NOT NULL AND sf.library_source_molecule = ${param_name}")
+                    # Store as special condition - will be handled after collecting all sequencing_files
+                    with_conditions.append(("specimen_molecular_analyte_type_single", param_name))
             elif field == "disease_phase":
                 # Apply reverse mapping for filtering (API value -> DB value(s))
                 # "Relapse" can map to both "Recurrent Disease" and "Relapse" in DB
@@ -2980,30 +3385,67 @@ class SampleRepository:
                 else:
                     with_conditions.append(f"sa.{field} = ${param_name}")
             
-            if field not in ["disease_phase", "tumor_grade", "age_at_diagnosis", "age_at_collection", "diagnosis"]:
+            if field not in ["disease_phase", "tumor_grade", "age_at_diagnosis", "age_at_collection", "diagnosis", "anatomical_sites"]:
                 # For non-diagnosis fields, handle list values
+                # Skip anatomical_sites as it's handled specially with tuples
                 if isinstance(value, list):
-                    # Replace the condition we just added with IN version
-                    with_conditions[-1] = with_conditions[-1].replace(f"= ${param_name}", f"IN ${param_name}")
+                    # Only replace if the last condition is a string (not a tuple)
+                    if with_conditions and isinstance(with_conditions[-1], str):
+                        with_conditions[-1] = with_conditions[-1].replace(f"= ${param_name}", f"IN ${param_name}")
             
             # Only set param if not already set (age fields set it above)
             if param_name not in params:
                 params[param_name] = value
         
-        # Build WHERE clause - handle anatomical_sites filter specially
+        # Build WHERE clause - handle anatomical_sites and specimen_molecular_analyte_type filters specially
         anatomical_sites_param = None
         anatomical_sites_list_condition = None
         anatomical_sites_string_condition = None
+        specimen_molecular_analyte_type_list = None
+        specimen_molecular_analyte_type_single_param = None
         regular_conditions = []
         
         for condition in with_conditions:
             if isinstance(condition, tuple) and condition[0] == "anatomical_sites_list":
                 anatomical_sites_param = condition[1]
-                # List version: use IN
-                anatomical_sites_list_condition = f"sa.anatomic_site IS NOT NULL AND ${condition[1]} IN sa.anatomic_site"
+                # Check if the parameter value is a list (multiple values from || delimiter)
+                param_value = params.get(condition[1])
+                if isinstance(param_value, list):
+                    # Multiple values - check if ANY of them match (OR logic)
+                    # Build OR conditions for each value
+                    or_conditions = []
+                    for idx, val in enumerate(param_value):
+                        val_param = f"{condition[1]}_{idx}"
+                        params[val_param] = val
+                        or_conditions.append(f"""(
+                            ${val_param} = sa.anatomic_site OR
+                            reduce(found = false, tok IN SPLIT(toString(sa.anatomic_site), ';') | 
+                              CASE WHEN trim(tok) = trim(toString(${val_param})) THEN true ELSE found END
+                            ) = true
+                        )""")
+                    anatomical_sites_list_condition = f"""sa.anatomic_site IS NOT NULL AND ({' OR '.join(or_conditions)})"""
+                else:
+                    # Single value - handle both exact match and semicolon-separated string cases
+                    anatomical_sites_list_condition = f"""sa.anatomic_site IS NOT NULL AND (
+                        ${condition[1]} = sa.anatomic_site OR
+                        reduce(found = false, tok IN SPLIT(toString(sa.anatomic_site), ';') | 
+                          CASE WHEN trim(tok) = trim(toString(${condition[1]})) THEN true ELSE found END
+                        ) = true
+                    )"""
             elif isinstance(condition, tuple) and condition[0] == "anatomical_sites_string":
-                # String version: use equality (will be used as fallback)
-                anatomical_sites_string_condition = f"sa.anatomic_site IS NOT NULL AND ${condition[1]} = sa.anatomic_site"
+                # String version: handle exact match and semicolon-separated strings
+                anatomical_sites_string_condition = f"""sa.anatomic_site IS NOT NULL AND (
+                    trim(toString(sa.anatomic_site)) = trim(toString(${condition[1]})) OR
+                    reduce(found = false, tok IN SPLIT(toString(sa.anatomic_site), ';') | 
+                      CASE WHEN trim(tok) = trim(toString(${condition[1]})) THEN true ELSE found END
+                    ) = true
+                )"""
+            elif isinstance(condition, tuple) and condition[0] == "specimen_molecular_analyte_type_list":
+                # Store the list of DB values that map to the API value (e.g., ["Transcriptomic", "Viral RNA"] for "RNA")
+                specimen_molecular_analyte_type_list = condition[1]
+            elif isinstance(condition, tuple) and condition[0] == "specimen_molecular_analyte_type_single":
+                # Store the parameter name for single value mapping
+                specimen_molecular_analyte_type_single_param = condition[1]
             else:
                 regular_conditions.append(condition)
         
@@ -3012,6 +3454,9 @@ class SampleRepository:
         if anatomical_sites_list_condition:
             # Use list version first (will try string version if it fails)
             all_conditions.append(anatomical_sites_list_condition)
+        # Add specimen_molecular_analyte_type condition if present (will be checked after collecting all sequencing_files)
+        if specimen_molecular_analyte_type_list or specimen_molecular_analyte_type_single_param:
+            all_conditions.append("has_matching_sf = true")
         
         where_clause = ""
         if all_conditions:
@@ -3031,7 +3476,7 @@ class SampleRepository:
         ) or any("pf." in str(cond) for cond in all_conditions if isinstance(cond, str))
         
         needs_sequencing_file = any(
-            field in filters for field in ["library_selection_method", "library_strategy", "library_source_material"]
+            field in filters for field in ["library_selection_method", "library_strategy", "library_source_material", "specimen_molecular_analyte_type"]
         ) or any("sf." in str(cond) for cond in all_conditions if isinstance(cond, str))
         
         needs_study = any(
@@ -3075,8 +3520,12 @@ class SampleRepository:
             with_vars.append("head(collect(DISTINCT d)) AS diagnoses")
         if needs_pathology_file:
             with_collects.append("head(collect(DISTINCT pf)) AS pf")
+        # For specimen_molecular_analyte_type, collect ALL sequencing_files first to check if ANY match
         if needs_sequencing_file:
-            with_collects.append("head(collect(DISTINCT sf)) AS sf")
+            if specimen_molecular_analyte_type_list or specimen_molecular_analyte_type_single_param:
+                with_collects.append("collect(DISTINCT sf) AS all_sfs")  # Collect all sequencing_files
+            else:
+                with_collects.append("head(collect(DISTINCT sf)) AS sf")
         
         # Always include study (coalesce both paths)
         with_vars.append("coalesce(st1, st2) AS st")
@@ -3084,44 +3533,144 @@ class SampleRepository:
         with_clause = ", ".join(with_vars)
         if with_collects:
             with_clause += ",\n             " + ",\n             ".join(with_collects)
+        
         # Add identifiers_condition to WITH clause if present
         if identifiers_condition:
             with_clause += identifiers_condition
         
+        # For specimen_molecular_analyte_type, we need a second WITH clause to use all_sfs
+        # (can't reference a variable in the same WITH clause where it's defined)
+        second_with_clause = None
+        if specimen_molecular_analyte_type_list:
+            # Build list of DB values for IN clause
+            db_values_str = ", ".join([f"'{v}'" for v in specimen_molecular_analyte_type_list])
+            # Build second_with_vars based on what's available from first WITH
+            second_with_vars = ["sa", "st"]
+            if needs_participant or needs_study or needs_st_for_where:
+                second_with_vars.append("p")
+            if needs_diagnosis:
+                second_with_vars.append("diagnoses")
+            if needs_pathology_file:
+                second_with_vars.append("pf")
+            second_with_vars.append(f"size([sf IN all_sfs WHERE sf IS NOT NULL AND sf.library_source_molecule IN [{db_values_str}]]) > 0 AS has_matching_sf")
+            second_with_vars.append("head([sf IN all_sfs WHERE sf IS NOT NULL | sf]) AS sf")
+            second_with_clause = ", ".join(second_with_vars)
+        elif specimen_molecular_analyte_type_single_param:
+            # Single value mapping
+            # Build second_with_vars based on what's available from first WITH
+            second_with_vars = ["sa", "st"]
+            if needs_participant or needs_study or needs_st_for_where:
+                second_with_vars.append("p")
+            if needs_diagnosis:
+                second_with_vars.append("diagnoses")
+            if needs_pathology_file:
+                second_with_vars.append("pf")
+            second_with_vars.append(f"size([sf IN all_sfs WHERE sf IS NOT NULL AND sf.library_source_molecule = ${specimen_molecular_analyte_type_single_param}]) > 0 AS has_matching_sf")
+            second_with_vars.append("head([sf IN all_sfs WHERE sf IS NOT NULL | sf]) AS sf")
+            second_with_clause = ", ".join(second_with_vars)
+        
         # Build WHERE clause - include filter conditions AND ensure sample has path to study
-        final_where_conditions = ["st IS NOT NULL"]
-        # Add identifiers where conditions (must be added first so id_list is available)
-        if where_conditions:
-            final_where_conditions.extend(where_conditions)
+        # Separate conditions that need to be in first WITH (for identifiers) from those that need to be after second WITH (for has_matching_sf)
+        first_where_conditions = ["st IS NOT NULL"]
+        second_where_conditions = []
+        
+        # Parse where_clause to separate conditions with has_matching_sf from others
         if where_clause:
             # Extract conditions from where_clause (remove "WHERE " prefix)
-            where_conditions_str = where_clause.replace("WHERE ", "")
-            final_where_conditions.append(where_conditions_str)
+            where_conditions_str = where_clause.replace("WHERE ", "").strip()
+            if where_conditions_str:
+                # Split by " AND " to get individual conditions
+                conditions = [c.strip() for c in where_conditions_str.split(" AND ")]
+                for condition in conditions:
+                    if "has_matching_sf" in condition:
+                        second_where_conditions.append(condition)
+                    else:
+                        first_where_conditions.append(condition)
         
-        # If identifiers are present, integrate WHERE clause into WITH clause
+        # If identifiers are present, integrate first WHERE clause into WITH clause
         # This ensures id_list is available when the WHERE condition is evaluated
+        # But we can't include has_matching_sf here since it's not defined yet
+        where_in_with = False
         if identifiers_condition:
-            # Integrate WHERE clause into WITH clause
-            where_conditions_str = " AND ".join(final_where_conditions)
+            # Integrate first WHERE clause into WITH clause (without has_matching_sf)
+            where_conditions_str = " AND ".join(first_where_conditions)
             if where_conditions_str:
                 with_clause += f"\n        WHERE {where_conditions_str}"
-                final_where_clause = ""
-            else:
-                final_where_clause = ""
+                where_in_with = True
+            first_where_clause = ""
         else:
-            # No identifiers - apply WHERE clause separately
-            final_where_clause = "\n        WHERE " + " AND ".join(final_where_conditions) if final_where_conditions else ""
+            # No identifiers - apply first WHERE clause separately
+            first_where_clause = "\n        WHERE " + " AND ".join(first_where_conditions) if first_where_conditions else ""
         
-        cypher = f"""
+        # Build final WHERE clause (includes has_matching_sf if present)
+        final_where_clause = "\n        WHERE " + " AND ".join(second_where_conditions) if second_where_conditions else ""
+        
+        # If we have a second WITH clause (for specimen_molecular_analyte_type), include it
+        second_with_str = ""
+        if second_with_clause:
+            # Apply WHERE clause after second WITH if present
+            # If where_in_with is True, first_where_clause is empty, so only use final_where_clause
+            # Otherwise, combine both into a single WHERE clause
+            if where_in_with:
+                # First WHERE is already in WITH clause, only add final_where_clause (has_matching_sf)
+                if final_where_clause.strip():
+                    second_with_str = f"WITH {second_with_clause}\n        {final_where_clause.strip()}\n        "
+                else:
+                    second_with_str = f"WITH {second_with_clause}\n        "
+            else:
+                # Combine first_where_clause and final_where_clause into a single WHERE clause
+                # Extract conditions from both (remove "WHERE " prefix and combine with AND)
+                first_conditions = []
+                if first_where_clause.strip():
+                    first_where_str = first_where_clause.replace("WHERE", "").strip()
+                    if first_where_str:
+                        first_conditions.append(first_where_str)
+                
+                second_conditions = []
+                if final_where_clause.strip():
+                    second_where_str = final_where_clause.replace("WHERE", "").strip()
+                    if second_where_str:
+                        second_conditions.append(second_where_str)
+                
+                # Combine all conditions into a single WHERE clause
+                all_combined_conditions = first_conditions + second_conditions
+                if all_combined_conditions:
+                    combined_where_str = " AND ".join(all_combined_conditions)
+                    second_with_str = f"WITH {second_with_clause}\n        WHERE {combined_where_str}\n        "
+                else:
+                    second_with_str = f"WITH {second_with_clause}\n        "
+            final_where_clause = ""  # Clear it since it's now in second_with_str
+        elif first_where_clause or final_where_clause:
+            # Apply WHERE clause after first WITH if no second WITH
+            combined_where = (first_where_clause + final_where_clause).strip()
+            final_where_clause = f"{combined_where}\n        " if combined_where else ""
+        else:
+            final_where_clause = ""
+        
+        # Build the query - ensure proper spacing
+        if second_with_str:
+            # second_with_str already includes the WITH and WHERE clauses
+            cypher = f"""
         MATCH (sa:sample)
         WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
         {optional_matches_str}
         // Try multiple paths to get study - collect all possible studies
         {study_paths_str}
         WITH {with_clause}
-        {final_where_clause}
-        WITH DISTINCT sa
-        RETURN count(DISTINCT sa) as total_count
+        {second_with_str}WITH DISTINCT sa.sample_id AS sample_id
+        RETURN count(DISTINCT sample_id) as total_count
+        """.strip()
+        else:
+            # No second WITH, use final_where_clause after first WITH
+            cypher = f"""
+        MATCH (sa:sample)
+        WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+        {optional_matches_str}
+        // Try multiple paths to get study - collect all possible studies
+        {study_paths_str}
+        WITH {with_clause}
+        {final_where_clause}WITH DISTINCT sa.sample_id AS sample_id
+        RETURN count(DISTINCT sample_id) as total_count
         """.strip()
         
         logger.info(
@@ -3217,8 +3766,8 @@ class SampleRepository:
                      head(collect(DISTINCT pf)) AS pf,
                      head(collect(DISTINCT d)) AS diagnoses
                 {where_clause}
-                WITH DISTINCT sa
-                RETURN count(DISTINCT sa) as total_count
+                WITH DISTINCT sa.sample_id AS sample_id
+                RETURN count(DISTINCT sample_id) as total_count
                 """.strip()
                 
                 try:
@@ -3443,6 +3992,15 @@ class SampleRepository:
             from app.models.dto import ValueField
             return ValueField(value=str_value)
         
+        def _wrap_list_value(value_list):
+            """Wrap list of values in list of ValueField objects if not None and not empty, otherwise return None."""
+            if value_list is None or not isinstance(value_list, list) or len(value_list) == 0:
+                return None
+            from app.models.dto import ValueField
+            # Filter out empty strings and create ValueField for each valid value
+            wrapped = [ValueField(value=str(v).strip()) for v in value_list if v is not None and str(v).strip()]
+            return wrapped if wrapped else None
+        
         def _map_library_selection_method(db_value):
             """Map database value to API value for library_selection_method.
             
@@ -3476,33 +4034,37 @@ class SampleRepository:
         
         # Helper function to handle anatomical_sites (may be array or string)
         def _process_anatomical_sites(value):
-            """Process anatomical_sites - handle arrays and filter out 'Invalid value', replacing with None."""
+            """Process anatomical_sites - handle arrays and strings, return list of all valid values."""
             if value is None:
                 return None
-            # If it's an array/list, filter out "Invalid value" entries (case-insensitive)
+            result = []
+            # If it's an array/list, process each value
             if isinstance(value, (list, tuple)):
-                filtered = [
-                    v for v in value 
-                    if v is not None 
-                    and str(v).strip() != "" 
-                    and str(v).strip().lower() != "invalid value"
-                ]
-                # Return None if all values were invalid or empty
-                if not filtered:
-                    return None
-                # Based on the model, it's a single ValueField, so we'll take the first valid value
-                return str(filtered[0]).strip() if filtered else None
-            # If it's a string, check for "Invalid value" (case-insensitive)
-            if isinstance(value, str):
+                for v in value:
+                    if v is not None and str(v).strip() != "" and str(v).strip().lower() != "invalid value":
+                        result.append(str(v).strip())
+            # If it's a string, check if it's semicolon-separated or a single value
+            elif isinstance(value, str):
                 value_stripped = value.strip()
-                if not value_stripped or value_stripped.lower() == "invalid value":
-                    return None
-                return value_stripped
-            # For other types, convert to string and check
-            value_str = str(value).strip() if value else ""
-            if not value_str or value_str.lower() == "invalid value":
-                return None
-            return value_str
+                if value_stripped and value_stripped.lower() != "invalid value":
+                    # Check if it contains semicolons (semicolon-separated values)
+                    if ';' in value_stripped:
+                        # Split by semicolon and process each part
+                        parts = value_stripped.split(';')
+                        for part in parts:
+                            part_stripped = part.strip()
+                            if part_stripped and part_stripped.lower() != "invalid value":
+                                result.append(part_stripped)
+                    else:
+                        # Single value
+                        result.append(value_stripped)
+            else:
+                # For other types, convert to string and check
+                value_str = str(value).strip() if value else ""
+                if value_str and value_str.lower() != "invalid value":
+                    result.append(value_str)
+            # Return None if no valid values, otherwise return the list
+            return result if result else None
         
         # Build identifiers - reference the subject (participant)
         identifiers = None
@@ -3597,7 +4159,7 @@ class SampleRepository:
         # Build metadata with field mappings applied
         metadata = SampleMetadata(
             disease_phase=_wrap_value(map_field_value("disease_phase", _null_if_invalid(disease_phase_value))),
-            anatomical_sites=_wrap_value(_process_anatomical_sites(anatomical_sites_value)),
+            anatomical_sites=_wrap_list_value(_process_anatomical_sites(anatomical_sites_value)),
             library_selection_method=_wrap_value(_map_library_selection_method(_null_if_invalid(library_selection_value))),
             library_strategy=_wrap_value(map_field_value("library_strategy", _null_if_invalid(library_strategy_value))),
             library_source_material=_wrap_value(map_field_value("library_source_material", _null_if_invalid(library_source_material_value))),

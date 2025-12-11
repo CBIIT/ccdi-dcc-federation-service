@@ -219,8 +219,14 @@ class SampleService:
         
         # Transform repository format to response format
         from app.models.dto import SummaryCounts
+        # Repository returns {"counts": {"total": ...}} or {"total_count": ...} (for filtered case)
+        if "counts" in summary_data:
+            total_count = summary_data["counts"].get("total", 0)
+        else:
+            total_count = summary_data.get("total_count", 0)
+        
         response = SummaryResponse(
-            counts=SummaryCounts(total=summary_data.get("total_count", 0))
+            counts=SummaryCounts(total=total_count)
         )
         
         # Cache result

@@ -333,7 +333,23 @@ def get_sample_filters(
     if disease_phase is not None:
         filters["disease_phase"] = disease_phase
     if anatomical_sites is not None:
-        filters["anatomical_sites"] = anatomical_sites
+        # Handle anatomical_sites as string input with || delimiter (similar to race and identifiers)
+        anatomical_sites_str = str(anatomical_sites).strip() if anatomical_sites else None
+        if anatomical_sites_str:
+            # Handle URL-encoded version (%7C%7C = double pipe encoded)
+            if '%7C%7C' in anatomical_sites_str:
+                anatomical_sites_str = anatomical_sites_str.replace('%7C%7C', '||')
+            
+            # Split ONLY on || delimiter - comma, ampersand, etc. are treated as part of the value
+            if '||' in anatomical_sites_str:
+                anatomical_sites_list = [s.strip() for s in anatomical_sites_str.split('||') if s.strip()]
+                if len(anatomical_sites_list) > 1:
+                    filters["anatomical_sites"] = anatomical_sites_list
+                elif len(anatomical_sites_list) == 1:
+                    filters["anatomical_sites"] = anatomical_sites_list[0]
+            else:
+                # No || delimiter found - treat entire value as single anatomical_sites value
+                filters["anatomical_sites"] = anatomical_sites_str
     if library_selection_method is not None:
         filters["library_selection_method"] = library_selection_method
     if library_strategy is not None:
@@ -416,7 +432,23 @@ def get_sample_filters_no_descriptions(
     if disease_phase is not None:
         filters["disease_phase"] = disease_phase
     if anatomical_sites is not None:
-        filters["anatomical_sites"] = anatomical_sites
+        # Handle anatomical_sites as string input with || delimiter (similar to race and identifiers)
+        anatomical_sites_str = str(anatomical_sites).strip() if anatomical_sites else None
+        if anatomical_sites_str:
+            # Handle URL-encoded version (%7C%7C = double pipe encoded)
+            if '%7C%7C' in anatomical_sites_str:
+                anatomical_sites_str = anatomical_sites_str.replace('%7C%7C', '||')
+            
+            # Split ONLY on || delimiter - comma, ampersand, etc. are treated as part of the value
+            if '||' in anatomical_sites_str:
+                anatomical_sites_list = [s.strip() for s in anatomical_sites_str.split('||') if s.strip()]
+                if len(anatomical_sites_list) > 1:
+                    filters["anatomical_sites"] = anatomical_sites_list
+                elif len(anatomical_sites_list) == 1:
+                    filters["anatomical_sites"] = anatomical_sites_list[0]
+            else:
+                # No || delimiter found - treat entire value as single anatomical_sites value
+                filters["anatomical_sites"] = anatomical_sites_str
     if library_selection_method is not None:
         filters["library_selection_method"] = library_selection_method
     if library_strategy is not None:

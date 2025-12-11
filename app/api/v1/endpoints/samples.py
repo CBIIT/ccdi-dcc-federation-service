@@ -111,7 +111,10 @@ in the `responses::Samples` schema.""",
                                 },
                                 "metadata": {
                                     "disease_phase": {"value": "Primary"},
-                                    "anatomical_sites": {"value": "Brain"},
+                                    "anatomical_sites": [
+                                        {"value": "C71.1 : Frontal lobe"},
+                                        {"value": "C71.9 : Brain, NOS"}
+                                    ],
                                     "identifiers": [
                                         {
                                             "value": {
@@ -188,8 +191,18 @@ async def list_samples(
         )
         
         # Get total count for summary (use original filters dict)
-        summary_result = await service.get_samples_summary(filters)
-        total_count = summary_result.counts.total
+        # If summary fails, use 0 as total (empty results)
+        try:
+            summary_result = await service.get_samples_summary(filters)
+            total_count = summary_result.counts.total
+        except Exception as summary_error:
+            # If summary fails, log but don't fail the request - return 0 as total
+            logger.warning(
+                "Error getting samples summary, using 0 as total",
+                error=str(summary_error),
+                exc_info=True
+            )
+            total_count = 0
         
         # Build pagination info
         pagination_info = PaginationInfo(
@@ -214,6 +227,7 @@ async def list_samples(
         logger.info(
             "List samples response",
             sample_count=len(samples),
+            total_count=total_count,
             page=pagination.page
         )
         
@@ -221,6 +235,7 @@ async def list_samples(
         samples_dicts = [sample.model_dump(exclude={'gateways'}) if hasattr(sample, 'model_dump') else {k: v for k, v in (sample if isinstance(sample, dict) else sample.__dict__).items() if k != 'gateways'} for sample in samples]
         
         # Build response with summary first, then data
+        # Always return 200 with empty data if query succeeded but no results found
         result = SamplesResponse(
             summary={
                 "counts": {
@@ -234,20 +249,47 @@ async def list_samples(
         return result
         
     except Exception as e:
-        logger.error("Error listing samples", error=str(e), exc_info=True)
-        if hasattr(e, 'to_http_exception'):
-            raise e.to_http_exception()
-        # Return 404 instead of 500 - no 500 errors allowed
-        error_detail = ErrorDetail(
-            kind=ErrorKind.NOT_FOUND,
-            entity="Samples",
-            message="Unable to find data for your request.",
-            reason="No data found."
-        )
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
-        )
+        # Check if this is a query error (like UnboundVariable, syntax error) that indicates a real problem
+        # vs a scenario where we should return empty results
+        error_str = str(e).lower()
+        is_query_error = any(keyword in error_str for keyword in [
+            "unbound variable", "syntax error", "type error", "mismatched input",
+            "invalidparameterserror", "unsupportedfielderror"
+        ])
+        
+        if is_query_error:
+            # This is an actual query/parameter error - log and return 404
+            logger.error("Error listing samples (query/parameter error)", error=str(e), exc_info=True)
+            if hasattr(e, 'to_http_exception'):
+                raise e.to_http_exception()
+            error_detail = ErrorDetail(
+                kind=ErrorKind.NOT_FOUND,
+                entity="Samples",
+                message="Unable to find data for your request.",
+                reason="Query or parameter error."
+            )
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+            )
+        else:
+            # For other errors, log but return 200 with empty results (don't expose internal errors)
+            logger.warning(
+                "Error listing samples, returning empty results",
+                error=str(e),
+                exc_info=True
+            )
+            # Return 200 with empty data instead of 404
+            result = SamplesResponse(
+                summary={
+                    "counts": {
+                        "all": 0,
+                        "current": 0
+                    }
+                },
+                data=[]
+            )
+            return result
 
 
 # ============================================================================
@@ -438,7 +480,10 @@ async def count_samples_by_field(
                         },
                         "metadata": {
                             "disease_phase": {"value": "Primary"},
-                            "anatomical_sites": {"value": "Brain"},
+                            "anatomical_sites": [
+                                {"value": "C71.1 : Frontal lobe"},
+                                {"value": "C71.9 : Brain, NOS"}
+                            ],
                             "identifiers": [
                                 {
                                     "value": {

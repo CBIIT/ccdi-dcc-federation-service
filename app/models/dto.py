@@ -311,7 +311,7 @@ class IdentifierField(BaseModel):
 class SampleMetadata(CommonMetadata):
     """Sample metadata model."""
     disease_phase: Optional[ValueField] = None
-    anatomical_sites: Optional[ValueField] = None
+    anatomical_sites: Optional[List[ValueField]] = None
     library_selection_method: Optional[ValueField] = None
     library_strategy: Optional[ValueField] = None
     library_source_material: Optional[ValueField] = None

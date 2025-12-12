@@ -156,17 +156,19 @@ class SampleRepository:
                     with_conditions.append(("anatomical_sites_string", param_name))
             elif field == "library_selection_method":
                 # Apply reverse mapping for filtering (API value -> DB value)
+                # Need to check if ANY sequencing_file matches, not just the first one
                 db_value = SampleRepository._reverse_map_library_selection_method_static(value)
                 params[param_name] = db_value
-                with_conditions.append(f"sf IS NOT NULL AND sf.library_selection = ${param_name}")
+                with_conditions.append(("library_selection_method", param_name))
             elif field == "library_strategy":
                 # Apply reverse mapping for filtering (API value -> DB value)
                 # For "Other", we need to match both "Archer Fusion" (reverse mapped) and "Other" (direct match)
+                # Need to check if ANY sequencing_file matches, not just the first one
                 db_value = reverse_map_field_value("library_strategy", value)
                 if db_value is None:
                     # If no reverse mapping, use the value as-is (for values not in mapping)
                     params[param_name] = value
-                    with_conditions.append(f"sf IS NOT NULL AND sf.library_strategy = ${param_name}")
+                    with_conditions.append(("library_strategy", param_name))
                 else:
                     # We have a reverse mapping - need to match both the mapped value and the original value
                     mapped_db_value = db_value if isinstance(db_value, str) else (db_value[0] if isinstance(db_value, list) and db_value else value)
@@ -175,7 +177,7 @@ class SampleRepository:
                     param_name_original = f"param_{param_counter}"
                     params[param_name] = mapped_db_value
                     params[param_name_original] = value
-                    with_conditions.append(f"sf IS NOT NULL AND (sf.library_strategy = ${param_name} OR sf.library_strategy = ${param_name_original})")
+                    with_conditions.append(("library_strategy", param_name, param_name_original))
             elif field == "specimen_molecular_analyte_type":
                 # Apply reverse mapping for filtering (API value -> DB value(s))
                 # "RNA" can map to both "Transcriptomic" and "Viral RNA" in DB
@@ -207,13 +209,14 @@ class SampleRepository:
             elif field == "library_source_material":
                 # Apply reverse mapping for filtering (API value -> DB value)
                 # "Other" maps to null, so filter for null values
+                # Need to check if ANY sequencing_file matches, not just the first one
                 reverse_mapped = reverse_map_field_value("library_source_material", value)
                 if reverse_mapped is None:
-                    # Filter for null or "Other" values
-                    with_conditions.append(f"(sf IS NULL OR sf.library_source_material IS NULL OR sf.library_source_material = 'Other')")
+                    # Filter for null or "Other" values - store as special condition
+                    with_conditions.append(("library_source_material_null", "null"))
                 else:
                     params[param_name] = reverse_mapped
-                    with_conditions.append(f"sf IS NOT NULL AND sf.library_source_material = ${param_name}")
+                    with_conditions.append(("library_source_material", param_name))
             elif field == "preservation_method":
                 with_conditions.append(f"pf IS NOT NULL AND pf.fixation_embedding_method = ${param_name}")
             elif field == "tumor_classification":
@@ -274,12 +277,15 @@ class SampleRepository:
             if param_name not in params:
                 params[param_name] = value
         
-        # Separate anatomical_sites and specimen_molecular_analyte_type conditions from regular conditions
+        # Separate anatomical_sites, specimen_molecular_analyte_type, and sequencing_file field conditions from regular conditions
         anatomical_sites_param = None
         anatomical_sites_list_condition = None
         anatomical_sites_string_condition = None
         specimen_molecular_analyte_type_list = None
         specimen_molecular_analyte_type_single_param = None
+        library_selection_method_param = None
+        library_strategy_param = None
+        library_source_material_param = None
         regular_conditions = []
         
         for condition in with_conditions:
@@ -325,6 +331,23 @@ class SampleRepository:
             elif isinstance(condition, tuple) and condition[0] == "specimen_molecular_analyte_type_single":
                 # Store the parameter name for single value mapping
                 specimen_molecular_analyte_type_single_param = condition[1]
+            elif isinstance(condition, tuple) and condition[0] == "library_selection_method":
+                # Store the parameter name - will be checked after collecting all sequencing_files
+                library_selection_method_param = condition[1]
+            elif isinstance(condition, tuple) and condition[0] == "library_strategy":
+                # Store the parameter name(s) - will be checked after collecting all sequencing_files
+                if len(condition) == 3:
+                    # Has both mapped and original values
+                    library_strategy_param = (condition[1], condition[2])
+                else:
+                    # Single value
+                    library_strategy_param = condition[1]
+            elif isinstance(condition, tuple) and condition[0] == "library_source_material":
+                # Store the parameter name - will be checked after collecting all sequencing_files
+                library_source_material_param = condition[1]
+            elif isinstance(condition, tuple) and condition[0] == "library_source_material_null":
+                # Store as special condition for null/Other values
+                library_source_material_param = "null"  # Signal that we need to check for null/Other
             else:
                 regular_conditions.append(condition)
         
@@ -332,8 +355,12 @@ class SampleRepository:
         all_conditions = regular_conditions.copy()
         if anatomical_sites_list_condition:
             all_conditions.append(anatomical_sites_list_condition)
-        # Add specimen_molecular_analyte_type condition if present (will be checked after collecting all sequencing_files)
-        if specimen_molecular_analyte_type_list or specimen_molecular_analyte_type_single_param:
+        # Add sequencing_file field conditions if present (will be checked after collecting all sequencing_files)
+        needs_sf_collection = (specimen_molecular_analyte_type_list or specimen_molecular_analyte_type_single_param or
+                              library_selection_method_param is not None or
+                              library_strategy_param is not None or
+                              library_source_material_param is not None)
+        if needs_sf_collection:
             all_conditions.append("has_matching_sf = true")
         
         # Separate cheap filters (can be applied before OPTIONAL MATCHes) from expensive ones
@@ -418,8 +445,12 @@ class SampleRepository:
         
         # Build WITH clause - always include diagnosis, pathology_file, and sequencing_file for metadata
         with_vars = ["sa", "p"]  # Always include participant for identifiers
-        # For specimen_molecular_analyte_type, collect ALL sequencing_files first to check if ANY match
-        if specimen_molecular_analyte_type_list or specimen_molecular_analyte_type_single_param:
+        # For sequencing_file fields, collect ALL sequencing_files first to check if ANY match
+        needs_sf_collection = (specimen_molecular_analyte_type_list or specimen_molecular_analyte_type_single_param or
+                              library_selection_method_param is not None or
+                              library_strategy_param is not None or
+                              library_source_material_param is not None)
+        if needs_sf_collection:
             with_collects = [
                 "head(collect(DISTINCT d)) AS diagnoses",
                 "head(collect(DISTINCT pf)) AS pf",
@@ -441,20 +472,52 @@ class SampleRepository:
         if identifiers_condition:
             with_clause += identifiers_condition
         
-        # For specimen_molecular_analyte_type, we need a second WITH clause to use all_sfs
+        # For sequencing_file fields, we need a second WITH clause to use all_sfs
         # (can't reference a variable in the same WITH clause where it's defined)
         second_with_clause = None
-        if specimen_molecular_analyte_type_list:
-            # Build list of DB values for IN clause
-            db_values_str = ", ".join([f"'{v}'" for v in specimen_molecular_analyte_type_list])
+        if needs_sf_collection:
             second_with_vars = ["sa", "p", "st", "diagnoses", "pf"]
-            second_with_vars.append(f"size([sf IN all_sfs WHERE sf IS NOT NULL AND sf.library_source_molecule IN [{db_values_str}]]) > 0 AS has_matching_sf")
-            second_with_vars.append("head([sf IN all_sfs WHERE sf IS NOT NULL | sf]) AS sf")
-            second_with_clause = ", ".join(second_with_vars)
-        elif specimen_molecular_analyte_type_single_param:
-            # Single value mapping
-            second_with_vars = ["sa", "p", "st", "diagnoses", "pf"]
-            second_with_vars.append(f"size([sf IN all_sfs WHERE sf IS NOT NULL AND sf.library_source_molecule = ${specimen_molecular_analyte_type_single_param}]) > 0 AS has_matching_sf")
+            
+            # Build conditions to check if ANY sequencing_file matches
+            sf_match_conditions = []
+            
+            # Check specimen_molecular_analyte_type
+            if specimen_molecular_analyte_type_list:
+                db_values_str = ", ".join([f"'{v}'" for v in specimen_molecular_analyte_type_list])
+                sf_match_conditions.append(f"sf.library_source_molecule IN [{db_values_str}]")
+            elif specimen_molecular_analyte_type_single_param:
+                sf_match_conditions.append(f"sf.library_source_molecule = ${specimen_molecular_analyte_type_single_param}")
+            
+            # Check library_selection_method
+            if library_selection_method_param is not None:
+                sf_match_conditions.append(f"sf.library_selection = ${library_selection_method_param}")
+            
+            # Check library_strategy
+            if library_strategy_param is not None:
+                if isinstance(library_strategy_param, tuple):
+                    # Has both mapped and original values
+                    sf_match_conditions.append(f"(sf.library_strategy = ${library_strategy_param[0]} OR sf.library_strategy = ${library_strategy_param[1]})")
+                else:
+                    # Single value
+                    sf_match_conditions.append(f"sf.library_strategy = ${library_strategy_param}")
+            
+            # Check library_source_material
+            if library_source_material_param is not None:
+                if library_source_material_param == "null":
+                    # Special case: check for null or "Other"
+                    sf_match_conditions.append("(sf.library_source_material IS NULL OR sf.library_source_material = 'Other')")
+                else:
+                    sf_match_conditions.append(f"sf.library_source_material = ${library_source_material_param}")
+            
+            # Combine all conditions with OR (if multiple fields) or use single condition
+            if len(sf_match_conditions) == 1:
+                has_matching_sf_expr = f"size([sf IN all_sfs WHERE sf IS NOT NULL AND {sf_match_conditions[0]}]) > 0"
+            else:
+                # Multiple conditions - combine with OR
+                combined_condition = " OR ".join([f"({cond})" for cond in sf_match_conditions])
+                has_matching_sf_expr = f"size([sf IN all_sfs WHERE sf IS NOT NULL AND ({combined_condition})]) > 0"
+            
+            second_with_vars.append(f"{has_matching_sf_expr} AS has_matching_sf")
             second_with_vars.append("head([sf IN all_sfs WHERE sf IS NOT NULL | sf]) AS sf")
             second_with_clause = ", ".join(second_with_vars)
         
@@ -3279,17 +3342,19 @@ class SampleRepository:
                 with_conditions.append(("anatomical_sites_string", param_name))
             elif field == "library_selection_method":
                 # Apply reverse mapping for filtering (API value -> DB value)
+                # Need to check if ANY sequencing_file matches, not just the first one
                 db_value = SampleRepository._reverse_map_library_selection_method_static(value)
                 params[param_name] = db_value
-                with_conditions.append(f"sf IS NOT NULL AND sf.library_selection = ${param_name}")
+                with_conditions.append(("library_selection_method", param_name))
             elif field == "library_strategy":
                 # Apply reverse mapping for filtering (API value -> DB value)
                 # For "Other", we need to match both "Archer Fusion" (reverse mapped) and "Other" (direct match)
+                # Need to check if ANY sequencing_file matches, not just the first one
                 db_value = reverse_map_field_value("library_strategy", value)
                 if db_value is None:
                     # If no reverse mapping, use the value as-is (for values not in mapping)
                     params[param_name] = value
-                    with_conditions.append(f"sf IS NOT NULL AND sf.library_strategy = ${param_name}")
+                    with_conditions.append(("library_strategy", param_name))
                 else:
                     # We have a reverse mapping - need to match both the mapped value and the original value
                     mapped_db_value = db_value if isinstance(db_value, str) else (db_value[0] if isinstance(db_value, list) and db_value else value)
@@ -3298,7 +3363,7 @@ class SampleRepository:
                     param_name_original = f"param_{param_counter}"
                     params[param_name] = mapped_db_value
                     params[param_name_original] = value
-                    with_conditions.append(f"sf IS NOT NULL AND (sf.library_strategy = ${param_name} OR sf.library_strategy = ${param_name_original})")
+                    with_conditions.append(("library_strategy", param_name, param_name_original))
             elif field == "specimen_molecular_analyte_type":
                 # Apply reverse mapping for filtering (API value -> DB value(s))
                 # "RNA" can map to both "Transcriptomic" and "Viral RNA" in DB
@@ -3330,13 +3395,14 @@ class SampleRepository:
             elif field == "library_source_material":
                 # Apply reverse mapping for filtering (API value -> DB value)
                 # "Other" maps to null, so filter for null values
+                # Need to check if ANY sequencing_file matches, not just the first one
                 reverse_mapped = reverse_map_field_value("library_source_material", value)
                 if reverse_mapped is None:
-                    # Filter for null or "Other" values
-                    with_conditions.append(f"(sf IS NULL OR sf.library_source_material IS NULL OR sf.library_source_material = 'Other')")
+                    # Filter for null or "Other" values - store as special condition
+                    with_conditions.append(("library_source_material_null", "null"))
                 else:
                     params[param_name] = reverse_mapped
-                    with_conditions.append(f"sf IS NOT NULL AND sf.library_source_material = ${param_name}")
+                    with_conditions.append(("library_source_material", param_name))
             elif field == "preservation_method":
                 with_conditions.append(f"pf IS NOT NULL AND pf.fixation_embedding_method = ${param_name}")
             elif field == "tumor_classification":
@@ -3397,12 +3463,15 @@ class SampleRepository:
             if param_name not in params:
                 params[param_name] = value
         
-        # Build WHERE clause - handle anatomical_sites and specimen_molecular_analyte_type filters specially
+        # Build WHERE clause - handle anatomical_sites, specimen_molecular_analyte_type, and sequencing_file field filters specially
         anatomical_sites_param = None
         anatomical_sites_list_condition = None
         anatomical_sites_string_condition = None
         specimen_molecular_analyte_type_list = None
         specimen_molecular_analyte_type_single_param = None
+        library_selection_method_param = None
+        library_strategy_param = None
+        library_source_material_param = None
         regular_conditions = []
         
         for condition in with_conditions:
@@ -3446,6 +3515,23 @@ class SampleRepository:
             elif isinstance(condition, tuple) and condition[0] == "specimen_molecular_analyte_type_single":
                 # Store the parameter name for single value mapping
                 specimen_molecular_analyte_type_single_param = condition[1]
+            elif isinstance(condition, tuple) and condition[0] == "library_selection_method":
+                # Store the parameter name - will be checked after collecting all sequencing_files
+                library_selection_method_param = condition[1]
+            elif isinstance(condition, tuple) and condition[0] == "library_strategy":
+                # Store the parameter name(s) - will be checked after collecting all sequencing_files
+                if len(condition) == 3:
+                    # Has both mapped and original values
+                    library_strategy_param = (condition[1], condition[2])
+                else:
+                    # Single value
+                    library_strategy_param = condition[1]
+            elif isinstance(condition, tuple) and condition[0] == "library_source_material":
+                # Store the parameter name - will be checked after collecting all sequencing_files
+                library_source_material_param = condition[1]
+            elif isinstance(condition, tuple) and condition[0] == "library_source_material_null":
+                # Store as special condition for null/Other values
+                library_source_material_param = "null"  # Signal that we need to check for null/Other
             else:
                 regular_conditions.append(condition)
         
@@ -3454,8 +3540,12 @@ class SampleRepository:
         if anatomical_sites_list_condition:
             # Use list version first (will try string version if it fails)
             all_conditions.append(anatomical_sites_list_condition)
-        # Add specimen_molecular_analyte_type condition if present (will be checked after collecting all sequencing_files)
-        if specimen_molecular_analyte_type_list or specimen_molecular_analyte_type_single_param:
+        # Add sequencing_file field conditions if present (will be checked after collecting all sequencing_files)
+        needs_sf_collection = (specimen_molecular_analyte_type_list or specimen_molecular_analyte_type_single_param or
+                              library_selection_method_param is not None or
+                              library_strategy_param is not None or
+                              library_source_material_param is not None)
+        if needs_sf_collection:
             all_conditions.append("has_matching_sf = true")
         
         where_clause = ""
@@ -3520,9 +3610,13 @@ class SampleRepository:
             with_vars.append("head(collect(DISTINCT d)) AS diagnoses")
         if needs_pathology_file:
             with_collects.append("head(collect(DISTINCT pf)) AS pf")
-        # For specimen_molecular_analyte_type, collect ALL sequencing_files first to check if ANY match
+        # For sequencing_file fields, collect ALL sequencing_files first to check if ANY match
+        needs_sf_collection = (specimen_molecular_analyte_type_list or specimen_molecular_analyte_type_single_param or
+                              library_selection_method_param is not None or
+                              library_strategy_param is not None or
+                              library_source_material_param is not None)
         if needs_sequencing_file:
-            if specimen_molecular_analyte_type_list or specimen_molecular_analyte_type_single_param:
+            if needs_sf_collection:
                 with_collects.append("collect(DISTINCT sf) AS all_sfs")  # Collect all sequencing_files
             else:
                 with_collects.append("head(collect(DISTINCT sf)) AS sf")
@@ -3538,12 +3632,10 @@ class SampleRepository:
         if identifiers_condition:
             with_clause += identifiers_condition
         
-        # For specimen_molecular_analyte_type, we need a second WITH clause to use all_sfs
+        # For sequencing_file fields, we need a second WITH clause to use all_sfs
         # (can't reference a variable in the same WITH clause where it's defined)
         second_with_clause = None
-        if specimen_molecular_analyte_type_list:
-            # Build list of DB values for IN clause
-            db_values_str = ", ".join([f"'{v}'" for v in specimen_molecular_analyte_type_list])
+        if needs_sf_collection:
             # Build second_with_vars based on what's available from first WITH
             second_with_vars = ["sa", "st"]
             if needs_participant or needs_study or needs_st_for_where:
@@ -3552,20 +3644,47 @@ class SampleRepository:
                 second_with_vars.append("diagnoses")
             if needs_pathology_file:
                 second_with_vars.append("pf")
-            second_with_vars.append(f"size([sf IN all_sfs WHERE sf IS NOT NULL AND sf.library_source_molecule IN [{db_values_str}]]) > 0 AS has_matching_sf")
-            second_with_vars.append("head([sf IN all_sfs WHERE sf IS NOT NULL | sf]) AS sf")
-            second_with_clause = ", ".join(second_with_vars)
-        elif specimen_molecular_analyte_type_single_param:
-            # Single value mapping
-            # Build second_with_vars based on what's available from first WITH
-            second_with_vars = ["sa", "st"]
-            if needs_participant or needs_study or needs_st_for_where:
-                second_with_vars.append("p")
-            if needs_diagnosis:
-                second_with_vars.append("diagnoses")
-            if needs_pathology_file:
-                second_with_vars.append("pf")
-            second_with_vars.append(f"size([sf IN all_sfs WHERE sf IS NOT NULL AND sf.library_source_molecule = ${specimen_molecular_analyte_type_single_param}]) > 0 AS has_matching_sf")
+            
+            # Build conditions to check if ANY sequencing_file matches
+            sf_match_conditions = []
+            
+            # Check specimen_molecular_analyte_type
+            if specimen_molecular_analyte_type_list:
+                db_values_str = ", ".join([f"'{v}'" for v in specimen_molecular_analyte_type_list])
+                sf_match_conditions.append(f"sf.library_source_molecule IN [{db_values_str}]")
+            elif specimen_molecular_analyte_type_single_param:
+                sf_match_conditions.append(f"sf.library_source_molecule = ${specimen_molecular_analyte_type_single_param}")
+            
+            # Check library_selection_method
+            if library_selection_method_param is not None:
+                sf_match_conditions.append(f"sf.library_selection = ${library_selection_method_param}")
+            
+            # Check library_strategy
+            if library_strategy_param is not None:
+                if isinstance(library_strategy_param, tuple):
+                    # Has both mapped and original values
+                    sf_match_conditions.append(f"(sf.library_strategy = ${library_strategy_param[0]} OR sf.library_strategy = ${library_strategy_param[1]})")
+                else:
+                    # Single value
+                    sf_match_conditions.append(f"sf.library_strategy = ${library_strategy_param}")
+            
+            # Check library_source_material
+            if library_source_material_param is not None:
+                if library_source_material_param == "null":
+                    # Special case: check for null or "Other"
+                    sf_match_conditions.append("(sf.library_source_material IS NULL OR sf.library_source_material = 'Other')")
+                else:
+                    sf_match_conditions.append(f"sf.library_source_material = ${library_source_material_param}")
+            
+            # Combine all conditions with OR (if multiple fields) or use single condition
+            if len(sf_match_conditions) == 1:
+                has_matching_sf_expr = f"size([sf IN all_sfs WHERE sf IS NOT NULL AND {sf_match_conditions[0]}]) > 0"
+            else:
+                # Multiple conditions - combine with OR
+                combined_condition = " OR ".join([f"({cond})" for cond in sf_match_conditions])
+                has_matching_sf_expr = f"size([sf IN all_sfs WHERE sf IS NOT NULL AND ({combined_condition})]) > 0"
+            
+            second_with_vars.append(f"{has_matching_sf_expr} AS has_matching_sf")
             second_with_vars.append("head([sf IN all_sfs WHERE sf IS NOT NULL | sf]) AS sf")
             second_with_clause = ", ".join(second_with_vars)
         

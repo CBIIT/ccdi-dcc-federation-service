@@ -124,7 +124,10 @@ in the `responses::Files` schema.""",
                                             "kind": "dbGaP",
                                             "value": "phs002430"
                                         }
-                                    ]
+                                    ],
+                                    "unharmonized": {
+                                        "file_name": {"value": "sample1-WGS.fastq.gz"}
+                                    }
                                 }
                             }
                         ]
@@ -416,8 +419,8 @@ async def count_files_by_field(
 @router.get(
     "/{organization}/{namespace}/{name}",
     response_model=File,
-    summary="Gets the sequencing file matching the provided name (if the file exists).",
-    description="Gets the sequencing file matching the provided name (if the file exists). Organization must be 'CCDI-DCC'. Namespace is the study_id value from the database. Name is the file_id field value.",
+    summary="Gets the sequencing file matching the provided identifier (if the file exists).",
+    description="Gets the sequencing file matching the provided identifier (if the file exists). Organization must be 'CCDI-DCC'. Namespace is the study_id value from the database. Name is the file id field value from the database.",
     operation_id="file_show",
     responses={
         200: {
@@ -456,7 +459,10 @@ async def count_files_by_field(
                                     "md5": "608449b55fe5480b3562a967eb7dc2b0"
                                 }
                             },
-                            "description": {"value": "WGS FASTQ Files R2"}
+                            "description": {"value": "WGS FASTQ Files R2"},
+                            "unharmonized": {
+                                "file_name": {"value": "UTYE.fastq"}
+                            }
                         }
                     }
                 }
@@ -483,10 +489,10 @@ async def count_files_by_field(
     }
 )
 async def get_file(
-    organization: str,
-    namespace: str,
-    name: str,
     request: Request,
+    organization: str = Path(..., description="Organization identifier", example="CCDI-DCC"),
+    namespace: str = Path(..., description="Study namespace (study_id)", example="phs002430"),
+    name: str = Path(..., description="File identifier (file.id)", example="b51fd7ab-e464-5012-b418-3502af28980d"),
     session: AsyncSession = Depends(get_database_session),
     settings: Settings = Depends(get_app_settings),
     allowlist: FieldAllowlist = Depends(get_allowlist),

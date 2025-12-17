@@ -110,10 +110,21 @@ in the `responses::Samples` schema.""",
                                     "name": "TARGET-10-DCC001"
                                 },
                                 "metadata": {
-                                    "disease_phase": {"value": "Primary"},
+                                    "disease_phase": {"value": "Initial Diagnosis"},
+                                    "diagnosis": {"value": "Neuroblastoma"},
+                                    "age_at_diagnosis": {"value": 10},
                                     "anatomical_sites": [
-                                        {"value": "C71.1 : Frontal lobe"},
                                         {"value": "C71.9 : Brain, NOS"}
+                                    ],
+                                    "tissue_type": {"value": "Tumor"},
+                                    "tumor_classification": {"value": "Primary"},
+                                    "library_strategy": {"value": "WXS"},
+                                    "library_source_material": {"value": "Genomic DNA"},
+                                    "depositions": [
+                                        {
+                                            "kind": "dbGaP",
+                                            "value": "phs002430"
+                                        }
                                     ],
                                     "identifiers": [
                                         {
@@ -122,8 +133,8 @@ in the `responses::Samples` schema.""",
                                                     "organization": "CCDI-DCC",
                                                     "name": "phs002430"
                                                 },
-                                                "name": "TARGET-10-DCC001",
-                                                "server": "https://dcc.ccdi.cancer.gov/api/v1/CCDI-DCC/phs002430/TARGET-10-DCC001",
+                                                "name": "TARGET-10-DCC001-03A-01R",
+                                                "server": "https://dcc.ccdi.cancer.gov/api/v1/sample/CCDI-DCC/phs002430/TARGET-10-DCC001-03A-01R",
                                                 "type": "Linked"
                                             }
                                         }
@@ -479,10 +490,21 @@ async def count_samples_by_field(
                             "name": "TARGET-10-DCC001"
                         },
                         "metadata": {
-                            "disease_phase": {"value": "Primary"},
+                            "disease_phase": {"value": "Initial Diagnosis"},
+                            "diagnosis": {"value": "Neuroblastoma"},
+                            "age_at_diagnosis": {"value": 10},
                             "anatomical_sites": [
-                                {"value": "C71.1 : Frontal lobe"},
                                 {"value": "C71.9 : Brain, NOS"}
+                            ],
+                            "tissue_type": {"value": "Tumor"},
+                            "tumor_classification": {"value": "Primary"},
+                            "library_strategy": {"value": "WXS"},
+                            "library_source_material": {"value": "Genomic DNA"},
+                            "depositions": [
+                                {
+                                    "kind": "dbGaP",
+                                    "value": "phs002430"
+                                }
                             ],
                             "identifiers": [
                                 {
@@ -491,8 +513,8 @@ async def count_samples_by_field(
                                             "organization": "CCDI-DCC",
                                             "name": "phs002430"
                                         },
-                                        "name": "TARGET-10-DCC001",
-                                        "server": "https://dcc.ccdi.cancer.gov/api/v1/CCDI-DCC/phs002430/TARGET-10-DCC001",
+                                        "name": "TARGET-10-DCC001-03A-01R",
+                                        "server": "https://dcc.ccdi.cancer.gov/api/v1/sample/CCDI-DCC/phs002430/TARGET-10-DCC001-03A-01R",
                                         "type": "Linked"
                                     }
                                 }

@@ -204,6 +204,11 @@ class SubjectRepository:
                     derived_conditions.append(f"final_vital_status = ${param_name}")
                 elif field == "age_at_vital_status":
                     derived_conditions.append(f"final_age_at_vital_status = ${param_name}")
+                    # Convert age to integer since it's stored as int in database
+                    try:
+                        value = int(value) if value is not None else value
+                    except (ValueError, TypeError):
+                        logger.warning(f"Invalid age_at_vital_status value: {value}, keeping as-is")
                 elif field == "ethnicity":
                     # Ethnicity filter will be applied in the WITH clause after calculation
                     ethnicity_param = param_name
@@ -2154,6 +2159,11 @@ WITH p, d, c, st,
                     derived_conditions.append(f"final_vital_status = ${param_name}")
                 elif field == "age_at_vital_status":
                     derived_conditions.append(f"final_age_at_vital_status = ${param_name}")
+                    # Convert age to integer since it's stored as int in database
+                    try:
+                        value = int(value) if value is not None else value
+                    except (ValueError, TypeError):
+                        logger.warning(f"Invalid age_at_vital_status value: {value}, keeping as-is")
                 elif field == "ethnicity":
                     # Ethnicity filter will be applied in the WITH clause after calculation
                     ethnicity_param = param_name

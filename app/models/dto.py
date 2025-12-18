@@ -383,7 +383,6 @@ class AssociatedDiagnosisField(BaseModel):
     """Associated diagnosis field with detailed structure."""
     value: str = Field(..., description="Diagnosis ID")
     ancestors: Optional[Any] = Field(default=None, description="Ancestor entities", exclude=True)
-    owned: bool = Field(default=True, description="Ownership status")
     comment: Optional[str] = Field(default=None, description="Comment")
 
 class SubjectMetadata(BaseModel):

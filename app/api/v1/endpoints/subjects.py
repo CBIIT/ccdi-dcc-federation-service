@@ -101,10 +101,10 @@ def prepare_subjects_for_response(subjects: List[Subject]) -> List[Dict[str, Any
                                     "identifiers": [
                                         {
                                             "value": {
-                                                "namespace": {
-                                                    "organization": "CCDI-DCC",
-                                                    "name": "phs002430"
-                                                },
+                                            "namespace": {
+                                                "organization": "CCDI-DCC",
+                                                "name": "phs002430"
+                                            },
                                                 "name": "SUBJECT-001",
                                                 "type": "Linked",
                                                 "server": "https://dcc.ccdi.cancer.gov/api/v1/subject/CCDI-DCC/phs002430/SUBJECT-001"
@@ -115,7 +115,7 @@ def prepare_subjects_for_response(subjects: List[Subject]) -> List[Dict[str, Any
                                     "age_at_vital_status": {"value": 45},
                                     "associated_diagnoses": [
                                         {
-                                            "value": "Neuroblastoma"
+                                            "value": "Neuroblastoma","comment": "null" 
                                         }
                                     ],
                                     "depositions": [
@@ -479,7 +479,7 @@ async def count_subjects_by_field(
                             "age_at_vital_status": {"value": 15},
                             "associated_diagnoses": [
                                 {
-                                    "value": "Neuroblastoma"
+                                    "value": "Neuroblastoma","comment": "null" 
                                 }
                             ],
                             "depositions": [

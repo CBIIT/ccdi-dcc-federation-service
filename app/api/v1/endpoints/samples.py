@@ -111,7 +111,7 @@ in the `responses::Samples` schema.""",
                                 },
                                 "metadata": {
                                     "disease_phase": {"value": "Initial Diagnosis"},
-                                    "diagnosis": {"value": "Neuroblastoma"},
+                                    "diagnosis": {"value": "Neuroblastoma","comment": "null" },
                                     "age_at_diagnosis": {"value": 10},
                                     "anatomical_sites": [
                                         {"value": "C71.9 : Brain, NOS"}
@@ -186,6 +186,27 @@ async def list_samples(
     )
     
     try:
+        # Validate query parameters - check for unknown parameters (especially "search" which is only for /sample-diagnosis)
+        allowed_params = {"disease_phase", "anatomical_sites", "library_selection_method", 
+                         "library_strategy", "library_source_material", "preservation_method", "tumor_grade",
+                         "specimen_molecular_analyte_type", "tissue_type", "tumor_classification", 
+                         "age_at_diagnosis", "age_at_collection", "tumor_tissue_morphology", 
+                         "depositions", "diagnosis", "identifiers", "page", "per_page"}
+        # Add support for metadata.unharmonized.* fields
+        allowed_params.update({k for k in request.query_params.keys() if k.startswith("metadata.unharmonized.")})
+        
+        unknown_params = []
+        for key in request.query_params.keys():
+            if key not in allowed_params and not key.startswith("metadata.unharmonized."):
+                unknown_params.append(key)
+        
+        if unknown_params:
+            raise InvalidParametersError(
+                parameters=[],  # Empty array - don't expose parameter names
+                message="Invalid query parameter(s) provided.",
+                reason="Unknown query parameter(s)"
+            )
+        
         # Create service
         cache_service = get_cache_service()
         service = SampleService(session, allowlist, settings, cache_service)
@@ -260,6 +281,12 @@ async def list_samples(
         return result
         
     except Exception as e:
+        # Check if this is a parameter validation error or query error
+        if isinstance(e, (InvalidParametersError, UnsupportedFieldError)):
+            # This is a parameter validation error - raise it directly
+            logger.error("Invalid parameters in request", error=str(e), exc_info=True)
+            raise e.to_http_exception()
+        
         # Check if this is a query error (like UnboundVariable, syntax error) that indicates a real problem
         # vs a scenario where we should return empty results
         error_str = str(e).lower()
@@ -491,7 +518,7 @@ async def count_samples_by_field(
                         },
                         "metadata": {
                             "disease_phase": {"value": "Initial Diagnosis"},
-                            "diagnosis": {"value": "Neuroblastoma"},
+                            "diagnosis": {"value": "Neuroblastoma","comment": "null" },
                             "age_at_diagnosis": {"value": 10},
                             "anatomical_sites": [
                                 {"value": "C71.9 : Brain, NOS"}

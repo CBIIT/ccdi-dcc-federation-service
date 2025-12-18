@@ -118,7 +118,7 @@ as a breaking change.""",
                                 },
                                 "metadata": {
                                     "disease_phase": {"value": "Initial Diagnosis"},
-                                    "diagnosis": {"value": "Neuroblastoma"},
+                                    "diagnosis": {"value": "Neuroblastoma","comment": "null" },
                                     "age_at_diagnosis": {"value": 10},
                                     "age_at_collection": {"value": 10},
                                     "anatomical_sites": [
@@ -197,11 +197,12 @@ async def search_samples_by_diagnosis(
     
     try:
         # Validate query parameters - check for unknown parameters
+        # Note: "diagnosis" is not included - use "search" parameter for diagnosis filtering
         allowed_params = {"search", "disease_phase", "anatomical_sites", "library_selection_method", 
                          "library_strategy", "library_source_material", "preservation_method", "tumor_grade",
                          "specimen_molecular_analyte_type", "tissue_type", "tumor_classification", 
                          "age_at_diagnosis", "age_at_collection", "tumor_tissue_morphology", 
-                         "depositions", "diagnosis", "identifiers", "page", "per_page"}
+                         "depositions", "identifiers", "page", "per_page"}
         
         unknown_params = []
         for key in request.query_params.keys():
@@ -285,7 +286,7 @@ async def search_samples_by_diagnosis(
         )
         
         return result
-    
+        
     except HTTPException:
         # Re-raise HTTPException as-is
         raise
@@ -405,7 +406,7 @@ as a breaking change.""",
                                     "vital_status": {"value": "Alive"},
                                     "age_at_vital_status": {"value": 12},
                                     "associated_diagnoses": [
-                                        {"value": "Neuroblastoma"}
+                                        {"value": "Neuroblastoma","comment": "null" }
                                     ],
                                     "depositions": [
                                         {
@@ -548,7 +549,7 @@ async def search_subjects_by_diagnosis(
         )
         
         return result
-    
+        
     except HTTPException:
         # Re-raise HTTPException as-is
         raise

@@ -131,16 +131,12 @@ class SubjectRepository:
                 # Filter by study_id - participants must belong to the specified study
                 where_conditions.append("st.study_id = ${}".format(dep_param))
         
-        # Handle diagnosis search
+        # Handle diagnosis search - will be applied after diagnosis collection
+        diagnosis_search_term = None
         if "_diagnosis_search" in filters:
-            search_term = filters.pop("_diagnosis_search")
-            where_conditions.append("""(
-                ANY(diag IN d.diagnosis WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))
-                OR ANY(key IN keys(p.metadata.unharmonized) 
-                       WHERE toLower(key) CONTAINS 'diagnos' 
-                       AND toLower(toString(p.metadata.unharmonized[key])) CONTAINS toLower($diagnosis_search_term))
-            )""")
-            params["diagnosis_search_term"] = search_term
+            diagnosis_search_term = filters.pop("_diagnosis_search")
+            params["diagnosis_search_term"] = diagnosis_search_term
+            # Don't add to where_conditions yet - will be applied after diagnosis collection
         
         # Separate derived fields (calculated after WITH clauses) from direct participant fields
         derived_filters = {}
@@ -367,6 +363,7 @@ class SubjectRepository:
              head(collect(DISTINCT ethnicity_value)) AS ethnicity_value,
              // Collect all distinct study_ids for this participant
              collect(DISTINCT st.study_id) AS study_ids
+        {"WHERE size([node IN diagnosis_nodes WHERE node IS NOT NULL AND ANY(diag IN CASE WHEN valueType(node.diagnosis) = 'LIST' THEN node.diagnosis ELSE [node.diagnosis] END WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))]) > 0" if diagnosis_search_term else ""}
         WITH participant_id, p, final_vital_status, final_age_at_vital_status,
              ethnicity_value, study_ids,
              // Aggregate all diagnoses from all diagnosis nodes
@@ -450,6 +447,7 @@ class SubjectRepository:
         // Collect studies separately (no cartesian product)
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         WITH p, survival_records, diagnosis_nodes, collect(DISTINCT st.study_id) AS study_ids
+        {"WHERE size([node IN diagnosis_nodes WHERE node IS NOT NULL AND ANY(diag IN CASE WHEN valueType(node.diagnosis) = 'LIST' THEN node.diagnosis ELSE [node.diagnosis] END WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))]) > 0" if diagnosis_search_term else ""}
         WITH p, diagnosis_nodes, study_ids,
              // Keep only records with a status
              [sr IN survival_records WHERE sr IS NOT NULL AND sr.last_known_survival_status IS NOT NULL] AS survs
@@ -2143,17 +2141,23 @@ WITH p, d, c, st,
                 # Filter by study_id - participants must belong to the specified study
                 where_conditions.append("st.study_id = ${}".format(dep_param))
         
-        # Handle diagnosis search
+        # Handle diagnosis search - will be applied after diagnosis collection
+        diagnosis_search_term = None
         if "_diagnosis_search" in filters:
-            search_term = filters.pop("_diagnosis_search")
-            where_conditions.append("""(
-                ANY(diag IN d.diagnosis WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))
-                OR ANY(key IN keys(p.metadata.unharmonized) 
-                       WHERE toLower(key) CONTAINS 'diagnos' 
-                       AND toLower(toString(p.metadata.unharmonized[key])) CONTAINS toLower($diagnosis_search_term))
-            )""")
-            params["diagnosis_search_term"] = search_term
-        
+            diagnosis_search_term = filters.pop("_diagnosis_search")
+            params["diagnosis_search_term"] = diagnosis_search_term
+            # Don't add to where_conditions yet - will be applied after diagnosis collection
+
+        # Build diagnosis search fragment to be inserted before final count
+        # This fragment assumes 'p' (participant node) and 'participant_id' are in scope
+        diagnosis_search_fragment = ""
+        if diagnosis_search_term:
+            diagnosis_search_fragment = """
+        // Apply diagnosis search filter
+        OPTIONAL MATCH (p)<-[:of_diagnosis]-(diag_search:diagnosis)
+        WITH participant_id, collect(DISTINCT diag_search) AS diag_search_nodes
+        WHERE size([dn IN diag_search_nodes WHERE dn IS NOT NULL AND ANY(diag IN CASE WHEN valueType(dn.diagnosis) = 'LIST' THEN dn.diagnosis ELSE [dn.diagnosis] END WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))]) > 0"""
+
         # Map API sex values to database values (M -> Male, F -> Female, U -> Not Reported)
         if "sex" in filters and filters["sex"]:
             sex_value = filters["sex"]
@@ -2488,6 +2492,7 @@ WITH p, d, c, st,
         // Collect studies separately (no cartesian product)
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         WITH participant_id, p, survival_records, diagnosis_nodes, collect(DISTINCT st.study_id) AS study_ids
+        {"WHERE size([node IN diagnosis_nodes WHERE node IS NOT NULL AND ANY(diag IN CASE WHEN valueType(node.diagnosis) = 'LIST' THEN node.diagnosis ELSE [node.diagnosis] END WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))]) > 0" if diagnosis_search_term else ""}
         // Apply filters
         WITH participant_id, p, survival_records, diagnosis_nodes, study_ids{race_condition}
         {where_clause_filtered}
@@ -2538,6 +2543,8 @@ WITH p, d, c, st,
              head(collect(final_age_at_vital_status)) AS final_age_at_vital_status,
              head(collect(ethnicity_value)) AS ethnicity_value
         {derived_where_clause}
+        // Note: Cannot apply diagnosis search here as 'p' is no longer in scope after head(collect())
+        // Diagnosis search would need to be applied earlier in the query if needed with survival filters
         RETURN count(DISTINCT participant_id) as total_count
         """.strip()
             else:
@@ -2618,6 +2625,8 @@ WITH p, d, c, st,
              head(collect(final_age_at_vital_status)) AS final_age_at_vital_status,
              head(collect(ethnicity_value)) AS ethnicity_value
         {derived_where_clause}
+        // Note: Cannot apply diagnosis search here as 'p' is no longer in scope after head(collect())
+        // Diagnosis search would need to be applied earlier in the query if needed with survival filters
         RETURN count(DISTINCT participant_id) as total_count
         """.strip()
         else:
@@ -2689,7 +2698,7 @@ WITH p, d, c, st,
                WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
                ELSE 'Not reported'
              END AS ethnicity_value
-        {derived_where_clause}
+        {derived_where_clause}{diagnosis_search_fragment}
         WITH DISTINCT participant_id
         RETURN count(participant_id) as total_count
         """.strip()
@@ -2715,7 +2724,7 @@ WITH p, d, c, st,
                WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
                ELSE 'Not reported'
              END AS ethnicity_value
-        {derived_where_clause}
+        {derived_where_clause}{diagnosis_search_fragment}
         WITH DISTINCT participant_id
         RETURN count(participant_id) as total_count
         """.strip()
@@ -2756,7 +2765,7 @@ WITH p, d, c, st,
                WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
                ELSE 'Not reported'
              END AS ethnicity_value
-        {derived_where_clause}
+        {derived_where_clause}{diagnosis_search_fragment}
         WITH DISTINCT participant_id
         RETURN count(participant_id) as total_count
         """.strip()
@@ -2789,7 +2798,7 @@ WITH p, d, c, st,
                WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
                ELSE 'Not reported'
              END AS ethnicity_value
-        {derived_where_clause}
+        {derived_where_clause}{diagnosis_search_fragment}
         WITH DISTINCT participant_id
         RETURN count(participant_id) as total_count
         """.strip()
@@ -2811,7 +2820,7 @@ WITH p, d, c, st,
                WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
                ELSE 'Not reported'
              END AS ethnicity_value
-        {derived_where_clause}
+        {derived_where_clause}{diagnosis_search_fragment}
         WITH DISTINCT participant_id
         RETURN count(participant_id) as total_count
         """.strip()
@@ -2882,7 +2891,7 @@ WITH p, d, c, st,
         WITH DISTINCT p.participant_id AS participant_id, p
         MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         WHERE st.study_id = ${dep_param}
-        {with_clause}
+        {with_clause}{diagnosis_search_fragment}
         WITH DISTINCT participant_id
         RETURN count(participant_id) as total_count
         """.strip()
@@ -2901,7 +2910,7 @@ WITH p, d, c, st,
         WHERE p.participant_id IN id_list
         WITH DISTINCT p.participant_id AS participant_id, p
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
-        {with_clause}
+        {with_clause}{diagnosis_search_fragment}
         WITH DISTINCT participant_id
         RETURN count(participant_id) as total_count
         """.strip()
@@ -2936,7 +2945,7 @@ WITH p, d, c, st,
         MATCH (p:participant)
         MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         WHERE st.study_id = ${dep_param}
-        {with_clause}
+        {with_clause}{diagnosis_search_fragment}
         WITH DISTINCT participant_id
         RETURN count(participant_id) as total_count
         """.strip()
@@ -2952,13 +2961,25 @@ WITH p, d, c, st,
                             cypher = f"""
         MATCH (p:participant)
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
-        {with_clause}
+        {with_clause}{diagnosis_search_fragment}
         WITH DISTINCT participant_id
         RETURN count(participant_id) as total_count
         """.strip()
             else:
-                # No filters at all - simple count
-                cypher = """
+                # No filters at all - but check for diagnosis search
+                if diagnosis_search_term:
+                    # Apply diagnosis search filter
+                    cypher = f"""
+        MATCH (p:participant)
+        // Collect diagnoses separately (no cartesian product)
+        OPTIONAL MATCH (p)<-[:of_diagnosis]-(d:diagnosis)
+        WITH p, collect(DISTINCT d) AS diagnosis_nodes
+        WHERE size([node IN diagnosis_nodes WHERE node IS NOT NULL AND ANY(diag IN CASE WHEN valueType(node.diagnosis) = 'LIST' THEN node.diagnosis ELSE [node.diagnosis] END WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))]) > 0
+        RETURN count(DISTINCT p.participant_id) as total_count
+        """.strip()
+                else:
+                    # No filters at all - simple count
+                    cypher = """
         MATCH (p:participant)
         RETURN count(DISTINCT p.participant_id) as total_count
         """.strip()
@@ -3208,7 +3229,6 @@ WITH p, d, c, st,
                     [
                         {
                             "value": diag,
-                            "owned": True,
                             "comment": None
                         }
                         for diag in associated_diagnoses

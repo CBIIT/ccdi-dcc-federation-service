@@ -113,7 +113,7 @@ def get_subject_filters(
         # Define all allowed query parameter names
         allowed_params = {
             "sex", "race", "ethnicity", "identifiers", "vital_status", 
-            "age_at_vital_status", "depositions", "page", "per_page"
+            "age_at_vital_status", "depositions", "page", "per_page", "search"
         }
         
         # Check for unknown parameters (excluding unharmonized fields)
@@ -643,10 +643,10 @@ def get_subject_diagnosis_filters(
         depositions=depositions,
         request=request
     )
-
+    
     if search:
         filters["_diagnosis_search"] = search
-
+    
     return filters
 
 
@@ -711,10 +711,6 @@ def get_sample_diagnosis_filters(
         None,
         description="Matches any sample where any member of the `depositions` fields match the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the sample should be included in the results."
     ),
-    diagnosis: Optional[str] = Query(
-        None,
-        description="Matches any sample where the `diagnosis` field matches the string provided."
-    ),
     identifiers: Optional[str] = Query(
         None,
         description="Matches any sample where the `sample_id` field matches the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the sample should be included in the results."
@@ -737,7 +733,7 @@ def get_sample_diagnosis_filters(
         age_at_collection=age_at_collection,
         tumor_tissue_morphology=tumor_tissue_morphology,
         depositions=depositions,
-        diagnosis=diagnosis,
+        diagnosis=None,  # Always None for sample-diagnosis endpoint (use 'search' instead)
         identifiers=identifiers,
         request=request
     )

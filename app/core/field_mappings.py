@@ -138,6 +138,77 @@ def reverse_map_field_value(field_name: str, api_value: Any) -> Optional[str | L
     return str_value
 
 
+def is_null_mapped_value(field_name: str, value: Any) -> bool:
+    """
+    Check if a value is in the null_mappings for a given field.
+    
+    Values in null_mappings are treated as NULL/missing and should not
+    be valid filter values.
+    
+    Args:
+        field_name: Name of the field (e.g., "library_source_material")
+        value: Value to check
+        
+    Returns:
+        True if the value is in null_mappings, False otherwise
+    """
+    if value is None:
+        return False
+    
+    str_value = str(value).strip()
+    if not str_value:
+        return False
+    
+    # Find field configuration
+    field_config_result = _find_field_config(field_name)
+    if field_config_result is None:
+        return False
+    
+    _, field_config = field_config_result
+    null_mappings = field_config.get("null_mappings", [])
+    
+    return str_value in null_mappings
+
+
+def is_database_only_value(field_name: str, value: Any) -> bool:
+    """
+    Check if a value is a database-only value (not a valid API value).
+    
+    Database-only values are those that appear in the forward mappings
+    (database -> API) but NOT in reverse_mappings (API -> database).
+    These should not be accepted as filter values.
+    
+    Args:
+        field_name: Name of the field (e.g., "disease_phase")
+        value: Value to check
+        
+    Returns:
+        True if the value is a database-only value, False otherwise
+    """
+    if value is None:
+        return False
+    
+    str_value = str(value).strip()
+    if not str_value:
+        return False
+    
+    # Find field configuration
+    field_config_result = _find_field_config(field_name)
+    if field_config_result is None:
+        return False
+    
+    _, field_config = field_config_result
+    mappings = field_config.get("mappings", {})
+    reverse_mappings = field_config.get("reverse_mappings", {})
+    
+    # If the value is in the forward mappings (as a database value that gets mapped to API value)
+    # but NOT in reverse_mappings (as a valid API value), it's a database-only value
+    if str_value in mappings and str_value not in reverse_mappings:
+        return True
+    
+    return False
+
+
 def get_field_mapping_info(field_name: str) -> Optional[Dict[str, Any]]:
     """
     Get mapping configuration for a specific field.

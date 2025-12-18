@@ -96,8 +96,9 @@ class VitalStatus(str, Enum):
     """
     ALIVE = "Alive"
     DEAD = "Dead"
-    NOT_REPORTED = "Not Reported"
+    NOT_REPORTED = "Not reported"
     UNKNOWN = "Unknown"
+    UNSPECIFIED = "Unspecified"
 
     @classmethod
     def values(cls) -> list[str]:

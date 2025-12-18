@@ -100,15 +100,24 @@ def prepare_subjects_for_response(subjects: List[Subject]) -> List[Dict[str, Any
                                     "ethnicity": {"value": "Not reported"},
                                     "identifiers": [
                                         {
+                                            "value": {
                                             "namespace": {
                                                 "organization": "CCDI-DCC",
                                                 "name": "phs002430"
                                             },
-                                            "name": "SUBJECT-001"
+                                                "name": "SUBJECT-001",
+                                                "type": "Linked",
+                                                "server": "https://dcc.ccdi.cancer.gov/api/v1/subject/CCDI-DCC/phs002430/SUBJECT-001"
+                                            }
                                         }
                                     ],
                                     "vital_status": {"value": "Alive"},
                                     "age_at_vital_status": {"value": 45},
+                                    "associated_diagnoses": [
+                                        {
+                                            "value": "Neuroblastoma","comment": "null" 
+                                        }
+                                    ],
                                     "depositions": [
                                         {
                                             "kind": "dbGaP",
@@ -432,7 +441,77 @@ async def count_subjects_by_field(
     "/{organization}/{namespace}/{name}",
     response_model=None,  # Will return different types based on input
     summary="Get subject by identifier or filter by field",
-    description="Get a specific subject by organization, namespace, and name. Organization defaults to 'CCDI-DCC'. Namespace is the study_id value from the database. 'name' is the participant ID."
+    description="Get a specific subject by organization, namespace, and name. Organization defaults to 'CCDI-DCC'. Namespace is the study_id value from the database. 'name' is the participant ID.",
+    responses={
+        200: {
+            "description": "Successful operation.",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "id": {
+                            "namespace": {
+                                "organization": "CCDI-DCC",
+                                "name": "phs002430"
+                            },
+                            "name": "TARGET-10-DCC001"
+                        },
+                        "kind": "Participant",
+                        "metadata": {
+                            "sex": {"value": "M"},
+                            "race": [
+                                {"value": "White"}
+                            ],
+                            "ethnicity": {"value": "Not reported"},
+                            "identifiers": [
+                                {
+                                    "value": {
+                                        "namespace": {
+                                            "organization": "CCDI-DCC",
+                                            "name": "phs002430"
+                                        },
+                                        "name": "TARGET-10-DCC001",
+                                        "type": "Linked",
+                                        "server": "https://dcc.ccdi.cancer.gov/api/v1/subject/CCDI-DCC/phs002430/TARGET-10-DCC001"
+                                    }
+                                }
+                            ],
+                            "vital_status": {"value": "Alive"},
+                            "age_at_vital_status": {"value": 15},
+                            "associated_diagnoses": [
+                                {
+                                    "value": "Neuroblastoma","comment": "null" 
+                                }
+                            ],
+                            "depositions": [
+                                {
+                                    "kind": "dbGaP",
+                                    "value": "phs002430"
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        404: {
+            "description": "Not found.",
+            "content": {
+                "application/json": {
+                    "schema": {"$ref": "#/components/schemas/ErrorsResponse"},
+                    "example": {
+                        "errors": [
+                            {
+                                "kind": "NotFound",
+                                "entity": "Subjects",
+                                "message": "Unable to find data for your request.",
+                                "reason": "No data found."
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+    }
 )
 async def get_subject(
     organization: str,

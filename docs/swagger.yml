@@ -1610,7 +1610,7 @@ paths:
       summary: Gets the sequencing file matching the provided name (if the file exists).
       description: Gets the sequencing file matching the provided name (if the file
         exists). Organization must be 'CCDI-DCC'. Namespace is the study_id value
-        from the database. Name is the file_id field value.
+        from the database. Name is the file.id field value.
       operationId: file_show
       parameters:
       - name: organization

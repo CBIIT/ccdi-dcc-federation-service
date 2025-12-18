@@ -737,6 +737,10 @@ paths:
           * Filtering on field with multiple values should include the `File` in the results if the query exactly matches any of the values of the field for that `File` (case-sensitive).
           * Unlike harmonized fields, unharmonized fields must be prefixed with `metadata.unharmonized`.
 
+          **Examples:**
+          * `?metadata.unharmonized.file_name=UTYE.fastq` - Filter files by file_name
+          * `?metadata.unharmonized.custom_field=value1` - Filter by any custom unharmonized field
+
           **Note:** this query parameter is intended to be symbolic of any unharmonized field. Because of limitations within Swagger UI, it will show up as a query parameter that can be optionally be submitted as part of a request within Swagger UI. Please keep in mind that the literal query parameter `?metadata.unharmonized.<field>=value` is not supported, so attempting to use it within Swagger UI will not work!
         required: false
         schema:
@@ -825,7 +829,7 @@ paths:
         required: true
         schema:
           type: string
-      - name: name
+      - name: file.id
         in: path
         description: The name portion of the file identifier.
         required: true
@@ -2025,7 +2029,6 @@ components:
       - U
       - F
       - M
-      - UNDIFFERENTIATED
     cde.v1.subject.VitalStatus:
       type: string
       description: |-

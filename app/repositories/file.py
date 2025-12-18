@@ -90,6 +90,22 @@ class FileRepository:
         
         # Add regular filters
         for field, value in filters_copy.items():
+            # Handle unharmonized fields (e.g., metadata.unharmonized.file_name)
+            if field.startswith("metadata.unharmonized."):
+                # Extract the actual database field name
+                # e.g., "metadata.unharmonized.file_name" -> "file_name"
+                db_field_name = field.replace("metadata.unharmonized.", "")
+                
+                param_counter += 1
+                param_name = f"param_{param_counter}"
+                
+                if isinstance(value, list):
+                    where_conditions.append(f"sf.{db_field_name} IN ${param_name}")
+                else:
+                    where_conditions.append(f"sf.{db_field_name} = ${param_name}")
+                params[param_name] = value
+                continue
+            
             param_counter += 1
             param_name = f"param_{param_counter}"
             
@@ -229,7 +245,7 @@ class FileRepository:
         Args:
             organization: Organization identifier (must be "CCDI-DCC")
             namespace: Namespace identifier (study_id)
-            name: File identifier (file_id)
+            name: File identifier (file id)
             
         Returns:
             File object or None if not found
@@ -242,7 +258,7 @@ class FileRepository:
         )
         
         # Build query to find sequencing_file by identifier
-        # Use only sf.id field
+        # Use sf.id field
         # Only include sequencing_files that have a path to a study
         # Path 1: sequencing_file -> sample -> participant -> consent_group -> study
         # Path 2: sequencing_file -> sample -> cell_line -> study
@@ -253,10 +269,10 @@ class FileRepository:
         OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st1:study)
         OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st2:study)
-        WITH sf, coalesce(st1, st2) AS st
+        WITH sf, sa, coalesce(st1, st2) AS st
         WHERE st IS NOT NULL AND st.study_id = $namespace
-        WITH DISTINCT sf
-        RETURN sf
+        WITH DISTINCT sf, collect(DISTINCT sa) AS samples, st
+        RETURN sf, samples, st
         LIMIT 1
         """
         
@@ -281,32 +297,7 @@ class FileRepository:
             logger.debug("Sequencing file not found", name=name, namespace=namespace)
             return None
         
-        # Convert to File object
-        file_data = records[0].get("sf", {})
-        # For single file, we need to fetch samples
-        cypher_samples = """
-        MATCH (sf:sequencing_file)
-        WHERE sf.id = $name
-        MATCH (sf)-[:of_sequencing_file]->(sa:sample)
-        OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-        OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st1:study)
-        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st2:study)
-        WITH sf, sa, coalesce(st1, st2) AS st
-        WHERE st IS NOT NULL AND st.study_id = $namespace
-        WITH DISTINCT sf, collect(DISTINCT sa) AS samples, st
-        RETURN sf, samples, st
-        LIMIT 1
-        """
-        
-        result_samples = await self.session.run(cypher_samples, params)
-        records_samples = []
-        async for record in result_samples:
-            records_samples.append(dict(record))
-        
-        if not records_samples:
-            return None
-        
-        record = records_samples[0]
+        record = records[0]
         file_data = record.get("sf", {})
         samples_data = record.get("samples", [])
         study_data = record.get("st", {})
@@ -394,6 +385,21 @@ class FileRepository:
         
         # Add regular filters
         for filter_field, value in filters_copy.items():
+            # Handle unharmonized fields (e.g., metadata.unharmonized.file_name)
+            if filter_field.startswith("metadata.unharmonized."):
+                # Extract the actual database field name
+                db_field_name = filter_field.replace("metadata.unharmonized.", "")
+                
+                param_counter += 1
+                param_name = f"param_{param_counter}"
+                
+                if isinstance(value, list):
+                    base_where_conditions.append(f"sf.{db_field_name} IN ${param_name}")
+                else:
+                    base_where_conditions.append(f"sf.{db_field_name} = ${param_name}")
+                params[param_name] = value
+                continue
+            
             param_counter += 1
             param_name = f"param_{param_counter}"
             
@@ -603,6 +609,21 @@ class FileRepository:
         
         # Add regular filters
         for filter_field, value in filters.items():
+            # Handle unharmonized fields (e.g., metadata.unharmonized.file_name)
+            if filter_field.startswith("metadata.unharmonized."):
+                # Extract the actual database field name
+                db_field_name = filter_field.replace("metadata.unharmonized.", "")
+                
+                param_counter += 1
+                param_name = f"param_{param_counter}"
+                
+                if isinstance(value, list):
+                    base_where_conditions.append(f"sf.{db_field_name} IN ${param_name}")
+                else:
+                    base_where_conditions.append(f"sf.{db_field_name} = ${param_name}")
+                params[param_name] = value
+                continue
+            
             param_counter += 1
             param_name = f"param_{param_counter}"
             
@@ -766,6 +787,22 @@ class FileRepository:
         
         # Add regular filters
         for field, value in filters_copy.items():
+            # Handle unharmonized fields (e.g., metadata.unharmonized.file_name)
+            if field.startswith("metadata.unharmonized."):
+                # Extract the actual database field name
+                # e.g., "metadata.unharmonized.file_name" -> "file_name"
+                db_field_name = field.replace("metadata.unharmonized.", "")
+                
+                param_counter += 1
+                param_name = f"param_{param_counter}"
+                
+                if isinstance(value, list):
+                    where_conditions.append(f"sf.{db_field_name} IN ${param_name}")
+                else:
+                    where_conditions.append(f"sf.{db_field_name} = ${param_name}")
+                params[param_name] = value
+                continue
+            
             param_counter += 1
             param_name = f"param_{param_counter}"
             
@@ -1008,12 +1045,19 @@ class FileRepository:
         raw_file_type = sf.get("file_type") or sf.get("type")
         mapped_file_type = self._map_file_type_to_enum(raw_file_type)
         
+        # Build unharmonized section with file_name
+        unharmonized = {}
+        file_name_value = sf.get("file_name")
+        if file_name_value is not None:
+            unharmonized["file_name"] = format_metadata_value(file_name_value)
+        
         metadata = {
             "size": format_metadata_value(sf.get("file_size") or sf.get("size")),
             "type": format_metadata_value(mapped_file_type),  # Use mapped enum value or None
             "checksums": format_checksums(sf.get("md5sum")),
             "description": format_metadata_value(sf.get("file_description")),
-            "depositions": depositions
+            "depositions": depositions,
+            "unharmonized": unharmonized if unharmonized else None
         }
         
         # Build file structure

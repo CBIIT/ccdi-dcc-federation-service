@@ -65,5 +65,18 @@
       "null_mappings": ["non-malignant"],
       "reverse_mappings": {}
     }
+  },
+  "subject": {
+    "vital_status": {
+      "description": "Maps database values to API values for vital_status field",
+      "source_property": "last_known_survival_status",
+      "mappings": {
+        "Not Reported": "Not reported"
+      },
+      "null_mappings": [],
+      "reverse_mappings": {
+        "Not reported": "Not Reported"
+      }
+    }
   }
 }

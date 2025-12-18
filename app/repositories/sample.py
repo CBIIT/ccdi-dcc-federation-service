@@ -15,7 +15,7 @@ from app.models.dto import Sample
 from app.models.errors import UnsupportedFieldError
 from app.core.config import Settings
 from app.core.constants import Race
-from app.core.field_mappings import map_field_value, reverse_map_field_value
+from app.core.field_mappings import map_field_value, reverse_map_field_value, is_null_mapped_value, is_database_only_value
 
 logger = get_logger(__name__)
 
@@ -135,10 +135,7 @@ class SampleRepository:
             param_name = f"param_{param_counter}"
             
             # Map fields to their source nodes (after WITH clause, so we can reference them directly)
-            if field == "disease_phase":
-                # Filter on diagnosis with matching disease_phase
-                with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase = ${param_name}")
-            elif field == "anatomical_sites":
+            if field == "anatomical_sites":
                 # anatomical_sites can be either a list or a string
                 # If it's a list, we need to check if ANY of the values match (OR logic)
                 # Normalize the value (trim whitespace) for consistent matching
@@ -155,91 +152,112 @@ class SampleRepository:
                     # Also store string version for fallback
                     with_conditions.append(("anatomical_sites_string", param_name))
             elif field == "library_selection_method":
-                # Apply reverse mapping for filtering (API value -> DB value)
-                # Need to check if ANY sequencing_file matches, not just the first one
-                db_value = SampleRepository._reverse_map_library_selection_method_static(value)
-                params[param_name] = db_value
-                with_conditions.append(("library_selection_method", param_name))
+                # Check if value is a database-only value (e.g., "PolyA", "Not Applicable")
+                if is_database_only_value("library_selection_method", value):
+                    # This value is a database-only value and is not valid for filtering
+                    with_conditions.append(("library_selection_method_invalid", "invalid"))
+                else:
+                    # Apply reverse mapping for filtering (API value -> DB value)
+                    # Need to check if ANY sequencing_file matches, not just the first one
+                    db_value = SampleRepository._reverse_map_library_selection_method_static(value)
+                    params[param_name] = db_value
+                    with_conditions.append(("library_selection_method", param_name))
             elif field == "library_strategy":
-                # Apply reverse mapping for filtering (API value -> DB value)
-                # For "Other", we need to match both "Archer Fusion" (reverse mapped) and "Other" (direct match)
-                # Need to check if ANY sequencing_file matches, not just the first one
-                db_value = reverse_map_field_value("library_strategy", value)
-                if db_value is None:
-                    # If no reverse mapping, use the value as-is (for values not in mapping)
-                    params[param_name] = value
-                    with_conditions.append(("library_strategy", param_name))
+                # Check if value is a database-only value (e.g., "Archer Fusion")
+                if is_database_only_value("library_strategy", value):
+                    # This value is a database-only value and is not valid for filtering
+                    with_conditions.append(("library_strategy_invalid", "invalid"))
                 else:
-                    # We have a reverse mapping - need to match both the mapped value and the original value
-                    mapped_db_value = db_value if isinstance(db_value, str) else (db_value[0] if isinstance(db_value, list) and db_value else value)
-                    # Match either the reverse-mapped value OR the original value (in case DB already has "Other")
-                    param_counter += 1
-                    param_name_original = f"param_{param_counter}"
-                    params[param_name] = mapped_db_value
-                    params[param_name_original] = value
-                    with_conditions.append(("library_strategy", param_name, param_name_original))
+                    # Apply reverse mapping for filtering (API value -> DB value)
+                    # For "Other", we need to match both "Archer Fusion" (reverse mapped) and "Other" (direct match)
+                    # Need to check if ANY sequencing_file matches, not just the first one
+                    db_value = reverse_map_field_value("library_strategy", value)
+                    if db_value is None:
+                        # If no reverse mapping, use the value as-is (for values not in mapping)
+                        params[param_name] = value
+                        with_conditions.append(("library_strategy", param_name))
+                    else:
+                        # We have a reverse mapping - need to match both the mapped value and the original value
+                        mapped_db_value = db_value if isinstance(db_value, str) else (db_value[0] if isinstance(db_value, list) and db_value else value)
+                        # Match either the reverse-mapped value OR the original value (in case DB already has "Other")
+                        param_counter += 1
+                        param_name_original = f"param_{param_counter}"
+                        params[param_name] = mapped_db_value
+                        params[param_name_original] = value
+                        with_conditions.append(("library_strategy", param_name, param_name_original))
             elif field == "specimen_molecular_analyte_type":
-                # Apply reverse mapping for filtering (API value -> DB value(s))
-                # "RNA" can map to both "Transcriptomic" and "Viral RNA" in DB
-                # Special handling: need to check if ANY sequencing_file matches, not just the first one
-                reverse_mapped = reverse_map_field_value("specimen_molecular_analyte_type", value)
-                if isinstance(reverse_mapped, list):
-                    # Multiple DB values map to this API value - store as special condition
-                    # Will be handled after collecting all sequencing_files
-                    with_conditions.append(("specimen_molecular_analyte_type_list", reverse_mapped))
-                elif reverse_mapped is None:
-                    # Filter for null or "Not Reported"
-                    with_conditions.append(f"(sf IS NULL OR sf.library_source_molecule IS NULL OR sf.library_source_molecule = 'Not Reported')")
+                # Check if value is a database-only value (e.g., "Transcriptomic", "Genomic", "Viral RNA")
+                # or in null_mappings (e.g., "Not Reported")
+                if is_database_only_value("specimen_molecular_analyte_type", value) or is_null_mapped_value("specimen_molecular_analyte_type", value):
+                    # This value is not valid for filtering
+                    with_conditions.append(("specimen_molecular_analyte_type_invalid", "invalid"))
                 else:
-                    params[param_name] = reverse_mapped
-                    # Store as special condition - will be handled after collecting all sequencing_files
-                    with_conditions.append(("specimen_molecular_analyte_type_single", param_name))
+                    # Apply reverse mapping for filtering (API value -> DB value(s))
+                    # "RNA" can map to both "Transcriptomic" and "Viral RNA" in DB
+                    # Special handling: need to check if ANY sequencing_file matches, not just the first one
+                    reverse_mapped = reverse_map_field_value("specimen_molecular_analyte_type", value)
+                    if isinstance(reverse_mapped, list):
+                        # Multiple DB values map to this API value - store as special condition
+                        # Will be handled after collecting all sequencing_files
+                        with_conditions.append(("specimen_molecular_analyte_type_list", reverse_mapped))
+                    else:
+                        params[param_name] = reverse_mapped
+                        # Store as special condition - will be handled after collecting all sequencing_files
+                        with_conditions.append(("specimen_molecular_analyte_type_single", param_name))
             elif field == "disease_phase":
-                # Apply reverse mapping for filtering (API value -> DB value(s))
-                # "Relapse" can map to both "Recurrent Disease" and "Relapse" in DB
-                reverse_mapped = reverse_map_field_value("disease_phase", value)
-                if isinstance(reverse_mapped, list):
-                    # Multiple DB values map to this API value - use OR condition
-                    db_values_list = [f"'{v}'" for v in reverse_mapped]
-                    db_values_str = ", ".join(db_values_list)
-                    with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase IN [{db_values_str}]")
+                # Check if value is a database-only value (e.g., "Recurrent Disease")
+                # Database-only values should not be accepted as filter values
+                if is_database_only_value("disease_phase", value):
+                    # This value is a database-only value and is not valid for filtering
+                    # Add an impossible condition to return empty results
+                    with_conditions.append("false")
                 else:
-                    params[param_name] = reverse_mapped
-                    with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase = ${param_name}")
+                    # Apply reverse mapping for filtering (API value -> DB value(s))
+                    # "Relapse" can map to both "Recurrent Disease" and "Relapse" in DB
+                    reverse_mapped = reverse_map_field_value("disease_phase", value)
+                    if isinstance(reverse_mapped, list):
+                        # Multiple DB values map to this API value - use OR condition
+                        db_values_list = [f"'{v}'" for v in reverse_mapped]
+                        db_values_str = ", ".join(db_values_list)
+                        with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase IN [{db_values_str}]")
+                    else:
+                        params[param_name] = reverse_mapped
+                        with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase = ${param_name}")
             elif field == "library_source_material":
-                # Apply reverse mapping for filtering (API value -> DB value)
-                # "Other" maps to null, so filter for null values
-                # Need to check if ANY sequencing_file matches, not just the first one
-                reverse_mapped = reverse_map_field_value("library_source_material", value)
-                if reverse_mapped is None:
-                    # Filter for null or "Other" values - store as special condition
-                    with_conditions.append(("library_source_material_null", "null"))
+                # Check if value is in null_mappings (e.g., "Other")
+                # Values in null_mappings are treated as missing and should not match any records
+                if is_null_mapped_value("library_source_material", value):
+                    # This value is treated as NULL/missing and is not valid for filtering
+                    # Add an impossible condition to return empty results
+                    with_conditions.append(("library_source_material_invalid", "invalid"))
                 else:
+                    # Apply reverse mapping for filtering (API value -> DB value)
+                    reverse_mapped = reverse_map_field_value("library_source_material", value)
                     params[param_name] = reverse_mapped
                     with_conditions.append(("library_source_material", param_name))
             elif field == "preservation_method":
                 with_conditions.append(f"pf IS NOT NULL AND pf.fixation_embedding_method = ${param_name}")
             elif field == "tumor_classification":
-                # Apply reverse mapping for filtering (API value -> DB value)
-                # "non-malignant" maps to null, so filter for null values
-                reverse_mapped = reverse_map_field_value("tumor_classification", value)
-                if reverse_mapped is None:
-                    # Filter for null or "non-malignant" values
-                    with_conditions.append(f"(diagnoses IS NULL OR diagnoses.tumor_classification IS NULL OR diagnoses.tumor_classification = 'non-malignant')")
+                # Check if value is in null_mappings (e.g., "non-malignant")
+                if is_null_mapped_value("tumor_classification", value):
+                    # This value is treated as NULL/missing and is not valid for filtering
+                    with_conditions.append("false")
                 else:
+                    # Apply reverse mapping for filtering (API value -> DB value)
+                    reverse_mapped = reverse_map_field_value("tumor_classification", value)
                     params[param_name] = reverse_mapped
                     with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_classification = ${param_name}")
             elif field == "tumor_grade":
                 with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_grade = ${param_name}")
             elif field == "age_at_diagnosis":
-                with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.age_at_diagnosis = ${param_name}")
+                with_conditions.append(f"diagnoses IS NOT NULL AND toInteger(diagnoses.age_at_diagnosis) = ${param_name}")
                 # Convert value to number for numeric comparison
                 try:
                     params[param_name] = int(value) if value is not None else None
                 except (ValueError, TypeError):
                     params[param_name] = value
             elif field == "age_at_collection":
-                with_conditions.append(f"sa.participant_age_at_collection = ${param_name}")
+                with_conditions.append(f"toInteger(sa.participant_age_at_collection) = ${param_name}")
                 # Convert value to number for numeric comparison
                 try:
                     params[param_name] = int(value) if value is not None else None
@@ -331,9 +349,15 @@ class SampleRepository:
             elif isinstance(condition, tuple) and condition[0] == "specimen_molecular_analyte_type_single":
                 # Store the parameter name for single value mapping
                 specimen_molecular_analyte_type_single_param = condition[1]
+            elif isinstance(condition, tuple) and condition[0] == "specimen_molecular_analyte_type_invalid":
+                # Invalid value (database-only or null-mapped value) - set impossible condition
+                specimen_molecular_analyte_type_single_param = "invalid"
             elif isinstance(condition, tuple) and condition[0] == "library_selection_method":
                 # Store the parameter name - will be checked after collecting all sequencing_files
                 library_selection_method_param = condition[1]
+            elif isinstance(condition, tuple) and condition[0] == "library_selection_method_invalid":
+                # Invalid value (database-only value) - set impossible condition
+                library_selection_method_param = "invalid"
             elif isinstance(condition, tuple) and condition[0] == "library_strategy":
                 # Store the parameter name(s) - will be checked after collecting all sequencing_files
                 if len(condition) == 3:
@@ -342,12 +366,15 @@ class SampleRepository:
                 else:
                     # Single value
                     library_strategy_param = condition[1]
+            elif isinstance(condition, tuple) and condition[0] == "library_strategy_invalid":
+                # Invalid value (database-only value) - set impossible condition
+                library_strategy_param = "invalid"
             elif isinstance(condition, tuple) and condition[0] == "library_source_material":
                 # Store the parameter name - will be checked after collecting all sequencing_files
                 library_source_material_param = condition[1]
-            elif isinstance(condition, tuple) and condition[0] == "library_source_material_null":
-                # Store as special condition for null/Other values
-                library_source_material_param = "null"  # Signal that we need to check for null/Other
+            elif isinstance(condition, tuple) and condition[0] == "library_source_material_invalid":
+                # Invalid value (in null_mappings) - set impossible condition to return empty results
+                library_source_material_param = "invalid"
             else:
                 regular_conditions.append(condition)
         
@@ -486,15 +513,26 @@ class SampleRepository:
                 db_values_str = ", ".join([f"'{v}'" for v in specimen_molecular_analyte_type_list])
                 sf_match_conditions.append(f"sf.library_source_molecule IN [{db_values_str}]")
             elif specimen_molecular_analyte_type_single_param:
-                sf_match_conditions.append(f"sf.library_source_molecule = ${specimen_molecular_analyte_type_single_param}")
+                if specimen_molecular_analyte_type_single_param == "invalid":
+                    # Invalid value - add impossible condition to return empty results
+                    sf_match_conditions.append("false")
+                else:
+                    sf_match_conditions.append(f"sf.library_source_molecule = ${specimen_molecular_analyte_type_single_param}")
             
             # Check library_selection_method
             if library_selection_method_param is not None:
-                sf_match_conditions.append(f"sf.library_selection = ${library_selection_method_param}")
-            
+                if library_selection_method_param == "invalid":
+                    # Invalid value - add impossible condition to return empty results
+                    sf_match_conditions.append("false")
+                else:
+                    sf_match_conditions.append(f"sf.library_selection = ${library_selection_method_param}")
+
             # Check library_strategy
             if library_strategy_param is not None:
-                if isinstance(library_strategy_param, tuple):
+                if library_strategy_param == "invalid":
+                    # Invalid value - add impossible condition to return empty results
+                    sf_match_conditions.append("false")
+                elif isinstance(library_strategy_param, tuple):
                     # Has both mapped and original values
                     sf_match_conditions.append(f"(sf.library_strategy = ${library_strategy_param[0]} OR sf.library_strategy = ${library_strategy_param[1]})")
                 else:
@@ -503,9 +541,9 @@ class SampleRepository:
             
             # Check library_source_material
             if library_source_material_param is not None:
-                if library_source_material_param == "null":
-                    # Special case: check for null or "Other"
-                    sf_match_conditions.append("(sf.library_source_material IS NULL OR sf.library_source_material = 'Other')")
+                if library_source_material_param == "invalid":
+                    # Invalid value (in null_mappings) - add impossible condition to return empty results
+                    sf_match_conditions.append("false")
                 else:
                     sf_match_conditions.append(f"sf.library_source_material = ${library_source_material_param}")
             
@@ -561,7 +599,7 @@ class SampleRepository:
         WITH {with_clause}
         {second_with_str}{where_clause}WITH DISTINCT {distinct_vars}
         RETURN {return_clause}
-        ORDER BY sa.sample_id
+        ORDER BY toString(sa.sample_id)
         SKIP $offset
         LIMIT $limit
         """.strip()
@@ -696,7 +734,7 @@ class SampleRepository:
                 {where_clause}
                 WITH DISTINCT {return_clause}
                 RETURN {return_clause}
-                ORDER BY sa.sample_id
+                ORDER BY toString(sa.sample_id)
                 SKIP $offset
                 LIMIT $limit
                 """.strip()
@@ -3332,100 +3370,119 @@ class SampleRepository:
             param_name = f"param_{param_counter}"
             
             # Map fields to their source nodes (same as get_samples)
-            if field == "disease_phase":
-                with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase = ${param_name}")
-            elif field == "anatomical_sites":
+            if field == "anatomical_sites":
                 # anatomical_sites can be either a list or a string
                 # Store both filter conditions - will be handled in query execution
                 # We'll try list version first, fallback to string if it fails
                 with_conditions.append(("anatomical_sites_list", param_name))
                 with_conditions.append(("anatomical_sites_string", param_name))
             elif field == "library_selection_method":
-                # Apply reverse mapping for filtering (API value -> DB value)
-                # Need to check if ANY sequencing_file matches, not just the first one
-                db_value = SampleRepository._reverse_map_library_selection_method_static(value)
-                params[param_name] = db_value
-                with_conditions.append(("library_selection_method", param_name))
+                # Check if value is a database-only value (e.g., "PolyA", "Not Applicable")
+                if is_database_only_value("library_selection_method", value):
+                    # This value is a database-only value and is not valid for filtering
+                    with_conditions.append(("library_selection_method_invalid", "invalid"))
+                else:
+                    # Apply reverse mapping for filtering (API value -> DB value)
+                    # Need to check if ANY sequencing_file matches, not just the first one
+                    db_value = SampleRepository._reverse_map_library_selection_method_static(value)
+                    params[param_name] = db_value
+                    with_conditions.append(("library_selection_method", param_name))
             elif field == "library_strategy":
-                # Apply reverse mapping for filtering (API value -> DB value)
-                # For "Other", we need to match both "Archer Fusion" (reverse mapped) and "Other" (direct match)
-                # Need to check if ANY sequencing_file matches, not just the first one
-                db_value = reverse_map_field_value("library_strategy", value)
-                if db_value is None:
-                    # If no reverse mapping, use the value as-is (for values not in mapping)
-                    params[param_name] = value
-                    with_conditions.append(("library_strategy", param_name))
+                # Check if value is a database-only value (e.g., "Archer Fusion")
+                if is_database_only_value("library_strategy", value):
+                    # This value is a database-only value and is not valid for filtering
+                    with_conditions.append(("library_strategy_invalid", "invalid"))
                 else:
-                    # We have a reverse mapping - need to match both the mapped value and the original value
-                    mapped_db_value = db_value if isinstance(db_value, str) else (db_value[0] if isinstance(db_value, list) and db_value else value)
-                    # Match either the reverse-mapped value OR the original value (in case DB already has "Other")
-                    param_counter += 1
-                    param_name_original = f"param_{param_counter}"
-                    params[param_name] = mapped_db_value
-                    params[param_name_original] = value
-                    with_conditions.append(("library_strategy", param_name, param_name_original))
+                    # Apply reverse mapping for filtering (API value -> DB value)
+                    # For "Other", we need to match both "Archer Fusion" (reverse mapped) and "Other" (direct match)
+                    # Need to check if ANY sequencing_file matches, not just the first one
+                    db_value = reverse_map_field_value("library_strategy", value)
+                    if db_value is None:
+                        # If no reverse mapping, use the value as-is (for values not in mapping)
+                        params[param_name] = value
+                        with_conditions.append(("library_strategy", param_name))
+                    else:
+                        # We have a reverse mapping - need to match both the mapped value and the original value
+                        mapped_db_value = db_value if isinstance(db_value, str) else (db_value[0] if isinstance(db_value, list) and db_value else value)
+                        # Match either the reverse-mapped value OR the original value (in case DB already has "Other")
+                        param_counter += 1
+                        param_name_original = f"param_{param_counter}"
+                        params[param_name] = mapped_db_value
+                        params[param_name_original] = value
+                        with_conditions.append(("library_strategy", param_name, param_name_original))
             elif field == "specimen_molecular_analyte_type":
-                # Apply reverse mapping for filtering (API value -> DB value(s))
-                # "RNA" can map to both "Transcriptomic" and "Viral RNA" in DB
-                # Special handling: need to check if ANY sequencing_file matches, not just the first one
-                reverse_mapped = reverse_map_field_value("specimen_molecular_analyte_type", value)
-                if isinstance(reverse_mapped, list):
-                    # Multiple DB values map to this API value - store as special condition
-                    # Will be handled after collecting all sequencing_files
-                    with_conditions.append(("specimen_molecular_analyte_type_list", reverse_mapped))
-                elif reverse_mapped is None:
-                    # Filter for null or "Not Reported"
-                    with_conditions.append(f"(sf IS NULL OR sf.library_source_molecule IS NULL OR sf.library_source_molecule = 'Not Reported')")
+                # Check if value is a database-only value (e.g., "Transcriptomic", "Genomic", "Viral RNA")
+                # or in null_mappings (e.g., "Not Reported")
+                if is_database_only_value("specimen_molecular_analyte_type", value) or is_null_mapped_value("specimen_molecular_analyte_type", value):
+                    # This value is not valid for filtering
+                    with_conditions.append(("specimen_molecular_analyte_type_invalid", "invalid"))
                 else:
-                    params[param_name] = reverse_mapped
-                    # Store as special condition - will be handled after collecting all sequencing_files
-                    with_conditions.append(("specimen_molecular_analyte_type_single", param_name))
+                    # Apply reverse mapping for filtering (API value -> DB value(s))
+                    # "RNA" can map to both "Transcriptomic" and "Viral RNA" in DB
+                    # Special handling: need to check if ANY sequencing_file matches, not just the first one
+                    reverse_mapped = reverse_map_field_value("specimen_molecular_analyte_type", value)
+                    if isinstance(reverse_mapped, list):
+                        # Multiple DB values map to this API value - store as special condition
+                        # Will be handled after collecting all sequencing_files
+                        with_conditions.append(("specimen_molecular_analyte_type_list", reverse_mapped))
+                    else:
+                        params[param_name] = reverse_mapped
+                        # Store as special condition - will be handled after collecting all sequencing_files
+                        with_conditions.append(("specimen_molecular_analyte_type_single", param_name))
             elif field == "disease_phase":
-                # Apply reverse mapping for filtering (API value -> DB value(s))
-                # "Relapse" can map to both "Recurrent Disease" and "Relapse" in DB
-                reverse_mapped = reverse_map_field_value("disease_phase", value)
-                if isinstance(reverse_mapped, list):
-                    # Multiple DB values map to this API value - use OR condition
-                    db_values_list = [f"'{v}'" for v in reverse_mapped]
-                    db_values_str = ", ".join(db_values_list)
-                    with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase IN [{db_values_str}]")
+                # Check if value is a database-only value (e.g., "Recurrent Disease")
+                # Database-only values should not be accepted as filter values
+                if is_database_only_value("disease_phase", value):
+                    # This value is a database-only value and is not valid for filtering
+                    # Add an impossible condition to return empty results
+                    with_conditions.append("false")
                 else:
-                    params[param_name] = reverse_mapped
-                    with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase = ${param_name}")
+                    # Apply reverse mapping for filtering (API value -> DB value(s))
+                    # "Relapse" can map to both "Recurrent Disease" and "Relapse" in DB
+                    reverse_mapped = reverse_map_field_value("disease_phase", value)
+                    if isinstance(reverse_mapped, list):
+                        # Multiple DB values map to this API value - use OR condition
+                        db_values_list = [f"'{v}'" for v in reverse_mapped]
+                        db_values_str = ", ".join(db_values_list)
+                        with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase IN [{db_values_str}]")
+                    else:
+                        params[param_name] = reverse_mapped
+                        with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase = ${param_name}")
             elif field == "library_source_material":
-                # Apply reverse mapping for filtering (API value -> DB value)
-                # "Other" maps to null, so filter for null values
-                # Need to check if ANY sequencing_file matches, not just the first one
-                reverse_mapped = reverse_map_field_value("library_source_material", value)
-                if reverse_mapped is None:
-                    # Filter for null or "Other" values - store as special condition
-                    with_conditions.append(("library_source_material_null", "null"))
+                # Check if value is in null_mappings (e.g., "Other")
+                # Values in null_mappings are treated as missing and should not match any records
+                if is_null_mapped_value("library_source_material", value):
+                    # This value is treated as NULL/missing and is not valid for filtering
+                    # Add an impossible condition to return empty results
+                    with_conditions.append(("library_source_material_invalid", "invalid"))
                 else:
+                    # Apply reverse mapping for filtering (API value -> DB value)
+                    reverse_mapped = reverse_map_field_value("library_source_material", value)
                     params[param_name] = reverse_mapped
                     with_conditions.append(("library_source_material", param_name))
             elif field == "preservation_method":
                 with_conditions.append(f"pf IS NOT NULL AND pf.fixation_embedding_method = ${param_name}")
             elif field == "tumor_classification":
-                # Apply reverse mapping for filtering (API value -> DB value)
-                # "non-malignant" maps to null, so filter for null values
-                reverse_mapped = reverse_map_field_value("tumor_classification", value)
-                if reverse_mapped is None:
-                    # Filter for null or "non-malignant" values
-                    with_conditions.append(f"(diagnoses IS NULL OR diagnoses.tumor_classification IS NULL OR diagnoses.tumor_classification = 'non-malignant')")
+                # Check if value is in null_mappings (e.g., "non-malignant")
+                if is_null_mapped_value("tumor_classification", value):
+                    # This value is treated as NULL/missing and is not valid for filtering
+                    with_conditions.append("false")
                 else:
+                    # Apply reverse mapping for filtering (API value -> DB value)
+                    reverse_mapped = reverse_map_field_value("tumor_classification", value)
                     params[param_name] = reverse_mapped
                     with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_classification = ${param_name}")
             elif field == "tumor_grade":
                 with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_grade = ${param_name}")
             elif field == "age_at_diagnosis":
-                with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.age_at_diagnosis = ${param_name}")
+                with_conditions.append(f"diagnoses IS NOT NULL AND toInteger(diagnoses.age_at_diagnosis) = ${param_name}")
                 # Convert value to number for numeric comparison
                 try:
                     params[param_name] = int(value) if value is not None else None
                 except (ValueError, TypeError):
                     params[param_name] = value
             elif field == "age_at_collection":
-                with_conditions.append(f"sa.participant_age_at_collection = ${param_name}")
+                with_conditions.append(f"toInteger(sa.participant_age_at_collection) = ${param_name}")
                 # Convert value to number for numeric comparison
                 try:
                     params[param_name] = int(value) if value is not None else None
@@ -3515,9 +3572,15 @@ class SampleRepository:
             elif isinstance(condition, tuple) and condition[0] == "specimen_molecular_analyte_type_single":
                 # Store the parameter name for single value mapping
                 specimen_molecular_analyte_type_single_param = condition[1]
+            elif isinstance(condition, tuple) and condition[0] == "specimen_molecular_analyte_type_invalid":
+                # Invalid value (database-only or null-mapped value) - set impossible condition
+                specimen_molecular_analyte_type_single_param = "invalid"
             elif isinstance(condition, tuple) and condition[0] == "library_selection_method":
                 # Store the parameter name - will be checked after collecting all sequencing_files
                 library_selection_method_param = condition[1]
+            elif isinstance(condition, tuple) and condition[0] == "library_selection_method_invalid":
+                # Invalid value (database-only value) - set impossible condition
+                library_selection_method_param = "invalid"
             elif isinstance(condition, tuple) and condition[0] == "library_strategy":
                 # Store the parameter name(s) - will be checked after collecting all sequencing_files
                 if len(condition) == 3:
@@ -3526,12 +3589,15 @@ class SampleRepository:
                 else:
                     # Single value
                     library_strategy_param = condition[1]
+            elif isinstance(condition, tuple) and condition[0] == "library_strategy_invalid":
+                # Invalid value (database-only value) - set impossible condition
+                library_strategy_param = "invalid"
             elif isinstance(condition, tuple) and condition[0] == "library_source_material":
                 # Store the parameter name - will be checked after collecting all sequencing_files
                 library_source_material_param = condition[1]
-            elif isinstance(condition, tuple) and condition[0] == "library_source_material_null":
-                # Store as special condition for null/Other values
-                library_source_material_param = "null"  # Signal that we need to check for null/Other
+            elif isinstance(condition, tuple) and condition[0] == "library_source_material_invalid":
+                # Invalid value (in null_mappings) - set impossible condition to return empty results
+                library_source_material_param = "invalid"
             else:
                 regular_conditions.append(condition)
         
@@ -3653,15 +3719,26 @@ class SampleRepository:
                 db_values_str = ", ".join([f"'{v}'" for v in specimen_molecular_analyte_type_list])
                 sf_match_conditions.append(f"sf.library_source_molecule IN [{db_values_str}]")
             elif specimen_molecular_analyte_type_single_param:
-                sf_match_conditions.append(f"sf.library_source_molecule = ${specimen_molecular_analyte_type_single_param}")
+                if specimen_molecular_analyte_type_single_param == "invalid":
+                    # Invalid value - add impossible condition to return empty results
+                    sf_match_conditions.append("false")
+                else:
+                    sf_match_conditions.append(f"sf.library_source_molecule = ${specimen_molecular_analyte_type_single_param}")
             
             # Check library_selection_method
             if library_selection_method_param is not None:
-                sf_match_conditions.append(f"sf.library_selection = ${library_selection_method_param}")
-            
+                if library_selection_method_param == "invalid":
+                    # Invalid value - add impossible condition to return empty results
+                    sf_match_conditions.append("false")
+                else:
+                    sf_match_conditions.append(f"sf.library_selection = ${library_selection_method_param}")
+
             # Check library_strategy
             if library_strategy_param is not None:
-                if isinstance(library_strategy_param, tuple):
+                if library_strategy_param == "invalid":
+                    # Invalid value - add impossible condition to return empty results
+                    sf_match_conditions.append("false")
+                elif isinstance(library_strategy_param, tuple):
                     # Has both mapped and original values
                     sf_match_conditions.append(f"(sf.library_strategy = ${library_strategy_param[0]} OR sf.library_strategy = ${library_strategy_param[1]})")
                 else:
@@ -3670,9 +3747,9 @@ class SampleRepository:
             
             # Check library_source_material
             if library_source_material_param is not None:
-                if library_source_material_param == "null":
-                    # Special case: check for null or "Other"
-                    sf_match_conditions.append("(sf.library_source_material IS NULL OR sf.library_source_material = 'Other')")
+                if library_source_material_param == "invalid":
+                    # Invalid value (in null_mappings) - add impossible condition to return empty results
+                    sf_match_conditions.append("false")
                 else:
                     sf_match_conditions.append(f"sf.library_source_material = ${library_source_material_param}")
             
@@ -4038,9 +4115,9 @@ class SampleRepository:
         # Build subject reference: name from participant, namespace from study
         subject = None
         if p and isinstance(p, dict) and st and isinstance(st, dict):
-            participant_id = p.get("participant_id", "")
-            if not participant_id:
-                participant_id = p.get("id", "") if isinstance(p, dict) else ""
+            participant_id = str(p.get("participant_id", ""))
+            if not participant_id or participant_id == "":
+                participant_id = str(p.get("id", "")) if isinstance(p, dict) else ""
             if participant_id:
                 subject_namespace = NamespaceIdentifier(
                     organization="CCDI-DCC",
@@ -4192,10 +4269,10 @@ class SampleRepository:
             study_id = st.get("study_id", "")
         
         if p and isinstance(p, dict) and study_id and sample_id:
-            participant_id = p.get("participant_id", "")
-            if not participant_id:
-                participant_id = p.get("id", "") if isinstance(p, dict) else ""
-            
+            participant_id = str(p.get("participant_id", ""))
+            if not participant_id or participant_id == "":
+                participant_id = str(p.get("id", "")) if isinstance(p, dict) else ""
+
             if participant_id and study_id and sample_id:
                 from app.models.dto import IdentifierField, IdentifierValue
                 

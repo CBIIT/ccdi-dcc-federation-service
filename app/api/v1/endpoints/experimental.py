@@ -30,7 +30,7 @@ from app.models.dto import (
     CountResponse,
     SummaryResponse
 )
-from app.models.errors import ErrorDetail, ErrorsResponse, ErrorKind
+from app.models.errors import ErrorDetail, ErrorsResponse, ErrorKind, InvalidParametersError
 from app.services.sample import SampleService
 from app.services.subject import SubjectService
 
@@ -196,6 +196,24 @@ async def search_samples_by_diagnosis(
     )
     
     try:
+        # Validate query parameters - check for unknown parameters
+        allowed_params = {"search", "disease_phase", "anatomical_sites", "library_selection_method", 
+                         "library_strategy", "library_source_material", "preservation_method", "tumor_grade",
+                         "specimen_molecular_analyte_type", "tissue_type", "tumor_classification", 
+                         "age_at_diagnosis", "age_at_collection", "tumor_tissue_morphology", 
+                         "depositions", "diagnosis", "identifiers", "page", "per_page"}
+        
+        unknown_params = []
+        for key in request.query_params.keys():
+            if key not in allowed_params:
+                unknown_params.append(key)
+        
+        if unknown_params:
+            raise InvalidParametersError(
+                parameters=[],  # Empty array - don't expose parameter names
+                message="Invalid query parameter(s) provided.",
+                reason="Unknown query parameter(s)"
+            )
         # Create service
         cache_service = get_cache_service()
         service = SampleService(session, allowlist, settings, cache_service)
@@ -267,7 +285,13 @@ async def search_samples_by_diagnosis(
         )
         
         return result
-        
+    
+    except HTTPException:
+        # Re-raise HTTPException as-is
+        raise
+    except InvalidParametersError as e:
+        # Re-raise InvalidParametersError to let the exception handler process it
+        raise e.to_http_exception()
     except Exception as e:
         logger.error("Error searching samples by diagnosis", error=str(e), exc_info=True)
         if hasattr(e, 'to_http_exception'):
@@ -436,6 +460,20 @@ async def search_subjects_by_diagnosis(
     )
     
     try:
+        # Validate query parameters - check for unknown parameters
+        allowed_params = {"search", "sex", "race", "ethnicity", "identifiers", "vital_status", "age_at_vital_status", "depositions", "page", "per_page"}
+        
+        unknown_params = []
+        for key in request.query_params.keys():
+            if key not in allowed_params:
+                unknown_params.append(key)
+        
+        if unknown_params:
+            raise InvalidParametersError(
+                parameters=[],  # Empty array - don't expose parameter names
+                message="Invalid query parameter(s) provided.",
+                reason="Unknown query parameter(s)"
+            )
         # Create service
         cache_service = get_cache_service()
         service = SubjectService(session, allowlist, settings, cache_service)
@@ -510,7 +548,13 @@ async def search_subjects_by_diagnosis(
         )
         
         return result
-        
+    
+    except HTTPException:
+        # Re-raise HTTPException as-is
+        raise
+    except InvalidParametersError as e:
+        # Re-raise InvalidParametersError to let the exception handler process it
+        raise e.to_http_exception()
     except Exception as e:
         logger.error("Error searching subjects by diagnosis", error=str(e), exc_info=True)
         if hasattr(e, 'to_http_exception'):

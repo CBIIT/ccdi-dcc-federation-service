@@ -123,11 +123,13 @@ class SampleRepository:
         # Build filter conditions - these will be applied in the WITH clause after collecting diagnoses
         with_conditions = []
         
-        # Handle diagnosis search
+        # Handle diagnosis search - need to check if ANY diagnosis in the sample matches
+        diagnosis_search_term = None
         if "_diagnosis_search" in filters:
-            search_term = filters.pop("_diagnosis_search")
-            with_conditions.append("""diagnoses IS NOT NULL AND toLower(toString(diagnoses.diagnosis)) CONTAINS toLower($diagnosis_search_term)""")
-            params["diagnosis_search_term"] = search_term
+            diagnosis_search_term = filters.pop("_diagnosis_search")
+            params["diagnosis_search_term"] = diagnosis_search_term
+            # This will be applied as a WHERE clause after collecting ALL diagnosis nodes
+            # We'll check if ANY diagnosis contains the search term before taking head()
         
         # Add regular filters - map to correct nodes based on field
         for field, value in filters.items():
@@ -389,6 +391,10 @@ class SampleRepository:
                               library_source_material_param is not None)
         if needs_sf_collection:
             all_conditions.append("has_matching_sf = true")
+        # Add diagnosis search condition if present (will be checked after collecting all diagnoses)
+        needs_diag_collection = diagnosis_search_term is not None
+        if needs_diag_collection:
+            all_conditions.append("has_matching_diagnosis = true")
         
         # Separate cheap filters (can be applied before OPTIONAL MATCHes) from expensive ones
         # Cheap filters: sample_id, anatomic_site (sample node properties)
@@ -477,18 +483,35 @@ class SampleRepository:
                               library_selection_method_param is not None or
                               library_strategy_param is not None or
                               library_source_material_param is not None)
+        # For diagnosis search, collect ALL diagnoses first to check if ANY match
+        needs_diag_collection = diagnosis_search_term is not None
+        
         if needs_sf_collection:
-            with_collects = [
-                "head(collect(DISTINCT d)) AS diagnoses",
-                "head(collect(DISTINCT pf)) AS pf",
-                "collect(DISTINCT sf) AS all_sfs"  # Collect all sequencing_files
-            ]
+            if needs_diag_collection:
+                with_collects = [
+                    "collect(DISTINCT d) AS all_diagnoses",  # Collect ALL diagnoses for search
+                    "head(collect(DISTINCT pf)) AS pf",
+                    "collect(DISTINCT sf) AS all_sfs"  # Collect all sequencing_files
+                ]
+            else:
+                with_collects = [
+                    "head(collect(DISTINCT d)) AS diagnoses",
+                    "head(collect(DISTINCT pf)) AS pf",
+                    "collect(DISTINCT sf) AS all_sfs"  # Collect all sequencing_files
+                ]
         else:
-            with_collects = [
-                "head(collect(DISTINCT d)) AS diagnoses",
-                "head(collect(DISTINCT pf)) AS pf",
-                "head(collect(DISTINCT sf)) AS sf"
-            ]
+            if needs_diag_collection:
+                with_collects = [
+                    "collect(DISTINCT d) AS all_diagnoses",  # Collect ALL diagnoses for search
+                    "head(collect(DISTINCT pf)) AS pf",
+                    "head(collect(DISTINCT sf)) AS sf"
+                ]
+            else:
+                with_collects = [
+                    "head(collect(DISTINCT d)) AS diagnoses",
+                    "head(collect(DISTINCT pf)) AS pf",
+                    "head(collect(DISTINCT sf)) AS sf"
+                ]
         with_vars.append("coalesce(st1, st2) AS st")
         
         with_clause = ", ".join(with_vars)
@@ -499,13 +522,34 @@ class SampleRepository:
         if identifiers_condition:
             with_clause += identifiers_condition
         
-        # For sequencing_file fields, we need a second WITH clause to use all_sfs
+        # For sequencing_file fields or diagnosis search, we need a second WITH clause
         # (can't reference a variable in the same WITH clause where it's defined)
         second_with_clause = None
-        if needs_sf_collection:
-            second_with_vars = ["sa", "p", "st", "diagnoses", "pf"]
+        if needs_sf_collection or needs_diag_collection:
+            second_with_vars = ["sa", "p", "st"]
             
-            # Build conditions to check if ANY sequencing_file matches
+            # Handle diagnosis search - check if ANY diagnosis matches
+            if needs_diag_collection:
+                # Check if ANY diagnosis in all_diagnoses contains the search term
+                # Handle both d.diagnosis and d.diagnosis_comment (when diagnosis = "see diagnosis_comment")
+                diagnosis_search_condition = f"""size([d IN all_diagnoses WHERE d IS NOT NULL AND (
+                    (toLower(trim(toString(d.diagnosis))) <> 'see diagnosis_comment' AND 
+                     ANY(diag IN CASE WHEN valueType(d.diagnosis) = 'LIST' THEN d.diagnosis ELSE [d.diagnosis] END 
+                         WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term)))
+                    OR
+                    (toLower(trim(toString(d.diagnosis))) = 'see diagnosis_comment' AND 
+                     d.diagnosis_comment IS NOT NULL AND 
+                     toLower(toString(d.diagnosis_comment)) CONTAINS toLower($diagnosis_search_term))
+                )]) > 0"""
+                second_with_vars.append(f"{diagnosis_search_condition} AS has_matching_diagnosis")
+                second_with_vars.append("head([d IN all_diagnoses WHERE d IS NOT NULL | d]) AS diagnoses")
+            else:
+                second_with_vars.append("diagnoses")
+            
+            second_with_vars.append("pf")
+        
+        # Build conditions to check if ANY sequencing_file matches (only if needed)
+        if needs_sf_collection:
             sf_match_conditions = []
             
             # Check specimen_molecular_analyte_type
@@ -557,6 +601,12 @@ class SampleRepository:
             
             second_with_vars.append(f"{has_matching_sf_expr} AS has_matching_sf")
             second_with_vars.append("head([sf IN all_sfs WHERE sf IS NOT NULL | sf]) AS sf")
+        elif needs_diag_collection:
+            # Only diagnosis search, no sequencing file collection
+            second_with_vars.append("sf")
+        
+        # Finalize second_with_clause if we have any second WITH vars
+        if needs_sf_collection or needs_diag_collection:
             second_with_clause = ", ".join(second_with_vars)
         
         # If identifiers are present, integrate WHERE clause into WITH clause
@@ -3136,8 +3186,9 @@ class SampleRepository:
             """.strip()
         
         # Query 3: Count by diagnosis values
-        # d.diagnosis is a STRING (not a list) - each diagnosis node has one diagnosis value
-        # Multiple diagnosis nodes can link to one sample, so each contributes one value
+        # Check ALL diagnoses of each sample (not just first)
+        # d.diagnosis can be a STRING or LIST - handle both
+        # Multiple diagnosis nodes can link to one sample, so each contributes values
         # Relationship direction: (d:diagnosis)-[:of_diagnosis]->(sa:sample)
         # If diagnosis is "see diagnosis_comment", use diagnosis_comment as the value
         # Filter out "see diagnosis_comment" if diagnosis_comment is NULL or empty
@@ -3152,18 +3203,20 @@ class SampleRepository:
             WHERE st IS NOT NULL
             OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
             WITH DISTINCT sa, collect(d) as diagnoses
-            WITH sa, 
-                 head([d IN diagnoses WHERE d IS NOT NULL | 
-                   CASE 
-                     WHEN toLower(trim(toString(d.diagnosis))) = 'see diagnosis_comment' 
-                          AND d.diagnosis_comment IS NOT NULL 
-                          AND trim(toString(d.diagnosis_comment)) <> ''
-                     THEN d.diagnosis_comment
-                     WHEN toLower(trim(toString(d.diagnosis))) = 'see diagnosis_comment'
-                     THEN null
-                     ELSE d.diagnosis
-                   END
-                 ]) as diagnosis_value
+            // UNWIND all diagnoses to count each one
+            UNWIND diagnoses AS diag_node
+            WITH sa, diag_node
+            WHERE diag_node IS NOT NULL
+            WITH sa,
+                 CASE 
+                   WHEN toLower(trim(toString(diag_node.diagnosis))) = 'see diagnosis_comment' 
+                        AND diag_node.diagnosis_comment IS NOT NULL 
+                        AND trim(toString(diag_node.diagnosis_comment)) <> ''
+                   THEN diag_node.diagnosis_comment
+                   WHEN toLower(trim(toString(diag_node.diagnosis))) = 'see diagnosis_comment'
+                   THEN null
+                   ELSE diag_node.diagnosis
+                 END AS diagnosis_value
             WHERE diagnosis_value IS NOT NULL 
               AND toString(diagnosis_value) <> '' 
               AND trim(toString(diagnosis_value)) <> ''
@@ -3182,18 +3235,20 @@ class SampleRepository:
             {where_clause.replace('WHERE ', 'AND ') if where_clause else ''}
             OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
             WITH DISTINCT sa, collect(d) as diagnoses
-            WITH sa, 
-                 head([d IN diagnoses WHERE d IS NOT NULL | 
-                   CASE 
-                     WHEN toLower(trim(toString(d.diagnosis))) = 'see diagnosis_comment' 
-                          AND d.diagnosis_comment IS NOT NULL 
-                          AND trim(toString(d.diagnosis_comment)) <> ''
-                     THEN d.diagnosis_comment
-                     WHEN toLower(trim(toString(d.diagnosis))) = 'see diagnosis_comment'
-                     THEN null
-                     ELSE d.diagnosis
-                   END
-                 ]) as diagnosis_value
+            // UNWIND all diagnoses to count each one
+            UNWIND diagnoses AS diag_node
+            WITH sa, diag_node
+            WHERE diag_node IS NOT NULL
+            WITH sa,
+                 CASE 
+                   WHEN toLower(trim(toString(diag_node.diagnosis))) = 'see diagnosis_comment' 
+                        AND diag_node.diagnosis_comment IS NOT NULL 
+                        AND trim(toString(diag_node.diagnosis_comment)) <> ''
+                   THEN diag_node.diagnosis_comment
+                   WHEN toLower(trim(toString(diag_node.diagnosis))) = 'see diagnosis_comment'
+                   THEN null
+                   ELSE diag_node.diagnosis
+                 END AS diagnosis_value
             WHERE diagnosis_value IS NOT NULL 
               AND toString(diagnosis_value) <> '' 
               AND trim(toString(diagnosis_value)) <> ''
@@ -3358,11 +3413,12 @@ class SampleRepository:
         
         with_conditions = []
         
-        # Handle diagnosis search
+        # Handle diagnosis search - need to check if ANY diagnosis in the sample matches
+        diagnosis_search_term = None
         if "_diagnosis_search" in filters:
-            search_term = filters.pop("_diagnosis_search")
-            with_conditions.append("""diagnoses IS NOT NULL AND toLower(toString(diagnoses.diagnosis)) CONTAINS toLower($diagnosis_search_term)""")
-            params["diagnosis_search_term"] = search_term
+            diagnosis_search_term = filters.pop("_diagnosis_search")
+            params["diagnosis_search_term"] = diagnosis_search_term
+            # This will be applied as a condition after collecting ALL diagnosis nodes
         
         # Add regular filters - map to correct nodes based on field
         for field, value in filters.items():
@@ -3613,6 +3669,10 @@ class SampleRepository:
                               library_source_material_param is not None)
         if needs_sf_collection:
             all_conditions.append("has_matching_sf = true")
+        # Add diagnosis search condition if present (will be checked after collecting all diagnoses)
+        needs_diag_collection = diagnosis_search_term is not None
+        if needs_diag_collection:
+            all_conditions.append("has_matching_diagnosis = true")
         
         where_clause = ""
         if all_conditions:
@@ -3625,7 +3685,7 @@ class SampleRepository:
         
         needs_diagnosis = any(
             field in filters for field in ["disease_phase", "tumor_grade", "age_at_diagnosis", "diagnosis"]
-        ) or any("d." in str(cond) or "diagnoses" in str(cond) for cond in all_conditions if isinstance(cond, str))
+        ) or any("d." in str(cond) or "diagnoses" in str(cond) or "has_matching_diagnosis" in str(cond) for cond in all_conditions if isinstance(cond, str)) or diagnosis_search_term is not None
         
         needs_pathology_file = any(
             field in filters for field in ["preservation_method"]
@@ -3672,8 +3732,13 @@ class SampleRepository:
         with_collects = []
         if needs_participant or needs_study or needs_st_for_where:
             with_vars.append("p")
+        # For diagnosis search, collect ALL diagnoses first to check if ANY match
+        needs_diag_collection = diagnosis_search_term is not None
         if needs_diagnosis:
-            with_vars.append("head(collect(DISTINCT d)) AS diagnoses")
+            if needs_diag_collection:
+                with_vars.append("collect(DISTINCT d) AS all_diagnoses")  # Collect ALL for search
+            else:
+                with_vars.append("head(collect(DISTINCT d)) AS diagnoses")
         if needs_pathology_file:
             with_collects.append("head(collect(DISTINCT pf)) AS pf")
         # For sequencing_file fields, collect ALL sequencing_files first to check if ANY match
@@ -3698,18 +3763,38 @@ class SampleRepository:
         if identifiers_condition:
             with_clause += identifiers_condition
         
-        # For sequencing_file fields, we need a second WITH clause to use all_sfs
+        # For sequencing_file fields or diagnosis search, we need a second WITH clause to use all_sfs or all_diagnoses
         # (can't reference a variable in the same WITH clause where it's defined)
         second_with_clause = None
-        if needs_sf_collection:
+        if needs_sf_collection or needs_diag_collection:
             # Build second_with_vars based on what's available from first WITH
             second_with_vars = ["sa", "st"]
             if needs_participant or needs_study or needs_st_for_where:
                 second_with_vars.append("p")
-            if needs_diagnosis:
+            
+            # Handle diagnosis search - check if ANY diagnosis matches
+            if needs_diag_collection:
+                # Check if ANY diagnosis in all_diagnoses contains the search term
+                # Handle both d.diagnosis and d.diagnosis_comment (when diagnosis = "see diagnosis_comment")
+                diagnosis_search_condition = f"""size([d IN all_diagnoses WHERE d IS NOT NULL AND (
+                    (toLower(trim(toString(d.diagnosis))) <> 'see diagnosis_comment' AND 
+                     ANY(diag IN CASE WHEN valueType(d.diagnosis) = 'LIST' THEN d.diagnosis ELSE [d.diagnosis] END 
+                         WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term)))
+                    OR
+                    (toLower(trim(toString(d.diagnosis))) = 'see diagnosis_comment' AND 
+                     d.diagnosis_comment IS NOT NULL AND 
+                     toLower(toString(d.diagnosis_comment)) CONTAINS toLower($diagnosis_search_term))
+                )]) > 0"""
+                second_with_vars.append(f"{diagnosis_search_condition} AS has_matching_diagnosis")
+                second_with_vars.append("head([d IN all_diagnoses WHERE d IS NOT NULL | d]) AS diagnoses")
+            elif needs_diagnosis:
                 second_with_vars.append("diagnoses")
+            
             if needs_pathology_file:
                 second_with_vars.append("pf")
+        
+        # Build SF-related conditions only if needs_sf_collection is true
+        if needs_sf_collection:
             
             # Build conditions to check if ANY sequencing_file matches
             sf_match_conditions = []
@@ -3761,16 +3846,25 @@ class SampleRepository:
                 combined_condition = " OR ".join([f"({cond})" for cond in sf_match_conditions])
                 has_matching_sf_expr = f"size([sf IN all_sfs WHERE sf IS NOT NULL AND ({combined_condition})]) > 0"
             
+            # SF collection is active, add SF-related variables
             second_with_vars.append(f"{has_matching_sf_expr} AS has_matching_sf")
             second_with_vars.append("head([sf IN all_sfs WHERE sf IS NOT NULL | sf]) AS sf")
+        
+        # If we have diagnosis search or sf collection, finalize second_with_clause
+        if needs_sf_collection or needs_diag_collection:
+            # If we don't have SF collection but have diagnosis search, we still need sf variable
+            if needs_diag_collection and not needs_sf_collection:
+                # No SF collection, just pass through sf variable if it exists
+                if needs_sequencing_file:
+                    second_with_vars.append("sf")
             second_with_clause = ", ".join(second_with_vars)
         
         # Build WHERE clause - include filter conditions AND ensure sample has path to study
-        # Separate conditions that need to be in first WITH (for identifiers) from those that need to be after second WITH (for has_matching_sf)
+        # Separate conditions that need to be in first WITH (for identifiers) from those that need to be after second WITH (for has_matching_sf/has_matching_diagnosis)
         first_where_conditions = ["st IS NOT NULL"]
         second_where_conditions = []
         
-        # Parse where_clause to separate conditions with has_matching_sf from others
+        # Parse where_clause to separate conditions with has_matching_sf/has_matching_diagnosis from others
         if where_clause:
             # Extract conditions from where_clause (remove "WHERE " prefix)
             where_conditions_str = where_clause.replace("WHERE ", "").strip()
@@ -3778,7 +3872,7 @@ class SampleRepository:
                 # Split by " AND " to get individual conditions
                 conditions = [c.strip() for c in where_conditions_str.split(" AND ")]
                 for condition in conditions:
-                    if "has_matching_sf" in condition:
+                    if "has_matching_sf" in condition or "has_matching_diagnosis" in condition:
                         second_where_conditions.append(condition)
                     else:
                         first_where_conditions.append(condition)

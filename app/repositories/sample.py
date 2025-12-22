@@ -103,22 +103,30 @@ class SampleRepository:
         param_counter = 0
         
         # Handle identifiers parameter normalization
+        # Support || separator for OR logic (e.g., "SAMP001 || SAMP002")
         identifiers_condition = ""
         if "identifiers" in filters:
             identifiers_value = filters.pop("identifiers")
             if identifiers_value is not None and str(identifiers_value).strip():
-                param_counter += 1
-                id_param = f"param_{param_counter}"
-                params[id_param] = identifiers_value
-                identifiers_condition = f""",
-                // normalize $identifiers: STRING -> [trimmed], LIST -> trimmed list
-                CASE
-                  WHEN ${id_param} IS NULL THEN NULL
-                  WHEN valueType(${id_param}) = 'LIST'   THEN [id IN ${id_param} | trim(id)]
-                  WHEN valueType(${id_param}) = 'STRING' THEN [trim(${id_param})]
-                  ELSE []
-                END AS id_list"""
-                where_conditions.append("sa.sample_id IN id_list")
+                # Parse || separator and create list
+                if isinstance(identifiers_value, str) and "||" in identifiers_value:
+                    identifiers_list = [i.strip() for i in identifiers_value.split("||")]
+                    identifiers_list = [i for i in identifiers_list if i]
+                    identifiers_value = identifiers_list if identifiers_list else None
+                
+                if identifiers_value:
+                    param_counter += 1
+                    id_param = f"param_{param_counter}"
+                    params[id_param] = identifiers_value
+                    identifiers_condition = f""",
+                    // normalize $identifiers: STRING -> [trimmed], LIST -> trimmed list
+                    CASE
+                      WHEN ${id_param} IS NULL THEN NULL
+                      WHEN valueType(${id_param}) = 'LIST'   THEN [id IN ${id_param} | trim(id)]
+                      WHEN valueType(${id_param}) = 'STRING' THEN [trim(${id_param})]
+                      ELSE []
+                    END AS id_list"""
+                    where_conditions.append("sa.sample_id IN id_list")
         
         # Build filter conditions - these will be applied in the WITH clause after collecting diagnoses
         with_conditions = []
@@ -266,7 +274,21 @@ class SampleRepository:
                 except (ValueError, TypeError):
                     params[param_name] = value
             elif field == "depositions":
-                with_conditions.append(f"st IS NOT NULL AND st.study_id = ${param_name}")
+                # Support || separator for multi-value OR logic
+                if isinstance(value, str) and "||" in value:
+                    dep_list = [d.strip() for d in value.split("||")]
+                    dep_list = [d for d in dep_list if d]
+                    if len(dep_list) > 1:
+                        params[param_name] = dep_list
+                        with_conditions.append(f"st IS NOT NULL AND st.study_id IN ${param_name}")
+                    elif len(dep_list) == 1:
+                        params[param_name] = dep_list[0]
+                        with_conditions.append(f"st IS NOT NULL AND st.study_id = ${param_name}")
+                    else:
+                        # Empty list after filtering, skip
+                        continue
+                else:
+                    with_conditions.append(f"st IS NOT NULL AND st.study_id = ${param_name}")
             elif field == "diagnosis":
                 # Check both diagnoses.diagnosis and diagnoses.diagnosis_comment (for "see diagnosis_comment" cases)
                 # If diagnosis is "see diagnosis_comment", check the comment field instead
@@ -1121,25 +1143,49 @@ class SampleRepository:
                     base_where_conditions.append(f"""ANY(tok IN ${race_param} WHERE tok IN [pt IN SPLIT(COALESCE(p.race, ''), ';') | trim(pt)])""")
         
         # Handle identifiers parameter
+        # Support || separator for OR logic (e.g., "SAMP001 || SAMP002")
         if "identifiers" in filters:
             identifiers_value = filters.pop("identifiers")
             if identifiers_value is not None and str(identifiers_value).strip():
-                param_counter += 1
-                id_param = f"param_{param_counter}"
-                params[id_param] = identifiers_value
-                if isinstance(identifiers_value, list):
-                    base_where_conditions.append(f"sa.sample_id IN ${id_param}")
-                else:
-                    base_where_conditions.append(f"sa.sample_id = ${id_param}")
+                # Parse || separator and create list
+                if isinstance(identifiers_value, str) and "||" in identifiers_value:
+                    identifiers_list = [i.strip() for i in identifiers_value.split("||")]
+                    identifiers_list = [i for i in identifiers_list if i]
+                    identifiers_value = identifiers_list if identifiers_list else None
+                
+                if identifiers_value:
+                    param_counter += 1
+                    id_param = f"param_{param_counter}"
+                    params[id_param] = identifiers_value
+                    if isinstance(identifiers_value, list):
+                        base_where_conditions.append(f"sa.sample_id IN ${id_param}")
+                    else:
+                        base_where_conditions.append(f"sa.sample_id = ${id_param}")
         
         # Handle depositions filter (study_id)
+        # Support || separator for OR logic (e.g., "phs001 || phs002")
         if "depositions" in filters:
             depositions_value = filters.pop("depositions")
             if depositions_value is not None and str(depositions_value).strip():
-                param_counter += 1
-                dep_param = f"param_{param_counter}"
-                params[dep_param] = str(depositions_value).strip()
-                base_where_conditions.append(f"st.study_id = ${dep_param}")
+                depositions_str = str(depositions_value).strip()
+                # Parse || separator
+                if "||" in depositions_str:
+                    depositions_list = [d.strip() for d in depositions_str.split("||")]
+                    depositions_list = [d for d in depositions_list if d]
+                    if depositions_list:
+                        param_counter += 1
+                        dep_param = f"param_{param_counter}"
+                        if len(depositions_list) == 1:
+                            params[dep_param] = depositions_list[0]
+                            base_where_conditions.append(f"st.study_id = ${dep_param}")
+                        else:
+                            params[dep_param] = depositions_list
+                            base_where_conditions.append(f"st.study_id IN ${dep_param}")
+                else:
+                    param_counter += 1
+                    dep_param = f"param_{param_counter}"
+                    params[dep_param] = depositions_str
+                    base_where_conditions.append(f"st.study_id = ${dep_param}")
         
         # Handle diagnosis search
         if "_diagnosis_search" in filters:
@@ -3394,22 +3440,30 @@ class SampleRepository:
         where_conditions = []
         
         # Handle identifiers parameter normalization
+        # Support || separator for OR logic (e.g., "SAMP001 || SAMP002")
         identifiers_condition = ""
         if "identifiers" in filters:
             identifiers_value = filters.pop("identifiers")
             if identifiers_value is not None and str(identifiers_value).strip():
-                param_counter += 1
-                id_param = f"param_{param_counter}"
-                params[id_param] = identifiers_value
-                identifiers_condition = f""",
-                // normalize $identifiers: STRING -> [trimmed], LIST -> trimmed list
-                CASE
-                  WHEN ${id_param} IS NULL THEN NULL
-                  WHEN valueType(${id_param}) = 'LIST'   THEN [id IN ${id_param} | trim(id)]
-                  WHEN valueType(${id_param}) = 'STRING' THEN [trim(${id_param})]
-                  ELSE []
-                END AS id_list"""
-                where_conditions.append("sa.sample_id IN id_list")
+                # Parse || separator and create list
+                if isinstance(identifiers_value, str) and "||" in identifiers_value:
+                    identifiers_list = [i.strip() for i in identifiers_value.split("||")]
+                    identifiers_list = [i for i in identifiers_list if i]
+                    identifiers_value = identifiers_list if identifiers_list else None
+                
+                if identifiers_value:
+                    param_counter += 1
+                    id_param = f"param_{param_counter}"
+                    params[id_param] = identifiers_value
+                    identifiers_condition = f""",
+                    // normalize $identifiers: STRING -> [trimmed], LIST -> trimmed list
+                    CASE
+                      WHEN ${id_param} IS NULL THEN NULL
+                      WHEN valueType(${id_param}) = 'LIST'   THEN [id IN ${id_param} | trim(id)]
+                      WHEN valueType(${id_param}) = 'STRING' THEN [trim(${id_param})]
+                      ELSE []
+                    END AS id_list"""
+                    where_conditions.append("sa.sample_id IN id_list")
         
         with_conditions = []
         
@@ -3545,7 +3599,21 @@ class SampleRepository:
                 except (ValueError, TypeError):
                     params[param_name] = value
             elif field == "depositions":
-                with_conditions.append(f"st IS NOT NULL AND st.study_id = ${param_name}")
+                # Support || separator for multi-value OR logic
+                if isinstance(value, str) and "||" in value:
+                    dep_list = [d.strip() for d in value.split("||")]
+                    dep_list = [d for d in dep_list if d]
+                    if len(dep_list) > 1:
+                        params[param_name] = dep_list
+                        with_conditions.append(f"st IS NOT NULL AND st.study_id IN ${param_name}")
+                    elif len(dep_list) == 1:
+                        params[param_name] = dep_list[0]
+                        with_conditions.append(f"st IS NOT NULL AND st.study_id = ${param_name}")
+                    else:
+                        # Empty list after filtering, skip
+                        continue
+                else:
+                    with_conditions.append(f"st IS NOT NULL AND st.study_id = ${param_name}")
             elif field == "diagnosis":
                 # Check both diagnoses.diagnosis and diagnoses.diagnosis_comment (for "see diagnosis_comment" cases)
                 # If diagnosis is "see diagnosis_comment", check the comment field instead
@@ -3659,6 +3727,12 @@ class SampleRepository:
         
         # Build WHERE clause - use list version for anatomical_sites if present
         all_conditions = regular_conditions.copy()
+        
+        # Add identifier filter conditions from where_conditions list
+        # This was missing - identifiers filter was being lost!
+        if where_conditions:
+            all_conditions.extend(where_conditions)
+        
         if anatomical_sites_list_condition:
             # Use list version first (will try string version if it fails)
             all_conditions.append(anatomical_sites_list_condition)

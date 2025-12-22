@@ -59,9 +59,32 @@ class FileRepository:
         param_counter = 0
         
         # Handle depositions filter separately - it filters by study_id
+        # Parse || separator for OR logic (e.g., "phs002517 || phs002790")
         # Make a copy to avoid modifying the original filters dict
         filters_copy = filters.copy()
         depositions_value = filters_copy.pop("depositions", None)
+        depositions_list = None
+        depositions_param_name = None  # Will store parameter name for CALL+UNION queries
+        if depositions_value is not None:
+            # Split on || separator and clean whitespace
+            depositions_list = [d.strip() for d in depositions_value.split("||")]
+            # Filter out empty strings
+            depositions_list = [d for d in depositions_list if d]
+            if not depositions_list:
+                depositions_list = None
+                depositions_value = None
+        
+        # Handle checksums filter separately - supports || separator for OR logic
+        # Note: checksums in filters_copy is mapped to "md5sum" field by get_file_filters()
+        checksums_value = filters_copy.pop("md5sum", None)
+        checksums_list = None
+        if checksums_value is not None:
+            # Split on || separator and clean whitespace
+            checksums_list = [c.strip() for c in checksums_value.split("||")]
+            # Filter out empty strings
+            checksums_list = [c for c in checksums_list if c]
+            if not checksums_list:
+                checksums_list = None
         
         # Validate type filter - must match enum value exactly (case-sensitive)
         # Note: filter key is "file_type" because get_file_filters() maps "type" -> "file_type"
@@ -129,6 +152,19 @@ class FileRepository:
         if type_filter_param:
             where_conditions.append(f"toLower(sf.file_type) = toLower(${type_filter_param})")
         
+        # Add checksums filter if present (supports || separator for OR logic)
+        if checksums_list is not None:
+            param_counter += 1
+            checksums_param_name = f"param_{param_counter}"
+            if len(checksums_list) == 1:
+                # Single checksum: check both md5sum and checksum_value fields
+                where_conditions.append(f"(sf.md5sum = ${checksums_param_name} OR sf.checksum_value = ${checksums_param_name})")
+                params[checksums_param_name] = checksums_list[0]
+            else:
+                # Multiple checksums: check if either field is IN the list
+                where_conditions.append(f"(sf.md5sum IN ${checksums_param_name} OR sf.checksum_value IN ${checksums_param_name})")
+                params[checksums_param_name] = checksums_list
+        
         # Build final query
         # Only include sequencing_files that have a path to a study
         # Path 1: sequencing_file -> sample -> participant -> consent_group -> study
@@ -141,42 +177,185 @@ class FileRepository:
         all_where_conditions.append("st IS NOT NULL")
         
         # Add depositions filter (filter by study_id)
-        if depositions_value is not None:
+        # Support || separator for OR logic (e.g., "phs002517 || phs002790")
+        depositions_param_name = None
+        if depositions_list is not None:
             param_counter += 1
             param_name = f"param_{param_counter}"
-            all_where_conditions.append(f"st.study_id = ${param_name}")
-            params[param_name] = depositions_value
+            depositions_param_name = param_name  # Store for CALL+UNION queries
+            if len(depositions_list) == 1:
+                all_where_conditions.append(f"st.study_id = ${param_name}")
+                params[param_name] = depositions_list[0]
+            else:
+                all_where_conditions.append(f"st.study_id IN ${param_name}")
+                params[param_name] = depositions_list
         
         # Add file field filters (applied to sf)
         if where_conditions:
             all_where_conditions.extend(where_conditions)
         
-        where_clause = "WHERE " + " AND ".join(all_where_conditions) if all_where_conditions else ""
+        # PERFORMANCE OPTIMIZATION: Split WHERE conditions into:
+        # 1. File property filters (apply BEFORE any traversals)
+        # 2. Study filters (apply AFTER study path is established)
+        file_where_conditions = []  # Filters on sf.* properties
+        study_where_conditions = []  # Filters on study properties
         
-        # Optimized query: Apply pagination early, then collect samples only for returned files
-        # This avoids collecting samples for all files before pagination - KEY PERFORMANCE OPTIMIZATION
-        cypher = f"""
-        // Step 1: Find all sequencing_files with their study relationships (for filtering)
-        MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
-        OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-        OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st1:study)
-        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st2:study)
-        WITH DISTINCT sf, coalesce(st1, st2) AS st
-        {where_clause}
-        // Step 2: Apply pagination early (before collecting samples) - this is the key optimization
-        // This means we only process the files we need, not all files
-        WITH sf
-        ORDER BY sf.id
-        SKIP $offset
-        LIMIT $limit
-        // Step 3: Now collect samples only for the paginated files (much faster!)
-        OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa2:sample)
-        OPTIONAL MATCH (sa2)-[:of_sample]->(p2:participant)
-        OPTIONAL MATCH (p2)-[:of_participant]->(c2:consent_group)-[:of_consent_group]->(st3:study)
-        OPTIONAL MATCH (sa2)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st4:study)
-        WITH sf, collect(DISTINCT sa2) AS samples, head(collect(DISTINCT coalesce(st3, st4))) AS st
-        RETURN sf, samples, st
-        """.strip()
+        for cond in all_where_conditions:
+            if "st." in cond or cond == "st IS NOT NULL":
+                study_where_conditions.append(cond)
+            else:
+                file_where_conditions.append(cond)
+        
+        # Build WHERE clauses
+        file_where_clause = "WHERE " + " AND ".join(file_where_conditions) if file_where_conditions else ""
+        study_where_clause = "WHERE " + " AND ".join(study_where_conditions) if study_where_conditions else ""
+        
+        # Detect if we have depositions filter for CALL+UNION optimization
+        has_depositions_filter = depositions_list is not None
+        
+        # CONDITIONAL OPTIMIZATION: Use different query patterns based on filters
+        # Pattern 1: File filters + Depositions = CALL+UNION (applies study filter during traversal)
+        # Pattern 2: File filters only = Optimized (filter files first, then traverse)
+        # Pattern 3: No file filters = Simple (single traversal, less overhead)
+        
+        if file_where_conditions and has_depositions_filter:
+            # PATTERN 1: CALL+UNION OPTIMIZATION (for type + depositions queries)
+            # Use stored depositions parameter name for CALL+UNION queries
+            deposition_param = depositions_param_name
+            deposition_operator = "=" if len(depositions_list) == 1 else "IN"
+            
+            cypher = f"""
+            // Step 1: Match files and apply file property filters FIRST
+            MATCH (sf:sequencing_file)
+            {file_where_clause}
+            // Step 2: Find study path with CALL+UNION (applies study filter INSIDE path)
+            WITH sf
+            CALL {{
+              WITH sf
+              OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+                            -[:of_sample]->(:cell_line)
+                            -[:of_cell_line]->(st:study)
+              WHERE st.study_id {deposition_operator} ${deposition_param}
+              RETURN st
+              UNION
+              WITH sf
+              OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+                            -[:of_sample]->(:participant)
+                            -[:of_participant]->(:consent_group)
+                            -[:of_consent_group]->(st:study)
+              WHERE st.study_id {deposition_operator} ${deposition_param}
+              RETURN st
+            }}
+            // Step 3: Filter out nulls
+            WITH sf, st
+            WHERE st IS NOT NULL
+            // Step 4: Order and paginate
+            WITH DISTINCT sf
+            ORDER BY sf.id
+            SKIP $offset
+            LIMIT $limit
+            // Step 5: Collect samples for final results only
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+            WITH sf, collect(DISTINCT sa) as samples
+            // Step 6: Get study for response
+            CALL {{
+              WITH sf
+              OPTIONAL MATCH (sf)-[:of_sequencing_file]->(:sample)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st:study)
+              RETURN st
+              UNION
+              WITH sf
+              OPTIONAL MATCH (sf)-[:of_sequencing_file]->(:sample)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
+              RETURN st
+            }}
+            WITH sf, samples, head(collect(DISTINCT st)) as study
+            RETURN sf, samples, study as st
+            """.strip()
+        elif file_where_conditions:
+            # OPTIMIZED QUERY (for queries with file filters like type=BAM)
+            # Apply file filters FIRST, then traverse to study
+            cypher = f"""
+            // Step 1: Match files and apply file property filters FIRST (before any traversals)
+            MATCH (sf:sequencing_file)
+            {file_where_clause}
+            // Step 2: Find study path (now processing fewer files due to early filtering)
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa2:sample)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH DISTINCT sf, coalesce(st1, st2) AS st
+            {study_where_clause}
+            // Step 3: Apply pagination early (before collecting samples)
+            WITH sf
+            ORDER BY sf.id
+            SKIP $offset
+            LIMIT $limit
+            // Step 4: Collect samples only for paginated files (much faster!)
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa3:sample)
+            WITH sf, collect(DISTINCT sa3) AS samples
+            // Step 5: Get study for response (only for the 20 returned files)
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(:sample)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st3:study)
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(:sample)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st4:study)
+            WITH sf, samples, head(collect(DISTINCT coalesce(st3, st4))) AS st
+            RETURN sf, samples, st
+            """.strip()
+        elif has_depositions_filter:
+            # PATTERN 2b: REVERSE TRAVERSAL for depositions-only queries (no file filters)
+            # PERFORMANCE OPTIMIZATION: Start from studies (2-10 nodes) instead of files (1M+ nodes)
+            # This is MUCH faster when filtering by depositions only
+            deposition_param = depositions_param_name
+            deposition_operator = "=" if len(depositions_list) == 1 else "IN"
+            
+            cypher = f"""
+            // Step 1: Start from study nodes (only a few studies to process!)
+            MATCH (st:study)
+            WHERE st.study_id {deposition_operator} ${deposition_param}
+            // Step 2: Collect files from both paths using CALL+UNION
+            CALL {{
+              WITH st
+              MATCH (st)<-[:of_cell_line]-(:cell_line)<-[:of_sample]-(sa:sample)
+                        <-[:of_sequencing_file]-(sf:sequencing_file)
+              RETURN sf, sa
+              UNION
+              WITH st
+              MATCH (st)<-[:of_consent_group]-(:consent_group)<-[:of_participant]-(:participant)
+                        <-[:of_sample]-(sa:sample)<-[:of_sequencing_file]-(sf:sequencing_file)
+              RETURN sf, sa
+            }}
+            // Step 3: Deduplicate and paginate
+            WITH DISTINCT sf, st
+            ORDER BY sf.id
+            SKIP $offset
+            LIMIT $limit
+            // Step 4: Collect samples for paginated files
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa2:sample)
+            WITH sf, st, collect(DISTINCT sa2) AS samples
+            RETURN sf, samples, st
+            """.strip()
+        else:
+            # PATTERN 3: SIMPLE QUERY (no filters at all - basic pagination only)
+            # PERFORMANCE OPTIMIZATION: Apply pagination FIRST, then traverse
+            # This is much faster for simple pagination requests
+            cypher = f"""
+            // Step 1: Apply pagination immediately to sequencing_file (no filters)
+            MATCH (sf:sequencing_file)
+            WITH sf
+            ORDER BY sf.id
+            SKIP $offset
+            LIMIT $limit
+            // Step 2: Now traverse only for the paginated files
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+            WITH sf, collect(DISTINCT sa) AS samples
+            // Step 3: Get study for response (only for paginated files)
+            CALL {{
+              WITH sf
+              OPTIONAL MATCH (sf)-[:of_sequencing_file]->(:sample)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st:study)
+              RETURN st
+              UNION
+              WITH sf
+              OPTIONAL MATCH (sf)-[:of_sequencing_file]->(:sample)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
+              RETURN st
+            }}
+            WITH sf, samples, head(collect(DISTINCT st)) as study
+            RETURN sf, samples, study as st
+            """.strip()
         
         logger.info(
             "Executing get_files Cypher query",
@@ -757,9 +936,31 @@ class FileRepository:
         param_counter = 0
         
         # Handle depositions filter separately - it filters by study_id
+        # Parse || separator for OR logic (e.g., "phs002517 || phs002790")
         # Make a copy to avoid modifying the original filters dict
         filters_copy = filters.copy()
         depositions_value = filters_copy.pop("depositions", None)
+        depositions_list = None
+        if depositions_value is not None:
+            # Split on || separator and clean whitespace
+            depositions_list = [d.strip() for d in depositions_value.split("||")]
+            # Filter out empty strings
+            depositions_list = [d for d in depositions_list if d]
+            if not depositions_list:
+                depositions_list = None
+                depositions_value = None
+        
+        # Handle checksums filter separately - supports || separator for OR logic
+        # Note: checksums in filters_copy is mapped to "md5sum" field by get_file_filters()
+        checksums_value = filters_copy.pop("md5sum", None)
+        checksums_list = None
+        if checksums_value is not None:
+            # Split on || separator and clean whitespace
+            checksums_list = [c.strip() for c in checksums_value.split("||")]
+            # Filter out empty strings
+            checksums_list = [c for c in checksums_list if c]
+            if not checksums_list:
+                checksums_list = None
         
         # Validate type filter - must match enum value exactly (case-sensitive)
         # Note: filter key is "file_type" because get_file_filters() maps "type" -> "file_type"
@@ -826,33 +1027,124 @@ class FileRepository:
         if type_filter_param:
             where_conditions.append(f"toLower(sf.file_type) = toLower(${type_filter_param})")
         
-        # Build final query
-        # Only include sequencing_files that have a path to a study
-        # Path 1: sequencing_file -> sample -> participant -> consent_group -> study
-        # Path 2: sequencing_file -> sample -> cell_line -> study
-        all_where_conditions = ["st IS NOT NULL"]
-        if where_conditions:
-            all_where_conditions.extend(where_conditions)
+        # Add checksums filter if present (supports || separator for OR logic)
+        if checksums_list is not None:
+            param_counter += 1
+            checksums_param_name = f"param_{param_counter}"
+            if len(checksums_list) == 1:
+                # Single checksum: check both md5sum and checksum_value fields
+                where_conditions.append(f"(sf.md5sum = ${checksums_param_name} OR sf.checksum_value = ${checksums_param_name})")
+                params[checksums_param_name] = checksums_list[0]
+            else:
+                # Multiple checksums: check if either field is IN the list
+                where_conditions.append(f"(sf.md5sum IN ${checksums_param_name} OR sf.checksum_value IN ${checksums_param_name})")
+                params[checksums_param_name] = checksums_list
         
-        # Add depositions filter (filter by study_id)
-        if depositions_value is not None:
+        # Build final query - OPTIMIZATION: Same as get_files, filter files FIRST
+        # PERFORMANCE OPTIMIZATION: Split WHERE conditions into:
+        # 1. File property filters (apply BEFORE any traversals)
+        # 2. Study filters (apply AFTER study path is established)
+        file_where_conditions = []  # Filters on sf.* properties
+        study_where_conditions = []  # Filters on study properties
+        
+        if where_conditions:
+            for cond in where_conditions:
+                file_where_conditions.append(cond)
+        
+        study_where_conditions.append("st IS NOT NULL")
+        
+        # Add depositions filter (filter by study_id)  
+        # Support || separator for OR logic (e.g., "phs002517 || phs002790")
+        if depositions_list is not None:
             param_counter += 1
             param_name = f"param_{param_counter}"
-            all_where_conditions.append(f"st.study_id = ${param_name}")
-            params[param_name] = depositions_value
+            depositions_param_name = param_name  # Store for CALL+UNION queries
+            if len(depositions_list) == 1:
+                study_where_conditions.append(f"st.study_id = ${param_name}")
+                params[param_name] = depositions_list[0]
+            else:
+                study_where_conditions.append(f"st.study_id IN ${param_name}")
+                params[param_name] = depositions_list
         
-        where_clause = "WHERE " + " AND ".join(all_where_conditions)
+        # Build WHERE clauses
+        file_where_clause = "WHERE " + " AND ".join(file_where_conditions) if file_where_conditions else ""
+        study_where_clause = "WHERE " + " AND ".join(study_where_conditions)
         
-        # Optimized summary query: Use DISTINCT earlier to reduce work
-        cypher = f"""
-        MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
-        OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-        OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st1:study)
-        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st2:study)
-        WITH DISTINCT sf, coalesce(st1, st2) AS st
-        {where_clause}
-        RETURN count(sf) as total_count
-        """.strip()
+        # Detect if we have depositions filter for CALL+UNION optimization
+        has_depositions_filter = depositions_list is not None
+        
+        # CONDITIONAL OPTIMIZATION: Match get_files pattern (same 3 patterns)
+        if file_where_conditions and has_depositions_filter:
+            # PATTERN 1: CALL+UNION SUMMARY (with file filters + depositions)
+            deposition_param = depositions_param_name
+            deposition_operator = "=" if len(depositions_list) == 1 else "IN"
+            
+            cypher = f"""
+            MATCH (sf:sequencing_file)
+            {file_where_clause}
+            CALL {{
+              WITH sf
+              OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+                            -[:of_sample]->(:cell_line)
+                            -[:of_cell_line]->(st:study)
+              WHERE st.study_id {deposition_operator} ${deposition_param}
+              RETURN st
+              UNION
+              WITH sf
+              OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+                            -[:of_sample]->(:participant)
+                            -[:of_participant]->(:consent_group)
+                            -[:of_consent_group]->(st:study)
+              WHERE st.study_id {deposition_operator} ${deposition_param}
+              RETURN st
+            }}
+            WITH sf, st
+            WHERE st IS NOT NULL
+            RETURN count(DISTINCT sf) as total_count
+            """.strip()
+        elif file_where_conditions:
+            # PATTERN 2: OPTIMIZED SUMMARY (with file filters only)
+            cypher = f"""
+            MATCH (sf:sequencing_file)
+            {file_where_clause}
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa2:sample)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH DISTINCT sf, coalesce(st1, st2) AS st
+            {study_where_clause}
+            RETURN count(sf) as total_count
+            """.strip()
+        elif has_depositions_filter:
+            # PATTERN 2b: REVERSE TRAVERSAL SUMMARY (depositions only)
+            # PERFORMANCE OPTIMIZATION: Start from studies instead of files
+            deposition_param = depositions_param_name
+            deposition_operator = "=" if len(depositions_list) == 1 else "IN"
+            
+            cypher = f"""
+            // Start from study nodes (only a few studies)
+            MATCH (st:study)
+            WHERE st.study_id {deposition_operator} ${deposition_param}
+            // Collect files from both paths
+            CALL {{
+              WITH st
+              MATCH (st)<-[:of_cell_line]-(:cell_line)<-[:of_sample]-(sa:sample)
+                        <-[:of_sequencing_file]-(sf:sequencing_file)
+              RETURN sf
+              UNION
+              WITH st
+              MATCH (st)<-[:of_consent_group]-(:consent_group)<-[:of_participant]-(:participant)
+                        <-[:of_sample]-(sa:sample)<-[:of_sequencing_file]-(sf:sequencing_file)
+              RETURN sf
+            }}
+            RETURN count(DISTINCT sf) as total_count
+            """.strip()
+        else:
+            # PATTERN 3: SIMPLE SUMMARY (no filters at all)
+            # PERFORMANCE OPTIMIZATION: Just count sequencing_file nodes directly
+            # No need for any traversals when there are no filters
+            cypher = f"""
+            MATCH (sf:sequencing_file)
+            RETURN count(sf) as total_count
+            """.strip()
         
         logger.info(
             "Executing get_files_summary Cypher query",

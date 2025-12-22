@@ -1643,16 +1643,18 @@ WITH p, d, c, st,
                     logger.error("Error in count_subjects_by_field query after retries", error=str(e), exc_info=True)
                     raise
         
-        # Format results - ensure all valid races are included (even with 0 count)
+        # Format results - only include races with count > 0
         counts_by_value = {record.get("value"): record.get("count", 0) for record in values_records}
         
-        # Build final counts list with all valid races
+        # Build final counts list - only include races with count > 0
         counts = []
         for race_value in valid_races:
-            counts.append({
-                "value": race_value,
-                "count": counts_by_value.get(race_value, 0)
-            })
+            count = counts_by_value.get(race_value, 0)
+            if count > 0:
+                counts.append({
+                    "value": race_value,
+                    "count": count
+                })
         
         # Sort by count descending (numeric), then by value ascending
         counts.sort(key=lambda x: (-x["count"], x["value"]))

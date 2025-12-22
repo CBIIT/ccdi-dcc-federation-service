@@ -103,33 +103,63 @@ class SubjectRepository:
                         race_filter_condition = "reduce(found = false, tok IN race_tokens | found OR (tok IN pr_tokens AND tok <> 'Hispanic or Latino'))"
         
         # Handle identifiers parameter normalization
+        # Support || separator for OR logic (e.g., "SUBJ001 || SUBJ002")
         identifiers_condition = ""
         if "identifiers" in filters:
             identifiers_value = filters.pop("identifiers")
             if identifiers_value is not None and str(identifiers_value).strip():
-                param_counter += 1
-                id_param = f"param_{param_counter}"
-                params[id_param] = identifiers_value
-                identifiers_condition = f""",
-                // normalize $identifiers: STRING -> [trimmed], LIST -> trimmed list
-                CASE
-                  WHEN ${id_param} IS NULL THEN NULL
-                  WHEN valueType(${id_param}) = 'LIST'   THEN [id IN ${id_param} | trim(id)]
-                  WHEN valueType(${id_param}) = 'STRING' THEN [trim(${id_param})]
-                  ELSE []
-                END AS id_list"""
-                where_conditions.append("p.participant_id IN id_list")
+                # Parse || separator and create list
+                if isinstance(identifiers_value, str) and "||" in identifiers_value:
+                    # Split on || separator and clean whitespace
+                    identifiers_list = [i.strip() for i in identifiers_value.split("||")]
+                    identifiers_list = [i for i in identifiers_list if i]
+                    identifiers_value = identifiers_list if identifiers_list else None
+                
+                if identifiers_value:
+                    param_counter += 1
+                    id_param = f"param_{param_counter}"
+                    params[id_param] = identifiers_value
+                    identifiers_condition = f""",
+                    // normalize $identifiers: STRING -> [trimmed], LIST -> trimmed list
+                    CASE
+                      WHEN ${id_param} IS NULL THEN NULL
+                      WHEN valueType(${id_param}) = 'LIST'   THEN [id IN ${id_param} | trim(id)]
+                      WHEN valueType(${id_param}) = 'STRING' THEN [trim(${id_param})]
+                      ELSE []
+                    END AS id_list"""
+                    where_conditions.append("p.participant_id IN id_list")
         
         # Handle depositions filter (study_id)
+        # Support || separator for OR logic (e.g., "phs001 || phs002")
         dep_param = None
+        depositions_list = None
+        deposition_operator = None
         if "depositions" in filters:
             depositions_value = filters.pop("depositions")
             if depositions_value is not None and str(depositions_value).strip():
-                param_counter += 1
-                dep_param = f"param_{param_counter}"
-                params[dep_param] = str(depositions_value).strip()
-                # Filter by study_id - participants must belong to the specified study
-                where_conditions.append("st.study_id = ${}".format(dep_param))
+                depositions_str = str(depositions_value).strip()
+                # Parse || separator
+                if "||" in depositions_str:
+                    depositions_list = [d.strip() for d in depositions_str.split("||")]
+                    depositions_list = [d for d in depositions_list if d]
+                    if not depositions_list:
+                        depositions_list = None
+                        depositions_value = None
+                else:
+                    depositions_list = [depositions_str]
+                
+                if depositions_list:
+                    param_counter += 1
+                    dep_param = f"param_{param_counter}"
+                    # Filter by study_id - participants must belong to the specified study
+                    if len(depositions_list) == 1:
+                        params[dep_param] = depositions_list[0]
+                        deposition_operator = "="
+                        where_conditions.append("st.study_id = ${}".format(dep_param))
+                    else:
+                        params[dep_param] = depositions_list
+                        deposition_operator = "IN"
+                        where_conditions.append("st.study_id IN ${}".format(dep_param))
         
         # Handle diagnosis search - will be applied after diagnosis collection
         diagnosis_search_term = None
@@ -234,7 +264,7 @@ class SubjectRepository:
         # But we can't put MATCH after OPTIONAL MATCH, so we need to restructure
         if dep_param:
             # Remove depositions filter from where_clause since it's applied in the MATCH WHERE
-            dep_filter_str = f"st.study_id = ${dep_param}"
+            dep_filter_str = f"st.study_id {deposition_operator} ${dep_param}"
             # Also remove identifiers condition if present (it's applied in MATCH WHERE when identifiers_condition exists)
             id_filter_str = "p.participant_id IN id_list"
             where_clause_no_dep = where_clause.replace(f"WHERE {dep_filter_str}", "").replace(f"AND {dep_filter_str}", "").replace(f"{dep_filter_str} AND", "").replace(dep_filter_str, "").strip() if where_clause else ""
@@ -279,11 +309,14 @@ class SubjectRepository:
             if with_where_conditions:
                 with_clause += f"\n        WHERE {' AND '.join(with_where_conditions)}"
             
+            # For the depositions path, we need to apply derived filters AFTER calculation (line 381)
+            # So we keep derived_where_clause as is for later application
+            
             # Required study match - put it before OPTIONAL MATCHes
             cypher = f"""
         MATCH (p:participant)
         MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
-        WHERE st.study_id = ${dep_param}
+        WHERE st.study_id {deposition_operator} ${dep_param}
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
         {with_clause}
@@ -2113,33 +2146,63 @@ WITH p, d, c, st,
                         race_filter_condition = "reduce(found = false, tok IN race_tokens | found OR (tok IN pr_tokens AND tok <> 'Hispanic or Latino'))"
         
         # Handle identifiers parameter normalization
+        # Support || separator for OR logic (e.g., "SUBJ001 || SUBJ002")
         identifiers_condition = ""
         if "identifiers" in filters:
             identifiers_value = filters.pop("identifiers")
             if identifiers_value is not None and str(identifiers_value).strip():
-                param_counter += 1
-                id_param = f"param_{param_counter}"
-                params[id_param] = identifiers_value
-                identifiers_condition = f""",
-                // normalize $identifiers: STRING -> [trimmed], LIST -> trimmed list
-                CASE
-                  WHEN ${id_param} IS NULL THEN NULL
-                  WHEN valueType(${id_param}) = 'LIST'   THEN [id IN ${id_param} | trim(id)]
-                  WHEN valueType(${id_param}) = 'STRING' THEN [trim(${id_param})]
-                  ELSE []
-                END AS id_list"""
-                where_conditions.append("p.participant_id IN id_list")
+                # Parse || separator and create list
+                if isinstance(identifiers_value, str) and "||" in identifiers_value:
+                    # Split on || separator and clean whitespace
+                    identifiers_list = [i.strip() for i in identifiers_value.split("||")]
+                    identifiers_list = [i for i in identifiers_list if i]
+                    identifiers_value = identifiers_list if identifiers_list else None
+                
+                if identifiers_value:
+                    param_counter += 1
+                    id_param = f"param_{param_counter}"
+                    params[id_param] = identifiers_value
+                    identifiers_condition = f""",
+                    // normalize $identifiers: STRING -> [trimmed], LIST -> trimmed list
+                    CASE
+                      WHEN ${id_param} IS NULL THEN NULL
+                      WHEN valueType(${id_param}) = 'LIST'   THEN [id IN ${id_param} | trim(id)]
+                      WHEN valueType(${id_param}) = 'STRING' THEN [trim(${id_param})]
+                      ELSE []
+                    END AS id_list"""
+                    where_conditions.append("p.participant_id IN id_list")
         
         # Handle depositions filter (study_id)
+        # Support || separator for OR logic (e.g., "phs001 || phs002")
         dep_param = None
+        depositions_list = None
+        deposition_operator = None
         if "depositions" in filters:
             depositions_value = filters.pop("depositions")
             if depositions_value is not None and str(depositions_value).strip():
-                param_counter += 1
-                dep_param = f"param_{param_counter}"
-                params[dep_param] = str(depositions_value).strip()
-                # Filter by study_id - participants must belong to the specified study
-                where_conditions.append("st.study_id = ${}".format(dep_param))
+                depositions_str = str(depositions_value).strip()
+                # Parse || separator
+                if "||" in depositions_str:
+                    depositions_list = [d.strip() for d in depositions_str.split("||")]
+                    depositions_list = [d for d in depositions_list if d]
+                    if not depositions_list:
+                        depositions_list = None
+                        depositions_value = None
+                else:
+                    depositions_list = [depositions_str]
+                
+                if depositions_list:
+                    param_counter += 1
+                    dep_param = f"param_{param_counter}"
+                    # Filter by study_id - participants must belong to the specified study
+                    if len(depositions_list) == 1:
+                        params[dep_param] = depositions_list[0]
+                        deposition_operator = "="
+                        where_conditions.append("st.study_id = ${}".format(dep_param))
+                    else:
+                        params[dep_param] = depositions_list
+                        deposition_operator = "IN"
+                        where_conditions.append("st.study_id IN ${}".format(dep_param))
         
         # Handle diagnosis search - will be applied after diagnosis collection
         diagnosis_search_term = None
@@ -2377,7 +2440,7 @@ WITH p, d, c, st,
                 if dep_param:
                     # Remove depositions filter from where_clause_filtered since we're using required MATCH
                     # The depositions filter will be applied directly after the MATCH for studies
-                    dep_filter_str = f"st.study_id = ${dep_param}"
+                    dep_filter_str = f"st.study_id {deposition_operator} ${dep_param}"
                     where_clause_no_dep = where_clause_filtered
                     if where_clause_no_dep:
                         # Remove the depositions filter condition
@@ -2399,7 +2462,7 @@ WITH p, d, c, st,
                             where_clause_no_dep = "WHERE " + where_clause_no_dep
                     
                     # Combine depositions filter with other filters if any
-                    combined_where = f"WHERE st.study_id = ${dep_param}"
+                    combined_where = f"WHERE st.study_id {deposition_operator} ${dep_param}"
                     if where_clause_no_dep and where_clause_no_dep.strip() and where_clause_no_dep != "WHERE":
                         # Remove WHERE from where_clause_no_dep and combine with depositions filter
                         other_filters = where_clause_no_dep.replace("WHERE", "").strip()
@@ -2417,7 +2480,7 @@ WITH p, d, c, st,
                             other_filters = other_filters[:-4].strip()
                         # Only add if we have valid content
                         if other_filters and other_filters != "AND" and other_filters.strip():
-                            combined_where = f"WHERE st.study_id = ${dep_param} AND {other_filters}"
+                            combined_where = f"WHERE st.study_id {deposition_operator} ${dep_param} AND {other_filters}"
                     
                     cypher = f"""
         {identifiers_with_clause}
@@ -2670,15 +2733,22 @@ WITH p, d, c, st,
                         # Handle depositions filter if present
                         if dep_param:
                             # Remove depositions filter from where_clause_filtered since we'll use required MATCH
-                            other_filters = where_clause_filtered.replace(f"st.study_id = ${dep_param}", "").replace(f"AND st.study_id = ${dep_param}", "").replace(f"st.study_id = ${dep_param} AND", "").strip() if where_clause_filtered else ""
+                            other_filters = where_clause_filtered.replace(f"st.study_id {deposition_operator} ${dep_param}", "").replace(f"AND st.study_id {deposition_operator} ${dep_param}", "").replace(f"st.study_id {deposition_operator} ${dep_param} AND", "").strip() if where_clause_filtered else ""
                             # Clean up any double WHERE or AND issues
                             if other_filters:
                                 other_filters = other_filters.replace("WHERE WHERE", "WHERE").replace("AND AND", "AND").replace("  ", " ").strip()
+                                # Remove WHERE prefix
                                 if other_filters.startswith("WHERE"):
                                     other_filters = other_filters[6:].strip()  # Remove "WHERE " prefix
+                                # Remove leading AND
+                                while other_filters.startswith("AND "):
+                                    other_filters = other_filters[4:].strip()
                                 # Remove trailing AND
-                                if other_filters.endswith(" AND"):
+                                while other_filters.endswith(" AND"):
                                     other_filters = other_filters[:-4].strip()
+                                # Final check - if empty after cleanup, set to empty string
+                                if not other_filters or other_filters == "AND":
+                                    other_filters = ""
                             
                             # Build WITH clause with optional WHERE
                             with_clause = f"WITH DISTINCT p.participant_id AS participant_id, p{race_condition}"
@@ -2691,7 +2761,7 @@ WITH p, d, c, st,
         WHERE p.participant_id IN id_list
         WITH DISTINCT p.participant_id AS participant_id, p
         MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
-        WHERE st.study_id = ${dep_param}
+        WHERE st.study_id {deposition_operator} ${dep_param}
         {with_clause}
         WITH participant_id, p,
              CASE 
@@ -2732,7 +2802,7 @@ WITH p, d, c, st,
                         # No identifiers - handle depositions filter if present
                         if dep_param:
                             # Remove depositions filter from where_clause since it's already in the MATCH WHERE
-                            dep_filter_str = f"st.study_id = ${dep_param}"
+                            dep_filter_str = f"st.study_id {deposition_operator} ${dep_param}"
                             other_filters = where_clause.replace(f"WHERE {dep_filter_str}", "").replace(f"AND {dep_filter_str}", "").replace(f"{dep_filter_str} AND", "").replace(dep_filter_str, "").strip() if where_clause else ""
                             # Clean up any double WHERE or AND issues - do this multiple times to catch all cases
                             while "WHERE AND" in other_filters or "AND AND" in other_filters:
@@ -2758,7 +2828,7 @@ WITH p, d, c, st,
                             cypher = f"""
         MATCH (p:participant)
         MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
-        WHERE st.study_id = ${dep_param}
+        WHERE st.study_id {deposition_operator} ${dep_param}
         {with_clause}
         WITH participant_id, p,
              CASE 
@@ -2773,15 +2843,22 @@ WITH p, d, c, st,
                             # Handle depositions filter if present
                             if dep_param:
                                 # Remove depositions filter from where_clause since we'll use required MATCH
-                                other_filters = where_clause.replace(f"st.study_id = ${dep_param}", "").replace(f"AND st.study_id = ${dep_param}", "").replace(f"st.study_id = ${dep_param} AND", "").strip() if where_clause else ""
+                                other_filters = where_clause.replace(f"st.study_id {deposition_operator} ${dep_param}", "").replace(f"AND st.study_id {deposition_operator} ${dep_param}", "").replace(f"st.study_id {deposition_operator} ${dep_param} AND", "").strip() if where_clause else ""
                                 # Clean up any double WHERE or AND issues
                                 if other_filters:
                                     other_filters = other_filters.replace("WHERE WHERE", "WHERE").replace("AND AND", "AND").replace("  ", " ").strip()
+                                    # Remove WHERE prefix
                                     if other_filters.startswith("WHERE"):
                                         other_filters = other_filters[6:].strip()  # Remove "WHERE " prefix
+                                    # Remove leading AND
+                                    while other_filters.startswith("AND "):
+                                        other_filters = other_filters[4:].strip()
                                     # Remove trailing AND
-                                    if other_filters.endswith(" AND"):
-                                        other_filters = other_filters[:-4].strip()
+                                    while other_filters.endswith(" AND"):
+                                        other_filters = other_filters[:-4:].strip()
+                                    # Final check - if empty after cleanup, set to empty string
+                                    if not other_filters or other_filters == "AND":
+                                        other_filters = ""
                                 
                                 # Build WITH clause with optional WHERE
                                 with_clause = f"WITH DISTINCT p.participant_id AS participant_id, p{race_condition}{identifiers_condition}"
@@ -2791,7 +2868,7 @@ WITH p, d, c, st,
                                 cypher = f"""
         MATCH (p:participant)
         MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
-        WHERE st.study_id = ${dep_param}
+        WHERE st.study_id {deposition_operator} ${dep_param}
         {with_clause}
         WITH participant_id, p,
              CASE 
@@ -2860,7 +2937,7 @@ WITH p, d, c, st,
                         
                         # Handle depositions filter if present
                         if dep_param:
-                            dep_filter_str = f"st.study_id = ${dep_param}"
+                            dep_filter_str = f"st.study_id {deposition_operator} ${dep_param}"
                             # Remove depositions filter from where_clause_filtered since it's already in the MATCH WHERE
                             other_filters = where_clause_filtered.replace(f"WHERE {dep_filter_str}", "").replace(f"AND {dep_filter_str}", "").replace(f"{dep_filter_str} AND", "").replace(dep_filter_str, "").strip() if where_clause_filtered else ""
                             # Clean up any double WHERE or AND issues - do this multiple times to catch all cases
@@ -2890,7 +2967,7 @@ WITH p, d, c, st,
         WHERE p.participant_id IN id_list
         WITH DISTINCT p.participant_id AS participant_id, p
         MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
-        WHERE st.study_id = ${dep_param}
+        WHERE st.study_id {deposition_operator} ${dep_param}
         {with_clause}{diagnosis_search_fragment}
         WITH DISTINCT participant_id
         RETURN count(participant_id) as total_count
@@ -2918,7 +2995,7 @@ WITH p, d, c, st,
                         # No identifiers - handle depositions filter if present
                         if dep_param:
                             # Remove depositions filter from where_clause since it's already in the MATCH WHERE
-                            dep_filter_str = f"st.study_id = ${dep_param}"
+                            dep_filter_str = f"st.study_id {deposition_operator} ${dep_param}"
                             other_filters = where_clause.replace(f"WHERE {dep_filter_str}", "").replace(f"AND {dep_filter_str}", "").replace(f"{dep_filter_str} AND", "").replace(dep_filter_str, "").strip() if where_clause else ""
                             # Clean up any double WHERE or AND issues - do this multiple times to catch all cases
                             while "WHERE AND" in other_filters or "AND AND" in other_filters:
@@ -2944,7 +3021,7 @@ WITH p, d, c, st,
                             cypher = f"""
         MATCH (p:participant)
         MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
-        WHERE st.study_id = ${dep_param}
+        WHERE st.study_id {deposition_operator} ${dep_param}
         {with_clause}{diagnosis_search_fragment}
         WITH DISTINCT participant_id
         RETURN count(participant_id) as total_count

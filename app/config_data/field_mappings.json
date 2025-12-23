@@ -61,9 +61,13 @@
     "tumor_classification": {
       "description": "Maps database values to API values for tumor_classification field",
       "source_property": "tumor_classification",
-      "mappings": {},
+      "mappings": {
+        "Not Applicable": "Not applicable"
+      },
       "null_mappings": ["non-malignant"],
-      "reverse_mappings": {}
+      "reverse_mappings": {
+        "Not applicable": "Not Applicable"
+      }
     }
   },
   "subject": {

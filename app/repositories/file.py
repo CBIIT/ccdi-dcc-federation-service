@@ -1139,11 +1139,16 @@ class FileRepository:
             """.strip()
         else:
             # PATTERN 3: SIMPLE SUMMARY (no filters at all)
-            # PERFORMANCE OPTIMIZATION: Just count sequencing_file nodes directly
-            # No need for any traversals when there are no filters
+            # Must verify study path to match count_files_by_field logic
+            # This ensures consistent totals across all file endpoints
             cypher = f"""
-            MATCH (sf:sequencing_file)
-            RETURN count(sf) as total_count
+            MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
+            OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+            OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st1:study)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st2:study)
+            WITH DISTINCT sf, coalesce(st1, st2) AS st
+            WHERE st IS NOT NULL
+            RETURN count(DISTINCT sf) as total_count
             """.strip()
         
         logger.info(

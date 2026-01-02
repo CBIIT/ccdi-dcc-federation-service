@@ -606,65 +606,55 @@ class FileRepository:
         all_where_conditions.append("st IS NOT NULL")
         all_where_clause = "WHERE " + " AND ".join(all_where_conditions) if all_where_conditions else "WHERE st IS NOT NULL"
         
-        # Query for total count
+        # OPTIMIZATION STRATEGY:
+        # Keep 3 separate queries but simplify them - the study path traversal is necessary
+        # The main bottleneck is traversing 1M+ files through study paths multiple times
+        # We can't easily avoid this without caching, but we can simplify the queries
+        
+        # Query 1: Total count (simplified - no need for OPTIONAL MATCH on participant)
         total_cypher = f"""
         MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
-        OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-        OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st1:study)
-        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st2:study)
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
         WITH DISTINCT sf, coalesce(st1, st2) AS st
         {all_where_clause}
-        RETURN count(DISTINCT sf) as total
+        RETURN count(sf) as total
         """.strip()
         
-        # Query for missing count (files with null field value)
+        # Query 2: Missing count
         missing_where_conditions = all_where_conditions.copy() if all_where_conditions else []
         missing_where_conditions.append(f"sf.{db_field} IS NULL")
         missing_where_clause = "WHERE " + " AND ".join(missing_where_conditions)
         
         missing_cypher = f"""
         MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
-        OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-        OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st1:study)
-        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st2:study)
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
         WITH DISTINCT sf, coalesce(st1, st2) AS st
         {missing_where_clause}
-        RETURN count(DISTINCT sf) as missing
+        RETURN count(sf) as missing
         """.strip()
         
-        # Query for values with counts
-        # Handle both list and string values without using APOC functions
-        # For file fields like file_type, the value is typically a string
-        # We wrap single values in a list for UNWIND, and use lists directly
-        # In Memgraph, filter invalid values in the CASE statement instead of using WHERE after UNWIND
+        # Query 3: Values with counts (simplified)
         values_cypher = f"""
         MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
-        OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-        OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st1:study)
-        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st2:study)
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
         WITH sf, coalesce(st1, st2) AS st
         {field_where_clause}
         WITH DISTINCT sf, sf.{db_field} as field_val
-        WITH sf, field_val,
-             CASE 
-               WHEN field_val IS NULL OR toString(field_val) = '' OR toString(field_val) = 'null' THEN []
-               ELSE [field_val]
-             END as field_values
-        UNWIND field_values as value
-        WITH value, sf
-        WHERE value IS NOT NULL
-        RETURN toString(value) as value, count(DISTINCT sf) as count
+        WHERE field_val IS NOT NULL AND toString(field_val) <> '' AND toString(field_val) <> 'null'
+        RETURN toString(field_val) as value, count(sf) as count
         ORDER BY count DESC, value ASC
         """.strip()
         
         logger.info(
-            "Executing count_files_by_field Cypher queries",
+            "Executing count_files_by_field Cypher queries (simplified 3-query approach)",
             field=field,
-            db_field=db_field,
-            values_cypher=values_cypher
+            db_field=db_field
         )
         
-        # Execute queries with retry logic
+        # Execute 3 queries with retry logic (simplified queries for better performance)
         max_retries = 2
         retry_count = 0
         total = 0
@@ -817,33 +807,34 @@ class FileRepository:
         all_where_conditions.append("st IS NOT NULL")
         all_where_clause = "WHERE " + " AND ".join(all_where_conditions) if all_where_conditions else "WHERE st IS NOT NULL"
         
-        # Query for total count
+        # OPTIMIZATION: Simplified queries (same as /by/type/count optimization)
+        # Removed unnecessary OPTIONAL MATCH on participant, simplified WHERE clauses
+        
+        # Query 1: Total count (simplified)
         total_cypher = f"""
         MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
-        OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-        OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st1:study)
-        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st2:study)
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
         WITH DISTINCT sf, coalesce(st1, st2) AS st
         {all_where_clause}
-        RETURN count(DISTINCT sf) as total
+        RETURN count(sf) as total
         """.strip()
         
-        # Query for missing count (files with null study_id)
+        # Query 2: Missing count (files with null study_id)
         missing_where_conditions = all_where_conditions.copy() if all_where_conditions else []
         missing_where_conditions.append("st.study_id IS NULL")
         missing_where_clause = "WHERE " + " AND ".join(missing_where_conditions)
         
         missing_cypher = f"""
         MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
-        OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-        OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st1:study)
-        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st2:study)
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
         WITH DISTINCT sf, coalesce(st1, st2) AS st
         {missing_where_clause}
-        RETURN count(DISTINCT sf) as missing
+        RETURN count(sf) as missing
         """.strip()
         
-        # Query for values with counts - group by study_id
+        # Query 3: Values with counts - group by study_id (simplified)
         field_where_conditions = base_where_conditions.copy() if base_where_conditions else []
         field_where_conditions.append("st IS NOT NULL")
         field_where_conditions.append("st.study_id IS NOT NULL")
@@ -851,27 +842,19 @@ class FileRepository:
         
         values_cypher = f"""
         MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
-        OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-        OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st1:study)
-        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st2:study)
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
         WITH sf, coalesce(st1, st2) AS st
         {field_where_clause}
         WITH DISTINCT sf, st.study_id as study_id_val
-        WITH sf, study_id_val,
-             CASE 
-               WHEN study_id_val IS NULL OR toString(study_id_val) = '' OR toString(study_id_val) = 'null' THEN []
-               ELSE [study_id_val]
-             END as field_values
-        UNWIND field_values as value
-        WITH value, sf
-        WHERE value IS NOT NULL
-        RETURN toString(value) as value, count(DISTINCT sf) as count
+        WHERE study_id_val IS NOT NULL AND toString(study_id_val) <> '' AND toString(study_id_val) <> 'null'
+        RETURN toString(study_id_val) as value, count(sf) as count
         ORDER BY count DESC, value ASC
         """.strip()
         
         logger.info(
-            "Executing count_files_by_depositions Cypher queries",
-            values_cypher=values_cypher
+            "Executing count_files_by_depositions Cypher queries (optimized - simplified 3-query approach)",
+            depositions_count=True
         )
         
         # Execute total query

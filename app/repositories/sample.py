@@ -198,7 +198,9 @@ class SampleRepository:
         
         # Handle identifiers parameter normalization
         # Support || separator for OR logic (e.g., "SAMP001 || SAMP002")
+        # OPTIMIZATION: Apply identifiers filter EARLY in MATCH WHERE clause to reduce dataset before OPTIONAL MATCHes
         identifiers_condition = ""
+        identifiers_early_filter = None
         if "identifiers" in filters:
             identifiers_value = filters.pop("identifiers")
             if identifiers_value is not None and str(identifiers_value).strip():
@@ -212,6 +214,17 @@ class SampleRepository:
                     param_counter += 1
                     id_param = f"param_{param_counter}"
                     params[id_param] = identifiers_value
+                    
+                    # Build early filter for MATCH WHERE clause (before OPTIONAL MATCHes)
+                    # This significantly reduces the dataset before expensive OPTIONAL MATCH operations
+                    if isinstance(identifiers_value, list):
+                        # Multiple identifiers - use IN clause directly
+                        identifiers_early_filter = f"sa.sample_id IN ${id_param}"
+                    else:
+                        # Single identifier - use = for better performance
+                        identifiers_early_filter = f"sa.sample_id = ${id_param}"
+                    
+                    # Also keep identifiers_condition for WITH clause (needed for id_list normalization in some cases)
                     identifiers_condition = f""",
                     // normalize $identifiers: STRING -> [trimmed], LIST -> trimmed list
                     CASE
@@ -220,7 +233,7 @@ class SampleRepository:
                       WHEN valueType(${id_param}) = 'STRING' THEN [trim(${id_param})]
                       ELSE []
                     END AS id_list"""
-                    where_conditions.append("sa.sample_id IN id_list")
+                    # Don't add to where_conditions - it's now applied early in MATCH WHERE clause
         
         # OPTIMIZATION: When identifiers filter exists AND sequencing file filters exist,
         # apply sequencing file filters EARLY in OPTIONAL MATCH WHERE clause
@@ -236,6 +249,7 @@ class SampleRepository:
         diagnosis_search_term = None
         needs_diag_collection = False
         disease_phase_filter_condition = None  # Track disease_phase filter for combined filtering
+        has_diagnoses_conditions = False  # Track if any diagnosis-related filters are present
         if "_diagnosis_search" in filters:
             diagnosis_search_term = filters.pop("_diagnosis_search")
             # OPTIMIZATION 4A: Pre-process search term to lowercase (done once in Python)
@@ -287,23 +301,36 @@ class SampleRepository:
                     # This value is a database-only value and is not valid for filtering
                     with_conditions.append(("library_strategy_invalid", "invalid"))
                 else:
-                    # Apply reverse mapping for filtering (API value -> DB value)
-                    # For "Other", we need to match both "Archer Fusion" (reverse mapped) and "Other" (direct match)
-                    # Need to check if ANY sequencing_file matches, not just the first one
-                    db_value = reverse_map_field_value("library_strategy", value)
-                    if db_value is None:
-                        # If no reverse mapping, use the value as-is (for values not in mapping)
-                        params[param_name] = value
+                    # Load enum values and use IN clause for filtering
+                    enum_values = load_sequencing_file_enum("library_strategy")
+                    if enum_values:
+                        # Apply reverse mapping for the filter value to get DB value(s)
+                        # For "Other", we need to match both "Archer Fusion" (reverse mapped) and "Other" (direct match)
+                        filter_db_values = []
+                        reverse_mapped = reverse_map_field_value("library_strategy", value)
+                        if reverse_mapped:
+                            if isinstance(reverse_mapped, list):
+                                filter_db_values.extend(reverse_mapped)
+                            else:
+                                filter_db_values.append(reverse_mapped)
+                        filter_db_values.append(value)  # Also include original value
+                        
+                        # Use IN clause with all matching DB values
+                        params[param_name] = list(set(filter_db_values))  # Remove duplicates
                         with_conditions.append(("library_strategy", param_name))
                     else:
-                        # We have a reverse mapping - need to match both the mapped value and the original value
-                        mapped_db_value = db_value if isinstance(db_value, str) else (db_value[0] if isinstance(db_value, list) and db_value else value)
-                        # Match either the reverse-mapped value OR the original value (in case DB already has "Other")
-                        param_counter += 1
-                        param_name_original = f"param_{param_counter}"
-                        params[param_name] = mapped_db_value
-                        params[param_name_original] = value
-                        with_conditions.append(("library_strategy", param_name, param_name_original))
+                        # Fallback to original logic if enum not available
+                        db_value = reverse_map_field_value("library_strategy", value)
+                        if db_value is None:
+                            params[param_name] = value
+                            with_conditions.append(("library_strategy", param_name))
+                        else:
+                            mapped_db_value = db_value if isinstance(db_value, str) else (db_value[0] if isinstance(db_value, list) and db_value else value)
+                            param_counter += 1
+                            param_name_original = f"param_{param_counter}"
+                            params[param_name] = mapped_db_value
+                            params[param_name_original] = value
+                            with_conditions.append(("library_strategy", param_name, param_name_original))
             elif field == "specimen_molecular_analyte_type":
                 # Check if value is a database-only value (e.g., "Transcriptomic", "Genomic", "Viral RNA")
                 # or in null_mappings (e.g., "Not Reported")
@@ -351,10 +378,19 @@ class SampleRepository:
                     # Add an impossible condition to return empty results
                     with_conditions.append(("library_source_material_invalid", "invalid"))
                 else:
-                    # Apply reverse mapping for filtering (API value -> DB value)
-                    reverse_mapped = reverse_map_field_value("library_source_material", value)
-                    params[param_name] = reverse_mapped
-                    with_conditions.append(("library_source_material", param_name))
+                    # Load enum values and use IN clause for filtering
+                    enum_values = load_sequencing_file_enum("library_source_material")
+                    if enum_values:
+                        # Apply reverse mapping for the filter value to get DB value
+                        reverse_mapped = reverse_map_field_value("library_source_material", value)
+                        # Use IN clause with the mapped DB value (as list for consistency)
+                        params[param_name] = [reverse_mapped] if reverse_mapped else [value]
+                        with_conditions.append(("library_source_material", param_name))
+                    else:
+                        # Fallback to original logic if enum not available
+                        reverse_mapped = reverse_map_field_value("library_source_material", value)
+                        params[param_name] = reverse_mapped
+                        with_conditions.append(("library_source_material", param_name))
             elif field == "preservation_method":
                 with_conditions.append(f"pf IS NOT NULL AND pf.fixation_embedding_method = ${param_name}")
             elif field == "tumor_classification":
@@ -384,21 +420,24 @@ class SampleRepository:
                 except (ValueError, TypeError):
                     params[param_name] = value
             elif field == "depositions":
+                # OPTIMIZATION: depositions filter will be applied early in MATCH WHERE clause
+                # Store the parameter for early filtering (don't add to with_conditions)
                 # Support || separator for multi-value OR logic
                 if isinstance(value, str) and "||" in value:
                     dep_list = [d.strip() for d in value.split("||")]
                     dep_list = [d for d in dep_list if d]
                     if len(dep_list) > 1:
                         params[param_name] = dep_list
-                        with_conditions.append(f"st IS NOT NULL AND st.study_id IN ${param_name}")
                     elif len(dep_list) == 1:
                         params[param_name] = dep_list[0]
-                        with_conditions.append(f"st IS NOT NULL AND st.study_id = ${param_name}")
                     else:
                         # Empty list after filtering, skip
                         continue
-                else:
-                    with_conditions.append(f"st IS NOT NULL AND st.study_id = ${param_name}")
+                # Store depositions param name for early filtering (will be added to early_where_conditions later)
+                if not hasattr(self, '_depositions_early_params'):
+                    self._depositions_early_params = []
+                self._depositions_early_params.append(param_name)
+                # Don't add to with_conditions - it's now applied early in MATCH WHERE clause
             elif field == "diagnosis":
                 # Check both diagnoses.diagnosis and diagnoses.diagnosis_comment (for "see diagnosis_comment" cases)
                 # If diagnosis is "see diagnosis_comment", check the comment field instead
@@ -575,13 +614,44 @@ class SampleRepository:
             all_conditions.append("has_matching_diagnosis = true")
         
         # Separate cheap filters (can be applied before OPTIONAL MATCHes) from expensive ones
-        # Cheap filters: sample_id, anatomic_site (sample node properties)
-        # Expensive filters: participant/diagnosis filters
+        # Cheap filters: sample_id, anatomic_site, identifiers, depositions (can filter early)
+        # Expensive filters: participant/diagnosis filters (need OPTIONAL MATCH first)
         # Note: st IS NOT NULL is no longer needed since IN_STUDY MATCH ensures study path exists
         early_where_conditions = [
             "sa.sample_id IS NOT NULL",
             "toString(sa.sample_id) <> ''"
         ]
+        
+        # OPTIMIZATION: Add identifiers filter early (before OPTIONAL MATCHes)
+        # This significantly reduces the dataset before expensive joins
+        if identifiers_early_filter:
+            early_where_conditions.append(identifiers_early_filter)
+        
+        # OPTIMIZATION: Add depositions filter early (before OPTIONAL MATCHes)
+        # Filter by study_id in the MATCH clause to reduce dataset early
+        if hasattr(self, '_depositions_early_params') and self._depositions_early_params:
+            # Collect all depositions values (in case multiple depositions filters were provided)
+            all_dep_values = []
+            for dep_param_name in self._depositions_early_params:
+                dep_value = params.get(dep_param_name)
+                if dep_value:
+                    if isinstance(dep_value, list):
+                        all_dep_values.extend(dep_value)
+                    else:
+                        all_dep_values.append(dep_value)
+            
+            if all_dep_values:
+                # Use the first param name for the combined filter
+                dep_param_name = self._depositions_early_params[0]
+                if len(all_dep_values) > 1:
+                    # Multiple values - use IN clause
+                    params[dep_param_name] = all_dep_values
+                    depositions_early_filter = f"st.study_id IN ${dep_param_name}"
+                else:
+                    # Single value - use = for better performance
+                    params[dep_param_name] = all_dep_values[0]
+                    depositions_early_filter = f"st.study_id = ${dep_param_name}"
+                early_where_conditions.append(depositions_early_filter)
         late_where_conditions = [
             # st IS NOT NULL check removed - IN_STUDY MATCH ensures study path exists
         ]
@@ -678,11 +748,23 @@ class SampleRepository:
                     # Invalid value - add impossible condition to return empty results
                     sf_match_conditions.append("false")
                 elif isinstance(library_strategy_param, tuple):
-                    # Has both mapped and original values
-                    sf_match_conditions.append(f"(sf.library_strategy = ${library_strategy_param[0]} OR sf.library_strategy = ${library_strategy_param[1]})")
+                    # Check if param is a list (from enum-based filtering)
+                    param_value = params.get(library_strategy_param[0])
+                    if isinstance(param_value, list):
+                        # Use IN clause for list of values
+                        sf_match_conditions.append(f"sf.library_strategy IN ${library_strategy_param[0]}")
+                    else:
+                        # Fallback to OR for tuple case
+                        sf_match_conditions.append(f"(sf.library_strategy = ${library_strategy_param[0]} OR sf.library_strategy = ${library_strategy_param[1]})")
                 else:
-                    # Single value
-                    sf_match_conditions.append(f"sf.library_strategy = ${library_strategy_param}")
+                    # Check if param value is a list (from enum-based filtering)
+                    param_value = params.get(library_strategy_param)
+                    if isinstance(param_value, list):
+                        # Use IN clause for list of values
+                        sf_match_conditions.append(f"sf.library_strategy IN ${library_strategy_param}")
+                    else:
+                        # Single value - use IN clause (will work with single-element list)
+                        sf_match_conditions.append(f"sf.library_strategy IN ${library_strategy_param}")
             
             # Check library_source_material
             if library_source_material_param is not None:
@@ -690,7 +772,8 @@ class SampleRepository:
                     # Invalid value (in null_mappings) - add impossible condition to return empty results
                     sf_match_conditions.append("false")
                 else:
-                    sf_match_conditions.append(f"sf.library_source_material = ${library_source_material_param}")
+                    # Use IN clause for filtering (works with single value or list)
+                    sf_match_conditions.append(f"sf.library_source_material IN ${library_source_material_param}")
             
             # Combine all conditions with AND (all must match)
             if sf_match_conditions:
@@ -740,6 +823,10 @@ class SampleRepository:
         # OPTIMIZATION Phase 4: When identifiers + sequencing file filters exist AND NOT filtering by diagnosis,
         # skip second_with_clause entirely and collect diagnosis/pathology_file directly (much faster)
         skip_second_with_for_sf = False
+        # IMPORTANT: When needs_diag_collection is True, has_diagnoses_conditions should also be True
+        # because we're collecting all_diagnoses which needs to be processed in the second WITH clause
+        if needs_diag_collection:
+            has_diagnoses_conditions = True
         if needs_sf_collection:
             if needs_diag_collection:
                 # Build combined filter condition for diagnosis search + disease_phase (if present)
@@ -763,11 +850,13 @@ class SampleRepository:
                     combined_filter = f"d IS NOT NULL AND ({diagnosis_search_filter})"
                 
                 # When early filter optimization applies, only matching sequencing files are collected
+                # BUT: When has_diagnoses_conditions is True, we need to collect all_sfs (not sf) 
+                # so the second WITH clause can extract matching sf from it
                 if use_sf_early_filter:
                     with_collects = [
                         f"[d IN collect(DISTINCT d) WHERE {combined_filter}] AS all_diagnoses",  # Filter during collection
                         "head(collect(DISTINCT pf)) AS pf",
-                        "head(collect(DISTINCT sf)) AS sf"  # Only matching files (filtered in OPTIONAL MATCH)
+                        "collect(DISTINCT sf) AS all_sfs"  # Collect matching files (filtered in OPTIONAL MATCH) as all_sfs for second WITH clause
                     ]
                 else:
                     with_collects = [
@@ -904,8 +993,14 @@ class SampleRepository:
                         # Has both mapped and original values
                         sf_match_conditions.append(f"(sf.library_strategy = ${library_strategy_param[0]} OR sf.library_strategy = ${library_strategy_param[1]})")
                     else:
-                        # Single value
-                        sf_match_conditions.append(f"sf.library_strategy = ${library_strategy_param}")
+                        # Check if param_value is a list (for IN clause) or single value (for = clause)
+                        param_value = params.get(library_strategy_param)
+                        if isinstance(param_value, list) and len(param_value) > 0:
+                            # Use IN clause for list values (from enum-based filtering)
+                            sf_match_conditions.append(f"sf.library_strategy IN ${library_strategy_param}")
+                        else:
+                            # Use = for single value
+                            sf_match_conditions.append(f"sf.library_strategy = ${library_strategy_param}")
                 
                 # Check library_source_material
                 if library_source_material_param is not None:
@@ -913,7 +1008,14 @@ class SampleRepository:
                         # Invalid value (in null_mappings) - add impossible condition to return empty results
                         sf_match_conditions.append("false")
                     else:
-                        sf_match_conditions.append(f"sf.library_source_material = ${library_source_material_param}")
+                        # Check if param_value is a list (for IN clause) or single value (for = clause)
+                        param_value = params.get(library_source_material_param)
+                        if isinstance(param_value, list) and len(param_value) > 0:
+                            # Use IN clause for list values (from enum-based filtering)
+                            sf_match_conditions.append(f"sf.library_source_material IN ${library_source_material_param}")
+                        else:
+                            # Use = for single value
+                            sf_match_conditions.append(f"sf.library_source_material = ${library_source_material_param}")
                 
                 # Combine all conditions with OR (if multiple fields) or use single condition
                 if len(sf_match_conditions) == 1:
@@ -934,58 +1036,10 @@ class SampleRepository:
                 # BUT: When has_diagnoses_conditions is True, we collected 'all_sfs' (not 'sf')
                 # So we need to extract from 'all_sfs' in that case
                 if has_diagnoses_conditions:
-                    # We collected 'all_sfs', so extract matching sf from it
-                    # Build the same filter conditions that were applied in OPTIONAL MATCH
-                    sf_match_conditions = []
-                    
-                    # Check specimen_molecular_analyte_type
-                    if specimen_molecular_analyte_type_list:
-                        db_values_str = ", ".join([f"'{v}'" for v in specimen_molecular_analyte_type_list])
-                        sf_match_conditions.append(f"sf.library_source_molecule IN [{db_values_str}]")
-                    elif specimen_molecular_analyte_type_single_param:
-                        if specimen_molecular_analyte_type_single_param == "invalid":
-                            sf_match_conditions.append("false")
-                        else:
-                            sf_match_conditions.append(f"sf.library_source_molecule = ${specimen_molecular_analyte_type_single_param}")
-                    
-                    # Check library_selection_method
-                    if library_selection_method_param is not None:
-                        if library_selection_method_param == "invalid":
-                            sf_match_conditions.append("false")
-                        else:
-                            sf_match_conditions.append(f"sf.library_selection = ${library_selection_method_param}")
-                    
-                    # Check library_strategy
-                    if library_strategy_param is not None:
-                        if library_strategy_param == "invalid":
-                            sf_match_conditions.append("false")
-                        elif isinstance(library_strategy_param, tuple):
-                            sf_match_conditions.append(f"(sf.library_strategy = ${library_strategy_param[0]} OR sf.library_strategy = ${library_strategy_param[1]})")
-                        else:
-                            sf_match_conditions.append(f"sf.library_strategy = ${library_strategy_param}")
-                    
-                    # Check library_source_material
-                    if library_source_material_param is not None:
-                        if library_source_material_param == "invalid":
-                            sf_match_conditions.append("false")
-                        else:
-                            sf_match_conditions.append(f"sf.library_source_material = ${library_source_material_param}")
-                    
-                    # Extract matching sf from all_sfs
-                    if sf_match_conditions:
-                        valid_conditions = [c for c in sf_match_conditions if c != "false"]
-                        if valid_conditions:
-                            combined_condition = " AND ".join([f"({cond})" for cond in valid_conditions])
-                            has_matching_sf_expr = f"size([sf IN all_sfs WHERE sf IS NOT NULL AND ({combined_condition})]) > 0"
-                            sf_return_expr = f"head([sf IN all_sfs WHERE sf IS NOT NULL AND ({combined_condition}) | sf])"
-                        else:
-                            # All conditions were "false" - no matches
-                            has_matching_sf_expr = "false"
-                            sf_return_expr = "null"
-                    else:
-                        # No conditions - just check if any sf exists
-                        has_matching_sf_expr = "size([sf IN all_sfs WHERE sf IS NOT NULL]) > 0"
-                        sf_return_expr = "head([sf IN all_sfs WHERE sf IS NOT NULL | sf])"
+                    # We collected 'all_sfs', which already contains only matching files (filtered in OPTIONAL MATCH WHERE)
+                    # So we just need to check if any exist and get the first one
+                    has_matching_sf_expr = "size([sf IN all_sfs WHERE sf IS NOT NULL]) > 0"
+                    sf_return_expr = "head([sf IN all_sfs WHERE sf IS NOT NULL | sf])"
                     
                     second_with_vars.append(f"{has_matching_sf_expr} AS has_matching_sf")
                     second_with_vars.append(f"{sf_return_expr} AS sf")
@@ -4092,7 +4146,9 @@ class SampleRepository:
         
         # Handle identifiers parameter normalization
         # Support || separator for OR logic (e.g., "SAMP001 || SAMP002")
+        # OPTIMIZATION: Apply identifiers filter EARLY in MATCH WHERE clause to reduce dataset before OPTIONAL MATCHes
         identifiers_condition = ""
+        identifiers_early_filter = None
         if "identifiers" in filters:
             identifiers_value = filters.pop("identifiers")
             if identifiers_value is not None and str(identifiers_value).strip():
@@ -4106,6 +4162,17 @@ class SampleRepository:
                     param_counter += 1
                     id_param = f"param_{param_counter}"
                     params[id_param] = identifiers_value
+                    
+                    # Build early filter for MATCH WHERE clause (before OPTIONAL MATCHes)
+                    # This significantly reduces the dataset before expensive OPTIONAL MATCH operations
+                    if isinstance(identifiers_value, list):
+                        # Multiple identifiers - use IN clause directly
+                        identifiers_early_filter = f"sa.sample_id IN ${id_param}"
+                    else:
+                        # Single identifier - use = for better performance
+                        identifiers_early_filter = f"sa.sample_id = ${id_param}"
+                    
+                    # Also keep identifiers_condition for WITH clause (needed for id_list normalization in some cases)
                     identifiers_condition = f""",
                     // normalize $identifiers: STRING -> [trimmed], LIST -> trimmed list
                     CASE
@@ -4114,7 +4181,7 @@ class SampleRepository:
                       WHEN valueType(${id_param}) = 'STRING' THEN [trim(${id_param})]
                       ELSE []
                     END AS id_list"""
-                    where_conditions.append("sa.sample_id IN id_list")
+                    # Don't add to where_conditions - it's now applied early in MATCH WHERE clause
         
         with_conditions = []
         
@@ -4223,10 +4290,19 @@ class SampleRepository:
                     # Add an impossible condition to return empty results
                     with_conditions.append(("library_source_material_invalid", "invalid"))
                 else:
-                    # Apply reverse mapping for filtering (API value -> DB value)
-                    reverse_mapped = reverse_map_field_value("library_source_material", value)
-                    params[param_name] = reverse_mapped
-                    with_conditions.append(("library_source_material", param_name))
+                    # Load enum values and use IN clause for filtering
+                    enum_values = load_sequencing_file_enum("library_source_material")
+                    if enum_values:
+                        # Apply reverse mapping for the filter value to get DB value
+                        reverse_mapped = reverse_map_field_value("library_source_material", value)
+                        # Use IN clause with the mapped DB value (as list for consistency)
+                        params[param_name] = [reverse_mapped] if reverse_mapped else [value]
+                        with_conditions.append(("library_source_material", param_name))
+                    else:
+                        # Fallback to original logic if enum not available
+                        reverse_mapped = reverse_map_field_value("library_source_material", value)
+                        params[param_name] = reverse_mapped
+                        with_conditions.append(("library_source_material", param_name))
             elif field == "preservation_method":
                 with_conditions.append(f"pf IS NOT NULL AND pf.fixation_embedding_method = ${param_name}")
             elif field == "tumor_classification":
@@ -4256,21 +4332,24 @@ class SampleRepository:
                 except (ValueError, TypeError):
                     params[param_name] = value
             elif field == "depositions":
+                # OPTIMIZATION: depositions filter will be applied early in MATCH WHERE clause
+                # Store the parameter for early filtering (don't add to with_conditions)
                 # Support || separator for multi-value OR logic
                 if isinstance(value, str) and "||" in value:
                     dep_list = [d.strip() for d in value.split("||")]
                     dep_list = [d for d in dep_list if d]
                     if len(dep_list) > 1:
                         params[param_name] = dep_list
-                        with_conditions.append(f"st IS NOT NULL AND st.study_id IN ${param_name}")
                     elif len(dep_list) == 1:
                         params[param_name] = dep_list[0]
-                        with_conditions.append(f"st IS NOT NULL AND st.study_id = ${param_name}")
                     else:
                         # Empty list after filtering, skip
                         continue
-                else:
-                    with_conditions.append(f"st IS NOT NULL AND st.study_id = ${param_name}")
+                # Store depositions param name for early filtering (will be added to early_where_conditions later)
+                if not hasattr(self, '_depositions_early_params'):
+                    self._depositions_early_params = []
+                self._depositions_early_params.append(param_name)
+                # Don't add to with_conditions - it's now applied early in MATCH WHERE clause
             elif field == "diagnosis":
                 # Check both diagnoses.diagnosis and diagnoses.diagnosis_comment (for "see diagnosis_comment" cases)
                 # If diagnosis is "see diagnosis_comment", check the comment field instead
@@ -4399,13 +4478,51 @@ class SampleRepository:
             )
             return {"counts": {"total": 0}}
         
+        # Build early WHERE conditions (applied before OPTIONAL MATCHes)
+        # Separate cheap filters (can be applied before OPTIONAL MATCHes) from expensive ones
+        early_where_conditions = [
+            "sa.sample_id IS NOT NULL",
+            "toString(sa.sample_id) <> ''"
+        ]
+        
+        # OPTIMIZATION: Add identifiers filter early (before OPTIONAL MATCHes)
+        # This significantly reduces the dataset before expensive joins
+        if identifiers_early_filter:
+            early_where_conditions.append(identifiers_early_filter)
+        
+        # OPTIMIZATION: Add depositions filter early (before OPTIONAL MATCHes)
+        # Filter by study_id in the MATCH clause to reduce dataset early
+        if hasattr(self, '_depositions_early_params') and self._depositions_early_params:
+            # Collect all depositions values (in case multiple depositions filters were provided)
+            all_dep_values = []
+            for dep_param_name in self._depositions_early_params:
+                dep_value = params.get(dep_param_name)
+                if dep_value:
+                    if isinstance(dep_value, list):
+                        all_dep_values.extend(dep_value)
+                    else:
+                        all_dep_values.append(dep_value)
+            
+            if all_dep_values:
+                # Use the first param name for the combined filter
+                dep_param_name = self._depositions_early_params[0]
+                if len(all_dep_values) > 1:
+                    # Multiple values - use IN clause
+                    params[dep_param_name] = all_dep_values
+                    depositions_early_filter = f"st.study_id IN ${dep_param_name}"
+                else:
+                    # Single value - use = for better performance
+                    params[dep_param_name] = all_dep_values[0]
+                    depositions_early_filter = f"st.study_id = ${dep_param_name}"
+                early_where_conditions.append(depositions_early_filter)
+        
+        # Build early WHERE clause
+        early_where_clause = "\n        WHERE " + " AND ".join(early_where_conditions) if early_where_conditions else ""
+        
         # Build WHERE clause - use list version for anatomical_sites if present
         all_conditions = regular_conditions.copy()
         
-        # Add identifier filter conditions from where_conditions list
-        # This was missing - identifiers filter was being lost!
-        if where_conditions:
-            all_conditions.extend(where_conditions)
+        # Don't add identifier filter conditions to where_conditions - they're now applied early
         
         if anatomical_sites_list_condition:
             # Use list version first (will try string version if it fails)
@@ -4459,26 +4576,14 @@ class SampleRepository:
         if needs_sequencing_file:
             optional_matches.append("OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)")
         
-        # Check if where_clause references st (e.g., for depositions filter)
-        needs_st_for_where = any("st." in str(cond) or "st IS NOT NULL" in str(cond) for cond in all_conditions if isinstance(cond, str))
-        
-        # Study paths - ALWAYS include to ensure samples have a path to a study
-        # Path 1: sample -> cell_line -> study
-        # Path 2: sample -> participant -> consent_group -> study
-        study_paths = []
-        # Need participant for path2
-        if not needs_participant:
-            optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
-        study_paths.append("OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)")
-        study_paths.append("OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)")
-        
+        # OPTIMIZATION: Use IN_STUDY relationship for early filtering (same as get_samples)
+        # This is much faster than pattern matching (sample -> cell_line -> study or sample -> participant -> consent_group -> study)
         optional_matches_str = "\n        ".join(optional_matches) if optional_matches else ""
-        study_paths_str = "\n        ".join(study_paths) if study_paths else ""
         
         # Build WITH clause - only include variables that were matched
         with_vars = ["sa"]
         with_collects = []
-        if needs_participant or needs_study or needs_st_for_where:
+        if needs_participant or needs_study:
             with_vars.append("p")
         # For diagnosis search, collect ALL diagnoses first to check if ANY match
         # Note: needs_diag_collection is already set at line 230 based on diagnosis_search_term
@@ -4500,8 +4605,8 @@ class SampleRepository:
             else:
                 with_collects.append("head(collect(DISTINCT sf)) AS sf")
         
-        # Always include study (coalesce both paths)
-        with_vars.append("coalesce(st1, st2) AS st")
+        # Always include study (from IN_STUDY relationship)
+        with_vars.append("st")
         
         with_clause = ", ".join(with_vars)
         if with_collects:
@@ -4517,7 +4622,7 @@ class SampleRepository:
         if needs_sf_collection or needs_diag_collection:
             # Build second_with_vars based on what's available from first WITH
             second_with_vars = ["sa", "st"]
-            if needs_participant or needs_study or needs_st_for_where:
+            if needs_participant or needs_study:
                 second_with_vars.append("p")
             
             # Pass through id_list if identifiers filter is present
@@ -4594,7 +4699,14 @@ class SampleRepository:
                     # Invalid value (in null_mappings) - add impossible condition to return empty results
                     sf_match_conditions.append("false")
                 else:
-                    sf_match_conditions.append(f"sf.library_source_material = ${library_source_material_param}")
+                    # Check if param_value is a list (for IN clause) or single value (for = clause)
+                    param_value = params.get(library_source_material_param)
+                    if isinstance(param_value, list) and len(param_value) > 0:
+                        # Use IN clause for list values
+                        sf_match_conditions.append(f"sf.library_source_material IN ${library_source_material_param}")
+                    else:
+                        # Use = for single value
+                        sf_match_conditions.append(f"sf.library_source_material = ${library_source_material_param}")
             
             # Combine all conditions with OR (if multiple fields) or use single condition
             if len(sf_match_conditions) == 1:
@@ -4622,9 +4734,10 @@ class SampleRepository:
                     second_with_vars.append("diagnoses")
             second_with_clause = ", ".join(second_with_vars)
         
-        # Build WHERE clause - include filter conditions AND ensure sample has path to study
+        # Build WHERE clause - include filter conditions
         # Separate conditions that need to be in first WITH (for identifiers) from those that need to be after second WITH (for has_matching_sf/has_matching_diagnosis)
-        first_where_conditions = ["st IS NOT NULL"]
+        # Note: st IS NOT NULL is no longer needed since IN_STUDY MATCH ensures study path exists
+        first_where_conditions = []
         second_where_conditions = []
         
         # Parse where_clause to separate conditions with has_matching_sf/has_matching_diagnosis from others
@@ -4704,15 +4817,15 @@ class SampleRepository:
         else:
             final_where_clause = ""
         
-        # Build the query - ensure proper spacing
+        # Build the query - use IN_STUDY relationship for early filtering (same as get_samples)
+        optional_matches_str = "\n        ".join(optional_matches) if optional_matches else ""
+        
         if second_with_str:
             # second_with_str already includes the WITH and WHERE clauses
             cypher = f"""
-        MATCH (sa:sample)
-        WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+        MATCH (sa:sample)-[:IN_STUDY]->(st:study)
+        {early_where_clause}
         {optional_matches_str}
-        // Try multiple paths to get study - collect all possible studies
-        {study_paths_str}
         WITH {with_clause}
         {second_with_str}WITH DISTINCT sa.sample_id AS sample_id
         RETURN count(DISTINCT sample_id) as total_count
@@ -4720,11 +4833,9 @@ class SampleRepository:
         else:
             # No second WITH, use final_where_clause after first WITH
             cypher = f"""
-        MATCH (sa:sample)
-        WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+        MATCH (sa:sample)-[:IN_STUDY]->(st:study)
+        {early_where_clause}
         {optional_matches_str}
-        // Try multiple paths to get study - collect all possible studies
-        {study_paths_str}
         WITH {with_clause}
         {final_where_clause}WITH DISTINCT sa.sample_id AS sample_id
         RETURN count(DISTINCT sample_id) as total_count

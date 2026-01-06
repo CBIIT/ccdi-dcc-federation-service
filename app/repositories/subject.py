@@ -104,7 +104,9 @@ class SubjectRepository:
         
         # Handle identifiers parameter normalization
         # Support || separator for OR logic (e.g., "SUBJ001 || SUBJ002")
+        # OPTIMIZATION: Apply identifiers filter EARLY in MATCH WHERE clause to reduce dataset before OPTIONAL MATCHes
         identifiers_condition = ""
+        identifiers_early_filter = None
         if "identifiers" in filters:
             identifiers_value = filters.pop("identifiers")
             if identifiers_value is not None and str(identifiers_value).strip():
@@ -297,8 +299,9 @@ class SubjectRepository:
             with_clause = f"WITH p, s, d, c, st{race_condition}{identifiers_condition}"
             # Build WHERE conditions for WITH clause
             with_where_conditions = []
-            # Always apply identifiers filter if present (id_list is created in WITH clause)
-            if identifiers_condition:
+            # Don't apply identifiers filter here if it's already applied early in MATCH WHERE clause
+            # (identifiers_early_filter is applied in MATCH WHERE, so id_list normalization is still needed but filter is already applied)
+            if identifiers_condition and not identifiers_early_filter:
                 with_where_conditions.append("p.participant_id IN id_list")
             # Add other filters if any
             if other_filters:
@@ -314,10 +317,16 @@ class SubjectRepository:
             # So we keep derived_where_clause as is for later application
             
             # Required study match - put it before OPTIONAL MATCHes
+            # OPTIMIZATION: Apply identifiers filter early in MATCH WHERE clause when depositions IS present
+            # This reduces the dataset before expensive OPTIONAL MATCH operations
+            early_where_conditions = [f"st.study_id {deposition_operator} ${dep_param}"]
+            if identifiers_early_filter:
+                early_where_conditions.append(identifiers_early_filter)
+            early_where_clause = f"\n        WHERE {' AND '.join(early_where_conditions)}"
+            
             cypher = f"""
         MATCH (p:participant)
-        MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
-        WHERE st.study_id {deposition_operator} ${dep_param}
+        MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study){early_where_clause}
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
         {with_clause}
@@ -475,8 +484,14 @@ class SubjectRepository:
             if with_where_conditions:
                 with_clause += f"\n        WHERE {' AND '.join(with_where_conditions)}"
             
+            # OPTIMIZATION: Apply identifiers filter early in MATCH WHERE clause when depositions is NOT present
+            # This reduces the dataset before expensive OPTIONAL MATCH operations
+            early_where_clause = ""
+            if identifiers_early_filter:
+                early_where_clause = f"\n        WHERE {identifiers_early_filter}"
+            
             cypher = f"""
-        MATCH (p:participant)
+        MATCH (p:participant){early_where_clause}
         {with_clause}
         // Collect survivals separately (no cartesian product)
         OPTIONAL MATCH (p)<-[:of_survival]-(s:survival)
@@ -2156,7 +2171,9 @@ WITH p, d, c, st,
         
         # Handle identifiers parameter normalization
         # Support || separator for OR logic (e.g., "SUBJ001 || SUBJ002")
+        # OPTIMIZATION: Apply identifiers filter EARLY in MATCH WHERE clause to reduce dataset before OPTIONAL MATCHes
         identifiers_condition = ""
+        identifiers_early_filter = None
         if "identifiers" in filters:
             identifiers_value = filters.pop("identifiers")
             if identifiers_value is not None and str(identifiers_value).strip():

@@ -218,12 +218,9 @@ class SubjectRepository:
             if filtered_conditions:
                 where_clause = "WHERE " + " AND ".join(filtered_conditions)
         
-        # Add race filter to WHERE clause if it exists (after WITH defines race_tokens/pr_tokens)
-        if race_filter_condition:
-            if where_clause:
-                where_clause = where_clause + " AND " + race_filter_condition
-            else:
-                where_clause = "WHERE " + race_filter_condition
+        # Note: race_filter_condition is NOT added to where_clause here
+        # It will be added separately to with_where_conditions where race_tokens is in scope
+        # (race_tokens is defined in the WITH clause via race_condition)
         
         # Build WHERE clause for derived fields (after calculation)
         if derived_filters:
@@ -267,6 +264,7 @@ class SubjectRepository:
             dep_filter_str = f"st.study_id {deposition_operator} ${dep_param}"
             # Also remove identifiers condition if present (it's applied in MATCH WHERE when identifiers_condition exists)
             id_filter_str = "p.participant_id IN id_list"
+            # Note: race_filter_condition is NOT in where_clause (it's handled separately)
             where_clause_no_dep = where_clause.replace(f"WHERE {dep_filter_str}", "").replace(f"AND {dep_filter_str}", "").replace(f"{dep_filter_str} AND", "").replace(dep_filter_str, "").strip() if where_clause else ""
             # Remove identifiers condition if identifiers_condition is present
             if identifiers_condition:
@@ -305,6 +303,9 @@ class SubjectRepository:
             # Add other filters if any
             if other_filters:
                 with_where_conditions.append(other_filters)
+            # Add race filter if it exists (race_tokens/pr_tokens are defined in WITH clause)
+            if race_filter_condition:
+                with_where_conditions.append(race_filter_condition)
             # Apply WHERE clause if we have any conditions
             if with_where_conditions:
                 with_clause += f"\n        WHERE {' AND '.join(with_where_conditions)}"
@@ -320,13 +321,13 @@ class SubjectRepository:
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
         {with_clause}
-        WITH p, d, c, st, 
+        WITH p, d, c, st{", race_tokens, pr_tokens" if race_condition else ""}, 
              // Collect all survival records for this participant
              collect(s) AS survival_records
-        WITH p, d, c, st,
+        WITH p, d, c, st{", race_tokens, pr_tokens" if race_condition else ""},
              // Keep only records with a status
              [sr IN survival_records WHERE sr.last_known_survival_status IS NOT NULL] AS survs
-        WITH p, d, c, st, survs,
+        WITH p, d, c, st{", race_tokens, pr_tokens" if race_condition else ""}, survs,
              // Check if any record has 'Dead' status
              any(sr IN survs WHERE sr.last_known_survival_status = 'Dead') AS has_dead,
              // Find max age among Dead records (if any exist)
@@ -354,7 +355,7 @@ class SubjectRepository:
                         END
                       ELSE max_age 
                     END) AS max_age
-        WITH p, d, c, st, survs,
+        WITH p, d, c, st{", race_tokens, pr_tokens" if race_condition else ""}, survs,
              // Priority: If 'Dead' exists, use 'Dead'; otherwise use status with max age
              // If no record matches max_age, fall back to first available status
              CASE 
@@ -449,13 +450,16 @@ class SubjectRepository:
             # Always apply identifiers filter if present (id_list is created in WITH clause)
             if identifiers_condition:
                 with_where_conditions.append("p.participant_id IN id_list")
-            # Add other filters from where_clause (excluding identifiers condition)
+            # Add other filters from where_clause (excluding identifiers condition and race_filter_condition)
             if where_clause:
                 # Remove "WHERE " prefix if present
                 where_conditions_str = where_clause.replace("WHERE ", "").strip()
                 # Remove identifiers condition if present (already added above)
                 id_filter_str = "p.participant_id IN id_list"
                 where_conditions_str = where_conditions_str.replace(f"AND {id_filter_str}", "").replace(f"{id_filter_str} AND", "").replace(id_filter_str, "").strip()
+                # Remove race_filter_condition if present (it will be added separately since race_tokens is defined in WITH clause)
+                if race_filter_condition:
+                    where_conditions_str = where_conditions_str.replace(f"AND {race_filter_condition}", "").replace(f"{race_filter_condition} AND", "").replace(race_filter_condition, "").strip()
                 # Clean up any resulting "AND AND" or trailing/leading AND
                 where_conditions_str = where_conditions_str.replace("AND AND", "AND").strip()
                 while where_conditions_str.startswith("AND "):
@@ -464,6 +468,9 @@ class SubjectRepository:
                     where_conditions_str = where_conditions_str[:-4].strip()
                 if where_conditions_str:
                     with_where_conditions.append(where_conditions_str)
+            # Add race filter if it exists (race_tokens/pr_tokens are defined in WITH clause)
+            if race_filter_condition:
+                with_where_conditions.append(race_filter_condition)
             # Apply WHERE clause if we have any conditions
             if with_where_conditions:
                 with_clause += f"\n        WHERE {' AND '.join(with_where_conditions)}"
@@ -473,18 +480,18 @@ class SubjectRepository:
         {with_clause}
         // Collect survivals separately (no cartesian product)
         OPTIONAL MATCH (p)<-[:of_survival]-(s:survival)
-        WITH p, collect(s) AS survival_records
+        WITH p{", race_tokens, pr_tokens" if race_condition else ""}, collect(s) AS survival_records
         // Collect diagnoses separately (no cartesian product)
         OPTIONAL MATCH (p)<-[:of_diagnosis]-(d:diagnosis)
-        WITH p, survival_records, collect(DISTINCT d) AS diagnosis_nodes
+        WITH p{", race_tokens, pr_tokens" if race_condition else ""}, survival_records, collect(DISTINCT d) AS diagnosis_nodes
         // Collect studies separately (no cartesian product)
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
-        WITH p, survival_records, diagnosis_nodes, collect(DISTINCT st.study_id) AS study_ids
+        WITH p{", race_tokens, pr_tokens" if race_condition else ""}, survival_records, diagnosis_nodes, collect(DISTINCT st.study_id) AS study_ids
         {"WHERE size([node IN diagnosis_nodes WHERE node IS NOT NULL AND ANY(diag IN CASE WHEN valueType(node.diagnosis) = 'LIST' THEN node.diagnosis ELSE [node.diagnosis] END WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))]) > 0" if diagnosis_search_term else ""}
-        WITH p, diagnosis_nodes, study_ids,
+        WITH p{", race_tokens, pr_tokens" if race_condition else ""}, diagnosis_nodes, study_ids,
              // Keep only records with a status
              [sr IN survival_records WHERE sr IS NOT NULL AND sr.last_known_survival_status IS NOT NULL] AS survs
-        WITH p, diagnosis_nodes, study_ids, survs,
+        WITH p{", race_tokens, pr_tokens" if race_condition else ""}, diagnosis_nodes, study_ids, survs,
              // Check if any record has 'Dead' status
              size([sr IN survs WHERE sr.last_known_survival_status = 'Dead']) > 0 AS has_dead,
              // Find max age among Dead records (if any exist)
@@ -2273,12 +2280,9 @@ WITH p, d, c, st,
             if filtered_conditions:
                 where_clause = "WHERE " + " AND ".join(filtered_conditions)
         
-        # Add race filter to WHERE clause if it exists (after WITH defines race_tokens/pr_tokens)
-        if race_filter_condition:
-            if where_clause:
-                where_clause = where_clause + " AND " + race_filter_condition
-            else:
-                where_clause = "WHERE " + race_filter_condition
+        # Note: race_filter_condition is NOT added to where_clause here
+        # It will be added separately to with_where_conditions where race_tokens is in scope
+        # (race_tokens is defined in the WITH clause via race_condition)
         
         # Build WHERE clause for derived fields (after calculation)
         if derived_filters:

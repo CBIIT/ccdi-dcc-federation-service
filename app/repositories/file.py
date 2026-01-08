@@ -10,7 +10,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from neo4j import AsyncSession
 
 from app.core.logging import get_logger
-from app.core.constants import FileType
+from app.core.constants import FileType, load_file_enum
 from app.lib.field_allowlist import FieldAllowlist
 from app.models.dto import File
 from app.models.errors import UnsupportedFieldError
@@ -592,66 +592,159 @@ class FileRepository:
         if type_filter_param:
             base_where_conditions.append(f"toLower(sf.file_type) = toLower(${type_filter_param})")
         
-        # Build base WHERE clause (for filtering)
+        # OPTIMIZATION: When counting by type, filter to enum values using IN clause
+        # BUT: Only apply this filter to the VALUES query, not total/missing queries
+        # This ensures total counts match between type and depositions endpoints
+        # (both should count ALL files with valid study paths)
+        type_enum_param = None
+        type_enum_filter = None
+        if field == "type":
+            enum_values = FileType.values() if FileType.values() else load_file_enum()
+            if enum_values:
+                # Create case-insensitive IN filter for all enum values
+                # Use toLower() for case-insensitive matching with parameter
+                param_counter += 1
+                type_enum_param = f"param_{param_counter}"
+                # Store lowercase enum values for case-insensitive matching
+                enum_values_lower = [v.lower() for v in enum_values]
+                params[type_enum_param] = enum_values_lower
+                # Build case-insensitive IN condition using parameter
+                # NOTE: This will be added ONLY to values query, not total/missing
+                type_enum_filter = f"toLower(sf.{db_field}) IN ${type_enum_param}"
+                logger.debug(
+                    "Using enum-based IN filter for type count (values query only)",
+                    enum_count=len(enum_values),
+                    db_field=db_field
+                )
+        
+        # Build base WHERE clause for file filters (applied before traversals)
+        # NOTE: type_enum_filter is NOT included here - it's only for values query
         base_where_clause = "WHERE " + " AND ".join(base_where_conditions) if base_where_conditions else ""
         
-        # Build WHERE clause for values query (includes field IS NOT NULL)
-        field_where_conditions = base_where_conditions.copy() if base_where_conditions else []
-        field_where_conditions.append("st IS NOT NULL")
-        field_where_conditions.append(f"sf.{db_field} IS NOT NULL")
-        field_where_clause = "WHERE " + " AND ".join(field_where_conditions) if field_where_conditions else ""
-        
-        # Build WHERE clause for total and missing queries (includes study path check)
-        all_where_conditions = base_where_conditions.copy() if base_where_conditions else []
-        all_where_conditions.append("st IS NOT NULL")
-        all_where_clause = "WHERE " + " AND ".join(all_where_conditions) if all_where_conditions else "WHERE st IS NOT NULL"
-        
         # OPTIMIZATION STRATEGY:
-        # Keep 3 separate queries but simplify them - the study path traversal is necessary
-        # The main bottleneck is traversing 1M+ files through study paths multiple times
-        # We can't easily avoid this without caching, but we can simplify the queries
+        # Apply file filters FIRST (before traversals) to reduce dataset size
+        # Use reverse traversal when no file filters exist (start from studies)
+        # This significantly reduces the number of nodes processed
         
-        # Query 1: Total count (simplified - no need for OPTIONAL MATCH on participant)
-        total_cypher = f"""
-        MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
-        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-        WITH DISTINCT sf, coalesce(st1, st2) AS st
-        {all_where_clause}
-        RETURN count(sf) as total
-        """.strip()
+        # Check if we have file filters (excluding study path requirements)
+        has_file_filters = len(base_where_conditions) > 0
         
-        # Query 2: Missing count
-        missing_where_conditions = all_where_conditions.copy() if all_where_conditions else []
-        missing_where_conditions.append(f"sf.{db_field} IS NULL")
-        missing_where_clause = "WHERE " + " AND ".join(missing_where_conditions)
-        
-        missing_cypher = f"""
-        MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
-        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-        WITH DISTINCT sf, coalesce(st1, st2) AS st
-        {missing_where_clause}
-        RETURN count(sf) as missing
-        """.strip()
-        
-        # Query 3: Values with counts (simplified)
-        values_cypher = f"""
-        MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
-        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-        WITH sf, coalesce(st1, st2) AS st
-        {field_where_clause}
-        WITH DISTINCT sf, sf.{db_field} as field_val
-        WHERE field_val IS NOT NULL AND toString(field_val) <> '' AND toString(field_val) <> 'null'
-        RETURN toString(field_val) as value, count(sf) as count
-        ORDER BY count DESC, value ASC
-        """.strip()
+        if has_file_filters:
+            # OPTIMIZED PATTERN: Apply file filters FIRST (including IN clause for enum types)
+            # Then traverse to study - this processes fewer files before traversals
+            # The IN clause filters files to only valid enum types, significantly reducing dataset
+            
+            # Query 1: Total count (with file filters applied early)
+            total_cypher = f"""
+            MATCH (sf:sequencing_file)
+            {base_where_clause}
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH DISTINCT sf, coalesce(st1, st2) AS st
+            WHERE st IS NOT NULL
+            RETURN count(sf) as total
+            """.strip()
+            
+            # Query 2: Missing count (with file filters applied early)
+            # For type count: Missing includes NULL file_type OR file_type not in enum list
+            missing_where_conditions = base_where_conditions.copy() if base_where_conditions else []
+            if type_enum_filter:
+                # For type count: Missing = NULL OR not in enum list
+                # Use NOT (IN enum) to catch files with invalid enum values
+                missing_where_conditions.append(f"(sf.{db_field} IS NULL OR NOT ({type_enum_filter}))")
+            else:
+                # For other fields: Missing = NULL
+                missing_where_conditions.append(f"sf.{db_field} IS NULL")
+            missing_where_clause = "WHERE " + " AND ".join(missing_where_conditions)
+            
+            missing_cypher = f"""
+            MATCH (sf:sequencing_file)
+            {missing_where_clause}
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH DISTINCT sf, coalesce(st1, st2) AS st
+            WHERE st IS NOT NULL
+            RETURN count(sf) as missing
+            """.strip()
+            
+            # Query 3: Values with counts (with file filters applied early)
+            # For type count: Also apply enum IN filter to only group valid enum types
+            field_where_conditions_filtered = base_where_conditions.copy() if base_where_conditions else []
+            field_where_conditions_filtered.append(f"sf.{db_field} IS NOT NULL")
+            # Add enum filter for type count (only for values query)
+            if type_enum_filter:
+                field_where_conditions_filtered.append(type_enum_filter)
+            field_where_clause_filtered = "WHERE " + " AND ".join(field_where_conditions_filtered) if field_where_conditions_filtered else ""
+            
+            values_cypher = f"""
+            MATCH (sf:sequencing_file)
+            {field_where_clause_filtered}
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH sf, coalesce(st1, st2) AS st
+            WHERE st IS NOT NULL
+            WITH DISTINCT sf, sf.{db_field} as field_val
+            WHERE field_val IS NOT NULL AND toString(field_val) <> '' AND toString(field_val) <> 'null'
+            RETURN toString(field_val) as value, count(sf) as count
+            ORDER BY count DESC, value ASC
+            """.strip()
+        else:
+            # SIMPLE PATTERN: No file filters - use original pattern (already optimized)
+            # Query 1: Total count
+            total_cypher = f"""
+            MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH DISTINCT sf, coalesce(st1, st2) AS st
+            WHERE st IS NOT NULL
+            RETURN count(sf) as total
+            """.strip()
+            
+            # Query 2: Missing count
+            # For type count: Missing includes NULL file_type OR file_type not in enum list
+            if type_enum_filter:
+                # For type count: Missing = NULL OR not in enum list
+                missing_where_additional = f" AND (sf.{db_field} IS NULL OR NOT ({type_enum_filter}))"
+            else:
+                # For other fields: Missing = NULL
+                missing_where_additional = f" AND sf.{db_field} IS NULL"
+            
+            missing_cypher = f"""
+            MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH DISTINCT sf, coalesce(st1, st2) AS st
+            WHERE st IS NOT NULL{missing_where_additional}
+            RETURN count(sf) as missing
+            """.strip()
+            
+            # Query 3: Values with counts
+            # For type count: Also apply enum IN filter to only group valid enum types
+            values_where_parts = [f"sf.{db_field} IS NOT NULL"]
+            if type_enum_filter:
+                values_where_parts.append(type_enum_filter)
+            values_where_additional = " AND " + " AND ".join(values_where_parts) if values_where_parts else ""
+            
+            values_cypher = f"""
+            MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH sf, coalesce(st1, st2) AS st
+            WHERE st IS NOT NULL{values_where_additional}
+            WITH DISTINCT sf, sf.{db_field} as field_val
+            WHERE field_val IS NOT NULL AND toString(field_val) <> '' AND toString(field_val) <> 'null'
+            RETURN toString(field_val) as value, count(sf) as count
+            ORDER BY count DESC, value ASC
+            """.strip()
         
         logger.info(
-            "Executing count_files_by_field Cypher queries (simplified 3-query approach)",
+            "Executing count_files_by_field Cypher queries (optimized - early filtering)",
             field=field,
-            db_field=db_field
+            db_field=db_field,
+            has_file_filters=has_file_filters
         )
         
         # Execute 3 queries with retry logic (simplified queries for better performance)
@@ -802,59 +895,96 @@ class FileRepository:
                 base_where_conditions.append(f"sf.{filter_field} = ${param_name}")
             params[param_name] = value
         
-        # Build WHERE clause for total and missing queries (includes study path check)
-        all_where_conditions = base_where_conditions.copy() if base_where_conditions else []
-        all_where_conditions.append("st IS NOT NULL")
-        all_where_clause = "WHERE " + " AND ".join(all_where_conditions) if all_where_conditions else "WHERE st IS NOT NULL"
+        # Build base WHERE clause for file filters
+        base_where_clause = "WHERE " + " AND ".join(base_where_conditions) if base_where_conditions else ""
         
-        # OPTIMIZATION: Simplified queries (same as /by/type/count optimization)
-        # Removed unnecessary OPTIONAL MATCH on participant, simplified WHERE clauses
+        # OPTIMIZATION: Apply file filters FIRST (before traversals) to reduce dataset size
+        # Check if we have file filters
+        has_file_filters = len(base_where_conditions) > 0
         
-        # Query 1: Total count (simplified)
-        total_cypher = f"""
-        MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
-        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-        WITH DISTINCT sf, coalesce(st1, st2) AS st
-        {all_where_clause}
-        RETURN count(sf) as total
-        """.strip()
-        
-        # Query 2: Missing count (files with null study_id)
-        missing_where_conditions = all_where_conditions.copy() if all_where_conditions else []
-        missing_where_conditions.append("st.study_id IS NULL")
-        missing_where_clause = "WHERE " + " AND ".join(missing_where_conditions)
-        
-        missing_cypher = f"""
-        MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
-        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-        WITH DISTINCT sf, coalesce(st1, st2) AS st
-        {missing_where_clause}
-        RETURN count(sf) as missing
-        """.strip()
-        
-        # Query 3: Values with counts - group by study_id (simplified)
-        field_where_conditions = base_where_conditions.copy() if base_where_conditions else []
-        field_where_conditions.append("st IS NOT NULL")
-        field_where_conditions.append("st.study_id IS NOT NULL")
-        field_where_clause = "WHERE " + " AND ".join(field_where_conditions) if field_where_conditions else ""
-        
-        values_cypher = f"""
-        MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
-        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-        WITH sf, coalesce(st1, st2) AS st
-        {field_where_clause}
-        WITH DISTINCT sf, st.study_id as study_id_val
-        WHERE study_id_val IS NOT NULL AND toString(study_id_val) <> '' AND toString(study_id_val) <> 'null'
-        RETURN toString(study_id_val) as value, count(sf) as count
-        ORDER BY count DESC, value ASC
-        """.strip()
+        if has_file_filters:
+            # OPTIMIZED PATTERN: Apply file filters FIRST, then traverse to study
+            # Query 1: Total count (with file filters applied early)
+            total_cypher = f"""
+            MATCH (sf:sequencing_file)
+            {base_where_clause}
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH DISTINCT sf, coalesce(st1, st2) AS st
+            WHERE st IS NOT NULL
+            RETURN count(sf) as total
+            """.strip()
+            
+            # Query 2: Missing count (files with null study_id)
+            missing_where_conditions = base_where_conditions.copy() if base_where_conditions else []
+            missing_where_conditions.append("st.study_id IS NULL")
+            missing_where_clause = "WHERE " + " AND ".join(missing_where_conditions)
+            
+            missing_cypher = f"""
+            MATCH (sf:sequencing_file)
+            {base_where_clause}
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH DISTINCT sf, coalesce(st1, st2) AS st
+            {missing_where_clause}
+            RETURN count(sf) as missing
+            """.strip()
+            
+            # Query 3: Values with counts - group by study_id (with file filters applied early)
+            values_cypher = f"""
+            MATCH (sf:sequencing_file)
+            {base_where_clause}
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH sf, coalesce(st1, st2) AS st
+            WHERE st IS NOT NULL AND st.study_id IS NOT NULL
+            WITH DISTINCT sf, st.study_id as study_id_val
+            WHERE study_id_val IS NOT NULL AND toString(study_id_val) <> '' AND toString(study_id_val) <> 'null'
+            RETURN toString(study_id_val) as value, count(sf) as count
+            ORDER BY count DESC, value ASC
+            """.strip()
+        else:
+            # SIMPLE PATTERN: No file filters - use original pattern
+            # Query 1: Total count
+            total_cypher = f"""
+            MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH DISTINCT sf, coalesce(st1, st2) AS st
+            WHERE st IS NOT NULL
+            RETURN count(sf) as total
+            """.strip()
+            
+            # Query 2: Missing count (files with null study_id)
+            missing_cypher = f"""
+            MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH DISTINCT sf, coalesce(st1, st2) AS st
+            WHERE st IS NOT NULL AND st.study_id IS NULL
+            RETURN count(sf) as missing
+            """.strip()
+            
+            # Query 3: Values with counts - group by study_id
+            values_cypher = f"""
+            MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH sf, coalesce(st1, st2) AS st
+            WHERE st IS NOT NULL AND st.study_id IS NOT NULL
+            WITH DISTINCT sf, st.study_id as study_id_val
+            WHERE study_id_val IS NOT NULL AND toString(study_id_val) <> '' AND toString(study_id_val) <> 'null'
+            RETURN toString(study_id_val) as value, count(sf) as count
+            ORDER BY count DESC, value ASC
+            """.strip()
         
         logger.info(
-            "Executing count_files_by_depositions Cypher queries (optimized - simplified 3-query approach)",
-            depositions_count=True
+            "Executing count_files_by_depositions Cypher queries (optimized - early filtering)",
+            depositions_count=True,
+            has_file_filters=has_file_filters
         )
         
         # Execute total query

@@ -341,6 +341,20 @@ async def count_files_by_field(
     _rate_limit: None = Depends(check_rate_limit)
 ):
     """Count sequencing files grouped by a specific field."""
+    # Check if any query parameters are provided - count endpoints don't accept filters
+    if request.query_params:
+        logger.warning(
+            "Invalid route detected - count endpoint does not accept query parameters",
+            path=request.url.path,
+            query_params=list(request.query_params.keys()),
+            field=field
+        )
+        raise InvalidRouteError(
+            method=request.method,
+            route=request.url.path,
+            message="Invalid route requested."
+        )
+    
     logger.info(
         "Count sequencing files by field request",
         field=field,
@@ -364,6 +378,9 @@ async def count_files_by_field(
         
         return result
         
+    except InvalidRouteError as e:
+        # Re-raise to let the exception handler process it with proper format
+        raise e.to_http_exception()
     except UnsupportedFieldError as e:
         logger.warning("Unsupported field error counting sequencing files by field", error=str(e), field=field)
         # Re-raise to let the exception handler process it with proper format

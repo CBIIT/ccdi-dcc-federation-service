@@ -4113,16 +4113,13 @@ class SampleRepository:
         has_real_filters = any(v is not None and v != "" for v in filters.values()) if filters else False
         
         if not has_real_filters:
+            # Use IN_STUDY relationship for consistency with main query
+            # Use sample_id + study_id as unique identifier (same sample_id can be in different studies)
             cypher = """
-        MATCH (sa:sample)
-        WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-        OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-        OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-        WITH sa, p, coalesce(st1, st2) AS st
-        WHERE st IS NOT NULL
-        WITH DISTINCT sa
-        RETURN count(DISTINCT sa) as total_count
+        MATCH (sa:sample)-[:IN_STUDY]->(st:study)
+        WHERE sa.sample_id IS NOT NULL AND toString(sa.sample_id) <> ''
+        WITH sa.sample_id AS sample_id, st.study_id AS study_id
+        RETURN count(*) as total_count
         """.strip()
             
             result = await self.session.run(cypher, {})
@@ -4822,23 +4819,25 @@ class SampleRepository:
         
         if second_with_str:
             # second_with_str already includes the WITH and WHERE clauses
+            # Use sample_id + study_id as unique identifier (same sample_id can be in different studies)
             cypher = f"""
         MATCH (sa:sample)-[:IN_STUDY]->(st:study)
         {early_where_clause}
         {optional_matches_str}
         WITH {with_clause}
-        {second_with_str}WITH DISTINCT sa.sample_id AS sample_id
-        RETURN count(DISTINCT sample_id) as total_count
+        {second_with_str}WITH sa.sample_id AS sample_id, st.study_id AS study_id
+        RETURN count(*) as total_count
         """.strip()
         else:
             # No second WITH, use final_where_clause after first WITH
+            # Use sample_id + study_id as unique identifier (same sample_id can be in different studies)
             cypher = f"""
         MATCH (sa:sample)-[:IN_STUDY]->(st:study)
         {early_where_clause}
         {optional_matches_str}
         WITH {with_clause}
-        {final_where_clause}WITH DISTINCT sa.sample_id AS sample_id
-        RETURN count(DISTINCT sample_id) as total_count
+        {final_where_clause}WITH sa.sample_id AS sample_id, st.study_id AS study_id
+        RETURN count(*) as total_count
         """.strip()
         
         logger.info(
@@ -4934,8 +4933,8 @@ class SampleRepository:
                      head(collect(DISTINCT pf)) AS pf,
                      head(collect(DISTINCT d)) AS diagnoses
                 {where_clause}
-                WITH DISTINCT sa.sample_id AS sample_id
-                RETURN count(DISTINCT sample_id) as total_count
+                WITH sa.sample_id AS sample_id, st.study_id AS study_id
+                RETURN count(*) as total_count
                 """.strip()
                 
                 try:

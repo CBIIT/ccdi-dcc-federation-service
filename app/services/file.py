@@ -18,6 +18,7 @@ from app.lib.field_allowlist import FieldAllowlist
 from app.models.dto import File, FileResponse, CountResponse, SummaryResponse
 from app.models.errors import NotFoundError, ValidationError
 from app.repositories.file import FileRepository
+from app.services.materialized_views import MaterializedViewService
 
 logger = get_logger(__name__)
 
@@ -34,6 +35,7 @@ class FileService:
     ):
         """Initialize service with dependencies."""
         self.repository = FileRepository(session, allowlist)
+        self.materialized_view_service = MaterializedViewService(session)
         self.settings = settings
         self.cache_service = cache_service
         
@@ -136,6 +138,9 @@ class FileService:
         """
         Count sequencing files grouped by a specific field value.
         
+        Uses materialized views when available (no filters), otherwise falls back
+        to live queries from the repository.
+        
         Args:
             field: Field to group by and count
             filters: Additional filters to apply
@@ -158,35 +163,62 @@ class FileService:
                 logger.debug("Returning cached sequencing file count", field=field)
                 return CountResponse(**cached_result)
         
-        # Get counts from repository with timeout handling
-        query_timeout = self.settings.query_timeout or 60  # Default to 60 seconds
-        start_time = time.time()
-        try:
-            result = await asyncio.wait_for(
-                self.repository.count_files_by_field(field, filters),
-                timeout=query_timeout
-            )
-            elapsed_time = time.time() - start_time
-            if elapsed_time > 10:  # Log warning if query takes more than 10 seconds
+        # Try materialized view first (only works for type/depositions with no filters)
+        result = None
+        if field in ("type", "depositions") and not filters:
+            try:
+                if field == "type":
+                    result = await self.materialized_view_service.get_file_count_by_type(filters)
+                elif field == "depositions":
+                    result = await self.materialized_view_service.get_file_count_by_depositions(filters)
+                
+                if result:
+                    logger.info(
+                        "Using materialized view for file count",
+                        field=field,
+                        total=result.get("total", 0),
+                        missing=result.get("missing", 0),
+                        values_count=len(result.get("values", [])),
+                        last_updated=result.get("last_updated")
+                    )
+            except Exception as e:
                 logger.warning(
-                    "Slow query detected",
+                    "Failed to read from materialized view, falling back to live query",
                     field=field,
-                    elapsed_time=elapsed_time,
+                    error=str(e)
+                )
+                result = None
+        
+        # Fall back to live query if materialized view not available or failed
+        if result is None:
+            query_timeout = self.settings.query_timeout or 60  # Default to 60 seconds
+            start_time = time.time()
+            try:
+                result = await asyncio.wait_for(
+                    self.repository.count_files_by_field(field, filters),
                     timeout=query_timeout
                 )
-        except asyncio.TimeoutError:
-            elapsed_time = time.time() - start_time
-            logger.error(
-                "Query timeout exceeded",
-                field=field,
-                timeout=query_timeout,
-                elapsed_time=elapsed_time,
-                filters=filters
-            )
-            raise ValidationError(
-                "Query execution exceeded the allowed timeout. "
-                "The request may be too complex or the database is under heavy load."
-            )
+                elapsed_time = time.time() - start_time
+                if elapsed_time > 10:  # Log warning if query takes more than 10 seconds
+                    logger.warning(
+                        "Slow query detected",
+                        field=field,
+                        elapsed_time=elapsed_time,
+                        timeout=query_timeout
+                    )
+            except asyncio.TimeoutError:
+                elapsed_time = time.time() - start_time
+                logger.error(
+                    "Query timeout exceeded",
+                    field=field,
+                    timeout=query_timeout,
+                    elapsed_time=elapsed_time,
+                    filters=filters
+                )
+                raise ValidationError(
+                    "Query execution exceeded the allowed timeout. "
+                    "The request may be too complex or the database is under heavy load."
+                )
         
         # Build response
         response = CountResponse(

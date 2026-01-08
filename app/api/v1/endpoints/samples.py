@@ -33,6 +33,7 @@ from app.models.dto import (
 )
 from app.models.errors import NotFoundError, ErrorDetail, ErrorsResponse, ErrorKind, InvalidParametersError, UnsupportedFieldError
 from app.services.sample import SampleService
+from app.db.memgraph import DatabaseConnectionError
 
 logger = get_logger(__name__)
 
@@ -227,13 +228,44 @@ async def list_samples(
         try:
             summary_result = await service.get_samples_summary(filters)
             total_count = summary_result.counts.total
-        except Exception as summary_error:
-            # If summary fails, log but don't fail the request - return 0 as total
-            logger.warning(
-                "Error getting samples summary, using 0 as total",
+        except DatabaseConnectionError as summary_error:
+            # Database connection error - log clearly for AWS cloud monitoring
+            logger.error(
+                "Database connection error while getting samples summary - using 0 as total",
                 error=str(summary_error),
-                exc_info=True
+                error_type=type(summary_error).__name__,
+                filters=filters,
+                is_database_connection_error=True,
+                will_use_zero_total=True,
+                aws_cloudwatch_alert=True
             )
+            total_count = 0
+        except Exception as summary_error:
+            # Check if this is a connection-related error
+            error_str = str(summary_error).lower()
+            is_connection_error = any(keyword in error_str for keyword in [
+                'connection', 'database', 'unavailable', 'timeout', 'network',
+                'service unavailable', 'broken pipe', 'connection reset', 'connection closed'
+            ])
+            
+            if is_connection_error:
+                # Connection-related error - log clearly for AWS cloud monitoring
+                logger.error(
+                    "Database connection issue while getting samples summary - using 0 as total",
+                    error=str(summary_error),
+                    error_type=type(summary_error).__name__,
+                    filters=filters,
+                    is_connection_related=True,
+                    will_use_zero_total=True,
+                    aws_cloudwatch_alert=True,
+                    exc_info=True
+                )
+            else:
+                logger.warning(
+                    "Error getting samples summary, using 0 as total",
+                    error=str(summary_error),
+                    exc_info=True
+                )
             total_count = 0
         
         # Build pagination info

@@ -16,6 +16,7 @@ from app.lib.field_allowlist import FieldAllowlist
 from app.lib.url_builder import build_identifier_server_url
 from app.models.dto import Subject
 from app.models.errors import UnsupportedFieldError
+from app.utils.cypher_builder import combine_where_clauses, append_where_conditions
 
 logger = get_logger(__name__)
 
@@ -294,6 +295,17 @@ class SubjectRepository:
                 # If other_filters is empty or just whitespace/AND after cleanup, set to empty
                 if not other_filters or other_filters.strip() == "" or other_filters.strip() == "AND":
                     other_filters = ""
+                # Remove any references to study_id (the variable) since it's not defined yet in this query path
+                if other_filters:
+                    other_filters = other_filters.replace("study_id =", "").replace("study_id IN", "").replace("study_id=", "").replace("study_idIN", "")
+                    # Clean up any resulting "AND AND" or trailing/leading AND
+                    other_filters = other_filters.replace("AND AND", "AND").strip()
+                    while other_filters.startswith("AND "):
+                        other_filters = other_filters[4:].strip()
+                    while other_filters.endswith(" AND"):
+                        other_filters = other_filters[:-4].strip()
+                    if not other_filters or other_filters.strip() == "" or other_filters.strip() == "AND":
+                        other_filters = ""
             
             # Build WITH clause with optional WHERE
             with_clause = f"WITH p, s, d, c, st{race_condition}{identifiers_condition}"
@@ -304,7 +316,7 @@ class SubjectRepository:
             if identifiers_condition and not identifiers_early_filter:
                 with_where_conditions.append("p.participant_id IN id_list")
             # Add other filters if any
-            if other_filters:
+            if other_filters and other_filters.strip() and other_filters != "AND":
                 with_where_conditions.append(other_filters)
             # Add race filter if it exists (race_tokens/pr_tokens are defined in WITH clause)
             if race_filter_condition:
@@ -393,9 +405,9 @@ class SubjectRepository:
              END AS ethnicity_value
         {derived_where_clause}
         // Group by participant to aggregate study_ids and handle multiple records per participant
-        WITH toString(p.participant_id) AS participant_id, p, d, st, final_vital_status, final_age_at_vital_status,
+        WITH toString(p.participant_id) AS participant_id, p, d, st, st.study_id AS study_id, final_vital_status, final_age_at_vital_status,
              ethnicity_value
-        WITH participant_id, 
+        WITH participant_id, study_id,
              // Use head to get first participant node (they're all the same per participant_id)
              head(collect(DISTINCT p)) AS p,
              // Collect all diagnosis nodes - we'll aggregate diagnoses from all nodes
@@ -404,16 +416,16 @@ class SubjectRepository:
              head(collect(DISTINCT final_vital_status)) AS final_vital_status,
              coalesce(head(collect(DISTINCT final_age_at_vital_status)), -999) AS final_age_at_vital_status,
              head(collect(DISTINCT ethnicity_value)) AS ethnicity_value,
-             // Collect all distinct study_ids for this participant
-             collect(DISTINCT st.study_id) AS study_ids
+             // Collect all distinct study_ids for this participant (collect from study_id variable, not st.study_id since st is no longer in scope)
+             collect(DISTINCT study_id) AS study_ids
         {"WHERE size([node IN diagnosis_nodes WHERE node IS NOT NULL AND ANY(diag IN CASE WHEN valueType(node.diagnosis) = 'LIST' THEN node.diagnosis ELSE [node.diagnosis] END WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))]) > 0" if diagnosis_search_term else ""}
-        WITH participant_id, p, final_vital_status, final_age_at_vital_status,
+        WITH participant_id, study_id, p, final_vital_status, final_age_at_vital_status,
              ethnicity_value, study_ids,
              // Aggregate all diagnoses from all diagnosis nodes
              // Extract diagnosis values from each node (d.diagnosis can be string or list)
              // Filter out NULL nodes first
              [node IN diagnosis_nodes WHERE node IS NOT NULL] AS non_null_nodes
-        WITH participant_id, p, final_vital_status, final_age_at_vital_status,
+        WITH participant_id, study_id, p, final_vital_status, final_age_at_vital_status,
              ethnicity_value, study_ids,
              // Extract diagnosis values from non-null nodes
              reduce(all_diagnoses = [], node IN non_null_nodes |
@@ -422,11 +434,11 @@ class SubjectRepository:
                         all_diagnoses + [node.diagnosis]
                       ELSE all_diagnoses
                     END) AS all_diagnoses_list
-        WITH participant_id, p, final_vital_status, final_age_at_vital_status,
+        WITH participant_id, study_id, p, final_vital_status, final_age_at_vital_status,
              ethnicity_value, study_ids,
              // Return the aggregated diagnoses list (will be processed in Python)
              all_diagnoses_list AS d
-        WITH participant_id, p, d, final_vital_status, final_age_at_vital_status,
+        WITH participant_id, study_id, p, d, final_vital_status, final_age_at_vital_status,
              ethnicity_value,
              // Use first study_id for namespace (for backward compatibility)
              head(study_ids) AS namespace,
@@ -459,7 +471,8 @@ class SubjectRepository:
             # Always apply identifiers filter if present (id_list is created in WITH clause)
             if identifiers_condition:
                 with_where_conditions.append("p.participant_id IN id_list")
-            # Add other filters from where_clause (excluding identifiers condition and race_filter_condition)
+            # Add other filters from where_clause (excluding identifiers condition, race_filter_condition, and st.study_id conditions)
+            # Note: st.study_id conditions are for depositions filter, which is not used in non-depositions path
             if where_clause:
                 # Remove "WHERE " prefix if present
                 where_conditions_str = where_clause.replace("WHERE ", "").strip()
@@ -469,13 +482,20 @@ class SubjectRepository:
                 # Remove race_filter_condition if present (it will be added separately since race_tokens is defined in WITH clause)
                 if race_filter_condition:
                     where_conditions_str = where_conditions_str.replace(f"AND {race_filter_condition}", "").replace(f"{race_filter_condition} AND", "").replace(race_filter_condition, "").strip()
+                # Remove st.study_id conditions (depositions filter) - these are not applicable in non-depositions path
+                # Remove patterns like "st.study_id = $param" or "st.study_id IN $param" with surrounding ANDs
+                where_conditions_str = where_conditions_str.replace("st.study_id =", "").replace("st.study_id IN", "").replace("st.study_id=", "").replace("st.study_idIN", "")
+                # Remove any references to study_id (the variable) since it's not defined yet in this query path
+                where_conditions_str = where_conditions_str.replace("study_id =", "").replace("study_id IN", "").replace("study_id=", "").replace("study_idIN", "")
+                # Remove any parameter references that might be left (e.g., "$param_1" if it was for st.study_id)
+                # But be careful - we can't safely remove all $param references as they might be for other fields
                 # Clean up any resulting "AND AND" or trailing/leading AND
                 where_conditions_str = where_conditions_str.replace("AND AND", "AND").strip()
                 while where_conditions_str.startswith("AND "):
                     where_conditions_str = where_conditions_str[4:].strip()
                 while where_conditions_str.endswith(" AND"):
                     where_conditions_str = where_conditions_str[:-4].strip()
-                if where_conditions_str:
+                if where_conditions_str and where_conditions_str.strip() and where_conditions_str != "AND":
                     with_where_conditions.append(where_conditions_str)
             # Add race filter if it exists (race_tokens/pr_tokens are defined in WITH clause)
             if race_filter_condition:
@@ -563,9 +583,12 @@ class SubjectRepository:
              END AS ethnicity_value
         {derived_where_clause}
         // Group by participant - everything is already aggregated per participant
+        // Note: study_id is included for consistency, even though we collect study_ids separately
+        // Extract study_id from the first study (if available) for consistency with unique identifier pattern
         WITH toString(p.participant_id) AS participant_id, p, diagnosis_nodes, study_ids, final_vital_status, final_age_at_vital_status,
-             ethnicity_value
-        WITH participant_id, 
+             ethnicity_value,
+             head(study_ids) AS study_id
+        WITH participant_id, study_id,
              // Use head to get first participant node (they're all the same per participant_id)
              head(collect(DISTINCT p)) AS p,
              // diagnosis_nodes and study_ids are already collected, just take first
@@ -576,13 +599,13 @@ class SubjectRepository:
              head(collect(DISTINCT ethnicity_value)) AS ethnicity_value,
              // study_ids are already collected, just take first
              head(collect(study_ids)) AS study_ids
-        WITH participant_id, p, final_vital_status, final_age_at_vital_status,
+        WITH participant_id, study_id, p, final_vital_status, final_age_at_vital_status,
              ethnicity_value, study_ids,
              // Aggregate all diagnoses from all diagnosis nodes
              // Extract diagnosis values from each node (d.diagnosis can be string or list)
              // Filter out NULL nodes first
              [node IN diagnosis_nodes WHERE node IS NOT NULL] AS non_null_nodes
-        WITH participant_id, p, final_vital_status, final_age_at_vital_status,
+        WITH participant_id, study_id, p, final_vital_status, final_age_at_vital_status,
              ethnicity_value, study_ids,
              // Extract diagnosis values from non-null nodes
              reduce(all_diagnoses = [], node IN non_null_nodes |
@@ -591,11 +614,11 @@ class SubjectRepository:
                         all_diagnoses + [node.diagnosis]
                       ELSE all_diagnoses
                     END) AS all_diagnoses_list
-        WITH participant_id, p, final_vital_status, final_age_at_vital_status,
+        WITH participant_id, study_id, p, final_vital_status, final_age_at_vital_status,
              ethnicity_value, study_ids,
              // Return the aggregated diagnoses list (will be processed in Python)
              all_diagnoses_list AS d
-        WITH participant_id, p, d, final_vital_status, final_age_at_vital_status,
+        WITH participant_id, study_id, p, d, final_vital_status, final_age_at_vital_status,
              ethnicity_value,
              // Use first study_id for namespace (for backward compatibility)
              head(study_ids) AS namespace,
@@ -1267,17 +1290,20 @@ WITH p, d, c, st,
         else:
             survival_processing = ""
         
-        # Query 1: Get total count of all unique participants matching filters
+        # Query 1: Get total count of all unique participant + study combinations matching filters
+        # Use participant_id + study_id as unique identifier (same participant_id can be in different studies)
         # Total count should match summary endpoint - use same logic (no survival processing for total)
         if is_survival_field:
+            combined_base_where = combine_where_clauses(base_where_clause, "st IS NOT NULL")
             total_cypher = f"""
         MATCH (p:participant)
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         WITH p, s, d, c, st{race_condition}{identifiers_condition}
-        {base_where_clause}
-        RETURN count(DISTINCT p.participant_id) as total
+        {combined_base_where}
+        WITH p.participant_id AS participant_id, st.study_id AS study_id
+        RETURN count(*) as total
         """.strip()
         else:
             total_cypher = f"""
@@ -1287,7 +1313,9 @@ WITH p, d, c, st,
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         WITH p, s, d, c, st{race_condition}{identifiers_condition}
         {base_where_clause}
-        RETURN count(DISTINCT p.participant_id) as total
+        WHERE st IS NOT NULL
+        WITH p.participant_id AS participant_id, st.study_id AS study_id
+        RETURN count(*) as total
         """.strip()
         
         # Query 2: Get count of participants with null field value
@@ -1304,12 +1332,13 @@ WITH p, d, c, st,
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         WITH p, s, d, c, st{race_condition}{identifiers_condition}
         {base_where_clause}{survival_processing}
-        WITH p.participant_id as participant_id, final_vital_status, final_age_at_vital_status
-        WITH participant_id, 
+        WHERE st IS NOT NULL
+        WITH p.participant_id AS participant_id, st.study_id AS study_id, final_vital_status, final_age_at_vital_status
+        WITH participant_id, study_id,
              head(collect(final_vital_status)) as final_vital_status,
              head(collect(final_age_at_vital_status)) as final_age_at_vital_status
         WHERE final_age_at_vital_status IS NULL
-        RETURN count(DISTINCT participant_id) as missing
+        RETURN count(*) as missing
         """.strip()
             else:
                 # For vital_status, missing means no vital_status
@@ -1320,10 +1349,11 @@ WITH p, d, c, st,
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         WITH p, s, d, c, st{race_condition}{identifiers_condition}
         {base_where_clause}{survival_processing}
-        WITH p.participant_id as participant_id, final_vital_status, final_age_at_vital_status
-        WITH participant_id, head(collect(final_vital_status)) as final_vital_status
+        WHERE st IS NOT NULL
+        WITH p.participant_id AS participant_id, st.study_id AS study_id, final_vital_status
+        WITH participant_id, study_id, head(collect(final_vital_status)) as final_vital_status
         WHERE final_vital_status IS NULL
-        RETURN count(DISTINCT participant_id) as missing
+        RETURN count(*) as missing
         """.strip()
         else:
             missing_cypher = f"""
@@ -1333,8 +1363,9 @@ WITH p, d, c, st,
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         WITH p, s, d, c, st{race_condition}{identifiers_condition}
         {base_where_clause}
-        WHERE {null_check}
-        RETURN count(DISTINCT p.participant_id) as missing
+        WHERE st IS NOT NULL AND {null_check}
+        WITH p.participant_id AS participant_id, st.study_id AS study_id
+        RETURN count(*) as missing
         """.strip()
         
         # Query 3: Get counts by field values
@@ -1358,18 +1389,20 @@ WITH p, d, c, st,
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         WITH p, s, d, c, st{race_condition}{identifiers_condition}
         {base_where_clause}{survival_processing}
-        WITH p.participant_id as participant_id, {field_value_expr} as field_val
-        WITH participant_id, head(collect(field_val)) as field_val
+        WHERE st IS NOT NULL
+        WITH p.participant_id AS participant_id, st.study_id AS study_id, {field_value_expr} as field_val
+        WITH participant_id, study_id, head(collect(field_val)) as field_val
         WHERE field_val IS NOT NULL
-        WITH participant_id, 
+        WITH participant_id, study_id,
              CASE 
                WHEN field_val IS NULL THEN []
                ELSE [field_val]
              END as field_values
         UNWIND field_values as value
-        WITH value, participant_id,
+        WITH participant_id, study_id, value,
              toString(value) as normalized_value
-        RETURN normalized_value as value, count(DISTINCT participant_id) as count
+        WITH DISTINCT participant_id, study_id, normalized_value
+        RETURN normalized_value as value, count(*) as count
         ORDER BY count DESC, value ASC
         """.strip()
         else:
@@ -1380,8 +1413,8 @@ WITH p, d, c, st,
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         WITH p, s, d, c, st{race_condition}{identifiers_condition}
         {base_where_clause}
-        WHERE {not_null_check}
-        WITH p, 
+        WHERE st IS NOT NULL AND {not_null_check}
+        WITH p.participant_id AS participant_id, st.study_id AS study_id, 
              CASE 
                WHEN {field_value_expr} IS NULL THEN []
                ELSE 
@@ -1389,12 +1422,13 @@ WITH p, d, c, st,
                  [{field_value_expr}]
              END as field_values
         UNWIND field_values as value
-        WITH value, p.participant_id as participant_id,
+        WITH participant_id, study_id, value,
              CASE 
                WHEN '{field}' = 'sex' THEN{normalization_expr}
                ELSE toString(value)
              END as normalized_value
-        RETURN normalized_value as value, count(DISTINCT participant_id) as count
+        WITH DISTINCT participant_id, study_id, normalized_value
+        RETURN normalized_value as value, count(*) as count
         ORDER BY count DESC, value ASC
         """.strip()
 
@@ -1555,61 +1589,203 @@ WITH p, d, c, st,
         else:
             where_clause = ""
         
-        # Query 1: Get total count of all unique participants matching filters
-        total_cypher = f"""
+        # Query 1: Get total count of all unique participant + study combinations matching filters
+        # Use participant_id + study_id as unique identifier (same participant_id can be in different studies)
+        # When no filters, use required MATCH for study (same as summary query) to avoid duplicates
+        if where_clause or identifiers_condition:
+            combined_where = combine_where_clauses(where_clause, "st IS NOT NULL")
+            total_cypher = f"""
         MATCH (p:participant)
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         WITH p, s, d, c, st{identifiers_condition}
-        {where_clause}
-        RETURN count(DISTINCT p.participant_id) as total
+        {combined_where}
+        WITH p.participant_id AS participant_id, st.study_id AS study_id
+        RETURN count(*) as total
+        """.strip()
+        else:
+            # No filters - use required MATCH for study (same as summary query)
+            total_cypher = """
+        MATCH (p:participant)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
+        WHERE st IS NOT NULL
+        WITH DISTINCT p.participant_id AS participant_id, st.study_id AS study_id
+        RETURN count(*) as total
         """.strip()
         
-        # Query 2: Get count of participants with null race value
-        missing_cypher = f"""
+        # Query 2: Get count of participant + study combinations with null or empty race value
+        # Note: Missing will be calculated as total - sum(values) to ensure accuracy
+        # This query only counts NULL and empty strings for efficiency
+        # Invalid race values (that don't match valid races) will be included in missing via calculation
+        if where_clause or identifiers_condition:
+            combined_where = combine_where_clauses(
+                where_clause, 
+                "st IS NOT NULL AND (p.race IS NULL OR toString(p.race) = '' OR trim(toString(p.race)) = '')"
+            )
+            missing_cypher = f"""
         MATCH (p:participant)
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         WITH p, s, d, c, st{identifiers_condition}
-        {where_clause}
-        WHERE p.race IS NULL
-        RETURN count(DISTINCT p.participant_id) as missing
+        {combined_where}
+        WITH p.participant_id AS participant_id, st.study_id AS study_id
+        RETURN count(*) as missing
+        """.strip()
+        else:
+            # No filters - use required MATCH for study (same as summary query)
+            missing_cypher = """
+        MATCH (p:participant)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
+        WHERE st IS NOT NULL 
+          AND (p.race IS NULL OR toString(p.race) = '' OR trim(toString(p.race)) = '')
+        WITH DISTINCT p.participant_id AS participant_id, st.study_id AS study_id
+        RETURN count(*) as missing
         """.strip()
         
-        # Query 3: Create a single query that counts distinct participants for each valid race
+        # Query 3: Create a single query that counts distinct participant + study combinations for each valid race
         # Special handling: if race is only "Hispanic or Latino", count as "Not Reported"
         # Split race by semicolon, remove "Hispanic or Latino", then match against valid races
+        # Use participant_id + study_id as unique identifier (same participant_id can be in different studies)
         params["valid_races"] = valid_races
         
-        values_cypher = f"""
+        # When no filters, use required MATCH for study (same as summary query) to avoid duplicates
+        if where_clause or identifiers_condition:
+            combined_where = combine_where_clauses(
+                where_clause,
+                "st IS NOT NULL AND p.race IS NOT NULL AND toString(p.race) <> '' AND trim(toString(p.race)) <> ''"
+            )
+            values_cypher = f"""
         MATCH (p:participant)
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         WITH p, s, d, c, st{identifiers_condition}
-        {where_clause}
-        WITH DISTINCT p.participant_id as participant_id, p.race as race
-        WHERE race IS NOT NULL
-        WITH participant_id, race,
+        {combined_where}
+        WITH p.participant_id AS participant_id, st.study_id AS study_id, toString(p.race) as race
+        WITH participant_id, study_id, race,
              // Split race by semicolon and trim each part
              [r IN SPLIT(race, ';') | trim(r)] as race_parts
-        WITH participant_id, race, race_parts,
+        WITH participant_id, study_id, race, race_parts,
              // Check if original race contained "Hispanic or Latino"
              any(r IN race_parts WHERE r = 'Hispanic or Latino') as had_hispanic,
              // Filter out "Hispanic or Latino" - it's not a valid race value
              [r IN race_parts WHERE r <> 'Hispanic or Latino'] as race_list_filtered
-        WITH participant_id, race, race_list_filtered, had_hispanic,
+        WITH participant_id, study_id, race, race_list_filtered, had_hispanic
+        // Process race values: if only "Hispanic or Latino", convert to "Not Reported" if valid
+        // Otherwise, use the filtered race values
+        WITH participant_id, study_id,
              CASE 
-               // If race was only "Hispanic or Latino", replace with "Not Reported"
                WHEN size(race_list_filtered) = 0 AND had_hispanic THEN ['Not Reported']
-               // Otherwise, use the filtered race values that are valid
-               ELSE [r IN race_list_filtered WHERE r IN $valid_races]
-             END as matching_races
-        UNWIND matching_races as race_value
-        RETURN race_value as value, count(DISTINCT participant_id) as count
+               ELSE race_list_filtered
+             END as processed_races
+        UNWIND processed_races as race_candidate
+        WITH participant_id, study_id, race_candidate
+        WHERE race_candidate IN $valid_races
+        WITH DISTINCT participant_id, study_id, race_candidate as race_value
+        RETURN race_value as value, count(*) as count
         ORDER BY count DESC, value ASC
+        """.strip()
+        else:
+            # No filters - use required MATCH for study (same as summary query)
+            values_cypher = f"""
+        MATCH (p:participant)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
+        WHERE st IS NOT NULL 
+          AND p.race IS NOT NULL 
+          AND toString(p.race) <> '' 
+          AND trim(toString(p.race)) <> ''
+        WITH DISTINCT p.participant_id AS participant_id, st.study_id AS study_id, toString(p.race) as race
+        WITH participant_id, study_id, race,
+             // Split race by semicolon and trim each part
+             [r IN SPLIT(race, ';') | trim(r)] as race_parts
+        WITH participant_id, study_id, race, race_parts,
+             // Check if original race contained "Hispanic or Latino"
+             any(r IN race_parts WHERE r = 'Hispanic or Latino') as had_hispanic,
+             // Filter out "Hispanic or Latino" - it's not a valid race value
+             [r IN race_parts WHERE r <> 'Hispanic or Latino'] as race_list_filtered
+        WITH participant_id, study_id, race, race_list_filtered, had_hispanic
+        // Process race values: if only "Hispanic or Latino", convert to "Not Reported" if valid
+        // Otherwise, use the filtered race values
+        WITH participant_id, study_id,
+             CASE 
+               WHEN size(race_list_filtered) = 0 AND had_hispanic THEN ['Not Reported']
+               ELSE race_list_filtered
+             END as processed_races
+        UNWIND processed_races as race_candidate
+        WITH participant_id, study_id, race_candidate
+        WHERE race_candidate IN $valid_races
+        WITH DISTINCT participant_id, study_id, race_candidate as race_value
+        RETURN race_value as value, count(*) as count
+        ORDER BY count DESC, value ASC
+        """.strip()
+        
+        # Query 4: Count unique participant+study combinations with valid race values
+        # This is needed to calculate missing correctly (total - unique_with_valid_race)
+        # Count BEFORE UNWIND to avoid counting same participant multiple times
+        if where_clause or identifiers_condition:
+            # Combine where_clause with race conditions safely using utility
+            race_conditions = "st IS NOT NULL AND p.race IS NOT NULL AND toString(p.race) <> '' AND trim(toString(p.race)) <> ''"
+            combined_where = combine_where_clauses(where_clause, race_conditions)
+            
+            unique_with_valid_race_cypher = f"""
+        MATCH (p:participant)
+        OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
+        OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
+        OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
+        WITH p, s, d, c, st{identifiers_condition}
+        {combined_where}
+        WITH p.participant_id AS participant_id, st.study_id AS study_id, toString(p.race) as race
+        WITH participant_id, study_id, race,
+             // Split race by semicolon and trim each part
+             [r IN SPLIT(race, ';') | trim(r)] as race_parts
+        WITH participant_id, study_id, race, race_parts,
+             // Check if original race contained "Hispanic or Latino"
+             any(r IN race_parts WHERE r = 'Hispanic or Latino') as had_hispanic,
+             // Filter out "Hispanic or Latino" - it's not a valid race value
+             [r IN race_parts WHERE r <> 'Hispanic or Latino'] as race_list_filtered
+        WITH participant_id, study_id, race, race_list_filtered, had_hispanic
+        // Process race values: if only "Hispanic or Latino", convert to "Not Reported" if valid
+        // Otherwise, use the filtered race values
+        WITH participant_id, study_id,
+             CASE 
+               WHEN size(race_list_filtered) = 0 AND had_hispanic THEN ['Not Reported']
+               ELSE race_list_filtered
+             END as processed_races
+        UNWIND processed_races as race_candidate
+        WITH participant_id, study_id, race_candidate
+        WHERE race_candidate IN $valid_races
+        WITH DISTINCT participant_id, study_id
+        RETURN count(*) as unique_count
+        """.strip()
+        else:
+            # No filters - use required MATCH for study (same as summary query)
+            unique_with_valid_race_cypher = f"""
+        MATCH (p:participant)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
+        WHERE st IS NOT NULL 
+          AND p.race IS NOT NULL 
+          AND toString(p.race) <> '' 
+          AND trim(toString(p.race)) <> ''
+        WITH DISTINCT p.participant_id AS participant_id, st.study_id AS study_id, toString(p.race) as race
+        WITH participant_id, study_id, race,
+             // Split race by semicolon and trim each part
+             [r IN SPLIT(race, ';') | trim(r)] as race_parts
+        WITH participant_id, study_id, race, race_parts,
+             // Check if original race contained "Hispanic or Latino"
+             any(r IN race_parts WHERE r = 'Hispanic or Latino') as had_hispanic,
+             // Filter out "Hispanic or Latino" - it's not a valid race value
+             [r IN race_parts WHERE r <> 'Hispanic or Latino'] as race_list_filtered
+        WITH participant_id, study_id, race, race_list_filtered, had_hispanic
+        // Process race values: if only "Hispanic or Latino", convert to "Not Reported" if valid
+        // Otherwise, use the filtered race values
+        WITH participant_id, study_id,
+             CASE 
+               WHEN size(race_list_filtered) = 0 AND had_hispanic THEN ['Not Reported']
+               ELSE race_list_filtered
+             END as processed_races
+        UNWIND processed_races as race_candidate
+        WITH participant_id, study_id, race_candidate
+        WHERE race_candidate IN $valid_races
+        WITH DISTINCT participant_id, study_id
+        RETURN count(*) as unique_count
         """.strip()
         
         logger.info(
@@ -1618,11 +1794,11 @@ WITH p, d, c, st,
             params_count=len(params)
         )
         
-        # Execute all three queries with proper result consumption and retry logic
+        # Execute queries with proper result consumption and retry logic
         max_retries = 2
         retry_count = 0
         total_count = 0
-        missing_count = 0
+        unique_with_valid_race_count = 0
         values_records = []
         
         while retry_count <= max_retries:
@@ -1634,12 +1810,13 @@ WITH p, d, c, st,
                 await total_result.consume()
                 total_count = total_records[0].get("total", 0) if total_records else 0
                 
-                missing_result = await self.session.run(missing_cypher, params)
-                missing_records = []
-                async for record in missing_result:
-                    missing_records.append(dict(record))
-                await missing_result.consume()
-                missing_count = missing_records[0].get("missing", 0) if missing_records else 0
+                # Count unique participant+study combinations with valid race values
+                unique_result = await self.session.run(unique_with_valid_race_cypher, params)
+                unique_records = []
+                async for record in unique_result:
+                    unique_records.append(dict(record))
+                await unique_result.consume()
+                unique_with_valid_race_count = unique_records[0].get("unique_count", 0) if unique_records else 0
                 
                 values_result = await self.session.run(values_cypher, params)
                 values_records = []
@@ -1681,16 +1858,25 @@ WITH p, d, c, st,
         # Sort by count descending (numeric), then by value ascending
         counts.sort(key=lambda x: (-x["count"], x["value"]))
         
+        # Calculate missing as total - unique participant+study combinations with valid race values
+        # This is correct because:
+        # - Participants with multiple race values (e.g., "Asian;White") are counted multiple times in values
+        # - But we only want to count each participant+study combination ONCE when calculating missing
+        # - So: missing = total - unique_with_valid_race_count
+        calculated_missing = max(0, total_count - unique_with_valid_race_count)
+        
         logger.info(
             "Completed subject count by race",
             total=total_count,
-            missing=missing_count,
+            unique_with_valid_race=unique_with_valid_race_count,
+            missing_calculated=calculated_missing,
+            sum_values=sum(counts_by_value.values()),
             values_count=len(counts)
         )
         
         return {
             "total": total_count,
-            "missing": missing_count,
+            "missing": calculated_missing,  # Use calculated missing to ensure total = unique_with_valid_race + missing
             "values": counts
         }
     
@@ -1768,45 +1954,51 @@ WITH p, d, c, st,
         else:
             where_clause = ""
         
-        # Query 1: Get total count of all unique participants matching filters
+        # Query 1: Get total count of all unique participant + study combinations matching filters
+        # Use participant_id + study_id as unique identifier (same participant_id can be in different studies)
+        combined_where_total = combine_where_clauses(where_clause, "st IS NOT NULL")
         total_cypher = f"""
         MATCH (p:participant)
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         WITH p, s, d, c, st{identifiers_condition}
-        {where_clause}
-        RETURN count(DISTINCT p.participant_id) as total
+        {combined_where_total}
+        WITH p.participant_id AS participant_id, st.study_id AS study_id
+        RETURN count(*) as total
         """.strip()
         
-        # Query 2: Get count of participants with null race (missing ethnicity)
+        # Query 2: Get count of participant + study combinations with null race (missing ethnicity)
+        combined_where_missing = combine_where_clauses(where_clause, "st IS NOT NULL AND p.race IS NULL")
         missing_cypher = f"""
         MATCH (p:participant)
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         WITH p, s, d, c, st{identifiers_condition}
-        {where_clause}
-        WHERE p.race IS NULL
-        RETURN count(DISTINCT p.participant_id) as missing
+        {combined_where_missing}
+        WITH p.participant_id AS participant_id, st.study_id AS study_id
+        RETURN count(*) as missing
         """.strip()
         
         # Query 3: Count by ethnicity (derived from race)
+        # Use participant_id + study_id as unique identifier
+        combined_where_values = combine_where_clauses(where_clause, "st IS NOT NULL AND p.race IS NOT NULL")
         values_cypher = f"""
         MATCH (p:participant)
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         WITH p, s, d, c, st{identifiers_condition}
-        {where_clause}
-        WITH DISTINCT p.participant_id as participant_id, p.race as race
-        WHERE race IS NOT NULL
-        WITH participant_id, race,
+        {combined_where_values}
+        WITH p.participant_id AS participant_id, st.study_id AS study_id, toString(p.race) as race
+        WITH participant_id, study_id, race,
              CASE 
                WHEN race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
                ELSE 'Not reported'
              END as ethnicity_value
-        RETURN ethnicity_value as value, count(DISTINCT participant_id) as count
+        WITH DISTINCT participant_id, study_id, ethnicity_value
+        RETURN ethnicity_value as value, count(*) as count
         ORDER BY value ASC
         """.strip()
         
@@ -1956,77 +2148,91 @@ WITH p, d, c, st,
         else:
             where_clause = ""
         
-        # Query 1: Get total count of all unique participants matching filters
+        # Query 1: Get total count of all unique participant + study combinations matching filters
+        # Use participant_id + study_id as unique identifier (same participant_id can be in different studies)
         # Only include OPTIONAL MATCHes if we have filters that need them
         if where_clause or identifiers_condition:
+            combined_where = combine_where_clauses(where_clause, "st IS NOT NULL")
             total_cypher = f"""
         MATCH (p:participant)
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         WITH p, s, d, c, st{identifiers_condition}
-        {where_clause}
-        RETURN count(DISTINCT p.participant_id) as total
+        {combined_where}
+        WITH p.participant_id AS participant_id, st.study_id AS study_id
+        RETURN count(*) as total
         """.strip()
         else:
             # No filters - simple count
             total_cypher = """
-        MATCH (p:participant)
-        RETURN count(DISTINCT p.participant_id) as total
+        MATCH (p:participant)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
+        WHERE st IS NOT NULL
+        WITH p.participant_id AS participant_id, st.study_id AS study_id
+        RETURN count(*) as total
         """.strip()
         
-        # Query 2: Get count of participants with no diagnoses (missing)
+        # Query 2: Get count of participant + study combinations with no diagnoses (missing)
         # Optimized to avoid unnecessary OPTIONAL MATCHes
         if where_clause or identifiers_condition:
+            combined_where = combine_where_clauses(where_clause, "st IS NOT NULL")
             missing_cypher = f"""
         MATCH (p:participant)
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         WITH p, s, d, c, st{identifiers_condition}
-        {where_clause}
-        WITH DISTINCT p, collect(d) as diagnoses
+        {combined_where}
+        // combined_where includes "st IS NOT NULL", so st is guaranteed to be non-NULL here
+        WITH p.participant_id AS participant_id, st.study_id AS study_id, collect(d) as diagnoses
         WHERE size([d IN diagnoses WHERE d IS NOT NULL]) = 0
-        RETURN count(DISTINCT p) as missing
+        RETURN count(*) as missing
         """.strip()
         else:
             # No filters - simple check for missing diagnoses
             missing_cypher = """
-        MATCH (p:participant)
+        MATCH (p:participant)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
+        WHERE st IS NOT NULL
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
-        WITH DISTINCT p.participant_id as participant_id, collect(d) as diagnoses
+        WITH p.participant_id AS participant_id, st.study_id AS study_id, collect(d) as diagnoses
         WHERE size([d IN diagnoses WHERE d IS NOT NULL]) = 0
-        RETURN count(DISTINCT participant_id) as missing
+        RETURN count(*) as missing
         """.strip()
         
         # Query 3: Count by diagnosis values
         # d.diagnosis is a STRING (not a list) - each diagnosis node has one diagnosis value
         # Multiple diagnosis nodes can link to one participant, so each contributes one value
         # Relationship direction: (d:diagnosis)-[:of_diagnosis]->(p:participant)
-        # Optimized: Start from diagnosis nodes, apply filters only if needed
-        # Use exact query that worked in Memgraph when no filters
+        # Use participant_id + study_id as unique identifier
         if where_clause or (identifiers_condition and identifiers_condition.strip()):
             # Has filters - need to apply them but keep it efficient
             values_cypher = f"""
         MATCH (d:diagnosis)-[:of_diagnosis]->(p:participant)
         WHERE d.diagnosis IS NOT NULL
-        WITH DISTINCT p.participant_id as participant_id, d.diagnosis as diagnosis_value
+        OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
+        WHERE st IS NOT NULL
+        WITH p.participant_id AS participant_id, st.study_id AS study_id, d.diagnosis as diagnosis_value
         MATCH (p2:participant {{participant_id: participant_id}})
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p2)
-        OPTIONAL MATCH (p2)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
-        WITH p2, s, c, st, participant_id, diagnosis_value{identifiers_condition}
-        {where_clause}
-        WHERE toString(diagnosis_value) <> ''
-        RETURN toString(diagnosis_value) as value, count(DISTINCT participant_id) as count
+        OPTIONAL MATCH (p2)-[:of_participant]->(c2:consent_group)-[:of_consent_group]->(st2:study)
+        WHERE st2.study_id = study_id
+        WITH p2, s, c2, st2, participant_id, study_id, diagnosis_value{identifiers_condition}
+        {combine_where_clauses(where_clause, "toString(diagnosis_value) <> ''")}
+        WITH DISTINCT participant_id, study_id, toString(diagnosis_value) as value
+        RETURN value, count(*) as count
         ORDER BY count DESC, value ASC
         """.strip()
         else:
-            # No filters - use exact query that worked in Memgraph
+            # No filters - use participant_id + study_id
             values_cypher = """
         MATCH (d:diagnosis)-[:of_diagnosis]->(p:participant)
         WHERE d.diagnosis IS NOT NULL
-        WITH DISTINCT p.participant_id as participant_id, d.diagnosis as diagnosis_value
-        RETURN toString(diagnosis_value) as value, count(DISTINCT participant_id) as count
+        OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
+        WHERE st IS NOT NULL
+        WITH p.participant_id AS participant_id, st.study_id AS study_id, d.diagnosis as diagnosis_value
+        WHERE toString(diagnosis_value) <> ''
+        WITH DISTINCT participant_id, study_id, toString(diagnosis_value) as value
+        RETURN value, count(*) as count
         ORDER BY count DESC, value ASC
         """.strip()
         
@@ -2238,13 +2444,13 @@ WITH p, d, c, st,
             # Don't add to where_conditions yet - will be applied after diagnosis collection
 
         # Build diagnosis search fragment to be inserted before final count
-        # This fragment assumes 'p' (participant node) and 'participant_id' are in scope
+        # This fragment assumes 'p' (participant node), 'participant_id', and 'study_id' are in scope
         diagnosis_search_fragment = ""
         if diagnosis_search_term:
             diagnosis_search_fragment = """
         // Apply diagnosis search filter
         OPTIONAL MATCH (p)<-[:of_diagnosis]-(diag_search:diagnosis)
-        WITH participant_id, collect(DISTINCT diag_search) AS diag_search_nodes
+        WITH participant_id, study_id, collect(DISTINCT diag_search) AS diag_search_nodes
         WHERE size([dn IN diag_search_nodes WHERE dn IS NOT NULL AND ANY(diag IN CASE WHEN valueType(dn.diagnosis) = 'LIST' THEN dn.diagnosis ELSE [dn.diagnosis] END WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))]) > 0"""
 
         # Map API sex values to database values (M -> Male, F -> Female, U -> Not Reported)
@@ -2559,8 +2765,9 @@ WITH p, d, c, st,
                ELSE 'Not reported'
              END AS ethnicity_value
         {derived_where_clause}
-        WITH DISTINCT participant_id
-        RETURN count(participant_id) as total_count
+        WHERE st IS NOT NULL
+        WITH DISTINCT participant_id, st.study_id AS study_id
+        RETURN count(*) as total_count
         """.strip()
                 else:
                     # No depositions filter - use OPTIONAL MATCH for studies
@@ -2624,26 +2831,42 @@ WITH p, d, c, st,
                WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
                ELSE 'Not reported'
              END AS ethnicity_value
-        WITH participant_id,
+        WITH participant_id, study_ids,
              head(collect(final_vital_status)) AS final_vital_status,
              head(collect(final_age_at_vital_status)) AS final_age_at_vital_status,
              head(collect(ethnicity_value)) AS ethnicity_value
         {derived_where_clause}
         // Note: Cannot apply diagnosis search here as 'p' is no longer in scope after head(collect())
         // Diagnosis search would need to be applied earlier in the query if needed with survival filters
-        RETURN count(DISTINCT participant_id) as total_count
+        UNWIND study_ids AS study_id
+        WITH DISTINCT participant_id, study_id
+        RETURN count(*) as total_count
         """.strip()
             else:
                 # No identifiers condition - use original query
                 # When depositions filter is present, use required MATCH for studies (before OPTIONAL MATCH)
                 if dep_param:
+                    # Clean where_clause to remove any study_id (variable) references since it's not defined yet
+                    where_clause_clean_for_summary = where_clause
+                    if where_clause_clean_for_summary:
+                        # Remove any references to study_id (the variable) since it's not defined yet
+                        where_clause_clean_for_summary = where_clause_clean_for_summary.replace("study_id =", "").replace("study_id IN", "").replace("study_id=", "").replace("study_idIN", "")
+                        # Clean up any resulting "AND AND" or trailing/leading AND
+                        where_clause_clean_for_summary = where_clause_clean_for_summary.replace("AND AND", "AND").strip()
+                        while where_clause_clean_for_summary.startswith("AND "):
+                            where_clause_clean_for_summary = where_clause_clean_for_summary[4:].strip()
+                        while where_clause_clean_for_summary.endswith(" AND"):
+                            where_clause_clean_for_summary = where_clause_clean_for_summary[:-4].strip()
+                        if where_clause_clean_for_summary == "WHERE" or where_clause_clean_for_summary == "AND" or not where_clause_clean_for_summary.strip():
+                            where_clause_clean_for_summary = ""
+                    
                     cypher = f"""
         MATCH (p:participant)
         MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
         WITH DISTINCT p.participant_id AS participant_id, p, s, d, c, st{race_condition}{identifiers_condition}
-        {where_clause}
+        {where_clause_clean_for_summary}
         WITH participant_id, p, d, c, st,
              collect(s) AS survival_records
         WITH participant_id, p, d, c, st,
@@ -2689,31 +2912,48 @@ WITH p, d, c, st,
                ELSE 'Not reported'
              END AS ethnicity_value
         {derived_where_clause}
-        WITH DISTINCT participant_id
-        RETURN count(participant_id) as total_count
+        WHERE st IS NOT NULL
+        WITH DISTINCT participant_id, st.study_id AS study_id
+        RETURN count(*) as total_count
         """.strip()
                 else:
                     # No depositions filter - use OPTIONAL MATCH approach like count endpoint
+                    # Clean where_clause to remove any study_id (variable) references since it's not defined yet
+                    where_clause_clean_for_summary = where_clause
+                    if where_clause_clean_for_summary:
+                        # Remove any references to study_id (the variable) since it's not defined yet
+                        where_clause_clean_for_summary = where_clause_clean_for_summary.replace("study_id =", "").replace("study_id IN", "").replace("study_id=", "").replace("study_idIN", "")
+                        # Clean up any resulting "AND AND" or trailing/leading AND
+                        where_clause_clean_for_summary = where_clause_clean_for_summary.replace("AND AND", "AND").strip()
+                        while where_clause_clean_for_summary.startswith("AND "):
+                            where_clause_clean_for_summary = where_clause_clean_for_summary[4:].strip()
+                        while where_clause_clean_for_summary.endswith(" AND"):
+                            where_clause_clean_for_summary = where_clause_clean_for_summary[:-4].strip()
+                        if where_clause_clean_for_summary == "WHERE" or where_clause_clean_for_summary == "AND" or not where_clause_clean_for_summary.strip():
+                            where_clause_clean_for_summary = ""
+                    
                     cypher = f"""
         MATCH (p:participant)
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         WITH p, s, d, c, st{race_condition}
-        {where_clause}{survival_processing}
-        WITH p.participant_id as participant_id, final_vital_status, final_age_at_vital_status,
+        {where_clause_clean_for_summary}{survival_processing}
+        WHERE st IS NOT NULL
+        WITH p.participant_id as participant_id, st.study_id as study_id, final_vital_status, final_age_at_vital_status,
              CASE 
                WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
                ELSE 'Not reported'
              END AS ethnicity_value
-        WITH participant_id,
+        WITH participant_id, study_id,
              head(collect(final_vital_status)) AS final_vital_status,
              head(collect(final_age_at_vital_status)) AS final_age_at_vital_status,
              head(collect(ethnicity_value)) AS ethnicity_value
         {derived_where_clause}
         // Note: Cannot apply diagnosis search here as 'p' is no longer in scope after head(collect())
         // Diagnosis search would need to be applied earlier in the query if needed with survival filters
-        RETURN count(DISTINCT participant_id) as total_count
+        WITH DISTINCT participant_id, study_id
+        RETURN count(*) as total_count
         """.strip()
         else:
             # Simple query without survival processing
@@ -2774,7 +3014,7 @@ WITH p, d, c, st,
                                     other_filters = ""
                             
                             # Build WITH clause with optional WHERE
-                            with_clause = f"WITH DISTINCT p.participant_id AS participant_id, p{race_condition}"
+                            with_clause = f"WITH DISTINCT p.participant_id AS participant_id, p, st.study_id AS study_id{race_condition}"
                             if other_filters:
                                 with_clause += f"\n        WHERE {other_filters}"
                             
@@ -2786,23 +3026,47 @@ WITH p, d, c, st,
         MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         WHERE st.study_id {deposition_operator} ${dep_param}
         {with_clause}
-        WITH participant_id, p,
+        WITH participant_id, p, study_id,
              CASE 
                WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
                ELSE 'Not reported'
              END AS ethnicity_value
         {derived_where_clause}{diagnosis_search_fragment}
-        WITH DISTINCT participant_id
-        RETURN count(participant_id) as total_count
+        WITH DISTINCT participant_id, study_id
+        RETURN count(*) as total_count
         """.strip()
                         else:
                             # No depositions filter - use OPTIONAL MATCH for studies
                             # Build WITH clause with optional WHERE
-                            with_clause = f"WITH DISTINCT p.participant_id AS participant_id, p{race_condition}"
-                            if where_clause_filtered:
+                            # Note: st comes from OPTIONAL MATCH, so we need to handle NULL case
+                            # Remove any st.study_id conditions from where_clause_filtered since st might be NULL
+                            where_clause_clean = where_clause_filtered
+                            if where_clause_clean:
+                                # Remove st.study_id conditions (depositions filter) - not applicable with OPTIONAL MATCH
+                                where_clause_clean = where_clause_clean.replace("st.study_id =", "").replace("st.study_id IN", "").replace("st.study_id=", "").replace("st.study_idIN", "")
+                                # Clean up any resulting "AND AND" or trailing/leading AND
+                                where_clause_clean = where_clause_clean.replace("AND AND", "AND").strip()
+                                while where_clause_clean.startswith("AND "):
+                                    where_clause_clean = where_clause_clean[4:].strip()
+                                while where_clause_clean.endswith(" AND"):
+                                    where_clause_clean = where_clause_clean[:-4].strip()
+                                if where_clause_clean == "WHERE" or where_clause_clean == "AND" or not where_clause_clean.strip():
+                                    where_clause_clean = ""
+                            
+                            with_clause = f"WITH DISTINCT p.participant_id AS participant_id, p, st.study_id AS study_id{race_condition}"
+                            if where_clause_clean:
                                 # Remove "WHERE " prefix if present
-                                where_conditions = where_clause_filtered.replace("WHERE ", "").strip()
-                                if where_conditions:
+                                where_conditions = where_clause_clean.replace("WHERE ", "").strip()
+                                # Remove any references to study_id (the variable) since it's being defined in this WITH clause
+                                # and WHERE clause is evaluated after variable assignments, but we want to be safe
+                                where_conditions = where_conditions.replace("study_id =", "").replace("study_id IN", "").replace("study_id=", "").replace("study_idIN", "")
+                                # Clean up any resulting "AND AND" or trailing/leading AND
+                                where_conditions = where_conditions.replace("AND AND", "AND").strip()
+                                while where_conditions.startswith("AND "):
+                                    where_conditions = where_conditions[4:].strip()
+                                while where_conditions.endswith(" AND"):
+                                    where_conditions = where_conditions[:-4].strip()
+                                if where_conditions and where_conditions.strip() and where_conditions != "AND":
                                     with_clause += f"\n        WHERE {where_conditions}"
                             
                             cypher = f"""
@@ -2811,15 +3075,16 @@ WITH p, d, c, st,
         WHERE p.participant_id IN id_list
         WITH DISTINCT p.participant_id AS participant_id, p
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
+        WHERE st IS NOT NULL
         {with_clause}
-        WITH participant_id, p,
+        WITH participant_id, p, study_id,
              CASE 
                WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
                ELSE 'Not reported'
              END AS ethnicity_value
         {derived_where_clause}{diagnosis_search_fragment}
-        WITH DISTINCT participant_id
-        RETURN count(participant_id) as total_count
+        WITH DISTINCT participant_id, study_id
+        RETURN count(*) as total_count
         """.strip()
                     else:
                         # No identifiers - handle depositions filter if present
@@ -2844,7 +3109,7 @@ WITH p, d, c, st,
                                 other_filters = ""
                             
                             # Build WITH clause with optional WHERE
-                            with_clause = f"WITH DISTINCT p.participant_id AS participant_id, p{race_condition}"
+                            with_clause = f"WITH DISTINCT p.participant_id AS participant_id, p, st.study_id AS study_id{race_condition}"
                             if other_filters and other_filters.strip():
                                 with_clause += f"\n        WHERE {other_filters}"
                             
@@ -2853,14 +3118,14 @@ WITH p, d, c, st,
         MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         WHERE st.study_id {deposition_operator} ${dep_param}
         {with_clause}
-        WITH participant_id, p,
+        WITH participant_id, p, study_id,
              CASE 
                WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
                ELSE 'Not reported'
              END AS ethnicity_value
         {derived_where_clause}{diagnosis_search_fragment}
-        WITH DISTINCT participant_id
-        RETURN count(participant_id) as total_count
+        WITH DISTINCT participant_id, study_id
+        RETURN count(*) as total_count
         """.strip()
                         else:
                             # Handle depositions filter if present
@@ -2884,7 +3149,7 @@ WITH p, d, c, st,
                                         other_filters = ""
                                 
                                 # Build WITH clause with optional WHERE
-                                with_clause = f"WITH DISTINCT p.participant_id AS participant_id, p{race_condition}{identifiers_condition}"
+                                with_clause = f"WITH DISTINCT p.participant_id AS participant_id, p, st.study_id AS study_id{race_condition}{identifiers_condition}"
                                 if other_filters:
                                     with_clause += f"\n        WHERE {other_filters}"
                                 
@@ -2893,36 +3158,61 @@ WITH p, d, c, st,
         MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         WHERE st.study_id {deposition_operator} ${dep_param}
         {with_clause}
-        WITH participant_id, p,
+        WITH participant_id, p, study_id,
              CASE 
                WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
                ELSE 'Not reported'
              END AS ethnicity_value
         {derived_where_clause}{diagnosis_search_fragment}
-        WITH DISTINCT participant_id
-        RETURN count(participant_id) as total_count
+        WITH DISTINCT participant_id, study_id
+        RETURN count(*) as total_count
         """.strip()
                             else:
                                 # Build WITH clause with optional WHERE
-                                with_clause = f"WITH DISTINCT p.participant_id AS participant_id, p{race_condition}{identifiers_condition}"
-                                if where_clause:
+                                # Note: st comes from OPTIONAL MATCH, so we need to handle NULL case
+                                # Remove any st.study_id conditions from where_clause since st might be NULL
+                                where_clause_clean = where_clause
+                                if where_clause_clean:
+                                    # Remove st.study_id conditions (depositions filter) - not applicable with OPTIONAL MATCH
+                                    where_clause_clean = where_clause_clean.replace("st.study_id =", "").replace("st.study_id IN", "").replace("st.study_id=", "").replace("st.study_idIN", "")
+                                    # Clean up any resulting "AND AND" or trailing/leading AND
+                                    where_clause_clean = where_clause_clean.replace("AND AND", "AND").strip()
+                                    while where_clause_clean.startswith("AND "):
+                                        where_clause_clean = where_clause_clean[4:].strip()
+                                    while where_clause_clean.endswith(" AND"):
+                                        where_clause_clean = where_clause_clean[:-4].strip()
+                                    if where_clause_clean == "WHERE" or where_clause_clean == "AND" or not where_clause_clean.strip():
+                                        where_clause_clean = ""
+                                
+                                with_clause = f"WITH DISTINCT p.participant_id AS participant_id, p, st.study_id AS study_id{race_condition}{identifiers_condition}"
+                                if where_clause_clean:
                                     # Remove "WHERE " prefix if present
-                                    where_conditions = where_clause.replace("WHERE ", "").strip()
-                                    if where_conditions:
+                                    where_conditions = where_clause_clean.replace("WHERE ", "").strip()
+                                    # Remove any references to study_id (the variable) since it's being defined in this WITH clause
+                                    # and WHERE clause is evaluated after variable assignments, but we want to be safe
+                                    where_conditions = where_conditions.replace("study_id =", "").replace("study_id IN", "").replace("study_id=", "").replace("study_idIN", "")
+                                    # Clean up any resulting "AND AND" or trailing/leading AND
+                                    where_conditions = where_conditions.replace("AND AND", "AND").strip()
+                                    while where_conditions.startswith("AND "):
+                                        where_conditions = where_conditions[4:].strip()
+                                    while where_conditions.endswith(" AND"):
+                                        where_conditions = where_conditions[:-4].strip()
+                                    if where_conditions and where_conditions.strip() and where_conditions != "AND":
                                         with_clause += f"\n        WHERE {where_conditions}"
                                 
                                 cypher = f"""
         MATCH (p:participant)
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
+        WHERE st IS NOT NULL
         {with_clause}
-        WITH participant_id, p,
+        WITH participant_id, p, study_id,
              CASE 
                WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
                ELSE 'Not reported'
              END AS ethnicity_value
         {derived_where_clause}{diagnosis_search_fragment}
-        WITH DISTINCT participant_id
-        RETURN count(participant_id) as total_count
+        WITH DISTINCT participant_id, study_id
+        RETURN count(*) as total_count
         """.strip()
                 else:
                     # When identifiers are used, ensure we count unique participants
@@ -2980,7 +3270,7 @@ WITH p, d, c, st,
                                 other_filters = ""
                             
                             # Build WITH clause with optional WHERE
-                            with_clause = f"WITH DISTINCT participant_id, p{race_condition}"
+                            with_clause = f"WITH DISTINCT participant_id, p, st.study_id AS study_id{race_condition}"
                             if other_filters and other_filters.strip():
                                 with_clause += f"\n        WHERE {other_filters}"
                             
@@ -2992,8 +3282,8 @@ WITH p, d, c, st,
         MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         WHERE st.study_id {deposition_operator} ${dep_param}
         {with_clause}{diagnosis_search_fragment}
-        WITH DISTINCT participant_id
-        RETURN count(participant_id) as total_count
+        WITH DISTINCT participant_id, study_id
+        RETURN count(*) as total_count
         """.strip()
                         else:
                             # Build WITH clause with optional WHERE
@@ -3011,8 +3301,8 @@ WITH p, d, c, st,
         WITH DISTINCT p.participant_id AS participant_id, p
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         {with_clause}{diagnosis_search_fragment}
-        WITH DISTINCT participant_id
-        RETURN count(participant_id) as total_count
+        WITH DISTINCT participant_id, study_id
+        RETURN count(*) as total_count
         """.strip()
                     else:
                         # No identifiers - handle depositions filter if present
@@ -3037,33 +3327,52 @@ WITH p, d, c, st,
                                 other_filters = ""
                             
                             # Build WITH clause with optional WHERE
-                            with_clause = f"WITH DISTINCT p.participant_id AS participant_id, p{race_condition}"
+                            with_clause = f"WITH DISTINCT p.participant_id AS participant_id, p, st.study_id AS study_id{race_condition}"
                             if other_filters and other_filters.strip():
-                                with_clause += f"\n        WHERE {other_filters}"
+                                # Remove any references to study_id (the variable) since it's being defined in this WITH clause
+                                other_filters_clean = other_filters.replace("study_id =", "").replace("study_id IN", "").replace("study_id=", "").replace("study_idIN", "")
+                                # Clean up any resulting "AND AND" or trailing/leading AND
+                                other_filters_clean = other_filters_clean.replace("AND AND", "AND").strip()
+                                while other_filters_clean.startswith("AND "):
+                                    other_filters_clean = other_filters_clean[4:].strip()
+                                while other_filters_clean.endswith(" AND"):
+                                    other_filters_clean = other_filters_clean[:-4].strip()
+                                if other_filters_clean and other_filters_clean.strip() and other_filters_clean != "AND":
+                                    with_clause += f"\n        WHERE {other_filters_clean}"
                             
                             cypher = f"""
         MATCH (p:participant)
         MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         WHERE st.study_id {deposition_operator} ${dep_param}
         {with_clause}{diagnosis_search_fragment}
-        WITH DISTINCT participant_id
-        RETURN count(participant_id) as total_count
+        WITH DISTINCT participant_id, study_id
+        RETURN count(*) as total_count
         """.strip()
                         else:
                             # Build WITH clause with optional WHERE
-                            with_clause = f"WITH DISTINCT p.participant_id AS participant_id, p{race_condition}{identifiers_condition}"
+                            # Note: st comes from OPTIONAL MATCH, so we need to handle NULL case
+                            with_clause = f"WITH DISTINCT p.participant_id AS participant_id, p, st.study_id AS study_id{race_condition}{identifiers_condition}"
                             if where_clause:
                                 # Remove "WHERE " prefix if present
                                 where_conditions = where_clause.replace("WHERE ", "").strip()
-                                if where_conditions:
+                                # Remove any references to study_id (the variable) since it's being defined in this WITH clause
+                                where_conditions = where_conditions.replace("study_id =", "").replace("study_id IN", "").replace("study_id=", "").replace("study_idIN", "")
+                                # Clean up any resulting "AND AND" or trailing/leading AND
+                                where_conditions = where_conditions.replace("AND AND", "AND").strip()
+                                while where_conditions.startswith("AND "):
+                                    where_conditions = where_conditions[4:].strip()
+                                while where_conditions.endswith(" AND"):
+                                    where_conditions = where_conditions[:-4].strip()
+                                if where_conditions and where_conditions.strip() and where_conditions != "AND":
                                     with_clause += f"\n        WHERE {where_conditions}"
                             
                             cypher = f"""
         MATCH (p:participant)
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
+        WHERE st IS NOT NULL
         {with_clause}{diagnosis_search_fragment}
-        WITH DISTINCT participant_id
-        RETURN count(participant_id) as total_count
+        WITH DISTINCT participant_id, study_id
+        RETURN count(*) as total_count
         """.strip()
             else:
                 # No filters at all - but check for diagnosis search
@@ -3075,13 +3384,18 @@ WITH p, d, c, st,
         OPTIONAL MATCH (p)<-[:of_diagnosis]-(d:diagnosis)
         WITH p, collect(DISTINCT d) AS diagnosis_nodes
         WHERE size([node IN diagnosis_nodes WHERE node IS NOT NULL AND ANY(diag IN CASE WHEN valueType(node.diagnosis) = 'LIST' THEN node.diagnosis ELSE [node.diagnosis] END WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))]) > 0
-        RETURN count(DISTINCT p.participant_id) as total_count
+        OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
+        WHERE st IS NOT NULL
+        WITH DISTINCT p.participant_id AS participant_id, st.study_id AS study_id
+        RETURN count(*) as total_count
         """.strip()
                 else:
                     # No filters at all - simple count
                     cypher = """
-        MATCH (p:participant)
-        RETURN count(DISTINCT p.participant_id) as total_count
+        MATCH (p:participant)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
+        WHERE st IS NOT NULL
+        WITH DISTINCT p.participant_id AS participant_id, st.study_id AS study_id
+        RETURN count(*) as total_count
         """.strip()
         
         logger.info(

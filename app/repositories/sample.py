@@ -2241,19 +2241,19 @@ class SampleRepository:
                             cypher = "RETURN '' as value, 0 AS count LIMIT 0"
                         else:
                             cypher = f"""
-                MATCH (sa:sample)-[:IN_STUDY]->(:study)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL 
                   AND sa.sample_id <> ''
                 MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
                 WHERE sf.library_source_molecule IN [{db_values_str}]
-                WITH DISTINCT sa.sample_id as sample_id, 
+                WITH sa.sample_id as sample_id, st.study_id as study_id,
                      collect(DISTINCT sf.library_source_molecule) as molecule_values
                 UNWIND molecule_values as molecule_value
-                WITH DISTINCT sample_id,
+                WITH sample_id, study_id,
                      {case_statement} as api_value
                 WHERE api_value IS NOT NULL
-                WITH DISTINCT sample_id, api_value
-                RETURN api_value as value, count(sample_id) AS count
+                WITH sample_id, study_id, api_value
+                RETURN api_value as value, count(*) AS count
                 ORDER BY count DESC, value ASC
                 """.strip()
                 elif node_alias == "sf" and not base_where_clause:
@@ -2275,13 +2275,18 @@ class SampleRepository:
                     # - Performance: 6.09s vs 6.89s (13% faster)
                     invalid_filter = build_invalid_value_filter(node_field, field)
                     cypher = f"""
-                MATCH (sa:sample)-[:IN_STUDY]->(:study)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL 
                   AND sa.sample_id <> ''
                 MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
                 WHERE {invalid_filter}
-                WITH DISTINCT sa.sample_id as sample_id, {node_field} as value
-                RETURN value, count(DISTINCT sample_id) AS count
+                WITH sa.sample_id as sample_id, st.study_id as study_id, 
+                     collect(DISTINCT {node_field}) as field_values
+                UNWIND field_values as value
+                WITH sample_id, study_id, value
+                WHERE value IS NOT NULL AND toString(value) <> ''
+                WITH DISTINCT sample_id, study_id, value
+                RETURN toString(value) as value, count(*) AS count
                 ORDER BY count DESC, value ASC
                 """.strip()
                 elif node_alias == "pf" and not base_where_clause:
@@ -2530,15 +2535,10 @@ class SampleRepository:
                 # No filters - count all samples with a path to a study (matches /sample/summary)
                 # Use the same query structure as get_samples_summary - always include participant
                 total_cypher = """
-                MATCH (sa:sample)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                WITH sa, p,
-                     size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
-                     size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
-                WHERE has_study1 > 0 OR has_study2 > 0
-                WITH DISTINCT sa
-                RETURN count(DISTINCT sa) as total
+                WITH sa.sample_id as sample_id, st.study_id as study_id
+                RETURN count(*) as total
                 """.strip()
             else:
                 # Has filters - need to apply them, but still count all samples that match
@@ -2556,26 +2556,20 @@ class SampleRepository:
                 # Use pattern comprehension for study path check
                 if optional_matches_str:
                     total_cypher = f"""
-                MATCH (sa:sample)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                {optional_matches_str}
-                WITH sa, p,
-                     size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
-                     size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
-                WHERE has_study1 > 0 OR has_study2 > 0
-                {base_where_clause.replace('WHERE ', 'AND ') if base_where_clause else ''}
-                RETURN count(DISTINCT sa.sample_id) as total
+                {optional_matches_str.replace('OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)', 'OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)') if optional_matches_str else ''}
+                WITH sa.sample_id as sample_id, st.study_id as study_id, p
+                {base_where_clause.replace('WHERE ', 'WHERE ') if base_where_clause else ''}
+                RETURN count(*) as total
                 """.strip()
                 else:
                     total_cypher = f"""
-                MATCH (sa:sample)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                WITH sa,
-                     size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
-                     size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
-                WHERE has_study1 > 0 OR has_study2 > 0
-                {base_where_clause.replace('WHERE ', 'AND ') if base_where_clause else ''}
-                RETURN count(DISTINCT sa.sample_id) as total
+                WITH sa.sample_id as sample_id, st.study_id as study_id
+                {base_where_clause.replace('WHERE ', 'WHERE ') if base_where_clause else ''}
+                RETURN count(*) as total
                 """.strip()
             
             # Missing: samples without participants OR samples with participants but sex_at_birth IS NULL
@@ -2586,16 +2580,12 @@ class SampleRepository:
                 # No filters - count samples without participants or with NULL sex
                 # IMPORTANT: Must match values query structure - only count samples WITH studies
                 missing_cypher = """
-                MATCH (sa:sample)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
                 OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                WITH sa, p,
-                     size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
-                     size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
-                WHERE has_study1 > 0 OR has_study2 > 0
-                WITH DISTINCT sa, p
+                WITH sa.sample_id as sample_id, st.study_id as study_id, p
                 WHERE p IS NULL OR p.sex_at_birth IS NULL
-                RETURN count(DISTINCT sa) as missing
+                RETURN count(*) as missing
                 """.strip()
             else:
                 # Has filters - apply them, but also check for missing sex
@@ -2604,16 +2594,12 @@ class SampleRepository:
                 missing_where_clause = "WHERE " + " AND ".join(missing_where_conditions) if missing_where_conditions else "WHERE (p IS NULL OR p.sex_at_birth IS NULL)"
                 
                 missing_cypher = f"""
-                MATCH (sa:sample)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
                 OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, p, coalesce(st1, st2) AS st
-                WHERE st IS NOT NULL
-                {missing_where_clause.replace('WHERE ', 'AND ') if missing_where_clause.startswith('WHERE ') else missing_where_clause}
-                WITH DISTINCT sa
-                RETURN count(DISTINCT sa) as missing
+                WITH sa.sample_id as sample_id, st.study_id as study_id, p
+                {missing_where_clause.replace('WHERE ', 'WHERE ') if missing_where_clause.startswith('WHERE ') else missing_where_clause}
+                RETURN count(*) as missing
                 """.strip()
             
             # Execute total and missing queries
@@ -2645,15 +2631,10 @@ class SampleRepository:
                 # No filters - count all samples with a path to a study (matches /sample/summary)
                 # Use the same query structure as get_samples_summary - always include participant
                 total_cypher = """
-                MATCH (sa:sample)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                WITH sa, p,
-                     size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
-                     size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
-                WHERE has_study1 > 0 OR has_study2 > 0
-                WITH DISTINCT sa
-                RETURN count(DISTINCT sa) as total
+                WITH sa.sample_id as sample_id, st.study_id as study_id
+                RETURN count(*) as total
                 """.strip()
             else:
                 # Has filters - need to include study paths and require st IS NOT NULL
@@ -2676,66 +2657,48 @@ class SampleRepository:
                 # No base filters - build queries for both list and string cases
                 # IMPORTANT: Must match values query structure - only count samples WITH studies
                 missing_cypher_list = """
-                MATCH (sa:sample)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                WITH sa, p,
-                     size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
-                     size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
-                WHERE has_study1 > 0 OR has_study2 > 0
-                WITH DISTINCT sa, sa.anatomic_site as sites
+                WITH sa.sample_id as sample_id, st.study_id as study_id, sa.anatomic_site as sites
                 WHERE sites IS NULL 
                    OR size(sites) = 0
                    OR ALL(site IN sites WHERE site IS NULL OR toString(site) = '' OR toLower(trim(toString(site))) = 'invalid value')
-                RETURN count(DISTINCT sa) as missing
+                RETURN count(*) as missing
                 """.strip()
                 
                 missing_cypher_string = """
-                MATCH (sa:sample)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                WITH sa, p,
-                     size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
-                     size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
-                WHERE has_study1 > 0 OR has_study2 > 0
-                WITH DISTINCT sa, sa.anatomic_site as sites
+                WITH sa.sample_id as sample_id, st.study_id as study_id, sa.anatomic_site as sites
                 WHERE sites IS NULL 
                    OR toString(sites) = ''
                    OR toLower(trim(toString(sites))) = 'invalid value'
-                RETURN count(DISTINCT sa) as missing
+                RETURN count(*) as missing
                 """.strip()
             else:
                 # Has base filters - build queries for both list and string cases
                 missing_cypher_list = f"""
-                MATCH (sa:sample)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
                 OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                WITH sa, p,
-                     size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
-                     size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
-                WHERE has_study1 > 0 OR has_study2 > 0
-                {base_where_clause.replace('WHERE ', 'AND ') if base_where_clause else ''}
-                WITH DISTINCT sa, sa.anatomic_site as sites
+                WITH sa.sample_id as sample_id, st.study_id as study_id, p, sa.anatomic_site as sites
+                {base_where_clause.replace('WHERE ', 'WHERE ') if base_where_clause else ''}
                 WHERE sites IS NULL 
                    OR size(sites) = 0
                    OR ALL(site IN sites WHERE site IS NULL OR toString(site) = '' OR toLower(trim(toString(site))) = 'invalid value')
-                RETURN count(DISTINCT sa) as missing
+                RETURN count(*) as missing
                 """.strip()
                 
                 missing_cypher_string = f"""
-                MATCH (sa:sample)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
                 OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                WITH sa, p,
-                     size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
-                     size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
-                WHERE has_study1 > 0 OR has_study2 > 0
-                {base_where_clause.replace('WHERE ', 'AND ') if base_where_clause else ''}
-                WITH DISTINCT sa, sa.anatomic_site as sites
+                WITH sa.sample_id as sample_id, st.study_id as study_id, p, sa.anatomic_site as sites
+                {base_where_clause.replace('WHERE ', 'WHERE ') if base_where_clause else ''}
                 WHERE sites IS NULL 
                    OR toString(sites) = ''
                    OR toLower(trim(toString(sites))) = 'invalid value'
-                RETURN count(DISTINCT sa) as missing
+                RETURN count(*) as missing
                 """.strip()
             
             # Store both queries as a tuple (will be handled in execution)
@@ -2808,29 +2771,19 @@ class SampleRepository:
                 # This is the total - all samples with a study path (matching /sample/summary - 50211 when no filters)
                 # Use the same query structure as other fields to ensure consistency
                 total_cypher = """
-                MATCH (sa:sample)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                WITH sa, p,
-                     size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
-                     size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
-                WHERE has_study1 > 0 OR has_study2 > 0
-                WITH DISTINCT sa
-                RETURN count(DISTINCT sa) as total
+                WITH sa.sample_id as sample_id, st.study_id as study_id
+                RETURN count(*) as total
                 """.strip()
             elif not base_where_clause:
                 # No filters - count all samples with a path to a study (matches /sample/summary)
                 # Use the same query structure as get_samples_summary - always include participant
                 total_cypher = """
-                MATCH (sa:sample)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                WITH sa, p,
-                     size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
-                     size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
-                WHERE has_study1 > 0 OR has_study2 > 0
-                WITH DISTINCT sa
-                RETURN count(DISTINCT sa) as total
+                WITH sa.sample_id as sample_id, st.study_id as study_id
+                RETURN count(*) as total
                 """.strip()
             else:
                 # Has filters - need to apply them
@@ -2844,14 +2797,10 @@ class SampleRepository:
                         # For specimen_molecular_analyte_type: count all samples matching to a study
                         # This is the total - all samples with a study path (matching /sample/summary - 50211 when no filters)
                         total_cypher = f"""
-                MATCH (sa:sample)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                WITH sa, p,
-                     size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
-                     size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
-                WHERE has_study1 > 0 OR has_study2 > 0
-                RETURN count(DISTINCT sa.sample_id) as total
+                WITH sa.sample_id as sample_id, st.study_id as study_id
+                RETURN count(*) as total
                 """.strip()
                     else:
                         # For other sample metadata fields, use standard approach
@@ -2903,9 +2852,10 @@ class SampleRepository:
                             else:
                                 # No filters - count ALL samples with study paths (matches values query structure)
                                 total_cypher = """
-                MATCH (sa:sample)-[:IN_STUDY]->(:study)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                RETURN count(DISTINCT sa.sample_id) as total
+                WITH sa.sample_id as sample_id, st.study_id as study_id
+                RETURN count(*) as total
                 """.strip()
                         elif node_alias in ["sf", "pf"]:
                             # For other related nodes (sf, pf), require the node to exist and sample to have a study path
@@ -3068,14 +3018,14 @@ class SampleRepository:
                             # Performance: Use IN_STUDY shortcut instead of pattern comprehension (much faster)
                             invalid_list_filter = build_invalid_value_list_filter("specimen_molecular_analyte_type")
                             missing_cypher = f"""
-                MATCH (sa:sample)-[:IN_STUDY]->(:study)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
                 OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
-                WITH DISTINCT sa, 
+                WITH sa.sample_id as sample_id, st.study_id as study_id,
                      collect(DISTINCT sf.library_source_molecule) as molecule_values
                 WHERE size([val IN molecule_values WHERE val IS NOT NULL 
                              AND {invalid_list_filter}]) = 0
-                RETURN count(DISTINCT sa) as missing
+                RETURN count(*) as missing
                 """.strip()
                         elif node_alias == "sf" and not base_where_clause:
                             # Optimized missing count for other sequencing_file fields
@@ -3085,14 +3035,14 @@ class SampleRepository:
                             # Performance: Use IN_STUDY shortcut instead of pattern comprehension (much faster)
                             invalid_list_filter = build_invalid_value_list_filter(field)
                             missing_cypher = f"""
-                MATCH (sa:sample)-[:IN_STUDY]->(:study)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
                 OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
-                WITH DISTINCT sa, 
+                WITH sa.sample_id as sample_id, st.study_id as study_id,
                      collect(DISTINCT {node_field}) as field_values
                 WHERE size([val IN field_values WHERE val IS NOT NULL 
                              AND {invalid_list_filter}]) = 0
-                RETURN count(DISTINCT sa) as missing
+                RETURN count(*) as missing
                 """.strip()
                         elif node_alias == "pf" and not base_where_clause:
                             # Optimized missing count for pathology_file fields
@@ -3125,16 +3075,16 @@ class SampleRepository:
                             # Use IN_STUDY shortcut instead of pattern comprehension (consistent with values/total queries and avoids null issues)
                             invalid_list_filter = build_invalid_value_list_filter(field)
                             missing_cypher = f"""
-                MATCH (sa:sample)-[:IN_STUDY]->(:study)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
                 OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
-                WITH DISTINCT sa, 
+                WITH sa.sample_id as sample_id, st.study_id as study_id,
                      collect(DISTINCT {node_field}) as all_values
-                WITH sa,
+                WITH sample_id, study_id,
                      [val IN all_values WHERE val IS NOT NULL] as non_null_values
                 WHERE size(non_null_values) = 0 
                    OR size([val IN non_null_values WHERE {invalid_list_filter}]) = 0
-                RETURN count(DISTINCT sa) as missing
+                RETURN count(*) as missing
                 """.strip()
                         else:
                             # For other fields, build missing_where and missing_cypher
@@ -3449,12 +3399,18 @@ class SampleRepository:
                  [r IN SPLIT(race, ';') | trim(r)] as race_parts
             WITH sample_id, race, race_parts,
                  [r IN race_parts WHERE r <> 'Hispanic or Latino'] as race_list_filtered
-            WITH sample_id, race, race_list_filtered,
+            WITH sample_id, race, race_list_filtered
+            // Process race values: if only "Hispanic or Latino", convert to "Not Reported" if valid
+            // Otherwise, use the filtered race values
+            WITH sample_id,
                  CASE 
                    WHEN size(race_list_filtered) = 0 THEN ['Not Reported']
-                   ELSE [r IN race_list_filtered WHERE r IN $valid_races]
-                 END as matching_races
-            UNWIND matching_races as race_value
+                   ELSE race_list_filtered
+                 END as processed_races
+            UNWIND processed_races as race_candidate
+            WITH sample_id, race_candidate
+            WHERE race_candidate IN $valid_races
+            WITH DISTINCT sample_id, race_candidate as race_value
             RETURN race_value as value, count(DISTINCT sample_id) as count
             ORDER BY count DESC, value ASC
             """.strip()
@@ -3471,12 +3427,18 @@ class SampleRepository:
                  [r IN SPLIT(race, ';') | trim(r)] as race_parts
             WITH sample_id, race, race_parts,
                  [r IN race_parts WHERE r <> 'Hispanic or Latino'] as race_list_filtered
-            WITH sample_id, race, race_list_filtered,
+            WITH sample_id, race, race_list_filtered
+            // Process race values: if only "Hispanic or Latino", convert to "Not Reported" if valid
+            // Otherwise, use the filtered race values
+            WITH sample_id,
                  CASE 
                    WHEN size(race_list_filtered) = 0 THEN ['Not Reported']
-                   ELSE [r IN race_list_filtered WHERE r IN $valid_races]
-                 END as matching_races
-            UNWIND matching_races as race_value
+                   ELSE race_list_filtered
+                 END as processed_races
+            UNWIND processed_races as race_candidate
+            WITH sample_id, race_candidate
+            WHERE race_candidate IN $valid_races
+            WITH DISTINCT sample_id, race_candidate as race_value
             RETURN race_value as value, count(DISTINCT sample_id) as count
             ORDER BY count DESC, value ASC
             """.strip()

@@ -1678,27 +1678,15 @@ WITH p, d, c, st,
         RETURN count(*) as missing
         """.strip()
                 else:
-                    # No filters - use IN_STUDY for study traversal (still need survival processing)
-                    # Note: Must use OPTIONAL MATCH for IN_STUDY since MATCH can't come after OPTIONAL MATCH
-                    # Note: survival_processing expects c (consent_group), but we don't have it with IN_STUDY
-                    # So we need to adapt survival_processing to work without c
+                    # No filters: optimize by computing derived age ONCE per participant, then expanding to studies.
+                    # This avoids repeating survival processing for each (participant, study) row.
                     missing_cypher = f"""
         MATCH (p:participant)
-        OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
-        OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
-        OPTIONAL MATCH (p)-[:IN_STUDY]->(st:study)
-        WITH p, s, d, st
-        WHERE st IS NOT NULL
-        WITH p, d, st, 
-             // Collect all survival records for this participant
-             collect(s) AS survival_records
-        WITH p, d, st, survival_records,
-             // Keep only records with a status
-             [sr IN survival_records WHERE sr.last_known_survival_status IS NOT NULL] AS survs
-        WITH p, d, st, survs,
-             // Check if any record has 'Dead' status
-             any(sr IN survs WHERE sr.last_known_survival_status = 'Dead') AS has_dead,
-             // Find max age among Dead records (if any exist)
+        OPTIONAL MATCH (p)<-[:of_survival]-(s:survival)
+        WITH p, collect(s) AS survival_records
+        WITH p, [sr IN survival_records WHERE sr IS NOT NULL AND sr.last_known_survival_status IS NOT NULL] AS survs
+        WITH p, survs,
+             size([sr IN survs WHERE sr.last_known_survival_status = 'Dead']) > 0 AS has_dead,
              reduce(dead_max_age = 0, sr IN survs |
                     CASE 
                       WHEN sr.last_known_survival_status = 'Dead' 
@@ -1707,7 +1695,6 @@ WITH p, d, c, st,
                       THEN coalesce(toInteger(sr.age_at_last_known_survival_status), -999)
                       ELSE dead_max_age 
                     END) AS max_dead_age,
-             // Find max age across all non-null records
              reduce(max_age = 0, sr IN survs |
                     CASE 
                       WHEN sr.age_at_last_known_survival_status IS NOT NULL
@@ -1715,26 +1702,9 @@ WITH p, d, c, st,
                       THEN coalesce(toInteger(sr.age_at_last_known_survival_status), -999)
                       ELSE max_age 
                     END) AS max_age,
-             // Check if all ages are -999 (for counting as missing)
              all(sr IN survs WHERE sr.age_at_last_known_survival_status IS NULL OR toInteger(sr.age_at_last_known_survival_status) = -999) AS all_ages_are_999,
-             // Check if Dead age is -999
              any(sr IN survs WHERE sr.last_known_survival_status = 'Dead' AND (sr.age_at_last_known_survival_status IS NULL OR toInteger(sr.age_at_last_known_survival_status) = -999)) AS dead_age_is_999
-        WITH p, d, st,
-             // Priority: If 'Dead' exists, use 'Dead'; otherwise use status with max age
-             CASE 
-               WHEN size(survs) = 0 THEN NULL
-               WHEN has_dead THEN 'Dead'
-               ELSE CASE
-                 WHEN head([sr IN survs 
-                             WHERE sr.age_at_last_known_survival_status IS NOT NULL AND toInteger(sr.age_at_last_known_survival_status) = max_age 
-                             | sr.last_known_survival_status]) IS NOT NULL
-                 THEN head([sr IN survs 
-                             WHERE sr.age_at_last_known_survival_status IS NOT NULL AND toInteger(sr.age_at_last_known_survival_status) = max_age 
-                             | sr.last_known_survival_status])
-                 ELSE head([sr IN survs | sr.last_known_survival_status])
-               END
-             END AS final_vital_status,
-             // Age: If no vital_status, age should also be NULL
+        WITH p,
              CASE 
                WHEN size(survs) = 0 THEN NULL
                WHEN has_dead AND dead_age_is_999 THEN NULL
@@ -1742,10 +1712,8 @@ WITH p, d, c, st,
                WHEN all_ages_are_999 THEN NULL
                ELSE max_age
              END AS final_age_at_vital_status
-        WITH p.participant_id AS participant_id, st.study_id AS study_id, final_vital_status, final_age_at_vital_status
-        WITH participant_id, study_id,
-             head(collect(final_vital_status)) as final_vital_status,
-             head(collect(final_age_at_vital_status)) as final_age_at_vital_status
+        MATCH (p)-[:IN_STUDY]->(st:study)
+        WITH p.participant_id AS participant_id, st.study_id AS study_id, final_age_at_vital_status
         WHERE final_age_at_vital_status IS NULL
         RETURN count(*) as missing
         """.strip()
@@ -1888,7 +1856,49 @@ WITH p, d, c, st,
                 # No filters - use IN_STUDY for study traversal (still need survival processing)
                 # OPTIMIZATION: Start from IN_STUDY (uses edge index), only match survival records (not diagnosis)
                 # Diagnosis is not needed for vital_status processing
-                values_cypher = f"""
+                if field == "age_at_vital_status":
+                    # Compute derived age ONCE per participant, then expand to studies for counting.
+                    values_cypher = f"""
+        MATCH (p:participant)
+        OPTIONAL MATCH (p)<-[:of_survival]-(s:survival)
+        WITH p, collect(s) AS survival_records
+        WITH p, [sr IN survival_records WHERE sr IS NOT NULL AND sr.last_known_survival_status IS NOT NULL] AS survs
+        WITH p, survs,
+             size([sr IN survs WHERE sr.last_known_survival_status = 'Dead']) > 0 AS has_dead,
+             reduce(dead_max_age = 0, sr IN survs |
+                    CASE 
+                      WHEN sr.last_known_survival_status = 'Dead' 
+                           AND sr.age_at_last_known_survival_status IS NOT NULL
+                           AND coalesce(toInteger(sr.age_at_last_known_survival_status), -999) > dead_max_age
+                      THEN coalesce(toInteger(sr.age_at_last_known_survival_status), -999)
+                      ELSE dead_max_age 
+                    END) AS max_dead_age,
+             reduce(max_age = 0, sr IN survs |
+                    CASE 
+                      WHEN sr.age_at_last_known_survival_status IS NOT NULL
+                           AND coalesce(toInteger(sr.age_at_last_known_survival_status), -999) > max_age
+                      THEN coalesce(toInteger(sr.age_at_last_known_survival_status), -999)
+                      ELSE max_age 
+                    END) AS max_age,
+             all(sr IN survs WHERE sr.age_at_last_known_survival_status IS NULL OR toInteger(sr.age_at_last_known_survival_status) = -999) AS all_ages_are_999,
+             any(sr IN survs WHERE sr.last_known_survival_status = 'Dead' AND (sr.age_at_last_known_survival_status IS NULL OR toInteger(sr.age_at_last_known_survival_status) = -999)) AS dead_age_is_999
+        WITH p,
+             CASE 
+               WHEN size(survs) = 0 THEN NULL
+               WHEN has_dead AND dead_age_is_999 THEN NULL
+               WHEN has_dead THEN max_dead_age
+               WHEN all_ages_are_999 THEN NULL
+               ELSE max_age
+             END AS final_age_at_vital_status
+        MATCH (p)-[:IN_STUDY]->(st:study)
+        WITH p.participant_id AS participant_id, st.study_id AS study_id, final_age_at_vital_status as field_val
+        WHERE field_val IS NOT NULL
+        WITH DISTINCT participant_id, study_id, toString(field_val) AS normalized_value
+        RETURN normalized_value as value, count(*) as count
+        ORDER BY count DESC, value ASC
+        """.strip()
+                else:
+                    values_cypher = f"""
         MATCH (p:participant)-[:IN_STUDY]->(st:study)
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
         WITH p, st,

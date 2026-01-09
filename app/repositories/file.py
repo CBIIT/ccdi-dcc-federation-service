@@ -219,8 +219,9 @@ class FileRepository:
         # Pattern 3: No file filters = Simple (single traversal, less overhead)
         
         if file_where_conditions and has_depositions_filter:
-            # PATTERN 1: CALL+UNION OPTIMIZATION (for type + depositions queries)
-            # Use stored depositions parameter name for CALL+UNION queries
+            # PATTERN 1: OPTIMIZED QUERY (for type + depositions queries)
+            # OPTIMIZATION: Use IN_STUDY relationship via samples (uses edge index, much faster!)
+            # Use stored depositions parameter name
             deposition_param = depositions_param_name
             deposition_operator = "=" if len(depositions_list) == 1 else "IN"
             
@@ -228,59 +229,37 @@ class FileRepository:
             // Step 1: Match files and apply file property filters FIRST
             MATCH (sf:sequencing_file)
             {file_where_clause}
-            // Step 2: Find study path with CALL+UNION (applies study filter INSIDE path)
-            WITH sf
-            CALL {{
-              WITH sf
-              OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
-                            -[:of_sample]->(:cell_line)
-                            -[:of_cell_line]->(st:study)
-              WHERE st.study_id {deposition_operator} ${deposition_param}
-              RETURN st
-              UNION
-              WITH sf
-              OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
-                            -[:of_sample]->(:participant)
-                            -[:of_participant]->(:consent_group)
-                            -[:of_consent_group]->(st:study)
-              WHERE st.study_id {deposition_operator} ${deposition_param}
-              RETURN st
-            }}
+            // Step 2: Find study path using IN_STUDY relationship (uses edge index, applies study filter)
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)-[:IN_STUDY]->(st:study)
+            WHERE st.study_id {deposition_operator} ${deposition_param}
             // Step 3: Filter out nulls
-            WITH sf, st
+            WITH DISTINCT sf, st
             WHERE st IS NOT NULL
             // Step 4: Order and paginate
-            WITH DISTINCT sf
+            WITH sf
             ORDER BY sf.id
             SKIP $offset
             LIMIT $limit
             // Step 5: Collect samples for final results only
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
-            WITH sf, collect(DISTINCT sa) as samples
-            // Step 6: Get study for response
-            CALL {{
-              WITH sf
-              OPTIONAL MATCH (sf)-[:of_sequencing_file]->(:sample)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st:study)
-              RETURN st
-              UNION
-              WITH sf
-              OPTIONAL MATCH (sf)-[:of_sequencing_file]->(:sample)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
-              RETURN st
-            }}
-            WITH sf, samples, head(collect(DISTINCT st)) as study
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa2:sample)
+            WITH sf, collect(DISTINCT sa2) as samples
+            // Step 6: Get study for response (using IN_STUDY)
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa3:sample)-[:IN_STUDY]->(st3:study)
+            WHERE st3.study_id {deposition_operator} ${deposition_param}
+            WITH sf, samples, head(collect(DISTINCT st3)) as study
             RETURN sf, samples, study as st
             """.strip()
         elif file_where_conditions:
             # OPTIMIZED QUERY (for queries with file filters like type=BAM)
-            # Apply file filters FIRST, then traverse to study
+            # OPTIMIZATION: Use IN_STUDY relationship via samples (much faster than multi-hop)
+            # Apply file filters FIRST, then traverse to study using IN_STUDY
             cypher = f"""
             // Step 1: Match files and apply file property filters FIRST (before any traversals)
             MATCH (sf:sequencing_file)
             {file_where_clause}
-            // Step 2: Find study path (now processing fewer files due to early filtering)
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa2:sample)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-            WITH DISTINCT sf, coalesce(st1, st2) AS st
+            // Step 2: Find study path using IN_STUDY relationship (uses edge index, much faster!)
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)-[:IN_STUDY]->(st:study)
+            WITH DISTINCT sf, st
             {study_where_clause}
             // Step 3: Apply pagination early (before collecting samples)
             WITH sf
@@ -290,16 +269,15 @@ class FileRepository:
             // Step 4: Collect samples only for paginated files (much faster!)
             OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa3:sample)
             WITH sf, collect(DISTINCT sa3) AS samples
-            // Step 5: Get study for response (only for the 20 returned files)
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(:sample)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st3:study)
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(:sample)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st4:study)
-            WITH sf, samples, head(collect(DISTINCT coalesce(st3, st4))) AS st
+            // Step 5: Get study for response (only for the 20 returned files, using IN_STUDY)
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa4:sample)-[:IN_STUDY]->(st4:study)
+            WITH sf, samples, head(collect(DISTINCT st4)) AS st
             RETURN sf, samples, st
             """.strip()
         elif has_depositions_filter:
-            # PATTERN 2b: REVERSE TRAVERSAL for depositions-only queries (no file filters)
-            # PERFORMANCE OPTIMIZATION: Start from studies (2-10 nodes) instead of files (1M+ nodes)
-            # This is MUCH faster when filtering by depositions only
+            # PATTERN 2b: OPTIMIZED REVERSE TRAVERSAL for depositions-only queries (no file filters)
+            # OPTIMIZATION: Use IN_STUDY relationship (uses edge index, much faster!)
+            # Start from studies (2-10 nodes) instead of files (1M+ nodes)
             deposition_param = depositions_param_name
             deposition_operator = "=" if len(depositions_list) == 1 else "IN"
             
@@ -307,18 +285,8 @@ class FileRepository:
             // Step 1: Start from study nodes (only a few studies to process!)
             MATCH (st:study)
             WHERE st.study_id {deposition_operator} ${deposition_param}
-            // Step 2: Collect files from both paths using CALL+UNION
-            CALL {{
-              WITH st
-              MATCH (st)<-[:of_cell_line]-(:cell_line)<-[:of_sample]-(sa:sample)
-                        <-[:of_sequencing_file]-(sf:sequencing_file)
-              RETURN sf, sa
-              UNION
-              WITH st
-              MATCH (st)<-[:of_consent_group]-(:consent_group)<-[:of_participant]-(:participant)
-                        <-[:of_sample]-(sa:sample)<-[:of_sequencing_file]-(sf:sequencing_file)
-              RETURN sf, sa
-            }}
+            // Step 2: Collect files using IN_STUDY relationship (uses edge index, much faster!)
+            MATCH (st)<-[:IN_STUDY]-(sa:sample)<-[:of_sequencing_file]-(sf:sequencing_file)
             // Step 3: Deduplicate and paginate
             WITH DISTINCT sf, st
             ORDER BY sf.id
@@ -331,8 +299,8 @@ class FileRepository:
             """.strip()
         else:
             # PATTERN 3: SIMPLE QUERY (no filters at all - basic pagination only)
-            # PERFORMANCE OPTIMIZATION: Apply pagination FIRST, then traverse
-            # This is much faster for simple pagination requests
+            # PERFORMANCE OPTIMIZATION: Apply pagination FIRST, then traverse using IN_STUDY
+            # OPTIMIZATION: Use IN_STUDY relationship via samples (uses edge index, much faster!)
             cypher = f"""
             // Step 1: Apply pagination immediately to sequencing_file (no filters)
             MATCH (sf:sequencing_file)
@@ -343,16 +311,8 @@ class FileRepository:
             // Step 2: Now traverse only for the paginated files
             OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
             WITH sf, collect(DISTINCT sa) AS samples
-            // Step 3: Get study for response (only for paginated files)
-            CALL {{
-              WITH sf
-              OPTIONAL MATCH (sf)-[:of_sequencing_file]->(:sample)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st:study)
-              RETURN st
-              UNION
-              WITH sf
-              OPTIONAL MATCH (sf)-[:of_sequencing_file]->(:sample)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
-              RETURN st
-            }}
+            // Step 3: Get study for response (only for paginated files, using IN_STUDY)
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa2:sample)-[:IN_STUDY]->(st:study)
             WITH sf, samples, head(collect(DISTINCT st)) as study
             RETURN sf, samples, study as st
             """.strip()

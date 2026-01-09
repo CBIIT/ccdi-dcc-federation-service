@@ -17,6 +17,7 @@ from app.lib.field_allowlist import FieldAllowlist
 from app.models.dto import Subject, SubjectResponse, CountResponse, SummaryResponse
 from app.models.errors import NotFoundError, ValidationError
 from app.repositories.subject import SubjectRepository
+from app.db.memgraph import DatabaseConnectionError
 
 logger = get_logger(__name__)
 
@@ -78,6 +79,22 @@ class SubjectService:
             try:
                 subjects = await self.repository.get_subjects(filters, offset, limit, base_url=base_url)
                 break
+            except DatabaseConnectionError as e:
+                # Database connection error - log clearly for AWS cloud monitoring
+                logger.error(
+                    "Database connection error while fetching subjects - returning empty result",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    attempt=attempt + 1,
+                    max_retries=max_retries,
+                    filters=filters,
+                    offset=offset,
+                    limit=limit,
+                    is_database_connection_error=True,
+                    will_return_empty=True
+                )
+                # Return empty list instead of raising - API will return 404
+                return []
             except Exception as e:
                 # Check if this is a transient error that might benefit from retry
                 error_str = str(e).lower()
@@ -195,7 +212,21 @@ class SubjectService:
                 return CountResponse(**cached_result)
         
         # Get counts from repository
-        result = await self.repository.count_subjects_by_field(field, filters)
+        try:
+            result = await self.repository.count_subjects_by_field(field, filters)
+        except DatabaseConnectionError as e:
+            # Database connection error - log clearly for AWS cloud monitoring
+            logger.error(
+                "Database connection error while counting subjects by field - returning empty result",
+                error=str(e),
+                error_type=type(e).__name__,
+                field=field,
+                filters=filters,
+                is_database_connection_error=True,
+                will_return_empty=True
+            )
+            # Return empty count instead of raising - API will return 404
+            return CountResponse(total=0, missing=0, values=[])
         
         # Build response
         response = CountResponse(
@@ -272,6 +303,21 @@ class SubjectService:
             try:
                 summary_data = await self.repository.get_subjects_summary(filters)
                 break
+            except DatabaseConnectionError as e:
+                # Database connection error - log clearly for AWS cloud monitoring
+                logger.error(
+                    "Database connection error while fetching subjects summary - returning empty result",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    attempt=attempt + 1,
+                    max_retries=max_retries,
+                    filters=filters,
+                    is_database_connection_error=True,
+                    will_return_empty=True
+                )
+                # Return empty summary instead of raising - API will return 404
+                from app.models.dto import SummaryResponse, SummaryCounts
+                return SummaryResponse(counts=SummaryCounts(total=0))
             except Exception as e:
                 # Check if this is a transient error that might benefit from retry
                 error_str = str(e).lower()

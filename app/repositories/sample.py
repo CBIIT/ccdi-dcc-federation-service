@@ -15,7 +15,7 @@ from app.models.dto import Sample
 from app.models.errors import UnsupportedFieldError
 from app.core.config import Settings
 from app.core.constants import Race
-from app.core.field_mappings import map_field_value, reverse_map_field_value, is_null_mapped_value, is_database_only_value
+from app.core.field_mappings import map_field_value, reverse_map_field_value, is_null_mapped_value, is_database_only_value, build_invalid_value_filter, build_invalid_value_list_filter, build_invalid_value_all_clause, build_case_mapping_statement, get_mapped_db_values, load_sequencing_file_enum, get_null_mappings
 
 logger = get_logger(__name__)
 
@@ -96,6 +96,21 @@ class SampleRepository:
             offset=offset,
             limit=limit
         )
+        
+        # PERFORMANCE OPTIMIZATION: Reverse query for sequencing_file-only filters
+        # When ONLY sequencing_file filters are present, use a reverse query that matches
+        # sequencing_files FIRST (using index), then finds samples
+        # This is 10-100x faster than collecting all sequencing_files first
+        sequencing_file_filter_keys = {"library_selection_method", "library_strategy", "library_source_material", "specimen_molecular_analyte_type"}
+        has_sf_filters = any(k in filters for k in sequencing_file_filter_keys)
+        has_other_filters = any(k not in sequencing_file_filter_keys for k in filters.keys())
+        
+        if has_sf_filters and not has_other_filters:
+            logger.info(
+                "Using optimized reverse query for sequencing_file-only filters",
+                filters=filters
+            )
+            return await self._get_samples_by_sequencing_file_filters(filters, offset, limit, base_url)
         
         # PERFORMANCE OPTIMIZATION: Early Pagination for No-Filter Queries
         # Problem: Current query processes ALL 50,211 samples before pagination (SLOW)
@@ -183,7 +198,9 @@ class SampleRepository:
         
         # Handle identifiers parameter normalization
         # Support || separator for OR logic (e.g., "SAMP001 || SAMP002")
+        # OPTIMIZATION: Apply identifiers filter EARLY in MATCH WHERE clause to reduce dataset before OPTIONAL MATCHes
         identifiers_condition = ""
+        identifiers_early_filter = None
         if "identifiers" in filters:
             identifiers_value = filters.pop("identifiers")
             if identifiers_value is not None and str(identifiers_value).strip():
@@ -197,6 +214,17 @@ class SampleRepository:
                     param_counter += 1
                     id_param = f"param_{param_counter}"
                     params[id_param] = identifiers_value
+                    
+                    # Build early filter for MATCH WHERE clause (before OPTIONAL MATCHes)
+                    # This significantly reduces the dataset before expensive OPTIONAL MATCH operations
+                    if isinstance(identifiers_value, list):
+                        # Multiple identifiers - use IN clause directly
+                        identifiers_early_filter = f"sa.sample_id IN ${id_param}"
+                    else:
+                        # Single identifier - use = for better performance
+                        identifiers_early_filter = f"sa.sample_id = ${id_param}"
+                    
+                    # Also keep identifiers_condition for WITH clause (needed for id_list normalization in some cases)
                     identifiers_condition = f""",
                     // normalize $identifiers: STRING -> [trimmed], LIST -> trimmed list
                     CASE
@@ -205,16 +233,32 @@ class SampleRepository:
                       WHEN valueType(${id_param}) = 'STRING' THEN [trim(${id_param})]
                       ELSE []
                     END AS id_list"""
-                    where_conditions.append("sa.sample_id IN id_list")
+                    # Don't add to where_conditions - it's now applied early in MATCH WHERE clause
+        
+        # OPTIMIZATION: When identifiers filter exists AND sequencing file filters exist,
+        # apply sequencing file filters EARLY in OPTIONAL MATCH WHERE clause
+        # This avoids collecting all files then filtering (10-20x faster)
+        # Note: These variables will be set later when we build OPTIONAL MATCH clauses
+        use_sf_early_filter = False
+        skip_second_with_for_sf = False
         
         # Build filter conditions - these will be applied in the WITH clause after collecting diagnoses
         with_conditions = []
         
         # Handle diagnosis search - need to check if ANY diagnosis in the sample matches
         diagnosis_search_term = None
+        needs_diag_collection = False
+        disease_phase_filter_condition = None  # Track disease_phase filter for combined filtering
+        has_diagnoses_conditions = False  # Track if any diagnosis-related filters are present
         if "_diagnosis_search" in filters:
             diagnosis_search_term = filters.pop("_diagnosis_search")
-            params["diagnosis_search_term"] = diagnosis_search_term
+            # OPTIMIZATION 4A: Pre-process search term to lowercase (done once in Python)
+            # This removes toLower() calls from Cypher, improving performance
+            diagnosis_search_term_lower = diagnosis_search_term.lower().strip()
+            params["diagnosis_search_term"] = diagnosis_search_term  # Keep original for potential use
+            params["diagnosis_search_term_lower"] = diagnosis_search_term_lower  # Pre-processed lowercase
+            params["diagnosis_search_term_see_comment"] = "see diagnosis_comment"  # Pre-computed constant
+            needs_diag_collection = True
             # This will be applied as a WHERE clause after collecting ALL diagnosis nodes
             # We'll check if ANY diagnosis contains the search term before taking head()
         
@@ -257,23 +301,36 @@ class SampleRepository:
                     # This value is a database-only value and is not valid for filtering
                     with_conditions.append(("library_strategy_invalid", "invalid"))
                 else:
-                    # Apply reverse mapping for filtering (API value -> DB value)
-                    # For "Other", we need to match both "Archer Fusion" (reverse mapped) and "Other" (direct match)
-                    # Need to check if ANY sequencing_file matches, not just the first one
-                    db_value = reverse_map_field_value("library_strategy", value)
-                    if db_value is None:
-                        # If no reverse mapping, use the value as-is (for values not in mapping)
-                        params[param_name] = value
+                    # Load enum values and use IN clause for filtering
+                    enum_values = load_sequencing_file_enum("library_strategy")
+                    if enum_values:
+                        # Apply reverse mapping for the filter value to get DB value(s)
+                        # For "Other", we need to match both "Archer Fusion" (reverse mapped) and "Other" (direct match)
+                        filter_db_values = []
+                        reverse_mapped = reverse_map_field_value("library_strategy", value)
+                        if reverse_mapped:
+                            if isinstance(reverse_mapped, list):
+                                filter_db_values.extend(reverse_mapped)
+                            else:
+                                filter_db_values.append(reverse_mapped)
+                        filter_db_values.append(value)  # Also include original value
+                        
+                        # Use IN clause with all matching DB values
+                        params[param_name] = list(set(filter_db_values))  # Remove duplicates
                         with_conditions.append(("library_strategy", param_name))
                     else:
-                        # We have a reverse mapping - need to match both the mapped value and the original value
-                        mapped_db_value = db_value if isinstance(db_value, str) else (db_value[0] if isinstance(db_value, list) and db_value else value)
-                        # Match either the reverse-mapped value OR the original value (in case DB already has "Other")
-                        param_counter += 1
-                        param_name_original = f"param_{param_counter}"
-                        params[param_name] = mapped_db_value
-                        params[param_name_original] = value
-                        with_conditions.append(("library_strategy", param_name, param_name_original))
+                        # Fallback to original logic if enum not available
+                        db_value = reverse_map_field_value("library_strategy", value)
+                        if db_value is None:
+                            params[param_name] = value
+                            with_conditions.append(("library_strategy", param_name))
+                        else:
+                            mapped_db_value = db_value if isinstance(db_value, str) else (db_value[0] if isinstance(db_value, list) and db_value else value)
+                            param_counter += 1
+                            param_name_original = f"param_{param_counter}"
+                            params[param_name] = mapped_db_value
+                            params[param_name_original] = value
+                            with_conditions.append(("library_strategy", param_name, param_name_original))
             elif field == "specimen_molecular_analyte_type":
                 # Check if value is a database-only value (e.g., "Transcriptomic", "Genomic", "Viral RNA")
                 # or in null_mappings (e.g., "Not Reported")
@@ -295,9 +352,10 @@ class SampleRepository:
                         with_conditions.append(("specimen_molecular_analyte_type_single", param_name))
             elif field == "disease_phase":
                 # Check if value is a database-only value (e.g., "Recurrent Disease")
-                # Database-only values should not be accepted as filter values
-                if is_database_only_value("disease_phase", value):
-                    # This value is a database-only value and is not valid for filtering
+                # or in null_mappings (e.g., "Not Reported")
+                # These values should not be accepted as filter values
+                if is_database_only_value("disease_phase", value) or is_null_mapped_value("disease_phase", value):
+                    # This value is not valid for filtering
                     # Add an impossible condition to return empty results
                     with_conditions.append("false")
                 else:
@@ -320,10 +378,19 @@ class SampleRepository:
                     # Add an impossible condition to return empty results
                     with_conditions.append(("library_source_material_invalid", "invalid"))
                 else:
-                    # Apply reverse mapping for filtering (API value -> DB value)
-                    reverse_mapped = reverse_map_field_value("library_source_material", value)
-                    params[param_name] = reverse_mapped
-                    with_conditions.append(("library_source_material", param_name))
+                    # Load enum values and use IN clause for filtering
+                    enum_values = load_sequencing_file_enum("library_source_material")
+                    if enum_values:
+                        # Apply reverse mapping for the filter value to get DB value
+                        reverse_mapped = reverse_map_field_value("library_source_material", value)
+                        # Use IN clause with the mapped DB value (as list for consistency)
+                        params[param_name] = [reverse_mapped] if reverse_mapped else [value]
+                        with_conditions.append(("library_source_material", param_name))
+                    else:
+                        # Fallback to original logic if enum not available
+                        reverse_mapped = reverse_map_field_value("library_source_material", value)
+                        params[param_name] = reverse_mapped
+                        with_conditions.append(("library_source_material", param_name))
             elif field == "preservation_method":
                 with_conditions.append(f"pf IS NOT NULL AND pf.fixation_embedding_method = ${param_name}")
             elif field == "tumor_classification":
@@ -353,21 +420,24 @@ class SampleRepository:
                 except (ValueError, TypeError):
                     params[param_name] = value
             elif field == "depositions":
+                # OPTIMIZATION: depositions filter will be applied early in MATCH WHERE clause
+                # Store the parameter for early filtering (don't add to with_conditions)
                 # Support || separator for multi-value OR logic
                 if isinstance(value, str) and "||" in value:
                     dep_list = [d.strip() for d in value.split("||")]
                     dep_list = [d for d in dep_list if d]
                     if len(dep_list) > 1:
                         params[param_name] = dep_list
-                        with_conditions.append(f"st IS NOT NULL AND st.study_id IN ${param_name}")
                     elif len(dep_list) == 1:
                         params[param_name] = dep_list[0]
-                        with_conditions.append(f"st IS NOT NULL AND st.study_id = ${param_name}")
                     else:
                         # Empty list after filtering, skip
                         continue
-                else:
-                    with_conditions.append(f"st IS NOT NULL AND st.study_id = ${param_name}")
+                # Store depositions param name for early filtering (will be added to early_where_conditions later)
+                if not hasattr(self, '_depositions_early_params'):
+                    self._depositions_early_params = []
+                self._depositions_early_params.append(param_name)
+                # Don't add to with_conditions - it's now applied early in MATCH WHERE clause
             elif field == "diagnosis":
                 # Check both diagnoses.diagnosis and diagnoses.diagnosis_comment (for "see diagnosis_comment" cases)
                 # If diagnosis is "see diagnosis_comment", check the comment field instead
@@ -481,6 +551,23 @@ class SampleRepository:
             else:
                 regular_conditions.append(condition)
         
+        # PERFORMANCE FIX: Early return for invalid filter values
+        # If any filter has an invalid value (e.g., "Other" for library_source_material),
+        # return empty results immediately without hitting the database
+        if (specimen_molecular_analyte_type_single_param == "invalid" or
+            library_selection_method_param == "invalid" or
+            library_strategy_param == "invalid" or
+            library_source_material_param == "invalid"):
+            logger.info(
+                "Invalid filter value detected - returning empty results",
+                filters=filters,
+                specimen_molecular_analyte_type_invalid=specimen_molecular_analyte_type_single_param == "invalid",
+                library_selection_method_invalid=library_selection_method_param == "invalid",
+                library_strategy_invalid=library_strategy_param == "invalid",
+                library_source_material_invalid=library_source_material_param == "invalid"
+            )
+            return []
+        
         # Build WHERE clause conditions
         all_conditions = regular_conditions.copy()
         if anatomical_sites_list_condition:
@@ -490,22 +577,83 @@ class SampleRepository:
                               library_selection_method_param is not None or
                               library_strategy_param is not None or
                               library_source_material_param is not None)
+        # Note: needs_diag_collection is already set at line 230 based on diagnosis_search_term
+        
+        # OPTIMIZATION Phase 2: Extract disease_phase filter condition if diagnosis search is active
+        # We'll combine them during collection instead of filtering after
+        disease_phase_collection_filter = None
+        if needs_diag_collection:
+            # Look for disease_phase condition in regular_conditions
+            for condition in regular_conditions:
+                if isinstance(condition, str) and "diagnoses.disease_phase" in condition:
+                    # Extract the disease_phase part (remove "diagnoses IS NOT NULL AND ")
+                    disease_phase_part = condition.replace("diagnoses IS NOT NULL AND ", "")
+                    # Convert to use 'd' instead of 'diagnoses' for collection filter
+                    disease_phase_collection_filter = disease_phase_part.replace("diagnoses.", "d.")
+                    # Remove from regular_conditions since we'll filter during collection
+                    all_conditions.remove(condition)
+                    break
+        
+        # When skip_second_with_for_sf is true, we'll check sf IS NOT NULL directly in WHERE clause
+        # so don't add has_matching_sf condition here
+        # NOTE: skip_second_with_for_sf is set later (line 781), so we check it after it's set
+        # For now, we'll add conditions normally and filter them out later if needed
         if needs_sf_collection:
-            all_conditions.append("has_matching_sf = true")
+            if use_sf_early_filter and skip_second_with_for_sf:
+                # Will be added directly to WHERE clause later
+                pass
+            elif use_sf_early_filter:
+                all_conditions.append("sf IS NOT NULL")
+            else:
+                all_conditions.append("has_matching_sf = true")
         # Add diagnosis search condition if present (will be checked after collecting all diagnoses)
-        needs_diag_collection = diagnosis_search_term is not None
+        # Note: If disease_phase was combined, it's already filtered during collection
+        # NOTE: skip_second_with_for_sf is set later (around line 794), so we'll add the condition here
+        # and filter it out later if skip_second_with_for_sf is True (at line 988-992)
         if needs_diag_collection:
             all_conditions.append("has_matching_diagnosis = true")
         
         # Separate cheap filters (can be applied before OPTIONAL MATCHes) from expensive ones
-        # Cheap filters: sample_id, anatomic_site (sample node properties)
-        # Expensive filters: st IS NOT NULL (requires OPTIONAL MATCHes), participant/diagnosis filters
+        # Cheap filters: sample_id, anatomic_site, identifiers, depositions (can filter early)
+        # Expensive filters: participant/diagnosis filters (need OPTIONAL MATCH first)
+        # Note: st IS NOT NULL is no longer needed since IN_STUDY MATCH ensures study path exists
         early_where_conditions = [
             "sa.sample_id IS NOT NULL",
             "toString(sa.sample_id) <> ''"
         ]
+        
+        # OPTIMIZATION: Add identifiers filter early (before OPTIONAL MATCHes)
+        # This significantly reduces the dataset before expensive joins
+        if identifiers_early_filter:
+            early_where_conditions.append(identifiers_early_filter)
+        
+        # OPTIMIZATION: Add depositions filter early (before OPTIONAL MATCHes)
+        # Filter by study_id in the MATCH clause to reduce dataset early
+        if hasattr(self, '_depositions_early_params') and self._depositions_early_params:
+            # Collect all depositions values (in case multiple depositions filters were provided)
+            all_dep_values = []
+            for dep_param_name in self._depositions_early_params:
+                dep_value = params.get(dep_param_name)
+                if dep_value:
+                    if isinstance(dep_value, list):
+                        all_dep_values.extend(dep_value)
+                    else:
+                        all_dep_values.append(dep_value)
+            
+            if all_dep_values:
+                # Use the first param name for the combined filter
+                dep_param_name = self._depositions_early_params[0]
+                if len(all_dep_values) > 1:
+                    # Multiple values - use IN clause
+                    params[dep_param_name] = all_dep_values
+                    depositions_early_filter = f"st.study_id IN ${dep_param_name}"
+                else:
+                    # Single value - use = for better performance
+                    params[dep_param_name] = all_dep_values[0]
+                    depositions_early_filter = f"st.study_id = ${dep_param_name}"
+                early_where_conditions.append(depositions_early_filter)
         late_where_conditions = [
-            "st IS NOT NULL"  # Ensure sample has a path to a study (requires OPTIONAL MATCHes)
+            # st IS NOT NULL check removed - IN_STUDY MATCH ensures study path exists
         ]
         
         # Extract anatomical_sites condition if present (can be applied early)
@@ -529,10 +677,13 @@ class SampleRepository:
             if late_cond not in where_conditions:
                 where_conditions.append(late_cond)
         # Add filter conditions (excluding anatomical_sites which is already in early_where_clause)
+        # NOTE: skip_second_with_for_sf is set later (around line 781), so we'll filter conditions after it's set
+        # For now, add all conditions - we'll filter them out later if needed
         if all_conditions:
             where_conditions.extend(all_conditions)
         
         # Build late WHERE clause (applied after OPTIONAL MATCHes and WITH)
+        # NOTE: This will be modified later if skip_second_with_for_sf is True
         where_clause = "\n        WHERE " + " AND ".join(where_conditions) if where_conditions else ""
         
         # Determine which OPTIONAL MATCH clauses are needed based on filters
@@ -563,94 +714,13 @@ class SampleRepository:
         # Always include sequencing_file for metadata fields
         needs_sequencing_file = True
         
-        # Build OPTIONAL MATCH clauses
-        optional_matches = []
-        # Always include participant for identifiers
-        optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
-        # Always include diagnosis, pathology_file, and sequencing_file for metadata
-        optional_matches.append("OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)")
-        optional_matches.append("OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)")
-        optional_matches.append("OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)")
-        # Always include study paths
-        optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)")
-        optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)")
-        
-        optional_matches_str = "\n        ".join(optional_matches) if optional_matches else ""
-        
-        # Build WITH clause - always include diagnosis, pathology_file, and sequencing_file for metadata
-        with_vars = ["sa", "p"]  # Always include participant for identifiers
-        # For sequencing_file fields, collect ALL sequencing_files first to check if ANY match
-        needs_sf_collection = (specimen_molecular_analyte_type_list or specimen_molecular_analyte_type_single_param or
-                              library_selection_method_param is not None or
-                              library_strategy_param is not None or
-                              library_source_material_param is not None)
-        # For diagnosis search, collect ALL diagnoses first to check if ANY match
-        needs_diag_collection = diagnosis_search_term is not None
-        
-        if needs_sf_collection:
-            if needs_diag_collection:
-                with_collects = [
-                    "collect(DISTINCT d) AS all_diagnoses",  # Collect ALL diagnoses for search
-                    "head(collect(DISTINCT pf)) AS pf",
-                    "collect(DISTINCT sf) AS all_sfs"  # Collect all sequencing_files
-                ]
-            else:
-                with_collects = [
-                    "head(collect(DISTINCT d)) AS diagnoses",
-                    "head(collect(DISTINCT pf)) AS pf",
-                    "collect(DISTINCT sf) AS all_sfs"  # Collect all sequencing_files
-                ]
-        else:
-            if needs_diag_collection:
-                with_collects = [
-                    "collect(DISTINCT d) AS all_diagnoses",  # Collect ALL diagnoses for search
-                    "head(collect(DISTINCT pf)) AS pf",
-                    "head(collect(DISTINCT sf)) AS sf"
-                ]
-            else:
-                with_collects = [
-                    "head(collect(DISTINCT d)) AS diagnoses",
-                    "head(collect(DISTINCT pf)) AS pf",
-                    "head(collect(DISTINCT sf)) AS sf"
-                ]
-        with_vars.append("coalesce(st1, st2) AS st")
-        
-        with_clause = ", ".join(with_vars)
-        if with_collects:
-            with_clause += ",\n             " + ",\n             ".join(with_collects)
-        
-        # Add identifiers_condition to WITH clause if present
-        if identifiers_condition:
-            with_clause += identifiers_condition
-        
-        # For sequencing_file fields or diagnosis search, we need a second WITH clause
-        # (can't reference a variable in the same WITH clause where it's defined)
-        second_with_clause = None
-        if needs_sf_collection or needs_diag_collection:
-            second_with_vars = ["sa", "p", "st"]
-            
-            # Handle diagnosis search - check if ANY diagnosis matches
-            if needs_diag_collection:
-                # Check if ANY diagnosis in all_diagnoses contains the search term
-                # Handle both d.diagnosis and d.diagnosis_comment (when diagnosis = "see diagnosis_comment")
-                diagnosis_search_condition = f"""size([d IN all_diagnoses WHERE d IS NOT NULL AND (
-                    (toLower(trim(toString(d.diagnosis))) <> 'see diagnosis_comment' AND 
-                     ANY(diag IN CASE WHEN valueType(d.diagnosis) = 'LIST' THEN d.diagnosis ELSE [d.diagnosis] END 
-                         WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term)))
-                    OR
-                    (toLower(trim(toString(d.diagnosis))) = 'see diagnosis_comment' AND 
-                     d.diagnosis_comment IS NOT NULL AND 
-                     toLower(toString(d.diagnosis_comment)) CONTAINS toLower($diagnosis_search_term))
-                )]) > 0"""
-                second_with_vars.append(f"{diagnosis_search_condition} AS has_matching_diagnosis")
-                second_with_vars.append("head([d IN all_diagnoses WHERE d IS NOT NULL | d]) AS diagnoses")
-            else:
-                second_with_vars.append("diagnoses")
-            
-            second_with_vars.append("pf")
-        
-        # Build conditions to check if ANY sequencing_file matches (only if needed)
-        if needs_sf_collection:
+        # OPTIMIZATION: When identifiers filter exists AND sequencing file filters exist,
+        # apply sequencing file filters EARLY in OPTIONAL MATCH WHERE clause
+        # This avoids collecting all files then filtering (10-20x faster)
+        sf_optional_match_where = None
+        use_sf_early_filter = False
+        if identifiers_condition and needs_sf_collection:
+            # Build sequencing file filter conditions for OPTIONAL MATCH WHERE clause
             sf_match_conditions = []
             
             # Check specimen_molecular_analyte_type
@@ -678,11 +748,23 @@ class SampleRepository:
                     # Invalid value - add impossible condition to return empty results
                     sf_match_conditions.append("false")
                 elif isinstance(library_strategy_param, tuple):
-                    # Has both mapped and original values
-                    sf_match_conditions.append(f"(sf.library_strategy = ${library_strategy_param[0]} OR sf.library_strategy = ${library_strategy_param[1]})")
+                    # Check if param is a list (from enum-based filtering)
+                    param_value = params.get(library_strategy_param[0])
+                    if isinstance(param_value, list):
+                        # Use IN clause for list of values
+                        sf_match_conditions.append(f"sf.library_strategy IN ${library_strategy_param[0]}")
+                    else:
+                        # Fallback to OR for tuple case
+                        sf_match_conditions.append(f"(sf.library_strategy = ${library_strategy_param[0]} OR sf.library_strategy = ${library_strategy_param[1]})")
                 else:
-                    # Single value
-                    sf_match_conditions.append(f"sf.library_strategy = ${library_strategy_param}")
+                    # Check if param value is a list (from enum-based filtering)
+                    param_value = params.get(library_strategy_param)
+                    if isinstance(param_value, list):
+                        # Use IN clause for list of values
+                        sf_match_conditions.append(f"sf.library_strategy IN ${library_strategy_param}")
+                    else:
+                        # Single value - use IN clause (will work with single-element list)
+                        sf_match_conditions.append(f"sf.library_strategy IN ${library_strategy_param}")
             
             # Check library_source_material
             if library_source_material_param is not None:
@@ -690,38 +772,347 @@ class SampleRepository:
                     # Invalid value (in null_mappings) - add impossible condition to return empty results
                     sf_match_conditions.append("false")
                 else:
-                    sf_match_conditions.append(f"sf.library_source_material = ${library_source_material_param}")
+                    # Use IN clause for filtering (works with single value or list)
+                    sf_match_conditions.append(f"sf.library_source_material IN ${library_source_material_param}")
             
-            # Combine all conditions with OR (if multiple fields) or use single condition
-            if len(sf_match_conditions) == 1:
-                has_matching_sf_expr = f"size([sf IN all_sfs WHERE sf IS NOT NULL AND {sf_match_conditions[0]}]) > 0"
-                # Return the MATCHING sequencing file, not just the first one
-                sf_return_expr = f"head([sf IN all_sfs WHERE sf IS NOT NULL AND {sf_match_conditions[0]} | sf])"
-            else:
-                # Multiple conditions - combine with OR
-                combined_condition = " OR ".join([f"({cond})" for cond in sf_match_conditions])
-                has_matching_sf_expr = f"size([sf IN all_sfs WHERE sf IS NOT NULL AND ({combined_condition})]) > 0"
-                # Return the MATCHING sequencing file, not just the first one
-                sf_return_expr = f"head([sf IN all_sfs WHERE sf IS NOT NULL AND ({combined_condition}) | sf])"
-            
-            second_with_vars.append(f"{has_matching_sf_expr} AS has_matching_sf")
-            second_with_vars.append(f"{sf_return_expr} AS sf")
-        elif needs_diag_collection:
-            # Only diagnosis search, no sequencing file collection
-            second_with_vars.append("sf")
+            # Combine all conditions with AND (all must match)
+            if sf_match_conditions:
+                # Remove "false" conditions (they make the whole query impossible)
+                valid_conditions = [c for c in sf_match_conditions if c != "false"]
+                if valid_conditions:
+                    combined_condition = " AND ".join([f"({cond})" for cond in valid_conditions])
+                    sf_optional_match_where = f"WHERE {combined_condition}"
+                    use_sf_early_filter = True
+                else:
+                    # All conditions were "false" - query will return empty
+                    sf_optional_match_where = "WHERE false"
+                    use_sf_early_filter = True
         
-        # Finalize second_with_clause if we have any second WITH vars
-        if needs_sf_collection or needs_diag_collection:
-            second_with_clause = ", ".join(second_with_vars)
+        # Build OPTIONAL MATCH clauses
+        optional_matches = []
+        # Always include participant for identifiers
+        optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
+        # Always include diagnosis, pathology_file, and sequencing_file for metadata
+        optional_matches.append("OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)")
+        optional_matches.append("OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)")
+        # Apply early filter to sequencing_file OPTIONAL MATCH if optimization applies
+        if use_sf_early_filter and sf_optional_match_where:
+            optional_matches.append(f"OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)\n        {sf_optional_match_where}")
+        else:
+            optional_matches.append("OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)")
+        # Use IN_STUDY shortcut for study path (much faster than pattern matching)
+        # Note: This requires the IN_STUDY relationship to exist (created via migration script)
+        
+        optional_matches_str = "\n        ".join(optional_matches) if optional_matches else ""
+        
+        # Build WITH clause - always include diagnosis, pathology_file, and sequencing_file for metadata
+        with_vars = ["sa", "p"]  # Always include participant for identifiers
+        # For sequencing_file fields, collect ALL sequencing_files first to check if ANY match
+        needs_sf_collection = (specimen_molecular_analyte_type_list or specimen_molecular_analyte_type_single_param or
+                              library_selection_method_param is not None or
+                              library_strategy_param is not None or
+                              library_source_material_param is not None)
+        # For diagnosis search, collect ALL diagnoses first to check if ANY match
+        # Note: needs_diag_collection is already set at line 230 based on diagnosis_search_term
+        
+        # OPTIMIZATION Phase 2: Filter diagnoses during collection when diagnosis search is active
+        # This reduces memory usage and improves performance by only collecting matching diagnoses
+        # OPTIMIZATION Phase 3: When identifiers filter exists AND sequencing file filters exist,
+        # use head(collect(DISTINCT sf)) directly instead of collect(DISTINCT sf) AS all_sfs
+        # because filters are already applied in OPTIONAL MATCH WHERE clause
+        # OPTIMIZATION Phase 4: When identifiers + sequencing file filters exist AND NOT filtering by diagnosis,
+        # skip second_with_clause entirely and collect diagnosis/pathology_file directly (much faster)
+        skip_second_with_for_sf = False
+        # IMPORTANT: When needs_diag_collection is True, has_diagnoses_conditions should also be True
+        # because we're collecting all_diagnoses which needs to be processed in the second WITH clause
+        if needs_diag_collection:
+            has_diagnoses_conditions = True
+        if needs_sf_collection:
+            if needs_diag_collection:
+                # Build combined filter condition for diagnosis search + disease_phase (if present)
+                diagnosis_search_filter = """(toLower(trim(toString(d.diagnosis))) <> $diagnosis_search_term_see_comment AND 
+                         CASE 
+                           WHEN valueType(d.diagnosis) = 'LIST' THEN 
+                             ANY(diag IN d.diagnosis WHERE toLower(toString(diag)) CONTAINS $diagnosis_search_term_lower)
+                           ELSE 
+                             toLower(toString(d.diagnosis)) CONTAINS $diagnosis_search_term_lower
+                         END)
+                        OR
+                        (toLower(trim(toString(d.diagnosis))) = $diagnosis_search_term_see_comment AND 
+                         d.diagnosis_comment IS NOT NULL AND 
+                         toLower(toString(d.diagnosis_comment)) CONTAINS $diagnosis_search_term_lower)"""
+                
+                if disease_phase_collection_filter:
+                    # Combine both filters during collection
+                    combined_filter = f"d IS NOT NULL AND ({diagnosis_search_filter}) AND ({disease_phase_collection_filter})"
+                else:
+                    # Only diagnosis search filter
+                    combined_filter = f"d IS NOT NULL AND ({diagnosis_search_filter})"
+                
+                # When early filter optimization applies, only matching sequencing files are collected
+                # BUT: When has_diagnoses_conditions is True, we need to collect all_sfs (not sf) 
+                # so the second WITH clause can extract matching sf from it
+                if use_sf_early_filter:
+                    with_collects = [
+                        f"[d IN collect(DISTINCT d) WHERE {combined_filter}] AS all_diagnoses",  # Filter during collection
+                        "head(collect(DISTINCT pf)) AS pf",
+                        "collect(DISTINCT sf) AS all_sfs"  # Collect matching files (filtered in OPTIONAL MATCH) as all_sfs for second WITH clause
+                    ]
+                else:
+                    with_collects = [
+                        f"[d IN collect(DISTINCT d) WHERE {combined_filter}] AS all_diagnoses",  # Filter during collection
+                        "head(collect(DISTINCT pf)) AS pf",
+                        "collect(DISTINCT sf) AS all_sfs"  # Collect all sequencing_files
+                    ]
+            else:
+                # When early filter optimization applies AND no diagnosis filtering,
+                # skip second_with_clause entirely - collect everything directly
+                # BUT: Check if there are any conditions referencing 'diagnoses' (like disease_phase filters)
+                # If so, we can't skip second_with_clause because diagnoses needs to be available
+                # Check both all_conditions AND regular_conditions to catch all diagnosis-related filters
+                has_diagnoses_conditions = (
+                    any(isinstance(cond, str) and "diagnoses" in cond for cond in all_conditions) or
+                    any(isinstance(cond, str) and "diagnoses" in cond for cond in regular_conditions)
+                )
+                if use_sf_early_filter and not has_diagnoses_conditions:
+                    with_collects = [
+                        "head(collect(DISTINCT d)) AS diagnoses",
+                        "head(collect(DISTINCT pf)) AS pf",
+                        "head(collect(DISTINCT sf)) AS sf"  # Only matching files (filtered in OPTIONAL MATCH)
+                    ]
+                    skip_second_with_for_sf = True  # Skip second_with_clause - we already have filtered sf
+                else:
+                    with_collects = [
+                        "head(collect(DISTINCT d)) AS diagnoses",
+                        "head(collect(DISTINCT pf)) AS pf",
+                        "collect(DISTINCT sf) AS all_sfs"  # Collect all sequencing_files
+                    ]
+        else:
+            if needs_diag_collection:
+                # Build combined filter condition for diagnosis search + disease_phase (if present)
+                diagnosis_search_filter = """(toLower(trim(toString(d.diagnosis))) <> $diagnosis_search_term_see_comment AND 
+                         CASE 
+                           WHEN valueType(d.diagnosis) = 'LIST' THEN 
+                             ANY(diag IN d.diagnosis WHERE toLower(toString(diag)) CONTAINS $diagnosis_search_term_lower)
+                           ELSE 
+                             toLower(toString(d.diagnosis)) CONTAINS $diagnosis_search_term_lower
+                         END)
+                        OR
+                        (toLower(trim(toString(d.diagnosis))) = $diagnosis_search_term_see_comment AND 
+                         d.diagnosis_comment IS NOT NULL AND 
+                         toLower(toString(d.diagnosis_comment)) CONTAINS $diagnosis_search_term_lower)"""
+                
+                if disease_phase_collection_filter:
+                    # Combine both filters during collection
+                    combined_filter = f"d IS NOT NULL AND ({diagnosis_search_filter}) AND ({disease_phase_collection_filter})"
+                else:
+                    # Only diagnosis search filter
+                    combined_filter = f"d IS NOT NULL AND ({diagnosis_search_filter})"
+                
+                with_collects = [
+                    f"[d IN collect(DISTINCT d) WHERE {combined_filter}] AS all_diagnoses",  # Filter during collection
+                    "head(collect(DISTINCT pf)) AS pf",
+                    "head(collect(DISTINCT sf)) AS sf"
+                ]
+            else:
+                with_collects = [
+                    "head(collect(DISTINCT d)) AS diagnoses",
+                    "head(collect(DISTINCT pf)) AS pf",
+                    "head(collect(DISTINCT sf)) AS sf"
+                ]
+        # st is already available from IN_STUDY MATCH, no need for coalesce
+        with_vars.append("st")
+        
+        with_clause = ", ".join(with_vars)
+        if with_collects:
+            with_clause += ",\n             " + ",\n             ".join(with_collects)
+        
+        # Add identifiers_condition to WITH clause if present
+        if identifiers_condition:
+            with_clause += identifiers_condition
+        
+        # For sequencing_file fields or diagnosis search, we need a second WITH clause
+        # (can't reference a variable in the same WITH clause where it's defined)
+        # OPTIMIZATION Phase 3 & 4: When early filter optimization applies AND no diagnosis filtering,
+        # skip second_with_clause entirely (much faster)
+        second_with_clause = None
+        if skip_second_with_for_sf:
+            # Skip second_with_clause - everything is already collected and filtered
+            second_with_clause = None
+        elif needs_sf_collection or needs_diag_collection:
+            second_with_vars = ["sa", "p", "st"]
+            
+            # Pass through id_list if identifiers filter is present
+            if identifiers_condition:
+                second_with_vars.append("id_list")
+            
+            # Handle diagnosis search - check if ANY diagnosis matches
+            if needs_diag_collection:
+                # OPTIMIZATION Phase 2: Diagnoses are already filtered during collection
+                # all_diagnoses now only contains matching diagnoses (search + disease_phase if present)
+                # So we just need to check if any were found
+                second_with_vars.append("size(all_diagnoses) > 0 AS has_matching_diagnosis")
+                second_with_vars.append("head(all_diagnoses) AS diagnoses")
+            else:
+                second_with_vars.append("diagnoses")
+            
+            second_with_vars.append("pf")
+        
+        # Build conditions to check if ANY sequencing_file matches (only if needed)
+        # Skip this when early filter optimization applies (filters already applied in OPTIONAL MATCH)
+        # Also skip if skip_second_with_for_sf is True (no second_with_clause needed)
+        if not skip_second_with_for_sf:
+            if needs_sf_collection and not use_sf_early_filter:
+                sf_match_conditions = []
+                
+                # Check specimen_molecular_analyte_type
+                if specimen_molecular_analyte_type_list:
+                    db_values_str = ", ".join([f"'{v}'" for v in specimen_molecular_analyte_type_list])
+                    sf_match_conditions.append(f"sf.library_source_molecule IN [{db_values_str}]")
+                elif specimen_molecular_analyte_type_single_param:
+                    if specimen_molecular_analyte_type_single_param == "invalid":
+                        # Invalid value - add impossible condition to return empty results
+                        sf_match_conditions.append("false")
+                    else:
+                        sf_match_conditions.append(f"sf.library_source_molecule = ${specimen_molecular_analyte_type_single_param}")
+                
+                # Check library_selection_method
+                if library_selection_method_param is not None:
+                    if library_selection_method_param == "invalid":
+                        # Invalid value - add impossible condition to return empty results
+                        sf_match_conditions.append("false")
+                    else:
+                        sf_match_conditions.append(f"sf.library_selection = ${library_selection_method_param}")
+
+                # Check library_strategy
+                if library_strategy_param is not None:
+                    if library_strategy_param == "invalid":
+                        # Invalid value - add impossible condition to return empty results
+                        sf_match_conditions.append("false")
+                    elif isinstance(library_strategy_param, tuple):
+                        # Has both mapped and original values
+                        sf_match_conditions.append(f"(sf.library_strategy = ${library_strategy_param[0]} OR sf.library_strategy = ${library_strategy_param[1]})")
+                    else:
+                        # Check if param_value is a list (for IN clause) or single value (for = clause)
+                        param_value = params.get(library_strategy_param)
+                        if isinstance(param_value, list) and len(param_value) > 0:
+                            # Use IN clause for list values (from enum-based filtering)
+                            sf_match_conditions.append(f"sf.library_strategy IN ${library_strategy_param}")
+                        else:
+                            # Use = for single value
+                            sf_match_conditions.append(f"sf.library_strategy = ${library_strategy_param}")
+                
+                # Check library_source_material
+                if library_source_material_param is not None:
+                    if library_source_material_param == "invalid":
+                        # Invalid value (in null_mappings) - add impossible condition to return empty results
+                        sf_match_conditions.append("false")
+                    else:
+                        # Check if param_value is a list (for IN clause) or single value (for = clause)
+                        param_value = params.get(library_source_material_param)
+                        if isinstance(param_value, list) and len(param_value) > 0:
+                            # Use IN clause for list values (from enum-based filtering)
+                            sf_match_conditions.append(f"sf.library_source_material IN ${library_source_material_param}")
+                        else:
+                            # Use = for single value
+                            sf_match_conditions.append(f"sf.library_source_material = ${library_source_material_param}")
+                
+                # Combine all conditions with OR (if multiple fields) or use single condition
+                if len(sf_match_conditions) == 1:
+                    has_matching_sf_expr = f"size([sf IN all_sfs WHERE sf IS NOT NULL AND {sf_match_conditions[0]}]) > 0"
+                    # Return the MATCHING sequencing file, not just the first one
+                    sf_return_expr = f"head([sf IN all_sfs WHERE sf IS NOT NULL AND {sf_match_conditions[0]} | sf])"
+                else:
+                    # Multiple conditions - combine with OR
+                    combined_condition = " OR ".join([f"({cond})" for cond in sf_match_conditions])
+                    has_matching_sf_expr = f"size([sf IN all_sfs WHERE sf IS NOT NULL AND ({combined_condition})]) > 0"
+                    # Return the MATCHING sequencing file, not just the first one
+                    sf_return_expr = f"head([sf IN all_sfs WHERE sf IS NOT NULL AND ({combined_condition}) | sf])"
+                
+                second_with_vars.append(f"{has_matching_sf_expr} AS has_matching_sf")
+                second_with_vars.append(f"{sf_return_expr} AS sf")
+            elif needs_sf_collection and use_sf_early_filter:
+                # Early filter optimization applies - sequencing files already filtered in OPTIONAL MATCH
+                # BUT: When has_diagnoses_conditions is True, we collected 'all_sfs' (not 'sf')
+                # So we need to extract from 'all_sfs' in that case
+                if has_diagnoses_conditions:
+                    # We collected 'all_sfs', which already contains only matching files (filtered in OPTIONAL MATCH WHERE)
+                    # So we just need to check if any exist and get the first one
+                    has_matching_sf_expr = "size([sf IN all_sfs WHERE sf IS NOT NULL]) > 0"
+                    sf_return_expr = "head([sf IN all_sfs WHERE sf IS NOT NULL | sf])"
+                    
+                    second_with_vars.append(f"{has_matching_sf_expr} AS has_matching_sf")
+                    second_with_vars.append(f"{sf_return_expr} AS sf")
+                else:
+                    # No diagnosis conditions - we collected 'sf' directly, just check if it's not null
+                    second_with_vars.append("sf IS NOT NULL AS has_matching_sf")
+                    second_with_vars.append("sf")
+            elif needs_diag_collection:
+                # Only diagnosis search, no sequencing file collection
+                second_with_vars.append("sf")
+            
+            # Finalize second_with_clause if we have any second WITH vars
+            if needs_sf_collection or needs_diag_collection:
+                second_with_clause = ", ".join(second_with_vars)
         
         # If identifiers are present, integrate WHERE clause into WITH clause
-        # Otherwise, apply WHERE clause separately
-        if identifiers_condition and where_clause:
-            # Remove "WHERE " prefix and integrate into WITH clause
+        # BUT only if there's no second_with_clause (for search/sequencing_file filters)
+        # If there's a second_with_clause, we need to apply WHERE clause after it
+        # IMPORTANT: When skip_second_with_for_sf is True, filter out conditions that require second_with_clause
+        # before adding to with_clause
+        if identifiers_condition and where_clause and not second_with_clause:
+            # Remove "WHERE " prefix and extract conditions
             where_conditions_str = where_clause.replace("WHERE ", "").strip()
             if where_conditions_str:
-                with_clause += f"\n        WHERE {where_conditions_str}"
-                where_clause = ""  # Clear it since it's now in WITH clause
+                # Filter out conditions that require second_with_clause when skip_second_with_for_sf is True
+                if skip_second_with_for_sf:
+                    # Split conditions and filter out ones that require second_with_clause
+                    conditions_list = [c.strip() for c in where_conditions_str.split(" AND ") if c.strip()]
+                    filtered_conditions = [
+                        c for c in conditions_list 
+                        if "has_matching_diagnosis" not in c 
+                        and "has_matching_sf" not in c
+                        and "diagnoses" not in c
+                        and c.strip() != "sf IS NOT NULL"  # Will be added separately later
+                        and not (c.strip().endswith("= true") and ("has_matching" in c or "diagnoses" in c))  # Remove any = true conditions for second_with_clause variables
+                    ]
+                    if filtered_conditions:
+                        where_conditions_str = " AND ".join(filtered_conditions)
+                    else:
+                        where_conditions_str = ""  # All conditions filtered out
+                    # IMPORTANT: Also preserve remaining conditions for later use (line 988)
+                    # Store filtered conditions in a way that can be used later
+                    # For now, we'll rebuild where_clause at line 988 if needed
+                
+                if where_conditions_str:
+                    # IMPORTANT: When skip_second_with_for_sf is True, we need to also add 'sf IS NOT NULL'
+                    # to the WHERE clause in with_clause to avoid having two WHERE clauses
+                    if skip_second_with_for_sf:
+                        sf_available = use_sf_early_filter and needs_sf_collection
+                        if sf_available:
+                            # Add 'sf IS NOT NULL' to the WHERE clause in with_clause
+                            with_clause += f"\n        WHERE {where_conditions_str} AND sf IS NOT NULL"
+                        else:
+                            # sf not available, just add filtered conditions
+                            with_clause += f"\n        WHERE {where_conditions_str}"
+                        # Clear where_clause since everything is now in with_clause
+                        where_clause = ""
+                    else:
+                        # Normal case: just add filtered conditions to with_clause
+                        with_clause += f"\n        WHERE {where_conditions_str}"
+                        where_clause = ""  # Clear it since it's now in WITH clause
+                else:
+                    # No filtered conditions, but we might still need 'sf IS NOT NULL'
+                    if skip_second_with_for_sf:
+                        sf_available = use_sf_early_filter and needs_sf_collection
+                        if sf_available:
+                            # Add 'sf IS NOT NULL' to with_clause
+                            with_clause += f"\n        WHERE sf IS NOT NULL"
+                        # Clear where_clause
+                        where_clause = ""
+                    else:
+                        # No conditions to add, clear where_clause
+                        where_clause = ""
         
         # Build RETURN clause - always include diagnosis, pathology_file, and sequencing_file for metadata
         return_vars = ["sa", "p", "st", "sf", "pf", "diagnoses"]
@@ -729,17 +1120,34 @@ class SampleRepository:
         return_clause = ", ".join(return_vars)
         
         # Build unified query
-        # Only include samples that have a path to a study
-        # Path 1: sample -> cell_line -> study
-        # Path 2: sample -> participant -> consent_group -> study
+        # Only include samples that have a path to a study (using IN_STUDY shortcut)
+        # This is much faster than pattern matching (sample -> cell_line -> study or sample -> participant -> consent_group -> study)
         # Build the DISTINCT clause with all return variables
         distinct_vars = ", ".join(return_vars)
         
         # If we have a second WITH clause (for specimen_molecular_analyte_type), include it
+        # OPTIMIZATION Phase 4: When skip_second_with_for_sf is true, apply WHERE clause directly after first WITH
         second_with_str = ""
-        if second_with_clause:
+        if skip_second_with_for_sf:
+            # IMPORTANT: When skip_second_with_for_sf is True, all WHERE conditions should already be
+            # in with_clause (including 'sf IS NOT NULL' if applicable). This happens at line 950-1002.
+            # So where_clause should ALWAYS be empty at this point.
+            # If it's not empty, it means the code at line 950-1002 didn't execute (edge case),
+            # but we should still clear it to avoid duplicate WHERE clauses.
+            # The with_clause already has all the necessary conditions.
+            where_clause = ""  # Always clear - everything is already in with_clause
+        elif second_with_clause:
             # Apply WHERE clause after second WITH if present
-            second_with_str = f"WITH {second_with_clause}\n        {where_clause}\n        "
+            # Ensure proper spacing - where_clause should end with newline if non-empty
+            if where_clause:
+                # Ensure where_clause ends with newline and proper spacing
+                where_clause_clean = where_clause.strip()
+                if where_clause_clean:
+                    second_with_str = f"WITH {second_with_clause}\n        {where_clause_clean}\n        "
+                else:
+                    second_with_str = f"WITH {second_with_clause}\n        "
+            else:
+                second_with_str = f"WITH {second_with_clause}\n        "
             where_clause = ""  # Clear it since it's now in second WITH
         elif where_clause:
             # Apply WHERE clause after first WITH if no second WITH
@@ -747,8 +1155,21 @@ class SampleRepository:
         else:
             where_clause = ""
         
+        # DEBUG: Log critical parts before building query to debug "trueWHERE" error
+        if skip_second_with_for_sf:
+            logger.warning(
+                "DEBUG: Building query with skip_second_with_for_sf=True",
+                skip_second_with_for_sf=skip_second_with_for_sf,
+                second_with_str=second_with_str,
+                second_with_str_repr=repr(second_with_str),
+                where_clause=where_clause,
+                where_clause_repr=repr(where_clause),
+                where_clause_len=len(where_clause) if where_clause else 0,
+                with_clause=with_clause[:200] if len(with_clause) > 200 else with_clause
+            )
+        
         cypher = f"""
-        MATCH (sa:sample)
+        MATCH (sa:sample)-[:IN_STUDY]->(st:study)
         {early_where_clause}
         {optional_matches_str}
         WITH {with_clause}
@@ -758,6 +1179,17 @@ class SampleRepository:
         SKIP $offset
         LIMIT $limit
         """.strip()
+        
+        # DEBUG: Log the exact query section that might cause "trueWHERE" error
+        if skip_second_with_for_sf:
+            # Extract the problematic section
+            query_section = f"{second_with_str}{where_clause}\n        WITH DISTINCT"
+            logger.warning(
+                "DEBUG: Query section around WHERE clause",
+                query_section=query_section,
+                query_section_repr=repr(query_section),
+                has_truewhere="trueWHERE" in query_section.replace(" ", "").replace("\n", "")
+            )
         
         # Build a debug version of the query with parameter values substituted for easier debugging
         debug_cypher = cypher
@@ -1018,6 +1450,161 @@ class SampleRepository:
             logger.info("No samples found matching criteria", filters=filters)
         
         return samples
+    
+    async def _get_samples_by_sequencing_file_filters(
+        self,
+        filters: Dict[str, Any],
+        offset: int = 0,
+        limit: int = 20,
+        base_url: Optional[str] = None
+    ) -> List[Sample]:
+        """
+        Optimized query for sequencing_file-only filters.
+        
+        Uses REVERSE query approach:
+        1. Match sequencing_files with the filter (uses index - FAST)
+        2. Find samples related to those files
+        3. Do other relationship traversals
+        
+        This is 10-100x faster than the standard approach of collecting all files first.
+        """
+        params = {"offset": offset, "limit": limit}
+        where_conditions = []
+        param_counter = 0
+        
+        # Build WHERE conditions for sequencing_file properties
+        for field, value in filters.items():
+            param_counter += 1
+            param_name = f"param_{param_counter}"
+            
+            if field == "library_source_material":
+                # Check if invalid value
+                if is_null_mapped_value("library_source_material", value):
+                    logger.info("Invalid library_source_material value - returning empty results", value=value)
+                    return []
+                reverse_mapped = reverse_map_field_value("library_source_material", value)
+                params[param_name] = reverse_mapped
+                where_conditions.append(f"sf.library_source_material = ${param_name}")
+                
+            elif field == "library_strategy":
+                # Check if invalid value
+                if is_database_only_value("library_strategy", value):
+                    logger.info("Invalid library_strategy value - returning empty results", value=value)
+                    return []
+                # Handle reverse mapping
+                reverse_mapped = reverse_map_field_value("library_strategy", value)
+                if reverse_mapped and reverse_mapped != value:
+                    # Has mapping - need to match both
+                    param_counter += 1
+                    param_name2 = f"param_{param_counter}"
+                    params[param_name] = reverse_mapped if isinstance(reverse_mapped, str) else reverse_mapped[0]
+                    params[param_name2] = value
+                    where_conditions.append(f"(sf.library_strategy = ${param_name} OR sf.library_strategy = ${param_name2})")
+                else:
+                    params[param_name] = value
+                    where_conditions.append(f"sf.library_strategy = ${param_name}")
+                    
+            elif field == "library_selection_method":
+                # Check if invalid value
+                if is_database_only_value("library_selection_method", value):
+                    logger.info("Invalid library_selection_method value - returning empty results", value=value)
+                    return []
+                db_value = SampleRepository._reverse_map_library_selection_method_static(value)
+                params[param_name] = db_value
+                where_conditions.append(f"sf.library_selection = ${param_name}")
+                
+            elif field == "specimen_molecular_analyte_type":
+                # Check if invalid value
+                if is_database_only_value("specimen_molecular_analyte_type", value) or is_null_mapped_value("specimen_molecular_analyte_type", value):
+                    logger.info("Invalid specimen_molecular_analyte_type value - returning empty results", value=value)
+                    return []
+                reverse_mapped = reverse_map_field_value("specimen_molecular_analyte_type", value)
+                if isinstance(reverse_mapped, list):
+                    # Multiple DB values (e.g., "RNA" -> ["Transcriptomic", "Viral RNA"])
+                    db_values_str = ", ".join([f"'{v}'" for v in reverse_mapped])
+                    where_conditions.append(f"sf.library_source_molecule IN [{db_values_str}]")
+                else:
+                    params[param_name] = reverse_mapped
+                    where_conditions.append(f"sf.library_source_molecule = ${param_name}")
+        
+        # Build WHERE clause
+        where_clause = " AND ".join(where_conditions) if where_conditions else "TRUE"
+        
+        # Build optimized reverse query
+        # Key optimization: Start from sequencing_file (uses index), then find samples
+        # Note: For large result sets (10k+ samples), study path traversal is inherently expensive
+        # Further optimization would require database-level changes (e.g., indexed has_study property)
+        cypher = f"""
+        MATCH (sf:sequencing_file)
+        WHERE {where_clause}
+        MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+        WHERE sa.sample_id IS NOT NULL AND toString(sa.sample_id) <> ''
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+        WITH sa, sf, p, coalesce(st1, st2) AS st
+        WHERE st IS NOT NULL
+        WITH DISTINCT sa, st, p, sf
+        ORDER BY toString(sa.sample_id)
+        SKIP $offset
+        LIMIT $limit
+        OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
+        OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)
+        WITH sa, p, st,
+             head(collect(DISTINCT d)) AS diagnoses,
+             head(collect(DISTINCT pf)) AS pf,
+             sf
+        RETURN sa, p, st, sf, pf, diagnoses
+        """.strip()
+        
+        logger.info(
+            "Executing optimized reverse query",
+            cypher=cypher[:300],
+            params=params
+        )
+        
+        # Execute query
+        try:
+            result = await self.session.run(cypher, params)
+            records = []
+            async for record in result:
+                records.append(dict(record))
+            await result.consume()
+            
+            logger.info(
+                "Reverse query executed successfully",
+                records_count=len(records)
+            )
+            
+            # Convert records to Sample objects
+            samples = []
+            for record in records:
+                try:
+                    sa_node = record.get("sa")
+                    p_node = record.get("p")
+                    st_node = record.get("st")
+                    sf_node = record.get("sf")
+                    pf_node = record.get("pf")
+                    diagnoses_node = record.get("diagnoses")
+                    
+                    # Convert nodes to dictionaries
+                    sa = dict(sa_node) if sa_node else {}
+                    p = dict(p_node) if p_node else {}
+                    st = dict(st_node) if st_node else {}
+                    sf = dict(sf_node) if sf_node else {}
+                    pf = dict(pf_node) if pf_node else {}
+                    diagnoses = dict(diagnoses_node) if diagnoses_node else {}
+                    
+                    sample = self._record_to_sample(sa, p, st, sf, pf, diagnoses, base_url=base_url)
+                    samples.append(sample)
+                except Exception as e:
+                    logger.error("Error converting record to sample", error=str(e), record=str(record)[:200])
+                    continue
+            
+            return samples
+            
+        except Exception as e:
+            logger.error("Error executing reverse query", error=str(e), exc_info=True)
+            raise
     
     async def get_sample_by_identifier(
         self,
@@ -1625,56 +2212,81 @@ class SampleRepository:
                 # 3. Then categorize by specimen_molecular_analyte_type per sample
                 if field == "specimen_molecular_analyte_type":
                     # Optimized query for specimen_molecular_analyte_type:
-                    # 1. Start from sample (to match search query logic)
-                    # 2. Collect all sequencing_files per sample
-                    # 3. Check study path
-                    # 4. Return sample_id and all molecule values for Python-side mapping and deduplication
-                    # IMPORTANT: Must match search query logic - collect ALL sequencing_files per sample
-                    # and check if ANY match, to avoid double-counting samples with multiple matching values
-                    cypher = f"""
-                MATCH (sa:sample)
+                    # 1. Start from sequencing_file (more selective) and filter invalid values early
+                    # 2. Match to sample and check study path using IN_STUDY shortcut (much faster)
+                    # 3. Map DB values to API values in Cypher using CASE statement
+                    # 4. Group by API value and count distinct samples directly in Cypher
+                    # Performance improvements:
+                    # - Start from sequencing_file instead of sample (fewer nodes to process)
+                    # - Filter invalid values early before study path check
+                    # - Use IN_STUDY shortcut instead of pattern comprehension (10x faster)
+                    # - Do mapping and counting in Cypher (eliminates Python-side processing overhead)
+                    # - Returns aggregated results directly (much fewer rows)
+                    # Optimized: Start from sample (like other sequencing_file fields), collect distinct values per sample first
+                    # Then map the collected values (much fewer rows to process in CASE statement)
+                    # Profile showed CASE evaluation on 1.1M rows was 30% of time - this reduces that significantly
+                    # Strategy: Collect distinct molecule values per sample → Map → Deduplicate → Aggregate
+                    # Note: IN clause uses mapped DB values from field_mappings.json, CASE statement built dynamically
+                    mapped_db_values = get_mapped_db_values(field)
+                    if not mapped_db_values:
+                        # No mappings configured, return empty results
+                        cypher = "RETURN '' as value, 0 AS count LIMIT 0"
+                    else:
+                        # Build IN clause from mapped DB values (escape single quotes by doubling them)
+                        db_values_str = ", ".join([f"'{val.replace(chr(39), chr(39) + chr(39))}'" for val in mapped_db_values])
+                        # Build CASE statement dynamically from mappings
+                        case_statement = build_case_mapping_statement(field, "molecule_value")
+                        if not case_statement:
+                            # No mappings, return empty results
+                            cypher = "RETURN '' as value, 0 AS count LIMIT 0"
+                        else:
+                            cypher = f"""
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL 
                   AND sa.sample_id <> ''
-                OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa.sample_id as sample_id, 
-                     collect(DISTINCT sf.library_source_molecule) as molecule_values, 
-                     coalesce(st1, st2) AS st
-                WHERE st IS NOT NULL
-                  AND size([val IN molecule_values WHERE val IS NOT NULL 
-                            AND val <> '' 
-                            AND val <> '-999'
-                            AND val <> 'Not Reported']) > 0
-                UNWIND [val IN molecule_values WHERE val IS NOT NULL 
-                        AND val <> '' 
-                        AND val <> '-999'
-                        AND val <> 'Not Reported'] as molecule_value
-                RETURN sample_id, molecule_value as value
+                MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
+                WHERE sf.library_source_molecule IN [{db_values_str}]
+                WITH sa.sample_id as sample_id, st.study_id as study_id,
+                     collect(DISTINCT sf.library_source_molecule) as molecule_values
+                UNWIND molecule_values as molecule_value
+                WITH sample_id, study_id,
+                     {case_statement} as api_value
+                WHERE api_value IS NOT NULL
+                WITH sample_id, study_id, api_value
+                RETURN api_value as value, count(*) AS count
+                ORDER BY count DESC, value ASC
                 """.strip()
                 elif node_alias == "sf" and not base_where_clause:
                     # Optimized query for other sequencing_file fields (library_selection_method, library_strategy, library_source_material):
                     # 1. Start from sequencing_file (more selective) and filter invalid values early
-                    # 2. Match to sample and check study path
+                    # 2. Match to sample and check study path using IN_STUDY shortcut (much faster than pattern comprehension)
                     # 3. Group by field value and count distinct samples
                     # Performance improvements:
                     # - Start from sequencing_file instead of sample (fewer nodes to process)
                     # - Filter invalid values early before study path check
+                    # - Use IN_STUDY shortcut relationship instead of pattern comprehension (10x faster)
                     # - Remove unnecessary participant match
                     # - Simplify redundant WHERE conditions (assume string fields)
+                    # Optimized: Use IN_STUDY shortcut relationship (much faster than pattern comprehension)
+                    # Original order (sample → sequencing_file) is BEST per FULL_QUERY_ANALYSIS.md:
+                    # - Starts from smaller set (68k samples vs 1.67M sequencing_files)
+                    # - Uses sample(sample_id) index effectively
+                    # - Fewer IN_STUDY relationships to expand (66k vs 1.6M)
+                    # - Performance: 6.09s vs 6.89s (13% faster)
+                    invalid_filter = build_invalid_value_filter(node_field, field)
                     cypher = f"""
-                MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL 
                   AND sa.sample_id <> ''
-                  AND {node_field} IS NOT NULL
-                  AND {node_field} <> ''
-                  AND {node_field} <> '-999'
-                  AND {node_field} <> 'Not Reported'
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH DISTINCT sa.sample_id as sample_id, {node_field} as value, coalesce(st1, st2) AS st
-                WHERE st IS NOT NULL
-                RETURN value, count(DISTINCT sample_id) AS count
+                MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
+                WHERE {invalid_filter}
+                WITH sa.sample_id as sample_id, st.study_id as study_id, 
+                     collect(DISTINCT {node_field}) as field_values
+                UNWIND field_values as value
+                WITH sample_id, study_id, value
+                WHERE value IS NOT NULL AND toString(value) <> ''
+                WITH DISTINCT sample_id, study_id, value
+                RETURN toString(value) as value, count(*) AS count
                 ORDER BY count DESC, value ASC
                 """.strip()
                 elif node_alias == "pf" and not base_where_clause:
@@ -1687,43 +2299,36 @@ class SampleRepository:
                     # - Filter invalid values early before study path check
                     # - Remove unnecessary participant match
                     # - Simplify redundant WHERE conditions (assume string fields)
+                    invalid_filter = build_invalid_value_filter(node_field, field)
                     cypher = f"""
                 MATCH (pf:pathology_file)-[:of_pathology_file]->(sa:sample)
                 WHERE sa.sample_id IS NOT NULL 
                   AND sa.sample_id <> ''
-                  AND {node_field} IS NOT NULL
-                  AND {node_field} <> ''
-                  AND {node_field} <> '-999'
-                  AND {node_field} <> 'Not Reported'
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH DISTINCT sa.sample_id as sample_id, {node_field} as value, coalesce(st1, st2) AS st
-                WHERE st IS NOT NULL
+                  AND {invalid_filter}
+                WITH DISTINCT sa.sample_id as sample_id, {node_field} as value,
+                     size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
+                     size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
+                WHERE has_study1 > 0 OR has_study2 > 0
                 RETURN value, count(DISTINCT sample_id) AS count
                 ORDER BY count DESC, value ASC
                 """.strip()
                 elif node_alias == "d" and not base_where_clause:
                     # Optimized query for diagnosis fields (disease_phase, tumor_grade, etc.):
                     # 1. Start from diagnosis (more selective) and filter invalid values early
-                    # 2. Match to sample and check study path
+                    # 2. Match to sample and check study path using IN_STUDY shortcut (avoids pattern comprehension null issue)
                     # 3. Use head() to get one diagnosis per sample, then group by field value
                     # Performance improvements:
                     # - Start from diagnosis instead of sample (fewer nodes to process)
                     # - Filter invalid values early before study path check
-                    # - Remove unnecessary participant match
+                    # - Use IN_STUDY shortcut instead of pattern comprehension (faster and avoids null issues)
                     # - Simplify redundant WHERE conditions (assume string fields)
+                    invalid_filter = build_invalid_value_filter(node_field, field)
                     cypher = f"""
-                MATCH (d:diagnosis)-[:of_diagnosis]->(sa:sample)
+                MATCH (d:diagnosis)-[:of_diagnosis]->(sa:sample)-[:IN_STUDY]->(:study)
                 WHERE sa.sample_id IS NOT NULL 
                   AND sa.sample_id <> ''
-                  AND {node_field} IS NOT NULL
-                  AND {node_field} <> ''
-                  AND {node_field} <> '-999'
-                  AND {node_field} <> 'Not Reported'
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH DISTINCT sa.sample_id as sample_id, head(collect(DISTINCT {node_field})) as value, coalesce(st1, st2) AS st
-                WHERE st IS NOT NULL
+                  AND {invalid_filter}
+                WITH DISTINCT sa.sample_id as sample_id, head(collect(DISTINCT {node_field})) as value
                 RETURN value, count(DISTINCT sample_id) AS count
                 ORDER BY count DESC, value ASC
                 """.strip()
@@ -1752,9 +2357,11 @@ class SampleRepository:
                 # Path 2: sample -> participant -> consent_group -> study
                 cypher = f"""
                 MATCH (sa:sample)-[:of_sample]->(p:participant)
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, p, coalesce(st1, st2) AS st
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                WITH sa, p,
+                     size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
+                     size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
+                WHERE has_study1 > 0 OR has_study2 > 0
                 {field_where_clause}
                 WITH DISTINCT sa, 
                      head(collect(DISTINCT {node_field})) as value
@@ -1847,39 +2454,22 @@ class SampleRepository:
         # Format results
         counts = []
         
-        # Special handling for specimen_molecular_analyte_type to avoid double-counting
-        # Query returns sample_id and value (molecule_value) - need to map to API values
-        # and count distinct samples per API value (not per DB value)
-        if field == "specimen_molecular_analyte_type" and records and "sample_id" in records[0]:
-            # Group by sample_id and collect all API values (after mapping)
-            sample_to_api_values = {}
+        # Special handling for specimen_molecular_analyte_type
+        # Query now returns aggregated results (value, count) with mapping done in Cypher
+        # This eliminates Python-side processing overhead and reduces returned rows significantly
+        if field == "specimen_molecular_analyte_type":
+            # Query already returns value and count, just process like other fields
+            # But need to handle deduplication: one sample can have multiple DB values that map to same API value
+            # The Cypher query handles this with DISTINCT sample_id per api_value
             for record in records:
-                sample_id = record.get("sample_id")
-                db_value = record.get("value")
+                value = record.get("value")
+                count = record.get("count", 0)
                 
-                if not sample_id or not db_value:
+                if not value or count == 0:
                     continue
                 
-                # Map DB value to API value
-                api_value = map_field_value(field, db_value)
-                if api_value is None:
-                    continue
-                
-                # Collect distinct API values per sample
-                if sample_id not in sample_to_api_values:
-                    sample_to_api_values[sample_id] = set()
-                sample_to_api_values[sample_id].add(api_value)
-            
-            # Count samples per API value
-            api_value_counts = {}
-            for sample_id, api_values in sample_to_api_values.items():
-                for api_value in api_values:
-                    api_value_counts[api_value] = api_value_counts.get(api_value, 0) + 1
-            
-            # Convert to counts list
-            for api_value, count in api_value_counts.items():
                 counts.append({
-                    "value": api_value,
+                    "value": value,
                     "count": count
                 })
             counts.sort(key=lambda x: (-x["count"], x["value"]))
@@ -1945,15 +2535,10 @@ class SampleRepository:
                 # No filters - count all samples with a path to a study (matches /sample/summary)
                 # Use the same query structure as get_samples_summary - always include participant
                 total_cypher = """
-                MATCH (sa:sample)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, p, coalesce(st1, st2) AS st
-                WHERE st IS NOT NULL
-                WITH DISTINCT sa
-                RETURN count(DISTINCT sa) as total
+                WITH sa.sample_id as sample_id, st.study_id as study_id
+                RETURN count(*) as total
                 """.strip()
             else:
                 # Has filters - need to apply them, but still count all samples that match
@@ -1961,42 +2546,30 @@ class SampleRepository:
                 # This is expected behavior when filters are applied
                 # Only include joins that are actually needed based on base filters
                 needs_participant = any("p." in cond for cond in base_where_conditions)
-                needs_study = any("st." in cond for cond in base_where_conditions)
                 
                 optional_matches = []
                 if needs_participant:
                     optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
-                if needs_study:
-                    optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)")
                 
                 optional_matches_str = "\n                ".join(optional_matches) if optional_matches else ""
                 
-                # Need to include study paths and require st IS NOT NULL to match summary
-                if not needs_study:
-                    # Add study paths if not already included
-                    optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)")
-                    optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p3:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)")
-                    optional_matches_str = "\n                ".join(optional_matches) if optional_matches else ""
-                    # Add st IS NOT NULL to WHERE clause
-                    study_where = " AND coalesce(st1, st2) IS NOT NULL"
-                    if base_where_clause:
-                        total_where_clause = base_where_clause + study_where
-                    else:
-                        total_where_clause = "WHERE coalesce(st1, st2) IS NOT NULL"
-                else:
-                    # Study paths already included, just add st IS NOT NULL check
-                    study_where = " AND st IS NOT NULL"
-                    if base_where_clause:
-                        total_where_clause = base_where_clause + study_where
-                    else:
-                        total_where_clause = "WHERE st IS NOT NULL"
-                
-                total_cypher = f"""
-                MATCH (sa:sample)
+                # Use pattern comprehension for study path check
+                if optional_matches_str:
+                    total_cypher = f"""
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                {optional_matches_str}
-                {total_where_clause}
-                RETURN count(DISTINCT sa.sample_id) as total
+                {optional_matches_str.replace('OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)', 'OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)') if optional_matches_str else ''}
+                WITH sa.sample_id as sample_id, st.study_id as study_id, p
+                {base_where_clause.replace('WHERE ', 'WHERE ') if base_where_clause else ''}
+                RETURN count(*) as total
+                """.strip()
+                else:
+                    total_cypher = f"""
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                WITH sa.sample_id as sample_id, st.study_id as study_id
+                {base_where_clause.replace('WHERE ', 'WHERE ') if base_where_clause else ''}
+                RETURN count(*) as total
                 """.strip()
             
             # Missing: samples without participants OR samples with participants but sex_at_birth IS NULL
@@ -2007,16 +2580,12 @@ class SampleRepository:
                 # No filters - count samples without participants or with NULL sex
                 # IMPORTANT: Must match values query structure - only count samples WITH studies
                 missing_cypher = """
-                MATCH (sa:sample)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
                 OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, p, coalesce(st1, st2) AS st
-                WHERE st IS NOT NULL
-                WITH DISTINCT sa, p
+                WITH sa.sample_id as sample_id, st.study_id as study_id, p
                 WHERE p IS NULL OR p.sex_at_birth IS NULL
-                RETURN count(DISTINCT sa) as missing
+                RETURN count(*) as missing
                 """.strip()
             else:
                 # Has filters - apply them, but also check for missing sex
@@ -2025,16 +2594,12 @@ class SampleRepository:
                 missing_where_clause = "WHERE " + " AND ".join(missing_where_conditions) if missing_where_conditions else "WHERE (p IS NULL OR p.sex_at_birth IS NULL)"
                 
                 missing_cypher = f"""
-                MATCH (sa:sample)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
                 OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, p, coalesce(st1, st2) AS st
-                WHERE st IS NOT NULL
-                {missing_where_clause.replace('WHERE ', 'AND ') if missing_where_clause.startswith('WHERE ') else missing_where_clause}
-                WITH DISTINCT sa
-                RETURN count(DISTINCT sa) as missing
+                WITH sa.sample_id as sample_id, st.study_id as study_id, p
+                {missing_where_clause.replace('WHERE ', 'WHERE ') if missing_where_clause.startswith('WHERE ') else missing_where_clause}
+                RETURN count(*) as missing
                 """.strip()
             
             # Execute total and missing queries
@@ -2066,15 +2631,10 @@ class SampleRepository:
                 # No filters - count all samples with a path to a study (matches /sample/summary)
                 # Use the same query structure as get_samples_summary - always include participant
                 total_cypher = """
-                MATCH (sa:sample)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, p, coalesce(st1, st2) AS st
-                WHERE st IS NOT NULL
-                WITH DISTINCT sa
-                RETURN count(DISTINCT sa) as total
+                WITH sa.sample_id as sample_id, st.study_id as study_id
+                RETURN count(*) as total
                 """.strip()
             else:
                 # Has filters - need to include study paths and require st IS NOT NULL
@@ -2082,10 +2642,10 @@ class SampleRepository:
                 MATCH (sa:sample)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
                 OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, p, coalesce(st1, st2) AS st
-                WHERE st IS NOT NULL
+                WITH sa, p,
+                     size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
+                     size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
+                WHERE has_study1 > 0 OR has_study2 > 0
                 {base_where_clause.replace('WHERE ', 'AND ') if base_where_clause else ''}
                 RETURN count(DISTINCT sa.sample_id) as total
                 """.strip()
@@ -2097,64 +2657,48 @@ class SampleRepository:
                 # No base filters - build queries for both list and string cases
                 # IMPORTANT: Must match values query structure - only count samples WITH studies
                 missing_cypher_list = """
-                MATCH (sa:sample)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, p, coalesce(st1, st2) AS st
-                WHERE st IS NOT NULL
-                WITH DISTINCT sa, sa.anatomic_site as sites
+                WITH sa.sample_id as sample_id, st.study_id as study_id, sa.anatomic_site as sites
                 WHERE sites IS NULL 
                    OR size(sites) = 0
                    OR ALL(site IN sites WHERE site IS NULL OR toString(site) = '' OR toLower(trim(toString(site))) = 'invalid value')
-                RETURN count(DISTINCT sa) as missing
+                RETURN count(*) as missing
                 """.strip()
                 
                 missing_cypher_string = """
-                MATCH (sa:sample)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, p, coalesce(st1, st2) AS st
-                WHERE st IS NOT NULL
-                WITH DISTINCT sa, sa.anatomic_site as sites
+                WITH sa.sample_id as sample_id, st.study_id as study_id, sa.anatomic_site as sites
                 WHERE sites IS NULL 
                    OR toString(sites) = ''
                    OR toLower(trim(toString(sites))) = 'invalid value'
-                RETURN count(DISTINCT sa) as missing
+                RETURN count(*) as missing
                 """.strip()
             else:
                 # Has base filters - build queries for both list and string cases
                 missing_cypher_list = f"""
-                MATCH (sa:sample)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
                 OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, p, coalesce(st1, st2) AS st
-                {base_where_clause.replace('WHERE ', 'AND ') if base_where_clause else 'WHERE st IS NOT NULL'}
-                WITH DISTINCT sa, sa.anatomic_site as sites
+                WITH sa.sample_id as sample_id, st.study_id as study_id, p, sa.anatomic_site as sites
+                {base_where_clause.replace('WHERE ', 'WHERE ') if base_where_clause else ''}
                 WHERE sites IS NULL 
                    OR size(sites) = 0
                    OR ALL(site IN sites WHERE site IS NULL OR toString(site) = '' OR toLower(trim(toString(site))) = 'invalid value')
-                RETURN count(DISTINCT sa) as missing
+                RETURN count(*) as missing
                 """.strip()
                 
                 missing_cypher_string = f"""
-                MATCH (sa:sample)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
                 OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, p, coalesce(st1, st2) AS st
-                {base_where_clause.replace('WHERE ', 'AND ') if base_where_clause else 'WHERE st IS NOT NULL'}
-                WITH DISTINCT sa, sa.anatomic_site as sites
+                WITH sa.sample_id as sample_id, st.study_id as study_id, p, sa.anatomic_site as sites
+                {base_where_clause.replace('WHERE ', 'WHERE ') if base_where_clause else ''}
                 WHERE sites IS NULL 
                    OR toString(sites) = ''
                    OR toLower(trim(toString(sites))) = 'invalid value'
-                RETURN count(DISTINCT sa) as missing
+                RETURN count(*) as missing
                 """.strip()
             
             # Store both queries as a tuple (will be handled in execution)
@@ -2227,29 +2771,19 @@ class SampleRepository:
                 # This is the total - all samples with a study path (matching /sample/summary - 50211 when no filters)
                 # Use the same query structure as other fields to ensure consistency
                 total_cypher = """
-                MATCH (sa:sample)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, p, coalesce(st1, st2) AS st
-                WHERE st IS NOT NULL
-                WITH DISTINCT sa
-                RETURN count(DISTINCT sa) as total
+                WITH sa.sample_id as sample_id, st.study_id as study_id
+                RETURN count(*) as total
                 """.strip()
             elif not base_where_clause:
                 # No filters - count all samples with a path to a study (matches /sample/summary)
                 # Use the same query structure as get_samples_summary - always include participant
                 total_cypher = """
-                MATCH (sa:sample)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, p, coalesce(st1, st2) AS st
-                WHERE st IS NOT NULL
-                WITH DISTINCT sa
-                RETURN count(DISTINCT sa) as total
+                WITH sa.sample_id as sample_id, st.study_id as study_id
+                RETURN count(*) as total
                 """.strip()
             else:
                 # Has filters - need to apply them
@@ -2263,14 +2797,10 @@ class SampleRepository:
                         # For specimen_molecular_analyte_type: count all samples matching to a study
                         # This is the total - all samples with a study path (matching /sample/summary - 50211 when no filters)
                         total_cypher = f"""
-                MATCH (sa:sample)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, p, coalesce(st1, st2) AS st
-                WHERE st IS NOT NULL
-                RETURN count(DISTINCT sa.sample_id) as total
+                WITH sa.sample_id as sample_id, st.study_id as study_id
+                RETURN count(*) as total
                 """.strip()
                     else:
                         # For other sample metadata fields, use standard approach
@@ -2296,16 +2826,53 @@ class SampleRepository:
                         
                         optional_matches_str = "\n                ".join(optional_matches) if optional_matches else ""
                         
-                        # For fields on related nodes (sf, pf, d), we need to ensure the node exists
-                        # and the sample has a path to a study
-                        if node_alias in ["sf", "pf", "d"]:
-                            # Require the related node to exist and sample to have a study path
+                        # For fields on related nodes (sf, pf, d), we need to ensure the sample has a path to a study
+                        # For diagnosis fields (d), total should count ALL samples with study paths, not just samples with diagnoses
+                        if node_alias == "d":
+                            # Diagnosis fields: count ALL samples with study paths (including those without diagnoses)
+                            # Use IN_STUDY shortcut instead of pattern comprehension (consistent with values query and avoids null issues)
+                            if base_where_clause:
+                                # Has filters - need to apply them, but use IN_STUDY for study path
+                                # Build optional matches for filters that need them
+                                filter_optional_matches = []
+                                if any("p." in cond for cond in base_where_conditions):
+                                    filter_optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
+                                if any("d." in cond or "diagnoses" in cond for cond in base_where_conditions):
+                                    filter_optional_matches.append("OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)")
+                                filter_optional_matches_str = "\n                ".join(filter_optional_matches) if filter_optional_matches else ""
+                                
+                                total_cypher = f"""
+                MATCH (sa:sample)-[:IN_STUDY]->(:study)
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                {filter_optional_matches_str}
+                WITH sa, p, d
+                {base_where_clause.replace('WHERE ', 'AND ') if base_where_clause else ''}
+                RETURN count(DISTINCT sa.sample_id) as total
+                """.strip()
+                            else:
+                                # No filters - count ALL samples with study paths (matches values query structure)
+                                total_cypher = """
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                WITH sa.sample_id as sample_id, st.study_id as study_id
+                RETURN count(*) as total
+                """.strip()
+                        elif node_alias in ["sf", "pf"]:
+                            # For other related nodes (sf, pf), require the node to exist and sample to have a study path
                             study_where = " AND coalesce(st1, st2) IS NOT NULL"
                             node_where = f" AND {node_alias} IS NOT NULL"
                             if base_where_clause:
                                 total_where_clause = base_where_clause + study_where + node_where
                             else:
                                 total_where_clause = f"WHERE coalesce(st1, st2) IS NOT NULL{node_where}"
+                            
+                            total_cypher = f"""
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                {optional_matches_str}
+                {total_where_clause}
+                RETURN count(DISTINCT sa.sample_id) as total
+                """.strip()
                         else:
                             # For fields on sample node or study node, just require study path
                             study_where = " AND coalesce(st1, st2) IS NOT NULL"
@@ -2313,8 +2880,8 @@ class SampleRepository:
                                 total_where_clause = base_where_clause + study_where
                             else:
                                 total_where_clause = "WHERE coalesce(st1, st2) IS NOT NULL"
-                        
-                        total_cypher = f"""
+                            
+                            total_cypher = f"""
                 MATCH (sa:sample)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
                 {optional_matches_str}
@@ -2327,10 +2894,10 @@ class SampleRepository:
                 MATCH (sa:sample)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
                 OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, p, coalesce(st1, st2) AS st
-                WHERE st IS NOT NULL
+                WITH sa, p,
+                     size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
+                     size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
+                WHERE has_study1 > 0 OR has_study2 > 0
                 {base_where_clause.replace('WHERE ', 'AND ') if base_where_clause else ''}
                 RETURN count(DISTINCT sa.sample_id) as total
                 """.strip()
@@ -2393,15 +2960,21 @@ class SampleRepository:
                         
                         optional_matches_str = "\n                ".join(optional_matches) if optional_matches else ""
                         
+                        # Build invalid value conditions based on null_mappings for this field
+                        invalid_all_clause = build_invalid_value_all_clause(field)
                         missing_cypher = f"""
                 MATCH (sa:sample)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
                 {optional_matches_str}
-                WITH sa, d, p, coalesce(st1, st2) AS st
-                WHERE st IS NOT NULL
-                WITH DISTINCT sa, collect(DISTINCT {node_field}) as field_values
-                WHERE size(field_values) = 0 
-                   OR ALL(val IN field_values WHERE val IS NULL OR toString(val) = '' OR trim(toString(val)) = '' OR toString(val) = '-999' OR trim(toString(val)) = '-999')
+                WITH sa, d, p,
+                     size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
+                     size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
+                WHERE has_study1 > 0 OR has_study2 > 0
+                WITH DISTINCT sa, collect(DISTINCT {node_field}) as all_values
+                WITH sa,
+                     [val IN all_values WHERE val IS NOT NULL] as non_null_values
+                WHERE size(non_null_values) = 0 
+                   OR ALL(val IN non_null_values WHERE {invalid_all_clause})
                 RETURN count(DISTINCT sa) as missing
                 """.strip()
                     else:
@@ -2412,7 +2985,8 @@ class SampleRepository:
                         # For fields on sample node (sa), we still need study paths to match summary
                         if node_alias == "sa":
                             # Field is on sample node itself, but we need study paths for consistency with summary
-                            with_clause = f"sa.sample_id as sample_id, p, coalesce(st1, st2) AS st, {node_field} as field_value"
+                            # Note: This with_clause is not used for node_alias == "sa" (separate query is built)
+                            with_clause = f"sa.sample_id as sample_id, p, {node_field} as field_value"
                         else:
                             # Field is on a related node, need to include it in WITH clause
                             with_vars = ["sa.sample_id as sample_id"]
@@ -2441,95 +3015,82 @@ class SampleRepository:
                             # Missing: samples with study path that either:
                             # 1. Don't have any sequencing_file, OR
                             # 2. Have sequencing_file(s) but all have null/invalid/Not Reported values
-                            # Optimized: filter invalid values early, remove redundant toString/trim calls
+                            # Performance: Use IN_STUDY shortcut instead of pattern comprehension (much faster)
+                            invalid_list_filter = build_invalid_value_list_filter("specimen_molecular_analyte_type")
                             missing_cypher = f"""
-                MATCH (sa:sample)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, coalesce(st1, st2) AS st
-                WHERE st IS NOT NULL
                 OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
-                WITH DISTINCT sa, 
+                WITH sa.sample_id as sample_id, st.study_id as study_id,
                      collect(DISTINCT sf.library_source_molecule) as molecule_values
                 WHERE size([val IN molecule_values WHERE val IS NOT NULL 
-                             AND val <> '' 
-                             AND val <> '-999'
-                             AND val <> 'Not Reported']) = 0
-                RETURN count(DISTINCT sa) as missing
+                             AND {invalid_list_filter}]) = 0
+                RETURN count(*) as missing
                 """.strip()
                         elif node_alias == "sf" and not base_where_clause:
                             # Optimized missing count for other sequencing_file fields
                             # Missing: samples with study path that either:
                             # 1. Don't have any sequencing_file, OR
-                            # 2. Have sequencing_file(s) but all have null/invalid/Not Reported values
+                            # 2. Have sequencing_file(s) but all have null/invalid values (based on null_mappings)
+                            # Performance: Use IN_STUDY shortcut instead of pattern comprehension (much faster)
+                            invalid_list_filter = build_invalid_value_list_filter(field)
                             missing_cypher = f"""
-                MATCH (sa:sample)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, coalesce(st1, st2) AS st
-                WHERE st IS NOT NULL
                 OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
-                WITH DISTINCT sa, 
+                WITH sa.sample_id as sample_id, st.study_id as study_id,
                      collect(DISTINCT {node_field}) as field_values
                 WHERE size([val IN field_values WHERE val IS NOT NULL 
-                             AND val <> '' 
-                             AND val <> '-999'
-                             AND val <> 'Not Reported']) = 0
-                RETURN count(DISTINCT sa) as missing
+                             AND {invalid_list_filter}]) = 0
+                RETURN count(*) as missing
                 """.strip()
                         elif node_alias == "pf" and not base_where_clause:
                             # Optimized missing count for pathology_file fields
                             # Missing: samples with study path that either:
                             # 1. Don't have any pathology_file, OR
-                            # 2. Have pathology_file(s) but all have null/invalid/Not Reported values
+                            # 2. Have pathology_file(s) but all have null/invalid values (based on null_mappings)
+                            invalid_list_filter = build_invalid_value_list_filter(field)
                             missing_cypher = f"""
                 MATCH (sa:sample)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, coalesce(st1, st2) AS st
-                WHERE st IS NOT NULL
+                WITH sa,
+                     size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
+                     size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
+                WHERE has_study1 > 0 OR has_study2 > 0
                 OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)
                 WITH DISTINCT sa, 
                      collect(DISTINCT {node_field}) as field_values
                 WHERE size([val IN field_values WHERE val IS NOT NULL 
-                             AND val <> '' 
-                             AND val <> '-999'
-                             AND val <> 'Not Reported']) = 0
+                             AND {invalid_list_filter}]) = 0
                 RETURN count(DISTINCT sa) as missing
                 """.strip()
                         elif node_alias == "d" and not base_where_clause:
                             # Optimized missing count for diagnosis fields
                             # Missing: samples with study path that either:
                             # 1. Don't have any diagnosis, OR
-                            # 2. Have diagnosis(es) but all have null/invalid/Not Reported values
+                            # 2. Have diagnosis(es) but all have null/invalid values (based on null_mappings)
+                            # Note: When OPTIONAL MATCH doesn't find a diagnosis, d is NULL
+                            # collect(DISTINCT d.disease_phase) on NULL returns empty list []
+                            # So samples without diagnoses will have field_values = [] and size([]) = 0, counted as missing ✅
+                            # Use IN_STUDY shortcut instead of pattern comprehension (consistent with values/total queries and avoids null issues)
+                            invalid_list_filter = build_invalid_value_list_filter(field)
                             missing_cypher = f"""
-                MATCH (sa:sample)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, coalesce(st1, st2) AS st
-                WHERE st IS NOT NULL
                 OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
-                WITH DISTINCT sa, 
-                     collect(DISTINCT {node_field}) as field_values
-                WHERE size([val IN field_values WHERE val IS NOT NULL 
-                             AND val <> '' 
-                             AND val <> '-999'
-                             AND val <> 'Not Reported']) = 0
-                RETURN count(DISTINCT sa) as missing
+                WITH sa.sample_id as sample_id, st.study_id as study_id,
+                     collect(DISTINCT {node_field}) as all_values
+                WITH sample_id, study_id,
+                     [val IN all_values WHERE val IS NOT NULL] as non_null_values
+                WHERE size(non_null_values) = 0 
+                   OR size([val IN non_null_values WHERE {invalid_list_filter}]) = 0
+                RETURN count(*) as missing
                 """.strip()
                         else:
                             # For other fields, build missing_where and missing_cypher
                             # IMPORTANT: All fields must check for study paths to match values and total queries
-                            if node_alias == "sa" and "st" in with_clause:
-                                # For fields on sample node, ensure st IS NOT NULL to match summary
-                                missing_where = "st IS NOT NULL AND (field_value IS NULL OR toString(field_value) = '' OR trim(toString(field_value)) = '' OR toString(field_value) = '-999' OR trim(toString(field_value)) = '-999')"
-                            else:
-                                # For fields on related nodes, also need to check st IS NOT NULL
-                                missing_where = "coalesce(st1, st2) IS NOT NULL AND (field_value IS NULL OR toString(field_value) = '' OR trim(toString(field_value)) = '' OR toString(field_value) = '-999' OR trim(toString(field_value)) = '-999')"
+                            # Note: Study path check is now done via pattern comprehension in the query itself
+                            missing_where = "(field_value IS NULL OR toString(field_value) = '' OR trim(toString(field_value)) = '' OR toString(field_value) = '-999' OR trim(toString(field_value)) = '-999')"
                             
                             # For fields on sample node (sa), ensure the query structure matches the total query
                             # Use the same pattern: WITH sa, p, coalesce(st1, st2) AS st, then filter by st IS NOT NULL
@@ -2538,28 +3099,28 @@ class SampleRepository:
                 MATCH (sa:sample)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
                 {optional_matches_str}
-                WITH sa, p, coalesce(st1, st2) AS st, {node_field} as field_value
-                WHERE st IS NOT NULL
+                WITH sa, p, {node_field} as field_value,
+                     size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
+                     size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
+                WHERE has_study1 > 0 OR has_study2 > 0
                   AND (field_value IS NULL OR toString(field_value) = '' OR trim(toString(field_value)) = '' OR toString(field_value) = '-999' OR trim(toString(field_value)) = '-999')
                 WITH DISTINCT sa
                 RETURN count(DISTINCT sa) as missing
                 """.strip()
                             else:
-                                # For fields on related nodes, include study paths in WITH clause and check st IS NOT NULL
-                                # Update with_clause to include study paths if not already included
-                                # Check if study path is already in with_clause (from specimen_molecular_analyte_type special case)
-                                if "coalesce(st1, st2) AS st" not in with_clause and "st AS" not in with_clause:
-                                    # Add study path to with_clause
-                                    with_clause_updated = f"{with_clause}, coalesce(st1, st2) AS st"
-                                else:
-                                    with_clause_updated = with_clause
+                                # For fields on related nodes, include pattern comprehension for study paths
+                                # Add pattern comprehension to with_clause
+                                with_clause_updated = f"{with_clause}, size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1, size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2"
+                                
+                                # Update missing_where to include study path check
+                                missing_where_updated = f"has_study1 > 0 OR has_study2 > 0 AND {missing_where}"
                                 
                                 missing_cypher = f"""
                 MATCH (sa:sample)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
                 {optional_matches_str}
                 WITH {with_clause_updated}
-                WHERE {missing_where}
+                WHERE {missing_where_updated}
                 RETURN count(DISTINCT sample_id) as missing
                 """.strip()
                 else:
@@ -2568,10 +3129,10 @@ class SampleRepository:
                 MATCH (sa:sample)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
                 OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, p, coalesce(st1, st2) AS st
-                WHERE st IS NOT NULL
+                WITH sa, p,
+                     size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
+                     size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
+                WHERE has_study1 > 0 OR has_study2 > 0
                 WITH DISTINCT sa, p, {node_field} as field_value
                 WHERE p IS NULL 
                    OR field_value IS NULL 
@@ -2609,7 +3170,11 @@ class SampleRepository:
                 MATCH (sa:sample)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
                 {optional_matches_str}
-                {missing_where_clause}
+                WITH sa, d, p,
+                     size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
+                     size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
+                WHERE has_study1 > 0 OR has_study2 > 0
+                {missing_where_clause.replace('WHERE ', 'AND ') if missing_where_clause else ''}
                 WITH DISTINCT sa, collect(DISTINCT {node_field}) as field_values
                 WHERE size(field_values) = 0 
                    OR ALL(val IN field_values WHERE val IS NULL OR toString(val) = '' OR trim(toString(val)) = '' OR toString(val) = '-999' OR trim(toString(val)) = '-999')
@@ -2638,26 +3203,24 @@ class SampleRepository:
                         # Include participant if needed for filters
                         if needs_participant:
                             with_vars.append("p")
-                        # Include study - need to handle both paths
-                        if node_alias == "st":
-                            # st was already matched in optional_matches
-                            with_vars.append("st")
-                        else:
-                            # Need to add study paths if not already included
-                            if not needs_study:
-                                # Add both study paths for coalesce
-                                with_vars.append("coalesce(st1, st2) AS st")
-                            else:
-                                # st was already matched, but we need both paths for coalesce
-                                with_vars.append("coalesce(st, st1) AS st")
+                        # Add pattern comprehension for study paths
+                        with_vars.append("size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1")
+                        with_vars.append("size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2")
                         
                         with_clause = f"WITH {', '.join(with_vars)}\n                " if with_vars else ""
+                        
+                        # Add study path check to WHERE clause
+                        study_where = "has_study1 > 0 OR has_study2 > 0"
+                        if missing_where_clause:
+                            missing_where_clause_updated = f"WHERE {study_where} AND {missing_where_clause.replace('WHERE ', '')}"
+                        else:
+                            missing_where_clause_updated = f"WHERE {study_where}"
                         
                         missing_cypher = f"""
                 MATCH (sa:sample)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
                 {optional_matches_str}
-                {with_clause}{missing_where_clause}
+                {with_clause}{missing_where_clause_updated}
                 RETURN count(DISTINCT sa.sample_id) as missing
                 """.strip()
                 else:
@@ -2671,10 +3234,10 @@ class SampleRepository:
                 MATCH (sa:sample)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
                 OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, p, coalesce(st1, st2) AS st
-                WHERE st IS NOT NULL
+                WITH sa, p,
+                     size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
+                     size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
+                WHERE has_study1 > 0 OR has_study2 > 0
                 {missing_where_clause.replace('WHERE ', 'AND ') if missing_where_clause.startswith('WHERE ') else missing_where_clause}
                 WITH DISTINCT sa
                 RETURN count(DISTINCT sa) as missing
@@ -2836,12 +3399,18 @@ class SampleRepository:
                  [r IN SPLIT(race, ';') | trim(r)] as race_parts
             WITH sample_id, race, race_parts,
                  [r IN race_parts WHERE r <> 'Hispanic or Latino'] as race_list_filtered
-            WITH sample_id, race, race_list_filtered,
+            WITH sample_id, race, race_list_filtered
+            // Process race values: if only "Hispanic or Latino", convert to "Not Reported" if valid
+            // Otherwise, use the filtered race values
+            WITH sample_id,
                  CASE 
                    WHEN size(race_list_filtered) = 0 THEN ['Not Reported']
-                   ELSE [r IN race_list_filtered WHERE r IN $valid_races]
-                 END as matching_races
-            UNWIND matching_races as race_value
+                   ELSE race_list_filtered
+                 END as processed_races
+            UNWIND processed_races as race_candidate
+            WITH sample_id, race_candidate
+            WHERE race_candidate IN $valid_races
+            WITH DISTINCT sample_id, race_candidate as race_value
             RETURN race_value as value, count(DISTINCT sample_id) as count
             ORDER BY count DESC, value ASC
             """.strip()
@@ -2858,12 +3427,18 @@ class SampleRepository:
                  [r IN SPLIT(race, ';') | trim(r)] as race_parts
             WITH sample_id, race, race_parts,
                  [r IN race_parts WHERE r <> 'Hispanic or Latino'] as race_list_filtered
-            WITH sample_id, race, race_list_filtered,
+            WITH sample_id, race, race_list_filtered
+            // Process race values: if only "Hispanic or Latino", convert to "Not Reported" if valid
+            // Otherwise, use the filtered race values
+            WITH sample_id,
                  CASE 
                    WHEN size(race_list_filtered) = 0 THEN ['Not Reported']
-                   ELSE [r IN race_list_filtered WHERE r IN $valid_races]
-                 END as matching_races
-            UNWIND matching_races as race_value
+                   ELSE race_list_filtered
+                 END as processed_races
+            UNWIND processed_races as race_candidate
+            WITH sample_id, race_candidate
+            WHERE race_candidate IN $valid_races
+            WITH DISTINCT sample_id, race_candidate as race_value
             RETURN race_value as value, count(DISTINCT sample_id) as count
             ORDER BY count DESC, value ASC
             """.strip()
@@ -3486,21 +4061,27 @@ class SampleRepository:
         """
         logger.debug("Getting samples summary", filters=filters)
         
+        # PERFORMANCE OPTIMIZATION: Use reverse query for sequencing_file-only filters
+        sequencing_file_filter_keys = {"library_selection_method", "library_strategy", "library_source_material", "specimen_molecular_analyte_type"}
+        has_sf_filters = any(k in filters for k in sequencing_file_filter_keys)
+        has_other_filters = any(k not in sequencing_file_filter_keys for k in filters.keys())
+        
+        if has_sf_filters and not has_other_filters:
+            logger.info("Using optimized reverse query for summary with sequencing_file-only filters")
+            return await self._get_samples_summary_reverse_query(filters)
+        
         # If no filters, use simple optimized query (matches the structure used in count queries)
         # Check if filters dict is empty or only contains None values
         has_real_filters = any(v is not None and v != "" for v in filters.values()) if filters else False
         
         if not has_real_filters:
+            # Use IN_STUDY relationship for consistency with main query
+            # Use sample_id + study_id as unique identifier (same sample_id can be in different studies)
             cypher = """
-        MATCH (sa:sample)
-        WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-        OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-        OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-        WITH sa, p, coalesce(st1, st2) AS st
-        WHERE st IS NOT NULL
-        WITH DISTINCT sa
-        RETURN count(DISTINCT sa) as total_count
+        MATCH (sa:sample)-[:IN_STUDY]->(st:study)
+        WHERE sa.sample_id IS NOT NULL AND toString(sa.sample_id) <> ''
+        WITH sa.sample_id AS sample_id, st.study_id AS study_id
+        RETURN count(*) as total_count
         """.strip()
             
             result = await self.session.run(cypher, {})
@@ -3524,7 +4105,9 @@ class SampleRepository:
         
         # Handle identifiers parameter normalization
         # Support || separator for OR logic (e.g., "SAMP001 || SAMP002")
+        # OPTIMIZATION: Apply identifiers filter EARLY in MATCH WHERE clause to reduce dataset before OPTIONAL MATCHes
         identifiers_condition = ""
+        identifiers_early_filter = None
         if "identifiers" in filters:
             identifiers_value = filters.pop("identifiers")
             if identifiers_value is not None and str(identifiers_value).strip():
@@ -3538,6 +4121,17 @@ class SampleRepository:
                     param_counter += 1
                     id_param = f"param_{param_counter}"
                     params[id_param] = identifiers_value
+                    
+                    # Build early filter for MATCH WHERE clause (before OPTIONAL MATCHes)
+                    # This significantly reduces the dataset before expensive OPTIONAL MATCH operations
+                    if isinstance(identifiers_value, list):
+                        # Multiple identifiers - use IN clause directly
+                        identifiers_early_filter = f"sa.sample_id IN ${id_param}"
+                    else:
+                        # Single identifier - use = for better performance
+                        identifiers_early_filter = f"sa.sample_id = ${id_param}"
+                    
+                    # Also keep identifiers_condition for WITH clause (needed for id_list normalization in some cases)
                     identifiers_condition = f""",
                     // normalize $identifiers: STRING -> [trimmed], LIST -> trimmed list
                     CASE
@@ -3546,7 +4140,7 @@ class SampleRepository:
                       WHEN valueType(${id_param}) = 'STRING' THEN [trim(${id_param})]
                       ELSE []
                     END AS id_list"""
-                    where_conditions.append("sa.sample_id IN id_list")
+                    # Don't add to where_conditions - it's now applied early in MATCH WHERE clause
         
         with_conditions = []
         
@@ -3554,7 +4148,12 @@ class SampleRepository:
         diagnosis_search_term = None
         if "_diagnosis_search" in filters:
             diagnosis_search_term = filters.pop("_diagnosis_search")
-            params["diagnosis_search_term"] = diagnosis_search_term
+            # OPTIMIZATION 4A: Pre-process search term to lowercase (done once in Python)
+            # This removes toLower() calls from Cypher, improving performance
+            diagnosis_search_term_lower = diagnosis_search_term.lower().strip()
+            params["diagnosis_search_term"] = diagnosis_search_term  # Keep original for potential use
+            params["diagnosis_search_term_lower"] = diagnosis_search_term_lower  # Pre-processed lowercase
+            params["diagnosis_search_term_see_comment"] = "see diagnosis_comment"  # Pre-computed constant
             # This will be applied as a condition after collecting ALL diagnosis nodes
         
         # Add regular filters - map to correct nodes based on field
@@ -3624,9 +4223,10 @@ class SampleRepository:
                         with_conditions.append(("specimen_molecular_analyte_type_single", param_name))
             elif field == "disease_phase":
                 # Check if value is a database-only value (e.g., "Recurrent Disease")
-                # Database-only values should not be accepted as filter values
-                if is_database_only_value("disease_phase", value):
-                    # This value is a database-only value and is not valid for filtering
+                # or in null_mappings (e.g., "Not Reported")
+                # These values should not be accepted as filter values
+                if is_database_only_value("disease_phase", value) or is_null_mapped_value("disease_phase", value):
+                    # This value is not valid for filtering
                     # Add an impossible condition to return empty results
                     with_conditions.append("false")
                 else:
@@ -3649,10 +4249,19 @@ class SampleRepository:
                     # Add an impossible condition to return empty results
                     with_conditions.append(("library_source_material_invalid", "invalid"))
                 else:
-                    # Apply reverse mapping for filtering (API value -> DB value)
-                    reverse_mapped = reverse_map_field_value("library_source_material", value)
-                    params[param_name] = reverse_mapped
-                    with_conditions.append(("library_source_material", param_name))
+                    # Load enum values and use IN clause for filtering
+                    enum_values = load_sequencing_file_enum("library_source_material")
+                    if enum_values:
+                        # Apply reverse mapping for the filter value to get DB value
+                        reverse_mapped = reverse_map_field_value("library_source_material", value)
+                        # Use IN clause with the mapped DB value (as list for consistency)
+                        params[param_name] = [reverse_mapped] if reverse_mapped else [value]
+                        with_conditions.append(("library_source_material", param_name))
+                    else:
+                        # Fallback to original logic if enum not available
+                        reverse_mapped = reverse_map_field_value("library_source_material", value)
+                        params[param_name] = reverse_mapped
+                        with_conditions.append(("library_source_material", param_name))
             elif field == "preservation_method":
                 with_conditions.append(f"pf IS NOT NULL AND pf.fixation_embedding_method = ${param_name}")
             elif field == "tumor_classification":
@@ -3682,21 +4291,24 @@ class SampleRepository:
                 except (ValueError, TypeError):
                     params[param_name] = value
             elif field == "depositions":
+                # OPTIMIZATION: depositions filter will be applied early in MATCH WHERE clause
+                # Store the parameter for early filtering (don't add to with_conditions)
                 # Support || separator for multi-value OR logic
                 if isinstance(value, str) and "||" in value:
                     dep_list = [d.strip() for d in value.split("||")]
                     dep_list = [d for d in dep_list if d]
                     if len(dep_list) > 1:
                         params[param_name] = dep_list
-                        with_conditions.append(f"st IS NOT NULL AND st.study_id IN ${param_name}")
                     elif len(dep_list) == 1:
                         params[param_name] = dep_list[0]
-                        with_conditions.append(f"st IS NOT NULL AND st.study_id = ${param_name}")
                     else:
                         # Empty list after filtering, skip
                         continue
-                else:
-                    with_conditions.append(f"st IS NOT NULL AND st.study_id = ${param_name}")
+                # Store depositions param name for early filtering (will be added to early_where_conditions later)
+                if not hasattr(self, '_depositions_early_params'):
+                    self._depositions_early_params = []
+                self._depositions_early_params.append(param_name)
+                # Don't add to with_conditions - it's now applied early in MATCH WHERE clause
             elif field == "diagnosis":
                 # Check both diagnoses.diagnosis and diagnoses.diagnosis_comment (for "see diagnosis_comment" cases)
                 # If diagnosis is "see diagnosis_comment", check the comment field instead
@@ -3808,13 +4420,68 @@ class SampleRepository:
             else:
                 regular_conditions.append(condition)
         
+        # PERFORMANCE FIX: Early return for invalid filter values
+        # If any filter has an invalid value (e.g., "Other" for library_source_material),
+        # return empty results immediately without hitting the database
+        if (specimen_molecular_analyte_type_single_param == "invalid" or
+            library_selection_method_param == "invalid" or
+            library_strategy_param == "invalid" or
+            library_source_material_param == "invalid"):
+            logger.info(
+                "Invalid filter value detected in summary query - returning empty results",
+                filters=filters,
+                specimen_molecular_analyte_type_invalid=specimen_molecular_analyte_type_single_param == "invalid",
+                library_selection_method_invalid=library_selection_method_param == "invalid",
+                library_strategy_invalid=library_strategy_param == "invalid",
+                library_source_material_invalid=library_source_material_param == "invalid"
+            )
+            return {"counts": {"total": 0}}
+        
+        # Build early WHERE conditions (applied before OPTIONAL MATCHes)
+        # Separate cheap filters (can be applied before OPTIONAL MATCHes) from expensive ones
+        early_where_conditions = [
+            "sa.sample_id IS NOT NULL",
+            "toString(sa.sample_id) <> ''"
+        ]
+        
+        # OPTIMIZATION: Add identifiers filter early (before OPTIONAL MATCHes)
+        # This significantly reduces the dataset before expensive joins
+        if identifiers_early_filter:
+            early_where_conditions.append(identifiers_early_filter)
+        
+        # OPTIMIZATION: Add depositions filter early (before OPTIONAL MATCHes)
+        # Filter by study_id in the MATCH clause to reduce dataset early
+        if hasattr(self, '_depositions_early_params') and self._depositions_early_params:
+            # Collect all depositions values (in case multiple depositions filters were provided)
+            all_dep_values = []
+            for dep_param_name in self._depositions_early_params:
+                dep_value = params.get(dep_param_name)
+                if dep_value:
+                    if isinstance(dep_value, list):
+                        all_dep_values.extend(dep_value)
+                    else:
+                        all_dep_values.append(dep_value)
+            
+            if all_dep_values:
+                # Use the first param name for the combined filter
+                dep_param_name = self._depositions_early_params[0]
+                if len(all_dep_values) > 1:
+                    # Multiple values - use IN clause
+                    params[dep_param_name] = all_dep_values
+                    depositions_early_filter = f"st.study_id IN ${dep_param_name}"
+                else:
+                    # Single value - use = for better performance
+                    params[dep_param_name] = all_dep_values[0]
+                    depositions_early_filter = f"st.study_id = ${dep_param_name}"
+                early_where_conditions.append(depositions_early_filter)
+        
+        # Build early WHERE clause
+        early_where_clause = "\n        WHERE " + " AND ".join(early_where_conditions) if early_where_conditions else ""
+        
         # Build WHERE clause - use list version for anatomical_sites if present
         all_conditions = regular_conditions.copy()
         
-        # Add identifier filter conditions from where_conditions list
-        # This was missing - identifiers filter was being lost!
-        if where_conditions:
-            all_conditions.extend(where_conditions)
+        # Don't add identifier filter conditions to where_conditions - they're now applied early
         
         if anatomical_sites_list_condition:
             # Use list version first (will try string version if it fails)
@@ -3868,29 +4535,17 @@ class SampleRepository:
         if needs_sequencing_file:
             optional_matches.append("OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)")
         
-        # Check if where_clause references st (e.g., for depositions filter)
-        needs_st_for_where = any("st." in str(cond) or "st IS NOT NULL" in str(cond) for cond in all_conditions if isinstance(cond, str))
-        
-        # Study paths - ALWAYS include to ensure samples have a path to a study
-        # Path 1: sample -> cell_line -> study
-        # Path 2: sample -> participant -> consent_group -> study
-        study_paths = []
-        # Need participant for path2
-        if not needs_participant:
-            optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
-        study_paths.append("OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)")
-        study_paths.append("OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)")
-        
+        # OPTIMIZATION: Use IN_STUDY relationship for early filtering (same as get_samples)
+        # This is much faster than pattern matching (sample -> cell_line -> study or sample -> participant -> consent_group -> study)
         optional_matches_str = "\n        ".join(optional_matches) if optional_matches else ""
-        study_paths_str = "\n        ".join(study_paths) if study_paths else ""
         
         # Build WITH clause - only include variables that were matched
         with_vars = ["sa"]
         with_collects = []
-        if needs_participant or needs_study or needs_st_for_where:
+        if needs_participant or needs_study:
             with_vars.append("p")
         # For diagnosis search, collect ALL diagnoses first to check if ANY match
-        needs_diag_collection = diagnosis_search_term is not None
+        # Note: needs_diag_collection is already set at line 230 based on diagnosis_search_term
         if needs_diagnosis:
             if needs_diag_collection:
                 with_vars.append("collect(DISTINCT d) AS all_diagnoses")  # Collect ALL for search
@@ -3909,8 +4564,8 @@ class SampleRepository:
             else:
                 with_collects.append("head(collect(DISTINCT sf)) AS sf")
         
-        # Always include study (coalesce both paths)
-        with_vars.append("coalesce(st1, st2) AS st")
+        # Always include study (from IN_STUDY relationship)
+        with_vars.append("st")
         
         with_clause = ", ".join(with_vars)
         if with_collects:
@@ -3926,21 +4581,31 @@ class SampleRepository:
         if needs_sf_collection or needs_diag_collection:
             # Build second_with_vars based on what's available from first WITH
             second_with_vars = ["sa", "st"]
-            if needs_participant or needs_study or needs_st_for_where:
+            if needs_participant or needs_study:
                 second_with_vars.append("p")
+            
+            # Pass through id_list if identifiers filter is present
+            if identifiers_condition:
+                second_with_vars.append("id_list")
             
             # Handle diagnosis search - check if ANY diagnosis matches
             if needs_diag_collection:
-                # Check if ANY diagnosis in all_diagnoses contains the search term
+                # OPTIMIZATION 4A + 4D: Simplified diagnosis search condition
+                # - Pre-processed search term (toLower done in Python)
+                # - Simplified list handling (avoid wrapper for single values)
                 # Handle both d.diagnosis and d.diagnosis_comment (when diagnosis = "see diagnosis_comment")
                 diagnosis_search_condition = f"""size([d IN all_diagnoses WHERE d IS NOT NULL AND (
-                    (toLower(trim(toString(d.diagnosis))) <> 'see diagnosis_comment' AND 
-                     ANY(diag IN CASE WHEN valueType(d.diagnosis) = 'LIST' THEN d.diagnosis ELSE [d.diagnosis] END 
-                         WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term)))
+                    (toLower(trim(toString(d.diagnosis))) <> $diagnosis_search_term_see_comment AND 
+                     CASE 
+                       WHEN valueType(d.diagnosis) = 'LIST' THEN 
+                         ANY(diag IN d.diagnosis WHERE toLower(toString(diag)) CONTAINS $diagnosis_search_term_lower)
+                       ELSE 
+                         toLower(toString(d.diagnosis)) CONTAINS $diagnosis_search_term_lower
+                     END)
                     OR
-                    (toLower(trim(toString(d.diagnosis))) = 'see diagnosis_comment' AND 
+                    (toLower(trim(toString(d.diagnosis))) = $diagnosis_search_term_see_comment AND 
                      d.diagnosis_comment IS NOT NULL AND 
-                     toLower(toString(d.diagnosis_comment)) CONTAINS toLower($diagnosis_search_term))
+                     toLower(toString(d.diagnosis_comment)) CONTAINS $diagnosis_search_term_lower)
                 )]) > 0"""
                 second_with_vars.append(f"{diagnosis_search_condition} AS has_matching_diagnosis")
                 second_with_vars.append("head([d IN all_diagnoses WHERE d IS NOT NULL | d]) AS diagnoses")
@@ -3993,7 +4658,14 @@ class SampleRepository:
                     # Invalid value (in null_mappings) - add impossible condition to return empty results
                     sf_match_conditions.append("false")
                 else:
-                    sf_match_conditions.append(f"sf.library_source_material = ${library_source_material_param}")
+                    # Check if param_value is a list (for IN clause) or single value (for = clause)
+                    param_value = params.get(library_source_material_param)
+                    if isinstance(param_value, list) and len(param_value) > 0:
+                        # Use IN clause for list values
+                        sf_match_conditions.append(f"sf.library_source_material IN ${library_source_material_param}")
+                    else:
+                        # Use = for single value
+                        sf_match_conditions.append(f"sf.library_source_material = ${library_source_material_param}")
             
             # Combine all conditions with OR (if multiple fields) or use single condition
             if len(sf_match_conditions) == 1:
@@ -4014,11 +4686,17 @@ class SampleRepository:
                 # No SF collection, just pass through sf variable if it exists
                 if needs_sequencing_file:
                     second_with_vars.append("sf")
+            # If we have SF collection but no diagnosis search, we still need diagnoses variable if it was collected
+            elif needs_sf_collection and not needs_diag_collection:
+                # No diagnosis search, but diagnoses might be needed for filters (e.g., disease_phase)
+                if needs_diagnosis and "diagnoses" not in second_with_vars:
+                    second_with_vars.append("diagnoses")
             second_with_clause = ", ".join(second_with_vars)
         
-        # Build WHERE clause - include filter conditions AND ensure sample has path to study
+        # Build WHERE clause - include filter conditions
         # Separate conditions that need to be in first WITH (for identifiers) from those that need to be after second WITH (for has_matching_sf/has_matching_diagnosis)
-        first_where_conditions = ["st IS NOT NULL"]
+        # Note: st IS NOT NULL is no longer needed since IN_STUDY MATCH ensures study path exists
+        first_where_conditions = []
         second_where_conditions = []
         
         # Parse where_clause to separate conditions with has_matching_sf/has_matching_diagnosis from others
@@ -4030,6 +4708,10 @@ class SampleRepository:
                 conditions = [c.strip() for c in where_conditions_str.split(" AND ")]
                 for condition in conditions:
                     if "has_matching_sf" in condition or "has_matching_diagnosis" in condition:
+                        second_where_conditions.append(condition)
+                    elif needs_diag_collection and "diagnoses" in condition:
+                        # If there's a diagnosis search, diagnoses is created in second WITH clause
+                        # So conditions referencing diagnoses must be in second_where_conditions
                         second_where_conditions.append(condition)
                     else:
                         first_where_conditions.append(condition)
@@ -4094,30 +4776,30 @@ class SampleRepository:
         else:
             final_where_clause = ""
         
-        # Build the query - ensure proper spacing
+        # Build the query - use IN_STUDY relationship for early filtering (same as get_samples)
+        optional_matches_str = "\n        ".join(optional_matches) if optional_matches else ""
+        
         if second_with_str:
             # second_with_str already includes the WITH and WHERE clauses
+            # Use sample_id + study_id as unique identifier (same sample_id can be in different studies)
             cypher = f"""
-        MATCH (sa:sample)
-        WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+        MATCH (sa:sample)-[:IN_STUDY]->(st:study)
+        {early_where_clause}
         {optional_matches_str}
-        // Try multiple paths to get study - collect all possible studies
-        {study_paths_str}
         WITH {with_clause}
-        {second_with_str}WITH DISTINCT sa.sample_id AS sample_id
-        RETURN count(DISTINCT sample_id) as total_count
+        {second_with_str}WITH sa.sample_id AS sample_id, st.study_id AS study_id
+        RETURN count(*) as total_count
         """.strip()
         else:
             # No second WITH, use final_where_clause after first WITH
+            # Use sample_id + study_id as unique identifier (same sample_id can be in different studies)
             cypher = f"""
-        MATCH (sa:sample)
-        WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+        MATCH (sa:sample)-[:IN_STUDY]->(st:study)
+        {early_where_clause}
         {optional_matches_str}
-        // Try multiple paths to get study - collect all possible studies
-        {study_paths_str}
         WITH {with_clause}
-        {final_where_clause}WITH DISTINCT sa.sample_id AS sample_id
-        RETURN count(DISTINCT sample_id) as total_count
+        {final_where_clause}WITH sa.sample_id AS sample_id, st.study_id AS study_id
+        RETURN count(*) as total_count
         """.strip()
         
         logger.info(
@@ -4213,8 +4895,8 @@ class SampleRepository:
                      head(collect(DISTINCT pf)) AS pf,
                      head(collect(DISTINCT d)) AS diagnoses
                 {where_clause}
-                WITH DISTINCT sa.sample_id AS sample_id
-                RETURN count(DISTINCT sample_id) as total_count
+                WITH sa.sample_id AS sample_id, st.study_id AS study_id
+                RETURN count(*) as total_count
                 """.strip()
                 
                 try:
@@ -4277,6 +4959,104 @@ class SampleRepository:
                     entity_type=entity_type
                 )
                 raise UnsupportedFieldError(field, entity_type)
+    
+    async def _get_samples_summary_reverse_query(
+        self,
+        filters: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Optimized summary query for sequencing_file-only filters.
+        Uses reverse query starting from sequencing_file.
+        """
+        params = {}
+        where_conditions = []
+        param_counter = 0
+        
+        # Build WHERE conditions - same as _get_samples_by_sequencing_file_filters
+        for field, value in filters.items():
+            param_counter += 1
+            param_name = f"param_{param_counter}"
+            
+            if field == "library_source_material":
+                if is_null_mapped_value("library_source_material", value):
+                    return {"counts": {"total": 0}}
+                reverse_mapped = reverse_map_field_value("library_source_material", value)
+                params[param_name] = reverse_mapped
+                where_conditions.append(f"sf.library_source_material = ${param_name}")
+                
+            elif field == "library_strategy":
+                if is_database_only_value("library_strategy", value):
+                    return {"counts": {"total": 0}}
+                reverse_mapped = reverse_map_field_value("library_strategy", value)
+                if reverse_mapped and reverse_mapped != value:
+                    param_counter += 1
+                    param_name2 = f"param_{param_counter}"
+                    params[param_name] = reverse_mapped if isinstance(reverse_mapped, str) else reverse_mapped[0]
+                    params[param_name2] = value
+                    where_conditions.append(f"(sf.library_strategy = ${param_name} OR sf.library_strategy = ${param_name2})")
+                else:
+                    params[param_name] = value
+                    where_conditions.append(f"sf.library_strategy = ${param_name}")
+                    
+            elif field == "library_selection_method":
+                if is_database_only_value("library_selection_method", value):
+                    return {"counts": {"total": 0}}
+                db_value = SampleRepository._reverse_map_library_selection_method_static(value)
+                params[param_name] = db_value
+                where_conditions.append(f"sf.library_selection = ${param_name}")
+                
+            elif field == "specimen_molecular_analyte_type":
+                if is_database_only_value("specimen_molecular_analyte_type", value) or is_null_mapped_value("specimen_molecular_analyte_type", value):
+                    return {"counts": {"total": 0}}
+                reverse_mapped = reverse_map_field_value("specimen_molecular_analyte_type", value)
+                if isinstance(reverse_mapped, list):
+                    db_values_str = ", ".join([f"'{v}'" for v in reverse_mapped])
+                    where_conditions.append(f"sf.library_source_molecule IN [{db_values_str}]")
+                else:
+                    params[param_name] = reverse_mapped
+                    where_conditions.append(f"sf.library_source_molecule = ${param_name}")
+        
+        where_clause = " AND ".join(where_conditions) if where_conditions else "TRUE"
+        
+        # Optimized count query
+        cypher = f"""
+        MATCH (sf:sequencing_file)
+        WHERE {where_clause}
+        MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+        WHERE sa.sample_id IS NOT NULL AND toString(sa.sample_id) <> ''
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+        WITH sa, coalesce(st1, st2) AS st
+        WHERE st IS NOT NULL
+        WITH DISTINCT sa
+        RETURN count(sa) as total_count
+        """.strip()
+        
+        logger.info(
+            "Executing optimized reverse summary query",
+            cypher=cypher[:300],
+            params=params
+        )
+        
+        try:
+            result = await self.session.run(cypher, params)
+            record = await result.single()
+            await result.consume()
+            
+            total_count = record["total_count"] if record else 0
+            
+            logger.info("Reverse summary query executed successfully", total_count=total_count)
+            
+            # Return in the expected format for the service layer
+            return {
+                "counts": {
+                    "total": total_count
+                }
+            }
+            
+        except Exception as e:
+            logger.error("Error executing reverse summary query", error=str(e), exc_info=True)
+            raise
     
     def _record_to_sample(
         self, 

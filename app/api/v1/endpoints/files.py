@@ -32,6 +32,7 @@ from app.models.dto import (
 )
 from app.models.errors import NotFoundError, ValidationError, InvalidParametersError, UnsupportedFieldError, InvalidRouteError, ErrorDetail, ErrorsResponse, ErrorKind
 from app.services.file import FileService
+from app.db.memgraph import DatabaseConnectionError
 
 logger = get_logger(__name__)
 
@@ -254,8 +255,55 @@ async def list_files(
     except InvalidParametersError as e:
         # Re-raise InvalidParametersError to let the exception handler process it
         raise e.to_http_exception()
+    except DatabaseConnectionError as e:
+        # Database connection error - log clearly for AWS cloud monitoring
+        logger.error(
+            "Database connection error in list_files endpoint - returning empty result",
+            error=str(e),
+            error_type=type(e).__name__,
+            filters=filters,
+            page=pagination.page,
+            per_page=pagination.per_page,
+            is_database_connection_error=True,
+            will_return_404=True,
+            aws_cloudwatch_alert=True
+        )
+        # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Files",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
     except Exception as e:
-        logger.error("Error listing sequencing files", error=str(e), exc_info=True)
+        # Check if this is a connection-related error
+        error_str = str(e).lower()
+        is_connection_error = any(keyword in error_str for keyword in [
+            'connection', 'database', 'unavailable', 'timeout', 'network',
+            'service unavailable', 'broken pipe', 'connection reset', 'connection closed'
+        ])
+        
+        if is_connection_error:
+            # Connection-related error - log clearly for AWS cloud monitoring
+            logger.error(
+                "Database connection issue in list_files endpoint - returning empty result",
+                error=str(e),
+                error_type=type(e).__name__,
+                filters=filters,
+                page=pagination.page,
+                per_page=pagination.per_page,
+                is_connection_related=True,
+                will_return_404=True,
+                aws_cloudwatch_alert=True,
+                exc_info=True
+            )
+        else:
+            logger.error("Error listing sequencing files", error=str(e), exc_info=True)
+        
         if hasattr(e, 'to_http_exception'):
             raise e.to_http_exception()
         # Return 404 instead of 500 - no 500 errors allowed

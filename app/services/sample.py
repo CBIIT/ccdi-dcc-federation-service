@@ -16,6 +16,7 @@ from app.lib.field_allowlist import FieldAllowlist
 from app.models.dto import Sample, CountResponse, SummaryResponse
 from app.models.errors import NotFoundError, ValidationError
 from app.repositories.sample import SampleRepository
+from app.db.memgraph import DatabaseConnectionError
 
 logger = get_logger(__name__)
 
@@ -72,7 +73,22 @@ class SampleService:
         base_url = self.settings.identifier_server_url.rstrip("/") if hasattr(self.settings, 'identifier_server_url') and self.settings.identifier_server_url else None
         
         # Get data from repository
-        samples = await self.repository.get_samples(filters, offset, limit, base_url=base_url)
+        try:
+            samples = await self.repository.get_samples(filters, offset, limit, base_url=base_url)
+        except DatabaseConnectionError as e:
+            # Database connection error - log clearly for AWS cloud monitoring
+            logger.error(
+                "Database connection error while fetching samples - returning empty result",
+                error=str(e),
+                error_type=type(e).__name__,
+                filters=filters,
+                offset=offset,
+                limit=limit,
+                is_database_connection_error=True,
+                will_return_empty=True
+            )
+            # Return empty list instead of raising - API will return 404
+            return []
         
         logger.info(
             "Retrieved samples",
@@ -215,7 +231,21 @@ class SampleService:
                 return SummaryResponse(**cached_result)
         
         # Get summary from repository
-        summary_data = await self.repository.get_samples_summary(filters)
+        try:
+            summary_data = await self.repository.get_samples_summary(filters)
+        except DatabaseConnectionError as e:
+            # Database connection error - log clearly for AWS cloud monitoring
+            logger.error(
+                "Database connection error while fetching samples summary - returning empty result",
+                error=str(e),
+                error_type=type(e).__name__,
+                filters=filters,
+                is_database_connection_error=True,
+                will_return_empty=True
+            )
+            # Return empty summary instead of raising - API will return 404
+            from app.models.dto import SummaryCounts
+            return SummaryResponse(counts=SummaryCounts(total=0))
         
         # Transform repository format to response format
         from app.models.dto import SummaryCounts

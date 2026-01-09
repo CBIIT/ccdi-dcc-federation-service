@@ -19,6 +19,7 @@ from app.models.dto import File, FileResponse, CountResponse, SummaryResponse
 from app.models.errors import NotFoundError, ValidationError
 from app.repositories.file import FileRepository
 from app.services.materialized_views import MaterializedViewService
+from app.db.memgraph import DatabaseConnectionError
 
 logger = get_logger(__name__)
 
@@ -73,7 +74,22 @@ class FileService:
             )
         
         # Get data from repository
-        files = await self.repository.get_files(filters, offset, limit)
+        try:
+            files = await self.repository.get_files(filters, offset, limit)
+        except DatabaseConnectionError as e:
+            # Database connection error - log clearly for AWS cloud monitoring
+            logger.error(
+                "Database connection error while fetching files - returning empty result",
+                error=str(e),
+                error_type=type(e).__name__,
+                filters=filters,
+                offset=offset,
+                limit=limit,
+                is_database_connection_error=True,
+                will_return_empty=True
+            )
+            # Return empty list instead of raising - API will return 404
+            return []
         
         logger.info(
             "Retrieved sequencing files",
@@ -270,7 +286,21 @@ class FileService:
                 return SummaryResponse(**cached_result)
         
         # Get summary from repository
-        summary_data = await self.repository.get_files_summary(filters)
+        try:
+            summary_data = await self.repository.get_files_summary(filters)
+        except DatabaseConnectionError as e:
+            # Database connection error - log clearly for AWS cloud monitoring
+            logger.error(
+                "Database connection error while fetching files summary - returning empty result",
+                error=str(e),
+                error_type=type(e).__name__,
+                filters=filters,
+                is_database_connection_error=True,
+                will_return_empty=True
+            )
+            # Return empty summary instead of raising - API will return 404
+            from app.models.dto import SummaryCounts
+            return SummaryResponse(counts=SummaryCounts(total=0))
         
         # Transform repository format to response format
         from app.models.dto import SummaryCounts

@@ -6,6 +6,7 @@ using Cypher queries to Memgraph.
 """
 
 import asyncio
+import re
 from typing import List, Dict, Any, Optional, Tuple
 from neo4j import AsyncSession
 
@@ -131,6 +132,12 @@ class SubjectRepository:
                       ELSE []
                     END AS id_list"""
                     where_conditions.append("p.participant_id IN id_list")
+                    # Set early filter for optimization (can be used in MATCH WHERE clause)
+                    # For early filter, we need to handle both LIST and STRING cases
+                    if isinstance(identifiers_value, list):
+                        identifiers_early_filter = f"p.participant_id IN ${id_param}"
+                    else:
+                        identifiers_early_filter = f"p.participant_id = ${id_param}"
         
         # Handle depositions filter (study_id)
         # Support || separator for OR logic (e.g., "phs001 || phs002")
@@ -257,6 +264,8 @@ class SubjectRepository:
         if derived_conditions:
             # Filter out empty strings to avoid "WHERE  AND ..." issues
             filtered_derived = [c for c in derived_conditions if c and c.strip()]
+            # Also filter out any conditions that reference study_id (not defined yet in non-depositions path)
+            filtered_derived = [c for c in filtered_derived if 'study_id' not in c.lower()]
             if filtered_derived:
                 derived_where_clause = "WHERE " + " AND ".join(filtered_derived)
         
@@ -486,7 +495,18 @@ class SubjectRepository:
                 # Remove patterns like "st.study_id = $param" or "st.study_id IN $param" with surrounding ANDs
                 where_conditions_str = where_conditions_str.replace("st.study_id =", "").replace("st.study_id IN", "").replace("st.study_id=", "").replace("st.study_idIN", "")
                 # Remove any references to study_id (the variable) since it's not defined yet in this query path
+                # Remove patterns like "study_id = $param", "study_id IN $param", "study_id=$param", etc.
+                # Use multiple passes to catch all variations - be very aggressive
+                # First, remove complete conditions with study_id
+                # Remove patterns like "study_id = $param_X" or "study_id IN $param_X" or "study_id=$param_X"
+                where_conditions_str = re.sub(r'\bstudy_id\s*[=IN]\s*\$[a-zA-Z0-9_]+', '', where_conditions_str)
+                # Remove patterns like "$param_X = study_id" or "$param_X IN study_id"
+                where_conditions_str = re.sub(r'\$[a-zA-Z0-9_]+\s*[=IN]\s*\bstudy_id\b', '', where_conditions_str)
+                # Remove standalone study_id references
                 where_conditions_str = where_conditions_str.replace("study_id =", "").replace("study_id IN", "").replace("study_id=", "").replace("study_idIN", "")
+                where_conditions_str = where_conditions_str.replace("study_id ", "").replace(" study_id", "").replace("(study_id", "").replace("study_id)", "")
+                # Remove any remaining study_id references (be very aggressive)
+                where_conditions_str = re.sub(r'\bstudy_id\b', '', where_conditions_str)
                 # Remove any parameter references that might be left (e.g., "$param_1" if it was for st.study_id)
                 # But be careful - we can't safely remove all $param references as they might be for other fields
                 # Clean up any resulting "AND AND" or trailing/leading AND
@@ -501,8 +521,18 @@ class SubjectRepository:
             if race_filter_condition:
                 with_where_conditions.append(race_filter_condition)
             # Apply WHERE clause if we have any conditions
+            # Final safety check: remove any study_id references that might have slipped through
             if with_where_conditions:
-                with_clause += f"\n        WHERE {' AND '.join(with_where_conditions)}"
+                # Filter out any conditions that reference study_id (not defined yet in non-depositions path)
+                safe_conditions = []
+                for condition in with_where_conditions:
+                    # Check if condition contains study_id (case-insensitive)
+                    if condition and 'study_id' not in condition.lower():
+                        safe_conditions.append(condition)
+                    else:
+                        logger.warning(f"Removing condition with study_id reference (not defined yet): {condition}")
+                if safe_conditions:
+                    with_clause += f"\n        WHERE {' AND '.join(safe_conditions)}"
             
             # OPTIMIZATION: Apply identifiers filter early in MATCH WHERE clause when depositions is NOT present
             # This reduces the dataset before expensive OPTIONAL MATCH operations
@@ -587,7 +617,7 @@ class SubjectRepository:
         // Extract study_id from the first study (if available) for consistency with unique identifier pattern
         WITH toString(p.participant_id) AS participant_id, p, diagnosis_nodes, study_ids, final_vital_status, final_age_at_vital_status,
              ethnicity_value,
-             head(study_ids) AS study_id
+             coalesce(head(study_ids), null) AS study_id
         WITH participant_id, study_id,
              // Use head to get first participant node (they're all the same per participant_id)
              head(collect(DISTINCT p)) AS p,
@@ -2403,6 +2433,12 @@ WITH p, d, c, st,
                       ELSE []
                     END AS id_list"""
                     where_conditions.append("p.participant_id IN id_list")
+                    # Set early filter for optimization (can be used in MATCH WHERE clause)
+                    # For early filter, we need to handle both LIST and STRING cases
+                    if isinstance(identifiers_value, list):
+                        identifiers_early_filter = f"p.participant_id IN ${id_param}"
+                    else:
+                        identifiers_early_filter = f"p.participant_id = ${id_param}"
         
         # Handle depositions filter (study_id)
         # Support || separator for OR logic (e.g., "phs001 || phs002")
@@ -2539,6 +2575,8 @@ WITH p, d, c, st,
         if derived_conditions:
             # Filter out empty strings to avoid "WHERE  AND ..." issues
             filtered_derived = [c for c in derived_conditions if c and c.strip()]
+            # Also filter out any conditions that reference study_id (not defined yet in non-depositions path)
+            filtered_derived = [c for c in filtered_derived if 'study_id' not in c.lower()]
             if filtered_derived:
                 derived_where_clause = "WHERE " + " AND ".join(filtered_derived)
         
@@ -3287,11 +3325,20 @@ WITH p, d, c, st,
         """.strip()
                         else:
                             # Build WITH clause with optional WHERE
-                            with_clause = f"WITH DISTINCT participant_id, p{race_condition}"
+                            # Need to include st.study_id AS study_id after OPTIONAL MATCH
+                            with_clause = f"WITH DISTINCT participant_id, p, st.study_id AS study_id{race_condition}"
                             if where_clause_filtered:
                                 # Remove "WHERE " prefix if present
                                 where_conditions = where_clause_filtered.replace("WHERE ", "").strip()
-                                if where_conditions:
+                                # Remove any references to study_id (the variable) since it's being defined in this WITH clause
+                                where_conditions = where_conditions.replace("study_id =", "").replace("study_id IN", "").replace("study_id=", "").replace("study_idIN", "")
+                                # Clean up any resulting "AND AND" or trailing/leading AND
+                                where_conditions = where_conditions.replace("AND AND", "AND").strip()
+                                while where_conditions.startswith("AND "):
+                                    where_conditions = where_conditions[4:].strip()
+                                while where_conditions.endswith(" AND"):
+                                    where_conditions = where_conditions[:-4].strip()
+                                if where_conditions and where_conditions.strip() and where_conditions != "AND":
                                     with_clause += f"\n        WHERE {where_conditions}"
                             
                             cypher = f"""

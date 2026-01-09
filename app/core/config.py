@@ -55,7 +55,8 @@ class DatabaseSettings(BaseModel):
 
 class CacheSettings(BaseModel):
     """Cache and Redis settings."""
-    enabled: bool = True
+    # Redis is not deployed in many environments; keep caching opt-in.
+    enabled: bool = False
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_db: int = 0
@@ -135,7 +136,8 @@ class Settings(BaseSettings):
     max_page_size: int = Field(default=1000, alias="MAX_PAGE_SIZE")
     
     # Cache settings
-    cache_enabled: bool = Field(default=True, alias="CACHE_ENABLED")
+    # Redis is not deployed yet; keep caching opt-in via CACHE_ENABLED=true.
+    cache_enabled: bool = Field(default=False, alias="CACHE_ENABLED")
     cache_ttl_count_endpoints: int = Field(
         default=1800,  # 30 minutes
         alias="CACHE_TTL_COUNT_ENDPOINTS"

@@ -7,7 +7,11 @@ for count and summary operations.
 
 import json
 from typing import Any, Optional, Dict
-from redis.asyncio import Redis
+try:
+    # Optional dependency: environments without Redis deployed may not install redis client.
+    from redis.asyncio import Redis  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover
+    Redis = None  # type: ignore[assignment]
 from contextlib import asynccontextmanager
 
 from app.core.config import Settings
@@ -139,7 +143,7 @@ _redis_client: Optional[Redis] = None
 _cache_service: Optional[CacheService] = None
 
 
-async def init_redis(settings: Settings) -> Redis:
+async def init_redis(settings: Settings) -> Optional[Redis]:
     """
     Initialize Redis client.
     
@@ -153,6 +157,10 @@ async def init_redis(settings: Settings) -> Redis:
     
     if not settings.cache.enabled:
         logger.info("Cache disabled, skipping Redis initialization")
+        return None
+
+    if Redis is None:
+        logger.warning("Redis client library not installed; caching disabled")
         return None
     
     try:

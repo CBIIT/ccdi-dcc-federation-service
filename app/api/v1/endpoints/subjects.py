@@ -56,7 +56,8 @@ def prepare_subjects_for_response(subjects: List[Subject]) -> List[Dict[str, Any
     
     for subject in subjects:
         # Create subject dict excluding gateways field (keep as placeholder in code)
-        subject_dict = subject.model_dump(exclude={'gateways'})
+        # CRITICAL: Keep schema stable. Always include keys even when values are null/empty.
+        subject_dict = subject.model_dump(exclude={'gateways'}, exclude_none=False, exclude_unset=False)
         subjects_dicts.append(subject_dict)
     
     return subjects_dicts
@@ -867,7 +868,7 @@ async def get_subject(
                 if subjects:
                     subject = subjects[0]
                     # Return subject dict excluding gateways (keep as placeholder in code)
-                    subject_dict = subject.model_dump(exclude={'gateways'})
+                    subject_dict = subject.model_dump(exclude={'gateways'}, exclude_none=False, exclude_unset=False)
                     logger.info(
                         "Get subject response (single participant ID)",
                         organization=organization,
@@ -981,7 +982,7 @@ async def get_subject(
             )
             
             # Return subject dict excluding gateways (keep as placeholder in code)
-            return subject.model_dump(exclude={'gateways'})
+            return subject.model_dump(exclude={'gateways'}, exclude_none=False, exclude_unset=False)
         
     except (InvalidRouteError, InvalidParametersError) as e:
         # Re-raise route/parameter errors to let the exception handler process them

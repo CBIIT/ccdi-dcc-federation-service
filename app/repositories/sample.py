@@ -1534,19 +1534,22 @@ class SampleRepository:
         # Key optimization: Start from sequencing_file (uses index), then find samples
         # Note: For large result sets (10k+ samples), study path traversal is inherently expensive
         # Further optimization would require database-level changes (e.g., indexed has_study property)
+        # PERFORMANCE: use the precomputed IN_STUDY relationship for sample->study lookup.
+        # This avoids the expensive traversal through cell_line/participant/consent_group.
+        # IMPORTANT: We also deduplicate matching sequencing_files per (sample, study) before pagination
+        # to prevent row explosion when multiple sf match the filter for the same sample.
         cypher = f"""
         MATCH (sf:sequencing_file)
         WHERE {where_clause}
         MATCH (sf)-[:of_sequencing_file]->(sa:sample)
         WHERE sa.sample_id IS NOT NULL AND toString(sa.sample_id) <> ''
-        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-        OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-        WITH sa, sf, p, coalesce(st1, st2) AS st
-        WHERE st IS NOT NULL
-        WITH DISTINCT sa, st, p, sf
+        MATCH (sa)-[:IN_STUDY]->(st:study)
+        WITH sa, st, collect(DISTINCT sf) AS matching_sfs
+        WITH sa, st, head(matching_sfs) AS sf
         ORDER BY toString(sa.sample_id)
         SKIP $offset
         LIMIT $limit
+        OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
         OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)
         WITH sa, p, st,
@@ -5019,17 +5022,17 @@ class SampleRepository:
         where_clause = " AND ".join(where_conditions) if where_conditions else "TRUE"
         
         # Optimized count query
+        # PERFORMANCE: use IN_STUDY for sample->study lookup and count unique (sample_id, study_id).
+        # This avoids the expensive traversal through cell_line/participant/consent_group.
         cypher = f"""
         MATCH (sf:sequencing_file)
         WHERE {where_clause}
         MATCH (sf)-[:of_sequencing_file]->(sa:sample)
         WHERE sa.sample_id IS NOT NULL AND toString(sa.sample_id) <> ''
-        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-        OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-        WITH sa, coalesce(st1, st2) AS st
-        WHERE st IS NOT NULL
-        WITH DISTINCT sa
-        RETURN count(sa) as total_count
+        MATCH (sa)-[:IN_STUDY]->(st:study)
+        WITH sa.sample_id AS sample_id, st.study_id AS study_id
+        WITH DISTINCT sample_id, study_id
+        RETURN count(*) as total_count
         """.strip()
         
         logger.info(

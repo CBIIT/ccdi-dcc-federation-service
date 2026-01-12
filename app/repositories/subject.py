@@ -2977,6 +2977,7 @@ WITH p, d, c, st,
         # Race filter must be applied after WITH clause defines variables
         race_condition = ""
         race_filter_condition = ""
+        race_where_clause = ""
         if "race" in filters:
             race_value = filters.pop("race")
             if race_value is not None:
@@ -3009,6 +3010,8 @@ WITH p, d, c, st,
                         # Check if any race_token matches a pr_token that is not 'Hispanic or Latino'
                         # Use a simpler approach: check each token individually
                         race_filter_condition = "reduce(found = false, tok IN race_tokens | found OR (tok IN pr_tokens AND tok <> 'Hispanic or Latino'))"
+        if race_filter_condition:
+            race_where_clause = f"WHERE {race_filter_condition}"
         
         # Handle identifiers parameter normalization
         # Support || separator for OR logic (e.g., "SUBJ001 || SUBJ002")
@@ -3968,6 +3971,9 @@ WITH p, d, st,
                             
                             # Build WITH clause with optional WHERE
                             with_clause = f"WITH DISTINCT p.participant_id AS participant_id, p, st.study_id AS study_id{race_condition}"
+                            # Combine normal filters (if any) + race token filter (if any) into a single WHERE,
+                            # evaluated while race_tokens/pr_tokens are in scope (same WITH clause).
+                            other_filters_clean = ""
                             if other_filters and other_filters.strip():
                                 # Remove any references to study_id (the variable) since it's being defined in this WITH clause
                                 other_filters_clean = other_filters.replace("study_id =", "").replace("study_id IN", "").replace("study_id=", "").replace("study_idIN", "")
@@ -3977,8 +3983,14 @@ WITH p, d, st,
                                     other_filters_clean = other_filters_clean[4:].strip()
                                 while other_filters_clean.endswith(" AND"):
                                     other_filters_clean = other_filters_clean[:-4].strip()
-                                if other_filters_clean and other_filters_clean.strip() and other_filters_clean != "AND":
-                                    with_clause += f"\n        WHERE {other_filters_clean}"
+                                if other_filters_clean == "AND" or not other_filters_clean.strip():
+                                    other_filters_clean = ""
+                            combined_with_where = combine_where_clauses(
+                                f"WHERE {other_filters_clean}" if other_filters_clean else "",
+                                race_filter_condition,
+                            )
+                            if combined_with_where:
+                                with_clause += f"\n        {combined_with_where}"
                             
                             cypher = f"""
         MATCH (p:participant)
@@ -3992,19 +4004,26 @@ WITH p, d, st,
                             # Build WITH clause with optional WHERE
                             # Note: st comes from OPTIONAL MATCH, so we need to handle NULL case
                             with_clause = f"WITH DISTINCT p.participant_id AS participant_id, p, st.study_id AS study_id{race_condition}{identifiers_condition}"
+                            where_conditions_clean = ""
                             if where_clause:
                                 # Remove "WHERE " prefix if present
-                                where_conditions = where_clause.replace("WHERE ", "").strip()
+                                where_conditions_clean = where_clause.replace("WHERE ", "").strip()
                                 # Remove any references to study_id (the variable) since it's being defined in this WITH clause
-                                where_conditions = where_conditions.replace("study_id =", "").replace("study_id IN", "").replace("study_id=", "").replace("study_idIN", "")
+                                where_conditions_clean = where_conditions_clean.replace("study_id =", "").replace("study_id IN", "").replace("study_id=", "").replace("study_idIN", "")
                                 # Clean up any resulting "AND AND" or trailing/leading AND
-                                where_conditions = where_conditions.replace("AND AND", "AND").strip()
-                                while where_conditions.startswith("AND "):
-                                    where_conditions = where_conditions[4:].strip()
-                                while where_conditions.endswith(" AND"):
-                                    where_conditions = where_conditions[:-4].strip()
-                                if where_conditions and where_conditions.strip() and where_conditions != "AND":
-                                    with_clause += f"\n        WHERE {where_conditions}"
+                                where_conditions_clean = where_conditions_clean.replace("AND AND", "AND").strip()
+                                while where_conditions_clean.startswith("AND "):
+                                    where_conditions_clean = where_conditions_clean[4:].strip()
+                                while where_conditions_clean.endswith(" AND"):
+                                    where_conditions_clean = where_conditions_clean[:-4].strip()
+                                if where_conditions_clean == "AND" or not where_conditions_clean.strip():
+                                    where_conditions_clean = ""
+                            combined_with_where = combine_where_clauses(
+                                f"WHERE {where_conditions_clean}" if where_conditions_clean else "",
+                                race_filter_condition,
+                            )
+                            if combined_with_where:
+                                with_clause += f"\n        {combined_with_where}"
                             
                             cypher = f"""
         MATCH (p:participant)
@@ -4016,7 +4035,18 @@ WITH p, d, st,
         """.strip()
             else:
                 # No filters at all - but check for diagnosis search
-                if diagnosis_search_term:
+                if race_filter_condition:
+                    # Race-only filter (or race was popped out of `filters`) must still be applied.
+                    # Use IN_STUDY edge for fast traversal, apply race token filter in the WITH clause
+                    # while race_tokens/pr_tokens are in scope.
+                    cypher = f"""
+        MATCH (p:participant)-[:IN_STUDY]->(st:study)
+        WITH p, st{race_condition}
+        {race_where_clause}
+        WITH DISTINCT p.participant_id AS participant_id, st.study_id AS study_id
+        RETURN count(*) as total_count
+        """.strip()
+                elif diagnosis_search_term:
                     # Apply diagnosis search filter
                     cypher = f"""
         MATCH (p:participant)

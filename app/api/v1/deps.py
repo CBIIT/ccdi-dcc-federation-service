@@ -101,7 +101,12 @@ def get_subject_filters(
     depositions: Optional[str] = Query(
         None, 
         description="Filter by study_id. Matches any subject where the `depositions` field contains the specified study_id value (e.g., `phs002431`). Returns all participants that belong to the specified study. Example: `depositions=phs002431` will return all participants in study `phs002431`.",
-        example="phs002431"
+        examples={
+            "default": {
+                "summary": "Example study_id",
+                "value": "phs002431",
+            }
+        },
     ),
     request: Request = None
 ) -> Dict[str, Any]:
@@ -628,7 +633,12 @@ def get_subject_diagnosis_filters(
     depositions: Optional[str] = Query(
         None,
         description="Filter by study_id. Matches any subject where the `depositions` field contains the specified study_id value (e.g., `phs002431`). Returns all participants that belong to the specified study. Example: `depositions=phs002431` will return all participants in study `phs002431`.",
-        example="phs002431"
+        examples={
+            "default": {
+                "summary": "Example study_id",
+                "value": "phs002431",
+            }
+        },
     ),
     request: Request = None
 ) -> Dict[str, Any]:

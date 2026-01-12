@@ -273,21 +273,24 @@ async def list_subjects(
         summary_result = await service.get_subjects_summary(filters)
         total_count = summary_result.counts.total
         
-        # Calculate pagination info using the utility function
-        # pagination_info = calculate_pagination_info(
-        #     page=pagination.page,
-        #     per_page=pagination.per_page,
-        #     total_items=total_count
-        # )
+        # Build pagination info (match /sample behavior: do not require total_pages)
+        pagination_info = PaginationInfo(
+            page=pagination.page,
+            per_page=pagination.per_page,
+            total_pages=None,
+            total_items=len(subjects),
+            has_next=len(subjects) == pagination.per_page,  # If we got a full page, there might be more
+            has_prev=pagination.page > 1,
+        )
         
-        # Add Link header for pagination
-        # link_header = build_link_header(
-        #     request=request,
-        #     pagination=pagination_info
-        # )
-        
-        # if link_header:
-        #     response.headers["Link"] = link_header
+        # Add Link header for pagination (consistent with /sample)
+        link_header = build_link_header(
+            request=request,
+            pagination=pagination_info,
+            extra_params=dict(request.query_params),
+        )
+        if link_header:
+            response.headers["Link"] = link_header
         
         # Prepare subjects for response (exclude gateways from output)
         subjects_dicts = prepare_subjects_for_response(subjects)

@@ -251,10 +251,16 @@ class Settings(BaseSettings):
         description="Mapping of database sex values to normalized output values"
     )
     
+    # NOTE:
+    # We intentionally do NOT hardcode `env_file=".env"` here.
+    #
+    # - In CI/unit tests, `.env` may not exist.
+    # - In sandboxed environments, reading dotfiles may be restricted.
+    #
+    # `get_settings()` below will opt-in to `.env` only when it is present and readable.
     model_config = {
         "extra": "allow",  # Allow extra fields that aren't defined
-        "env_file": ".env",
-        "case_sensitive": False
+        "case_sensitive": False,
     }
     
     # Nested settings properties
@@ -321,11 +327,16 @@ class Settings(BaseSettings):
         )
 
 
-# Create settings instance
-settings = Settings()
-
-
 @lru_cache()
 def get_settings() -> Settings:
     """Get cached application settings."""
-    return Settings()
+    # Only load `.env` when it exists and is readable; otherwise fall back to env vars/defaults.
+    # This prevents startup/test failures when `.env` is missing or not accessible.
+    try:
+        env_path = Path(".env")
+        if env_path.is_file():
+            return Settings(_env_file=".env")
+    except OSError:
+        # PermissionError / sandbox restrictions / etc.
+        pass
+    return Settings(_env_file=None)

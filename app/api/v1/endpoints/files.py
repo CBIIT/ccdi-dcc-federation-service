@@ -380,7 +380,12 @@ async def count_files_by_field(
     field: Literal["type", "depositions"] = Path(
         ...,
         description="The field to group by and count. Only 'type' and 'depositions' are supported.",
-        example="type"
+        examples={
+            "default": {
+                "summary": "Count field",
+                "value": "type",
+            }
+        },
     ),
     filters: Dict[str, Any] = Depends(get_file_filters_no_descriptions),
     session: AsyncSession = Depends(get_database_session),
@@ -555,9 +560,36 @@ async def count_files_by_field(
 )
 async def get_file(
     request: Request,
-    organization: str = Path(..., description="Organization identifier", example="CCDI-DCC"),
-    namespace: str = Path(..., description="Study namespace (study_id)", example="phs002430"),
-    name: str = Path(..., description="File identifier (file.id)", example="b51fd7ab-e464-5012-b418-3502af28980d"),
+    organization: str = Path(
+        ...,
+        description="Organization identifier",
+        examples={
+            "default": {
+                "summary": "Organization",
+                "value": "CCDI-DCC",
+            }
+        },
+    ),
+    namespace: str = Path(
+        ...,
+        description="Study namespace (study_id)",
+        examples={
+            "default": {
+                "summary": "Study namespace (study_id)",
+                "value": "phs002430",
+            }
+        },
+    ),
+    name: str = Path(
+        ...,
+        description="File identifier (file.id)",
+        examples={
+            "default": {
+                "summary": "Example file ID",
+                "value": "b51fd7ab-e464-5012-b418-3502af28980d",
+            }
+        },
+    ),
     session: AsyncSession = Depends(get_database_session),
     settings: Settings = Depends(get_app_settings),
     allowlist: FieldAllowlist = Depends(get_allowlist),

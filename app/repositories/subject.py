@@ -39,10 +39,16 @@ class SubjectRepository:
         Examples:
         - "a||b" -> ["a","b"]
         - "a" -> ["a"]
+        - ["a", "b"] -> ["a", "b"]  # Already a list, return as-is
         - None / "" -> None
         """
         if value is None:
             return None
+        # If value is already a list, return it as-is (don't convert to string)
+        if isinstance(value, list):
+            # Filter out empty strings and return
+            items = [str(v).strip() for v in value if v]
+            return items or None
         s = str(value).strip()
         if not s:
             return None
@@ -51,6 +57,22 @@ class SubjectRepository:
             items = [v for v in items if v]
             return items or None
         return [s]
+    
+    @staticmethod
+    def _build_combined_where_clause_for_depositions_path(diagnosis_search_term: Optional[str], dep_param: Optional[str], deposition_operator: Optional[str]) -> str:
+        """Build a combined WHERE clause for diagnosis search and depositions filter.
+        
+        When both conditions are present, combine them with AND in a single WHERE clause.
+        """
+        conditions = []
+        if diagnosis_search_term:
+            conditions.append("size([node IN diagnosis_nodes WHERE node IS NOT NULL AND ANY(diag IN CASE WHEN valueType(node.diagnosis) = 'LIST' THEN node.diagnosis ELSE [node.diagnosis] END WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))]) > 0")
+        if dep_param:
+            conditions.append(f"size([sid IN study_ids WHERE sid IS NOT NULL AND sid {deposition_operator} ${dep_param}]) > 0")
+        
+        if conditions:
+            return f"WHERE {' AND '.join(conditions)}"
+        return ""
         
     async def get_subjects(
         self,
@@ -167,6 +189,7 @@ class SubjectRepository:
         if "depositions" in filters:
             depositions_value = filters.pop("depositions")
             depositions_list = self._split_or_values(depositions_value)
+            logger.debug(f"Depositions filter provided: {depositions_value}, parsed list: {depositions_list}")
             if depositions_list:
                     param_counter += 1
                     dep_param = f"param_{param_counter}"
@@ -177,11 +200,16 @@ class SubjectRepository:
                     else:
                         params[dep_param] = depositions_list
                         deposition_operator = "IN"
+                    logger.debug(f"Depositions filter: param={dep_param}, operator={deposition_operator}, value={params[dep_param]}")
                     # IMPORTANT:
                     # Do NOT append any `st.study_id ...` condition into the generic `where_conditions` list.
                     # `st` is only bound in query shapes that explicitly `MATCH ... (p)-[:IN_STUDY]->(st:study)`.
                     # The depositions filter must be applied only in those query blocks (after `st` is in scope),
                     # otherwise we get recurring "Unbound variable: st." / "mismatched input" errors.
+            else:
+                logger.debug("Depositions filter provided but depositions_list is empty/None")
+        else:
+            logger.debug("No depositions filter in filters dict")
         
         # Handle diagnosis search - will be applied after diagnosis collection
         diagnosis_search_term = None
@@ -293,7 +321,11 @@ class SubjectRepository:
                         # Add impossible condition to return empty results
                         derived_conditions.append("false")
                     else:
-                        derived_conditions.append(f"final_vital_status = ${param_name}")
+                        # Case-insensitive match against DB values (do NOT match NULL/missing).
+                        # This ensures we only count explicit "Not Reported" values, not missing data.
+                        derived_conditions.append(
+                            f"(final_vital_status IS NOT NULL AND toLower(toString(final_vital_status)) = toLower(toString(${param_name})))"
+                        )
                         # Apply reverse mapping for vital_status filter (e.g., "Not reported" -> "Not Reported")
                         value = reverse_map_field_value("vital_status", value) if value else value
                 elif field == "age_at_vital_status":
@@ -403,7 +435,8 @@ class SubjectRepository:
         WITH participant_id, p, survival_records, diagnosis_nodes, collect(DISTINCT st.study_id) AS study_ids
         WITH participant_id, p, survival_records, diagnosis_nodes, study_ids,
              head(study_ids) AS namespace,
-             [sid IN study_ids WHERE sid IS NOT NULL] AS study_ids_temp
+             // Filter out null values and apply depositions filter if present
+             [sid IN study_ids WHERE sid IS NOT NULL{f" AND sid {deposition_operator} ${dep_param}" if dep_param else ""}] AS study_ids_temp
         UNWIND study_ids_temp AS sid
         WITH participant_id, p, survival_records, diagnosis_nodes, namespace, sid
         WHERE toString(sid) <> ''
@@ -433,13 +466,14 @@ class SubjectRepository:
              collect(DISTINCT st.study_id) AS study_ids
         WITH participant_id, p, study_ids,
              head(study_ids) AS namespace,
-             [sid IN study_ids WHERE sid IS NOT NULL] AS study_ids_temp
+             // Filter out null values and apply depositions filter if present
+             [sid IN study_ids WHERE sid IS NOT NULL{f" AND sid {deposition_operator} ${dep_param}" if dep_param else ""}] AS study_ids_temp
         UNWIND study_ids_temp AS sid
-        WITH participant_id, p, study_ids,
+        WITH participant_id, p,
              namespace,
              sid
         WHERE toString(sid) <> ''
-        WITH participant_id, p, study_ids,
+        WITH participant_id, p,
              namespace,
              collect(sid) AS study_ids_filtered
         RETURN
@@ -463,7 +497,10 @@ class SubjectRepository:
             # Full processing path - use existing complex query logic
             # When depositions filter is present, we need required MATCH for studies
             # But we can't put MATCH after OPTIONAL MATCH, so we need to restructure
-            if dep_param:
+            # Check if dep_param is set AND exists in params (more robust check)
+            condition_result = bool(dep_param and dep_param in params)
+            if condition_result:
+                logger.debug(f"Using depositions path: dep_param={dep_param}, operator={deposition_operator}")
                 # Remove depositions filter from where_clause since it's applied in the MATCH WHERE
                 dep_filter_str = f"st.study_id {deposition_operator} ${dep_param}"
                 # Also remove identifiers condition if present (it's applied in MATCH WHERE when identifiers_condition exists)
@@ -544,23 +581,31 @@ class SubjectRepository:
                 if early_participant_filters:
                     early_where_conditions.extend(early_participant_filters)
                 early_where_clause = f"\n        WHERE {' AND '.join(early_where_conditions)}" if early_where_conditions else ""
+                logger.debug(f"Depositions path - early_where_conditions: {early_where_conditions}")
                 
-                # OPTIMIZATION: Apply pagination EARLY - before expensive survival/diagnosis processing
-                # Step 1: Match participants with studies, apply filters, and paginate
-                # Step 2: Process survival/diagnosis ONLY for the paginated subset
-                # Build simplified WITH clause for pagination (without survival/diagnosis, but keep race/identifiers variables)
-                pagination_with_clause = f"WITH p, st{race_condition}{identifiers_condition}"
-                pagination_with_where_conditions = []
-                if identifiers_condition and not identifiers_early_filter:
-                    pagination_with_where_conditions.append("p.participant_id IN id_list")
-                if other_filters and other_filters.strip() and other_filters != "AND":
-                    pagination_with_where_conditions.append(other_filters)
-                if race_filter_condition:
-                    pagination_with_where_conditions.append(race_filter_condition)
-                if pagination_with_where_conditions:
-                    pagination_with_clause += f"\n        WHERE {' AND '.join(pagination_with_where_conditions)}"
+                # CRITICAL: When we have derived filters (vital_status, age_at_vital_status) or diagnosis search,
+                # we CANNOT paginate early because we need to compute/filter first, then paginate.
+                # Early pagination would skip participants before filtering, causing incorrect results.
+                use_early_pagination_dep = not needs_survival_processing and not needs_diagnosis_processing
+                logger.debug(f"Depositions path - use_early_pagination_dep: {use_early_pagination_dep}, needs_survival_processing: {needs_survival_processing}, needs_diagnosis_processing: {needs_diagnosis_processing}")
                 
-                cypher = f"""
+                if use_early_pagination_dep:
+                    # OPTIMIZATION: Apply pagination EARLY - before expensive survival/diagnosis processing
+                    # Step 1: Match participants with studies, apply filters, and paginate
+                    # Step 2: Process survival/diagnosis ONLY for the paginated subset
+                    # Build simplified WITH clause for pagination (without survival/diagnosis, but keep race/identifiers variables)
+                    pagination_with_clause = f"WITH p, st{race_condition}{identifiers_condition}"
+                    pagination_with_where_conditions = []
+                    if identifiers_condition and not identifiers_early_filter:
+                        pagination_with_where_conditions.append("p.participant_id IN id_list")
+                    if other_filters and other_filters.strip() and other_filters != "AND":
+                        pagination_with_where_conditions.append(other_filters)
+                    if race_filter_condition:
+                        pagination_with_where_conditions.append(race_filter_condition)
+                    if pagination_with_where_conditions:
+                        pagination_with_clause += f"\n        WHERE {' AND '.join(pagination_with_where_conditions)}"
+                    
+                    cypher = f"""
         // Step 1: Match participants with studies, apply filters, and paginate EARLY
         MATCH (p:participant)
         MATCH (p)-[:IN_STUDY]->(st:study){early_where_clause}
@@ -635,7 +680,9 @@ class SubjectRepository:
                ELSE 'Not reported'
              END AS ethnicity_value
         {derived_where_clause}
-        // Group by participant to aggregate study_ids and handle multiple records per participant
+        // Group by (participant_id, study_id) to preserve pairs
+        // IMPORTANT: The same participant_id string can represent different DB nodes (different participant.id)
+        // when associated with different study_id values. We must preserve (participant_id, study_id) pairs.
         WITH toString(p.participant_id) AS participant_id, p, d, st, st.study_id AS study_id, final_vital_status, final_age_at_vital_status,
              ethnicity_value
         WITH participant_id, study_id,
@@ -649,7 +696,7 @@ class SubjectRepository:
              head(collect(DISTINCT ethnicity_value)) AS ethnicity_value,
              // Collect all distinct study_ids for this participant (collect from study_id variable, not st.study_id since st is no longer in scope)
              collect(DISTINCT study_id) AS study_ids
-        {"WHERE size([node IN diagnosis_nodes WHERE node IS NOT NULL AND ANY(diag IN CASE WHEN valueType(node.diagnosis) = 'LIST' THEN node.diagnosis ELSE [node.diagnosis] END WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))]) > 0" if diagnosis_search_term else ""}
+        {self._build_combined_where_clause_for_depositions_path(diagnosis_search_term, dep_param, deposition_operator)}
         WITH participant_id, study_id, p, final_vital_status, final_age_at_vital_status,
              ethnicity_value, study_ids,
              // Aggregate all diagnoses from all diagnosis nodes
@@ -673,16 +720,16 @@ class SubjectRepository:
              ethnicity_value,
              // Use first study_id for namespace (for backward compatibility)
              head(study_ids) AS namespace,
-             // All study_ids for depositions (filter out null values)
-             [sid IN study_ids WHERE sid IS NOT NULL] AS study_ids_temp
+             // All study_ids for depositions (filter out null values and apply depositions filter if present)
+             [sid IN study_ids WHERE sid IS NOT NULL{f" AND sid {deposition_operator} ${dep_param}" if dep_param else ""}] AS study_ids_temp
         UNWIND study_ids_temp AS sid
-        WITH participant_id, study_id, p, final_vital_status, final_age_at_vital_status,
-             ethnicity_value, study_ids,
+        WITH participant_id, study_id, p, d, final_vital_status, final_age_at_vital_status,
+             ethnicity_value,
              namespace,
              sid
         WHERE toString(sid) <> ''
-        WITH participant_id, study_id, p, final_vital_status, final_age_at_vital_status,
-             ethnicity_value, study_ids,
+        WITH participant_id, study_id, p, d, final_vital_status, final_age_at_vital_status,
+             ethnicity_value,
              namespace,
              collect(sid) AS study_ids_filtered
         RETURN
@@ -699,12 +746,185 @@ class SubjectRepository:
           toString(namespace) AS namespace,
           study_ids_filtered AS depositions
         ORDER BY toString(name)
+                    """.strip()
+                else:
+                    # When we have derived filters (vital_status, age_at_vital_status), we MUST process survival/diagnosis first,
+                    # then filter, then paginate. We cannot paginate early because the filter depends on computed values.
+                    # Build a WITH clause for this path (without s and d, which aren't matched yet)
+                    alt_with_clause = f"WITH p, st{race_condition}{identifiers_condition}"
+                    alt_with_where_conditions = []
+                    # Apply identifiers filter if present
+                    # Note: Even if identifiers_early_filter is set (applied in MATCH WHERE), we still apply it here
+                    # as a backup to ensure the filter is applied correctly after OPTIONAL MATCH operations
+                    if identifiers_condition:
+                        alt_with_where_conditions.append("p.participant_id IN id_list")
+                    # Add race filter if present
+                    if race_filter_condition:
+                        alt_with_where_conditions.append(race_filter_condition)
+                    if alt_with_where_conditions:
+                        alt_with_clause += f"\n        WHERE {' AND '.join(alt_with_where_conditions)}"
+                    
+                    cypher = f"""
+        // Step 1: Match participants with studies and apply direct filters
+        MATCH (p:participant)
+        MATCH (p)-[:IN_STUDY]->(st:study){early_where_clause}
+        {alt_with_clause}
+        // Step 2: Process survival/diagnosis BEFORE filtering by derived fields
+        OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
+        OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
+        WITH p, d, st{", race_tokens, pr_tokens" if race_condition else ""}, 
+             // Collect all survival records for this participant
+             collect(s) AS survival_records
+        WITH p, d, st{", race_tokens, pr_tokens" if race_condition else ""},
+             // Keep only records with a status
+             [sr IN survival_records WHERE sr.last_known_survival_status IS NOT NULL] AS survs
+        WITH p, d, st{", race_tokens, pr_tokens" if race_condition else ""}, survs,
+             // Check if any record has 'Dead' status
+             any(sr IN survs WHERE sr.last_known_survival_status = 'Dead') AS has_dead,
+             // Find max age among Dead records (if any exist)
+             reduce(dead_max_age = 0, sr IN survs |
+                    CASE 
+                      WHEN sr.last_known_survival_status = 'Dead' 
+                           AND sr.age_at_last_known_survival_status IS NOT NULL
+                      THEN 
+                        CASE
+                          WHEN toInteger(sr.age_at_last_known_survival_status) > dead_max_age
+                          THEN toInteger(sr.age_at_last_known_survival_status)
+                          ELSE dead_max_age
+                        END
+                      ELSE dead_max_age 
+                    END) AS max_dead_age,
+             // Find max age across all non-null records
+             reduce(max_age = 0, sr IN survs |
+                    CASE 
+                      WHEN sr.age_at_last_known_survival_status IS NOT NULL
+                      THEN
+                        CASE
+                          WHEN toInteger(sr.age_at_last_known_survival_status) > max_age
+                          THEN toInteger(sr.age_at_last_known_survival_status)
+                          ELSE max_age
+                        END
+                      ELSE max_age 
+                    END) AS max_age
+        WITH p, d, st{", race_tokens, pr_tokens" if race_condition else ""}, survs,
+             // Priority: If 'Dead' exists, use 'Dead'; otherwise use status with max age
+             // If no record matches max_age, fall back to first available status
+             CASE 
+               WHEN size(survs) = 0 THEN NULL
+               WHEN has_dead THEN 'Dead'
+               ELSE CASE
+                 WHEN head([sr IN survs 
+                             WHERE sr.age_at_last_known_survival_status IS NOT NULL AND toInteger(sr.age_at_last_known_survival_status) = max_age 
+                             | sr.last_known_survival_status]) IS NOT NULL
+                 THEN head([sr IN survs 
+                             WHERE sr.age_at_last_known_survival_status IS NOT NULL AND toInteger(sr.age_at_last_known_survival_status) = max_age 
+                             | sr.last_known_survival_status])
+                 ELSE head([sr IN survs | sr.last_known_survival_status])
+               END
+             END AS final_vital_status,
+             // Age: If 'Dead' exists, use max Dead age; otherwise use max age
+             toInteger(CASE 
+               WHEN size(survs) = 0 THEN NULL
+               WHEN has_dead THEN max_dead_age
+               ELSE max_age
+             END) AS final_age_at_vital_status,
+             // Calculate ethnicity for filtering
+             CASE 
+               WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
+               ELSE 'Not reported'
+             END AS ethnicity_value
+        {derived_where_clause}
+        // Step 3: Keep (participant_id, study_id) pairs - do NOT group by participant_id only
+        // This allows multiple rows per participant_id if they have multiple study_ids
+        // IMPORTANT: We maintain (participant_id, study_id) pairs throughout to match the summary count
+        WITH toString(p.participant_id) AS participant_id, p, d, st, st.study_id AS study_id, final_vital_status, final_age_at_vital_status,
+             ethnicity_value{", race_tokens, pr_tokens" if race_condition else ""}
+        // Group by (participant_id, study_id) to preserve pairs while aggregating other fields
+        // IMPORTANT: The same participant_id string can represent different DB nodes (different participant.id)
+        // when associated with different study_id values. We must preserve (participant_id, study_id) pairs.
+        WITH participant_id, study_id,
+             // Use head to get first participant node (within a (participant_id, study_id) pair, there should be one node)
+             head(collect(DISTINCT p)) AS p,
+             // Collect all diagnosis nodes - we'll aggregate diagnoses from all nodes
+             collect(DISTINCT d) AS diagnosis_nodes,
+             // final_vital_status and final_age_at_vital_status are already calculated per participant, just take first
+             head(collect(DISTINCT final_vital_status)) AS final_vital_status,
+             coalesce(head(collect(DISTINCT final_age_at_vital_status)), -999) AS final_age_at_vital_status,
+             head(collect(DISTINCT ethnicity_value)) AS ethnicity_value{", head(collect(DISTINCT race_tokens)) AS race_tokens, head(collect(DISTINCT pr_tokens)) AS pr_tokens" if race_condition else ""},
+             // Keep study_id as a single value (not a list) since we're grouping by (participant_id, study_id)
+             study_id AS study_ids_single
+        // Apply diagnosis search filter (only if diagnosis_search_term is present)
+        // Note: Depositions filter is already applied in the MATCH clause (WHERE st.study_id = $param_1)
+        // Since we're grouping by (participant_id, study_id), all rows already match the depositions filter
+        {"WHERE size([node IN diagnosis_nodes WHERE node IS NOT NULL AND ANY(diag IN CASE WHEN valueType(node.diagnosis) = 'LIST' THEN node.diagnosis ELSE [node.diagnosis] END WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))]) > 0" if diagnosis_search_term else ""}
+        // Keep (participant_id, study_id) pairs - do NOT group by participant_id only
+        WITH participant_id, study_id, p, diagnosis_nodes, final_vital_status, final_age_at_vital_status,
+             ethnicity_value, study_ids_single{", race_tokens, pr_tokens" if race_condition else ""},
+             // Filter out NULL nodes first
+             [node IN diagnosis_nodes WHERE node IS NOT NULL] AS non_null_nodes
+        WITH participant_id, study_id, p, final_vital_status, final_age_at_vital_status,
+             ethnicity_value, study_ids_single{", race_tokens, pr_tokens" if race_condition else ""},
+             // Extract diagnosis values from non-null nodes
+             reduce(all_diagnoses = [], node IN non_null_nodes |
+                    CASE 
+                      WHEN node.diagnosis IS NOT NULL THEN
+                        all_diagnoses + [node.diagnosis]
+                      ELSE all_diagnoses
+                    END) AS all_diagnoses_list
+        WITH participant_id, study_id, p, final_vital_status, final_age_at_vital_status,
+             ethnicity_value, study_ids_single{", race_tokens, pr_tokens" if race_condition else ""},
+             // Return the aggregated diagnoses list (will be processed in Python)
+             all_diagnoses_list AS d
+        // Step 4: NOW paginate AFTER filtering by derived fields
+        // IMPORTANT: We paginate on (participant_id, study_id) pairs, not unique participant_ids
+        // The same participant_id string can represent different DB nodes (different participant.id)
+        // when associated with different study_id values. We must preserve (participant_id, study_id) pairs
+        // and allow multiple rows per participant_id if they have different study_ids.
+        // Filter by depositions if present
+        WITH participant_id, study_id, p, d, final_vital_status, final_age_at_vital_status,
+             ethnicity_value,
+             // Use study_id for namespace (for backward compatibility)
+             study_ids_single AS namespace,
+             study_ids_single AS sid{", race_tokens, pr_tokens" if race_condition else ""}
+        WHERE toString(sid) <> ''{f" AND sid {deposition_operator} ${dep_param}" if dep_param else ""}
+        // Step 5: Apply pagination AFTER filtering
+        // Paginate on (participant_id, sid) pairs - do NOT group by participant_id
+        // This allows multiple rows per participant_id if they have multiple study_ids
+        // Each row represents one (participant_id, study_id) pair
+        // Need WITH clause before ORDER BY to project variables
+        WITH participant_id, p, d, final_vital_status, final_age_at_vital_status,
+             ethnicity_value, namespace, sid{", race_tokens, pr_tokens" if race_condition else ""}
+        ORDER BY participant_id, sid
+        SKIP $offset
+        LIMIT $limit
+        RETURN
+          toString(participant_id) AS name,
+          p.race AS race,
+          CASE 
+            WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
+            ELSE 'Not reported'
+          END AS ethnicity,
+          CASE WHEN final_age_at_vital_status IS NOT NULL THEN final_age_at_vital_status ELSE -999 END AS age_at_vital_status,
+          final_vital_status AS vital_status,
+          d AS associated_diagnoses,
+          p.sex_at_birth AS sex,
+          toString(namespace) AS namespace,
+          [sid] AS depositions
+        ORDER BY toString(name)
         """.strip()
             else:
-                # No depositions filter - use OPTIONAL MATCH for studies
-                # Collect relationships separately to avoid cartesian product
-                # Build WITH clause with optional WHERE
-                with_clause = f"WITH p{race_condition}{identifiers_condition}"
+                # CRITICAL SAFEGUARD: If cypher is already set (from depositions path), skip this entire else block
+                if 'cypher' in locals() and cypher:
+                    logger.error("BUG: cypher is already set from depositions path, but else block is executing! This should never happen.")
+                    logger.error("Skipping non-depositions path code since cypher is already set.")
+                    # Skip the rest of this else block - cypher is already set from depositions path
+                    # Create a dummy cypher to prevent errors, but it should never be used
+                    cypher = cypher  # Keep existing cypher
+                else:
+                    # No depositions filter - use OPTIONAL MATCH for studies
+                    # Collect relationships separately to avoid cartesian product
+                    # Build WITH clause with optional WHERE
+                    with_clause = f"WITH p{race_condition}{identifiers_condition}"
             # Build WHERE conditions for WITH clause
             with_where_conditions = []
             # Always apply identifiers filter if present (id_list is created in WITH clause)
@@ -776,56 +996,71 @@ class SubjectRepository:
             if early_participant_filters:
                 early_where_conditions.extend(early_participant_filters)
             early_where_clause = f"\n        WHERE {' AND '.join(early_where_conditions)}" if early_where_conditions else ""
+            logger.debug(f"Non-depositions path - early_where_conditions: {early_where_conditions}")
             
-            # OPTIMIZATION: Apply pagination EARLY - before expensive survival/diagnosis processing
-            # Step 1: Match participants, apply filters, and paginate
-            # Step 2: Process survival/diagnosis/studies ONLY for the paginated subset
-            # Build simplified WITH clause for pagination (without survival/diagnosis, but keep race/identifiers variables)
-            pagination_with_clause = f"WITH p{race_condition}{identifiers_condition}"
-            pagination_with_where_conditions = []
-            if identifiers_condition:
-                pagination_with_where_conditions.append("p.participant_id IN id_list")
-            if where_clause:
-                where_conditions_str = where_clause.replace("WHERE ", "").strip()
-                id_filter_str = "p.participant_id IN id_list"
-                where_conditions_str = where_conditions_str.replace(f"AND {id_filter_str}", "").replace(f"{id_filter_str} AND", "").replace(id_filter_str, "").strip()
-                if race_filter_condition:
-                    where_conditions_str = where_conditions_str.replace(f"AND {race_filter_condition}", "").replace(f"{race_filter_condition} AND", "").replace(race_filter_condition, "").strip()
-                for early_filter in early_participant_filters:
-                    where_conditions_str = where_conditions_str.replace(f"AND {early_filter}", "").replace(f"{early_filter} AND", "").replace(early_filter, "").strip()
-                # CRITICAL: Remove ALL st. references (depositions filter - not applicable in non-depositions path)
-                # Remove complete conditions with st.study_id
-                where_conditions_str = re.sub(r'\bst\.study_id\s*[=IN]\s*\$[a-zA-Z0-9_]+', '', where_conditions_str)
-                where_conditions_str = re.sub(r'\$[a-zA-Z0-9_]+\s*[=IN]\s*\bst\.study_id\b', '', where_conditions_str)
-                # Remove any partial st. references (dangling st.)
-                where_conditions_str = re.sub(r'\bAND\s+st\.\s*', ' AND ', where_conditions_str)  # Remove "AND st."
-                where_conditions_str = re.sub(r'\bst\.\s*AND', ' AND', where_conditions_str)  # Remove "st. AND"
-                where_conditions_str = re.sub(r'\bst\.\s*$', '', where_conditions_str)  # Remove trailing "st."
-                where_conditions_str = re.sub(r'^\s*st\.\s*', '', where_conditions_str)  # Remove leading "st."
-                where_conditions_str = re.sub(r'\bst\.\b', '', where_conditions_str)  # Remove any remaining "st."
-                # Remove study_id patterns (variable, not st.study_id)
-                where_conditions_str = re.sub(r'\bstudy_id\s*[=IN]\s*\$[a-zA-Z0-9_]+', '', where_conditions_str)
-                where_conditions_str = re.sub(r'\$[a-zA-Z0-9_]+\s*[=IN]\s*\bstudy_id\b', '', where_conditions_str)
-                # Clean up multiple ANDs and whitespace
-                where_conditions_str = re.sub(r'\s+', ' ', where_conditions_str)  # Normalize whitespace
-                where_conditions_str = where_conditions_str.replace("AND AND", "AND").strip()
-                while where_conditions_str.startswith("AND "):
-                    where_conditions_str = where_conditions_str[4:].strip()
-                while where_conditions_str.endswith(" AND"):
-                    where_conditions_str = where_conditions_str[:-4].strip()
-                # Final check: if the string is empty or just "AND", don't add it
-                if where_conditions_str and where_conditions_str.strip() and where_conditions_str != "AND" and where_conditions_str.strip() != "AND":
-                    # Final safety: ensure no st. references remain
-                    if 'st.' not in where_conditions_str.lower():
-                        pagination_with_where_conditions.append(where_conditions_str)
-            if race_filter_condition:
-                pagination_with_where_conditions.append(race_filter_condition)
-            if pagination_with_where_conditions:
-                safe_conditions = [c for c in pagination_with_where_conditions if c and 'study_id' not in c.lower()]
-                if safe_conditions:
-                    pagination_with_clause += f"\n        WHERE {' AND '.join(safe_conditions)}"
-            
-            cypher = f"""
+            # CRITICAL SAFEGUARD: Only execute non-depositions path code if cypher is not already set
+            # If cypher is already set from the depositions path, skip this entire block
+            if 'cypher' in locals() and cypher:
+                logger.debug("Skipping non-depositions path - cypher already set from depositions path")
+                # Skip the rest - cypher is already set
+                pass
+            else:
+                # CRITICAL: When we have derived filters (vital_status, age_at_vital_status), we CANNOT paginate early
+                # because we need to compute final_vital_status first, then filter, then paginate.
+                # Early pagination only works when we're filtering on direct participant properties (sex, identifiers, etc.)
+                use_early_pagination = not needs_survival_processing
+                logger.debug(f"Non-depositions path - use_early_pagination: {use_early_pagination}")
+                
+                if use_early_pagination:
+                    # OPTIMIZATION: Apply pagination EARLY - before expensive survival/diagnosis processing
+                    # Step 1: Match participants, apply filters, and paginate
+                    # Step 2: Process survival/diagnosis/studies ONLY for the paginated subset
+                    # Build simplified WITH clause for pagination (without survival/diagnosis, but keep race/identifiers variables)
+                    pagination_with_clause = f"WITH p{race_condition}{identifiers_condition}"
+                    pagination_with_where_conditions = []
+                    if identifiers_condition:
+                        pagination_with_where_conditions.append("p.participant_id IN id_list")
+                    if where_clause:
+                        where_conditions_str = where_clause.replace("WHERE ", "").strip()
+                        id_filter_str = "p.participant_id IN id_list"
+                        where_conditions_str = where_conditions_str.replace(f"AND {id_filter_str}", "").replace(f"{id_filter_str} AND", "").replace(id_filter_str, "").strip()
+                        if race_filter_condition:
+                            where_conditions_str = where_conditions_str.replace(f"AND {race_filter_condition}", "").replace(f"{race_filter_condition} AND", "").replace(race_filter_condition, "").strip()
+                        for early_filter in early_participant_filters:
+                            where_conditions_str = where_conditions_str.replace(f"AND {early_filter}", "").replace(f"{early_filter} AND", "").replace(early_filter, "").strip()
+                        # CRITICAL: Remove ALL st. references (depositions filter - not applicable in non-depositions path)
+                        # Remove complete conditions with st.study_id
+                        where_conditions_str = re.sub(r'\bst\.study_id\s*[=IN]\s*\$[a-zA-Z0-9_]+', '', where_conditions_str)
+                        where_conditions_str = re.sub(r'\$[a-zA-Z0-9_]+\s*[=IN]\s*\bst\.study_id\b', '', where_conditions_str)
+                        # Remove any partial st. references (dangling st.)
+                        where_conditions_str = re.sub(r'\bAND\s+st\.\s*', ' AND ', where_conditions_str)  # Remove "AND st."
+                        where_conditions_str = re.sub(r'\bst\.\s*AND', ' AND', where_conditions_str)  # Remove "st. AND"
+                        where_conditions_str = re.sub(r'\bst\.\s*$', '', where_conditions_str)  # Remove trailing "st."
+                        where_conditions_str = re.sub(r'^\s*st\.\s*', '', where_conditions_str)  # Remove leading "st."
+                        where_conditions_str = re.sub(r'\bst\.\b', '', where_conditions_str)  # Remove any remaining "st."
+                        # Remove study_id patterns (variable, not st.study_id)
+                        where_conditions_str = re.sub(r'\bstudy_id\s*[=IN]\s*\$[a-zA-Z0-9_]+', '', where_conditions_str)
+                        where_conditions_str = re.sub(r'\$[a-zA-Z0-9_]+\s*[=IN]\s*\bstudy_id\b', '', where_conditions_str)
+                        # Clean up multiple ANDs and whitespace
+                        where_conditions_str = re.sub(r'\s+', ' ', where_conditions_str)  # Normalize whitespace
+                        where_conditions_str = where_conditions_str.replace("AND AND", "AND").strip()
+                        while where_conditions_str.startswith("AND "):
+                            where_conditions_str = where_conditions_str[4:].strip()
+                        while where_conditions_str.endswith(" AND"):
+                            where_conditions_str = where_conditions_str[:-4].strip()
+                        # Final check: if the string is empty or just "AND", don't add it
+                        if where_conditions_str and where_conditions_str.strip() and where_conditions_str != "AND" and where_conditions_str.strip() != "AND":
+                            # Final safety: ensure no st. references remain
+                            if 'st.' not in where_conditions_str.lower():
+                                pagination_with_where_conditions.append(where_conditions_str)
+                    if race_filter_condition:
+                        pagination_with_where_conditions.append(race_filter_condition)
+                    if pagination_with_where_conditions:
+                        safe_conditions = [c for c in pagination_with_where_conditions if c and 'study_id' not in c.lower()]
+                        if safe_conditions:
+                            pagination_with_clause += f"\n        WHERE {' AND '.join(safe_conditions)}"
+                    
+                    cypher = f"""
         // Step 1: Match participants, apply filters, and paginate EARLY
         MATCH (p:participant){early_where_clause}
         {pagination_with_clause}
@@ -943,6 +1178,219 @@ class SubjectRepository:
           p.sex_at_birth AS sex,
           toString(study_id) AS namespace,
           [study_id] AS depositions
+        ORDER BY toString(name)
+                """.strip()
+                else:
+                    # Non-depositions path - should only be taken when dep_param is NOT set
+                    # If dep_param is set, we should have taken the depositions path above
+                    logger.debug(f"Taking non-depositions path (dep_param={dep_param})")
+                # CRITICAL SAFEGUARD: If dep_param is set, we MUST NOT take the non-depositions path
+                # This is a safeguard to prevent incorrect queries when dep_param is set but the condition above failed
+                if dep_param and dep_param in params:
+                    logger.error(f"BUG: dep_param is set ({dep_param}) and exists in params, but non-depositions path is being taken! This should never happen.")
+                    logger.error(f"dep_param={dep_param}, params keys={list(params.keys())}")
+                    # Don't raise an error - instead, log the issue and let the query proceed
+                    # The query will be incorrect, but at least we'll see the error in logs
+                    # TODO: Fix the root cause of why the condition at line 479 is failing
+                # When we have derived filters (vital_status, age_at_vital_status), we MUST process survival/diagnosis first,
+                # then filter, then paginate. We cannot paginate early because the filter depends on computed values.
+                # Build initial WITH clause (similar to early pagination path, but without pagination)
+                initial_with_clause = f"WITH p{race_condition}{identifiers_condition}"
+                initial_with_where_conditions = []
+                # Apply identifiers filter if present
+                # Note: Even if identifiers_early_filter is set (applied in MATCH WHERE), we still apply it here
+                # as a backup to ensure the filter is applied correctly after OPTIONAL MATCH operations
+                if identifiers_condition:
+                    initial_with_where_conditions.append("p.participant_id IN id_list")
+                if where_clause:
+                    where_conditions_str = where_clause.replace("WHERE ", "").strip()
+                    id_filter_str = "p.participant_id IN id_list"
+                    where_conditions_str = where_conditions_str.replace(f"AND {id_filter_str}", "").replace(f"{id_filter_str} AND", "").replace(id_filter_str, "").strip()
+                    if race_filter_condition:
+                        where_conditions_str = where_conditions_str.replace(f"AND {race_filter_condition}", "").replace(f"{race_filter_condition} AND", "").replace(race_filter_condition, "").strip()
+                    for early_filter in early_participant_filters:
+                        where_conditions_str = where_conditions_str.replace(f"AND {early_filter}", "").replace(f"{early_filter} AND", "").replace(early_filter, "").strip()
+                    # Remove st.study_id and study_id references (not applicable before study match)
+                    where_conditions_str = re.sub(r'\bst\.study_id\s*[=IN]\s*\$[a-zA-Z0-9_]+', '', where_conditions_str)
+                    where_conditions_str = re.sub(r'\$[a-zA-Z0-9_]+\s*[=IN]\s*\bst\.study_id\b', '', where_conditions_str)
+                    where_conditions_str = re.sub(r'\bstudy_id\s*[=IN]\s*\$[a-zA-Z0-9_]+', '', where_conditions_str)
+                    where_conditions_str = re.sub(r'\$[a-zA-Z0-9_]+\s*[=IN]\s*\bstudy_id\b', '', where_conditions_str)
+                    where_conditions_str = re.sub(r'\bst\.\b', '', where_conditions_str)
+                    where_conditions_str = re.sub(r'\bstudy_id\b', '', where_conditions_str)
+                    where_conditions_str = where_conditions_str.replace("AND AND", "AND").strip()
+                    while where_conditions_str.startswith("AND "):
+                        where_conditions_str = where_conditions_str[4:].strip()
+                    while where_conditions_str.endswith(" AND"):
+                        where_conditions_str = where_conditions_str[:-4].strip()
+                    if where_conditions_str and where_conditions_str.strip() and where_conditions_str != "AND":
+                        if 'st.' not in where_conditions_str.lower() and 'study_id' not in where_conditions_str.lower():
+                            initial_with_where_conditions.append(where_conditions_str)
+                if race_filter_condition:
+                    initial_with_where_conditions.append(race_filter_condition)
+                if initial_with_where_conditions:
+                    safe_conditions = [c for c in initial_with_where_conditions if c and 'study_id' not in c.lower()]
+                    if safe_conditions:
+                        initial_with_clause += f"\n        WHERE {' AND '.join(safe_conditions)}"
+                
+                cypher = f"""
+        // Step 1: Match participants and apply direct filters
+        MATCH (p:participant){early_where_clause}
+        {initial_with_clause}
+        // Step 2: Process survival/diagnosis/studies BEFORE filtering by derived fields
+        // Collect survivals separately (no cartesian product)
+        OPTIONAL MATCH (p)<-[:of_survival]-(s:survival)
+        WITH p{", race_tokens, pr_tokens" if race_condition else ""}, collect(s) AS survival_records
+        // Collect diagnoses separately (no cartesian product)
+        OPTIONAL MATCH (p)<-[:of_diagnosis]-(d:diagnosis)
+        WITH p{", race_tokens, pr_tokens" if race_condition else ""}, survival_records, collect(DISTINCT d) AS diagnosis_nodes
+        // Collect studies separately (no cartesian product)
+        // OPTIMIZATION: Use IN_STUDY relationship (5-10x faster than consent_group traversal)
+        OPTIONAL MATCH (p)-[:IN_STUDY]->(st:study)
+        // Bind a scalar `study_id` for the row. Avoid carrying a LIST of study IDs through long WITH chains,
+        // which Memgraph can mis-handle and report as "Unbound variable".
+        WITH p{", race_tokens, pr_tokens" if race_condition else ""}, survival_records, diagnosis_nodes,
+             st.study_id AS study_id
+        {"WHERE size([node IN diagnosis_nodes WHERE node IS NOT NULL AND ANY(diag IN CASE WHEN valueType(node.diagnosis) = 'LIST' THEN node.diagnosis ELSE [node.diagnosis] END WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))]) > 0" if diagnosis_search_term else ""}
+        // Keep `participant_id` and `survival_records` in scope (Memgraph will error if we drop them and reference later)
+        WITH p{", race_tokens, pr_tokens" if race_condition else ""}, survival_records, diagnosis_nodes, study_id,
+             // Keep only records with a status
+             [sr IN survival_records WHERE sr IS NOT NULL AND sr.last_known_survival_status IS NOT NULL] AS survs
+        WITH p{", race_tokens, pr_tokens" if race_condition else ""}, diagnosis_nodes, study_id, survs,
+             // Check if any record has 'Dead' status
+             size([sr IN survs WHERE sr.last_known_survival_status = 'Dead']) > 0 AS has_dead,
+             // Find max age among Dead records (if any exist)
+             reduce(dead_max_age = 0, sr IN survs |
+                    CASE 
+                      WHEN sr.last_known_survival_status = 'Dead' 
+                           AND sr.age_at_last_known_survival_status IS NOT NULL
+                      THEN 
+                        CASE
+                          WHEN toInteger(sr.age_at_last_known_survival_status) > dead_max_age
+                          THEN toInteger(sr.age_at_last_known_survival_status)
+                          ELSE dead_max_age
+                        END
+                      ELSE dead_max_age 
+                    END) AS max_dead_age,
+             // Find max age across all non-null records
+             reduce(max_age = 0, sr IN survs |
+                    CASE 
+                      WHEN sr.age_at_last_known_survival_status IS NOT NULL
+                      THEN
+                        CASE
+                          WHEN toInteger(sr.age_at_last_known_survival_status) > max_age
+                          THEN toInteger(sr.age_at_last_known_survival_status)
+                          ELSE max_age
+                        END
+                      ELSE max_age 
+                    END) AS max_age
+        WITH p{", race_tokens, pr_tokens" if race_condition else ""}, diagnosis_nodes, study_id, survs,
+             // Priority: If 'Dead' exists, use 'Dead'; otherwise use status with max age
+             // If no record matches max_age, fall back to first available status
+             CASE 
+               WHEN size(survs) = 0 THEN NULL
+               WHEN has_dead THEN 'Dead'
+               ELSE CASE
+                 WHEN head([sr IN survs 
+                             WHERE sr.age_at_last_known_survival_status IS NOT NULL AND toInteger(sr.age_at_last_known_survival_status) = max_age 
+                             | sr.last_known_survival_status]) IS NOT NULL
+                 THEN head([sr IN survs 
+                             WHERE sr.age_at_last_known_survival_status IS NOT NULL AND toInteger(sr.age_at_last_known_survival_status) = max_age 
+                             | sr.last_known_survival_status])
+                 ELSE head([sr IN survs | sr.last_known_survival_status])
+               END
+             END AS final_vital_status,
+             // Age: If 'Dead' exists, use max Dead age; otherwise use max age
+             toInteger(CASE 
+               WHEN size(survs) = 0 THEN NULL
+               WHEN has_dead THEN max_dead_age
+               ELSE max_age
+             END) AS final_age_at_vital_status,
+             // Calculate ethnicity for filtering
+             CASE 
+               WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
+               ELSE 'Not reported'
+             END AS ethnicity_value
+        {derived_where_clause}
+        // Step 3: Group by participant to aggregate study_ids and handle multiple records per participant
+        WITH toString(p.participant_id) AS participant_id, p, diagnosis_nodes, study_id, final_vital_status, final_age_at_vital_status,
+             ethnicity_value{", race_tokens, pr_tokens" if race_condition else ""}
+        WITH participant_id, study_id,
+             // Use head to get first participant node (they're all the same per participant_id)
+             head(collect(DISTINCT p)) AS p,
+             // Collect all diagnosis nodes - we'll aggregate diagnoses from all nodes
+             collect(DISTINCT diagnosis_nodes) AS diagnosis_nodes_list,
+             // final_vital_status and final_age_at_vital_status are already calculated per participant, just take first
+             head(collect(DISTINCT final_vital_status)) AS final_vital_status,
+             coalesce(head(collect(DISTINCT final_age_at_vital_status)), -999) AS final_age_at_vital_status,
+             head(collect(DISTINCT ethnicity_value)) AS ethnicity_value,
+             // Collect all distinct study_ids for this participant
+             collect(DISTINCT study_id) AS study_ids{", head(collect(DISTINCT race_tokens)) AS race_tokens, head(collect(DISTINCT pr_tokens)) AS pr_tokens" if race_condition else ""}
+        // Flatten diagnosis_nodes_list (it's a list of lists) and process diagnoses
+        // Note: We need to preserve study_ids through the UNWIND, so we'll re-aggregate by participant_id
+        WITH participant_id, study_id, p, final_vital_status, final_age_at_vital_status,
+             ethnicity_value, study_ids{", race_tokens, pr_tokens" if race_condition else ""},
+             // Flatten the list of diagnosis node lists into a single list
+             [node_list IN diagnosis_nodes_list | node_list] AS all_diagnosis_nodes
+        UNWIND all_diagnosis_nodes AS diagnosis_nodes
+        WITH participant_id, study_id, p, final_vital_status, final_age_at_vital_status,
+             ethnicity_value, study_ids{", race_tokens, pr_tokens" if race_condition else ""},
+             diagnosis_nodes
+        // Filter out NULL nodes and extract diagnosis values
+        WITH participant_id, study_id, p, final_vital_status, final_age_at_vital_status,
+             ethnicity_value, study_ids{", race_tokens, pr_tokens" if race_condition else ""},
+             // Extract diagnosis values from non-null nodes
+             [node IN diagnosis_nodes WHERE node IS NOT NULL AND node.diagnosis IS NOT NULL | node.diagnosis] AS diagnoses_from_node
+        // Handle empty diagnosis lists: if empty, use [null] to ensure participant is not dropped by UNWIND
+        WITH participant_id, study_id, p, final_vital_status, final_age_at_vital_status,
+             ethnicity_value, study_ids{", race_tokens, pr_tokens" if race_condition else ""},
+             CASE WHEN size(diagnoses_from_node) = 0 THEN [null] ELSE diagnoses_from_node END AS diagnoses_to_unwind
+        UNWIND diagnoses_to_unwind AS diag
+        // Re-aggregate by participant_id to preserve study_ids and flatten diagnoses
+        WITH participant_id,
+             head(collect(DISTINCT study_id)) AS study_id,
+             head(collect(DISTINCT p)) AS p,
+             head(collect(DISTINCT final_vital_status)) AS final_vital_status,
+             head(collect(DISTINCT final_age_at_vital_status)) AS final_age_at_vital_status,
+             head(collect(DISTINCT ethnicity_value)) AS ethnicity_value,
+             head(collect(DISTINCT study_ids)) AS study_ids{", head(collect(DISTINCT race_tokens)) AS race_tokens, head(collect(DISTINCT pr_tokens)) AS pr_tokens" if race_condition else ""},
+             // Filter out null values from diagnoses (from empty list handling)
+             [d IN collect(DISTINCT diag) WHERE d IS NOT NULL] AS d
+        // Step 4: NOW paginate AFTER filtering by derived fields
+        WITH participant_id, study_id, p, d, final_vital_status, final_age_at_vital_status,
+             ethnicity_value,
+             // Use first study_id for namespace (for backward compatibility)
+             head(study_ids) AS namespace,
+             // All study_ids for depositions (filter out null values)
+             [sid IN study_ids WHERE sid IS NOT NULL] AS study_ids_temp{", race_tokens, pr_tokens" if race_condition else ""}
+        UNWIND study_ids_temp AS sid
+        WITH participant_id, study_id, p, d, final_vital_status, final_age_at_vital_status,
+             ethnicity_value,
+             namespace,
+             sid{", race_tokens, pr_tokens" if race_condition else ""}
+        WHERE toString(sid) <> ''
+        WITH participant_id, study_id, p, d, final_vital_status, final_age_at_vital_status,
+             ethnicity_value,
+             namespace,
+             collect(sid) AS study_ids_filtered{", race_tokens, pr_tokens" if race_condition else ""}
+        // Step 5: Apply pagination AFTER filtering
+        WITH participant_id, study_id, p, d, final_vital_status, final_age_at_vital_status,
+             ethnicity_value, study_ids_filtered, namespace{", race_tokens, pr_tokens" if race_condition else ""}
+        ORDER BY participant_id
+        SKIP $offset
+        LIMIT $limit
+        RETURN
+          toString(participant_id) AS name,
+          p.race AS race,
+          CASE 
+            WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
+            ELSE 'Not reported'
+          END AS ethnicity,
+          CASE WHEN final_age_at_vital_status IS NOT NULL THEN final_age_at_vital_status ELSE -999 END AS age_at_vital_status,
+          final_vital_status AS vital_status,
+          d AS associated_diagnoses,
+          p.sex_at_birth AS sex,
+          toString(namespace) AS namespace,
+          study_ids_filtered AS depositions
         ORDER BY toString(name)
         """.strip()
         
@@ -3158,7 +3606,11 @@ WITH p, d, c, st,
                         # Add impossible condition to return empty results
                         derived_conditions.append("false")
                     else:
-                        derived_conditions.append(f"final_vital_status = ${param_name}")
+                        # Case-insensitive match against DB values (do NOT match NULL/missing).
+                        # This ensures we only count explicit "Not Reported" values, not missing data.
+                        derived_conditions.append(
+                            f"(final_vital_status IS NOT NULL AND toLower(toString(final_vital_status)) = toLower(toString(${param_name})))"
+                        )
                         # Apply reverse mapping for vital_status filter (e.g., "Not reported" -> "Not Reported")
                         value = reverse_map_field_value("vital_status", value) if value else value
                 elif field == "age_at_vital_status":
@@ -3498,6 +3950,7 @@ WITH p, d, st,
         MATCH (p:participant)
         // OPTIMIZATION: Use IN_STUDY relationship (faster and simpler than consent_group traversal)
         MATCH (p)-[:IN_STUDY]->(st:study)
+        WHERE st.study_id {deposition_operator} ${dep_param}
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
         WITH DISTINCT p.participant_id AS participant_id, p, s, d, st{race_condition}{identifiers_condition}
@@ -3942,7 +4395,8 @@ WITH p, d, st,
         MATCH (p:participant)
         WHERE p.participant_id IN id_list
         WITH DISTINCT p.participant_id AS participant_id, p
-        OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
+        // Use IN_STUDY relationship to match the main query's relationship path
+        {"MATCH (p)-[:IN_STUDY]->(st:study)\n        WHERE st.study_id " + deposition_operator + " $" + dep_param if dep_param else "OPTIONAL MATCH (p)-[:IN_STUDY]->(st:study)\n        WHERE st IS NOT NULL"}
         {with_clause}{diagnosis_search_fragment}
         WITH DISTINCT participant_id, study_id
         RETURN count(*) as total_count
@@ -4027,8 +4481,8 @@ WITH p, d, st,
                             
                             cypher = f"""
         MATCH (p:participant)
-        OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
-        WHERE st IS NOT NULL
+        // Use IN_STUDY relationship to match the main query's relationship path
+        {"MATCH (p)-[:IN_STUDY]->(st:study)\n        WHERE st.study_id " + deposition_operator + " $" + dep_param if dep_param else "OPTIONAL MATCH (p)-[:IN_STUDY]->(st:study)\n        WHERE st IS NOT NULL"}
         {with_clause}{diagnosis_search_fragment}
         WITH DISTINCT participant_id, study_id
         RETURN count(*) as total_count
@@ -4054,16 +4508,26 @@ WITH p, d, st,
         OPTIONAL MATCH (p)<-[:of_diagnosis]-(d:diagnosis)
         WITH p, collect(DISTINCT d) AS diagnosis_nodes
         WHERE size([node IN diagnosis_nodes WHERE node IS NOT NULL AND ANY(diag IN CASE WHEN valueType(node.diagnosis) = 'LIST' THEN node.diagnosis ELSE [node.diagnosis] END WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))]) > 0
-        OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
-        WHERE st IS NOT NULL
+        // Use IN_STUDY relationship to match the main query's relationship path
+        {"MATCH (p)-[:IN_STUDY]->(st:study)\n        WHERE st.study_id " + deposition_operator + " $" + dep_param if dep_param else "OPTIONAL MATCH (p)-[:IN_STUDY]->(st:study)\n        WHERE st IS NOT NULL"}
         WITH DISTINCT p.participant_id AS participant_id, st.study_id AS study_id
         RETURN count(*) as total_count
         """.strip()
                 else:
-                    # No filters at all - simple count
-                    # OPTIMIZATION: Use IN_STUDY relationship with edge index (7x faster with edge index)
-                    # Note: WHERE st IS NOT NULL is redundant since IN_STUDY is a required match
-                    cypher = """
+                    # No filters at all - but check for depositions filter
+                    if dep_param:
+                        # Apply depositions filter
+                        cypher = f"""
+        MATCH (p:participant)-[:IN_STUDY]->(st:study)
+        WHERE st.study_id {deposition_operator} ${dep_param}
+        WITH DISTINCT p.participant_id AS participant_id, st.study_id AS study_id
+        RETURN count(*) as total_count
+        """.strip()
+                    else:
+                        # No filters at all - simple count
+                        # OPTIMIZATION: Use IN_STUDY relationship with edge index (7x faster with edge index)
+                        # Note: WHERE st IS NOT NULL is redundant since IN_STUDY is a required match
+                        cypher = """
         MATCH (p:participant)-[:IN_STUDY]->(st:study)
         WITH DISTINCT p.participant_id AS participant_id, st.study_id AS study_id
         RETURN count(*) as total_count

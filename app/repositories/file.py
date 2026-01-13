@@ -1146,49 +1146,39 @@ class FileRepository:
         # Detect if we have depositions filter for CALL+UNION optimization
         has_depositions_filter = depositions_list is not None
         
-        # CONDITIONAL OPTIMIZATION: Match get_files pattern (same 3 patterns)
+        # CONDITIONAL OPTIMIZATION: Match get_files pattern (same 4 patterns, using IN_STUDY)
         if file_where_conditions and has_depositions_filter:
-            # PATTERN 1: CALL+UNION SUMMARY (with file filters + depositions)
+            # PATTERN 1: OPTIMIZED SUMMARY (with file filters + depositions)
+            # OPTIMIZATION: Use IN_STUDY relationship via samples (uses edge index, much faster!)
             deposition_param = depositions_param_name
             deposition_operator = "=" if len(depositions_list) == 1 else "IN"
             
             cypher = f"""
             MATCH (sf:sequencing_file)
             {file_where_clause}
-            CALL {{
-              WITH sf
-              OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
-                            -[:of_sample]->(:cell_line)
-                            -[:of_cell_line]->(st:study)
-              WHERE st.study_id {deposition_operator} ${deposition_param}
-              RETURN st
-              UNION
-              WITH sf
-              OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
-                            -[:of_sample]->(:participant)
-                            -[:of_participant]->(:consent_group)
-                            -[:of_consent_group]->(st:study)
-              WHERE st.study_id {deposition_operator} ${deposition_param}
-              RETURN st
-            }}
-            WITH sf, st
+            // Use IN_STUDY relationship (uses edge index, much faster!)
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)-[:IN_STUDY]->(st:study)
+            WHERE st.study_id {deposition_operator} ${deposition_param}
+            WITH DISTINCT sf, st
             WHERE st IS NOT NULL
             RETURN count(DISTINCT sf) as total_count
             """.strip()
         elif file_where_conditions:
             # PATTERN 2: OPTIMIZED SUMMARY (with file filters only)
+            # OPTIMIZATION: Use IN_STUDY relationship via samples (uses edge index, much faster!)
             cypher = f"""
             MATCH (sf:sequencing_file)
             {file_where_clause}
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa2:sample)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-            WITH DISTINCT sf, coalesce(st1, st2) AS st
+            // Use IN_STUDY relationship (uses edge index, much faster!)
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)-[:IN_STUDY]->(st:study)
+            WITH DISTINCT sf, st
             {study_where_clause}
-            RETURN count(sf) as total_count
+            RETURN count(DISTINCT sf) as total_count
             """.strip()
         elif has_depositions_filter:
-            # PATTERN 2b: REVERSE TRAVERSAL SUMMARY (depositions only)
-            # PERFORMANCE OPTIMIZATION: Start from studies instead of files
+            # PATTERN 2b: OPTIMIZED REVERSE TRAVERSAL SUMMARY (depositions only)
+            # OPTIMIZATION: Use IN_STUDY relationship (uses edge index, much faster!)
+            # Start from studies (2-10 nodes) instead of files (1M+ nodes)
             deposition_param = depositions_param_name
             deposition_operator = "=" if len(depositions_list) == 1 else "IN"
             
@@ -1196,30 +1186,16 @@ class FileRepository:
             // Start from study nodes (only a few studies)
             MATCH (st:study)
             WHERE st.study_id {deposition_operator} ${deposition_param}
-            // Collect files from both paths
-            CALL {{
-              WITH st
-              MATCH (st)<-[:of_cell_line]-(:cell_line)<-[:of_sample]-(sa:sample)
-                        <-[:of_sequencing_file]-(sf:sequencing_file)
-              RETURN sf
-              UNION
-              WITH st
-              MATCH (st)<-[:of_consent_group]-(:consent_group)<-[:of_participant]-(:participant)
-                        <-[:of_sample]-(sa:sample)<-[:of_sequencing_file]-(sf:sequencing_file)
-              RETURN sf
-            }}
+            // Collect files using IN_STUDY relationship (uses edge index, much faster!)
+            MATCH (st)<-[:IN_STUDY]-(sa:sample)<-[:of_sequencing_file]-(sf:sequencing_file)
             RETURN count(DISTINCT sf) as total_count
             """.strip()
         else:
             # PATTERN 3: SIMPLE SUMMARY (no filters at all)
+            # OPTIMIZATION: Use IN_STUDY relationship (uses edge index, much faster!)
             # Must verify study path to match count_files_by_field logic
-            # This ensures consistent totals across all file endpoints
             cypher = f"""
-            MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
-            OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-            OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st1:study)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st2:study)
-            WITH DISTINCT sf, coalesce(st1, st2) AS st
+            MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)-[:IN_STUDY]->(st:study)
             WHERE st IS NOT NULL
             RETURN count(DISTINCT sf) as total_count
             """.strip()

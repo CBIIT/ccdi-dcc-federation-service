@@ -540,12 +540,21 @@ async def search_subjects_by_diagnosis(
             total_count = 0
         
         # Build pagination info
+        # NOTE: total_count is the number of unique subjects matching filters (not just the current page size)
+        # This is needed for accurate Link headers and client-side pagination.
+        total_pages = None
+        if total_count is not None and pagination.per_page:
+            try:
+                total_pages = (int(total_count) + int(pagination.per_page) - 1) // int(pagination.per_page)
+            except Exception:
+                total_pages = None
+
         pagination_info = PaginationInfo(
             page=pagination.page,
             per_page=pagination.per_page,
-            total_pages=None,
-            total_items=len(subjects),
-            has_next=len(subjects) == pagination.per_page,  # If we got a full page, there might be more
+            total_pages=total_pages,
+            total_items=total_count,
+            has_next=(pagination.page * pagination.per_page) < total_count if total_count is not None else (len(subjects) == pagination.per_page),
             has_prev=pagination.page > 1
         )
         
@@ -559,8 +568,14 @@ async def search_subjects_by_diagnosis(
         if link_header:
             response.headers["Link"] = link_header
         
-        # Exclude gateways from individual subjects
-        subjects_dicts = [subject.model_dump(exclude={'gateways'}) if hasattr(subject, 'model_dump') else {k: v for k, v in (subject if isinstance(subject, dict) else subject.__dict__).items() if k != 'gateways'} for subject in subjects]
+        # Exclude gateways from individual subjects and always include required metadata keys
+        # (`associated_diagnoses`, `vital_status`, `age_at_vital_status`) even when null.
+        subjects_dicts = [
+            subject.model_dump(exclude={'gateways'}, exclude_none=False, exclude_unset=False)
+            if hasattr(subject, 'model_dump')
+            else {k: v for k, v in (subject if isinstance(subject, dict) else subject.__dict__).items() if k != 'gateways'}
+            for subject in subjects
+        ]
         
         # Build response with summary first, then data
         result = SubjectResponse(

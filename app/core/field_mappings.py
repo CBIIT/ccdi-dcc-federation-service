@@ -377,6 +377,30 @@ def load_sequencing_file_enum(field_name: str) -> List[str]:
         return []
 
 
+def load_sample_enum(field_name: str) -> List[str]:
+    """
+    Load enum values for a sample field from sample_enum.json.
+    
+    Args:
+        field_name: The field name (e.g., 'sample_tumor_status')
+        
+    Returns:
+        List of enum values, or empty list if file not found or field not present
+    """
+    enum_path = Path(__file__).parent.parent / "config_data" / "sample_enum.json"
+    
+    try:
+        with enum_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, dict) and field_name in data:
+                enum_values = data[field_name]
+                if isinstance(enum_values, list):
+                    return enum_values
+            return []
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
 def build_invalid_value_all_clause(field_name: str) -> str:
     """
     Build ALL clause conditions for filtering invalid values in Cypher ALL() expressions.

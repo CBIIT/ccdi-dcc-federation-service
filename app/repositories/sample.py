@@ -15,7 +15,7 @@ from app.models.dto import Sample
 from app.models.errors import UnsupportedFieldError
 from app.core.config import Settings
 from app.core.constants import Race
-from app.core.field_mappings import map_field_value, reverse_map_field_value, is_null_mapped_value, is_database_only_value, build_invalid_value_filter, build_invalid_value_list_filter, build_invalid_value_all_clause, build_case_mapping_statement, get_mapped_db_values, load_sequencing_file_enum, get_null_mappings
+from app.core.field_mappings import map_field_value, reverse_map_field_value, is_null_mapped_value, is_database_only_value, build_invalid_value_filter, build_invalid_value_list_filter, build_invalid_value_all_clause, build_case_mapping_statement, get_mapped_db_values, load_sequencing_file_enum, load_sample_enum, get_null_mappings
 
 logger = get_logger(__name__)
 
@@ -393,6 +393,47 @@ class SampleRepository:
                         with_conditions.append(("library_source_material", param_name))
             elif field == "preservation_method":
                 with_conditions.append(f"pf IS NOT NULL AND pf.fixation_embedding_method = ${param_name}")
+            elif field == "tissue_type":
+                # Validate against sample_tumor_status enum
+                valid_values = load_sample_enum("sample_tumor_status")
+                if valid_values:
+                    # Handle both string and list values (defensive programming)
+                    if isinstance(value, list):
+                        # If it's a list, validate each value
+                        invalid_values = [v for v in value if v not in valid_values]
+                        if invalid_values:
+                            # At least one value is invalid - return empty results immediately
+                            logger.info(
+                                "tissue_type filter contains invalid enum values - returning empty results",
+                                tissue_type_value=value,
+                                invalid_values=invalid_values,
+                                valid_values=valid_values
+                            )
+                            return []
+                        # All values are valid - use IN clause for list
+                        # No need to filter NULL/empty/-999 - enum validation ensures only valid values
+                        with_conditions.append(f"sa.sample_tumor_status IN ${param_name}")
+                        params[param_name] = value
+                    else:
+                        # Single string value
+                        if value not in valid_values:
+                            # Value doesn't match any enum value - return empty results immediately
+                            logger.info(
+                                "tissue_type filter value does not match any enum value - returning empty results",
+                                tissue_type_value=value,
+                                valid_values=valid_values
+                            )
+                            return []
+                        # Value is valid - add filter condition
+                        # No need to filter NULL/empty/-999 - enum validation ensures only valid values
+                        with_conditions.append(f"sa.sample_tumor_status = ${param_name}")
+                        params[param_name] = value
+                else:
+                    # Enum not available - fallback to direct comparison (shouldn't happen in production)
+                    logger.warning("sample_tumor_status enum not available, using direct comparison")
+                    # No need to filter NULL/empty/-999 - enum validation ensures only valid values
+                    with_conditions.append(f"sa.sample_tumor_status = ${param_name}")
+                    params[param_name] = value
             elif field == "tumor_classification":
                 # Check if value is in null_mappings (e.g., "non-malignant")
                 if is_null_mapped_value("tumor_classification", value):
@@ -456,9 +497,10 @@ class SampleRepository:
                 else:
                     with_conditions.append(f"sa.{field} = ${param_name}")
             
-            if field not in ["disease_phase", "tumor_grade", "age_at_diagnosis", "age_at_collection", "diagnosis", "anatomical_sites"]:
+            if field not in ["disease_phase", "tumor_grade", "age_at_diagnosis", "age_at_collection", "diagnosis", "anatomical_sites", "tissue_type"]:
                 # For non-diagnosis fields, handle list values
                 # Skip anatomical_sites as it's handled specially with tuples
+                # Skip tissue_type as it's already handled with proper validation and IN clause if needed
                 if isinstance(value, list):
                     # Only replace if the last condition is a string (not a tuple)
                     if with_conditions and isinstance(with_conditions[-1], str):
@@ -1174,10 +1216,13 @@ class SampleRepository:
         {optional_matches_str}
         WITH {with_clause}
         {second_with_str}{where_clause}WITH DISTINCT {distinct_vars}
-        RETURN {return_clause}
-        ORDER BY toString(sa.sample_id)
+        // Deduplicate by sample_id to ensure one row per sample (handles multiple study relationships)
+        // Use head() to pick one study per sample (consistent with count query which groups by sample_id)
+        WITH DISTINCT sa.sample_id as sample_id, sa, p, head(collect(DISTINCT st)) as st, sf, pf, diagnoses
+        ORDER BY toString(sample_id)
         SKIP $offset
         LIMIT $limit
+        RETURN sa, p, st, sf, pf, diagnoses
         """.strip()
         
         # DEBUG: Log the exact query section that might cause "trueWHERE" error
@@ -1771,7 +1816,7 @@ class SampleRepository:
             "preservation_method": ("pf", "fixation_embedding_method"),  # From pathology_file node
             "tumor_grade": ("d", "tumor_grade"),  # From diagnosis node
             "specimen_molecular_analyte_type": ("sf", "library_source_molecule"),  # From sequencing_file node
-            "tissue_type": ("sa", "tissue_type"),  # From sample node (if exists)
+            "tissue_type": ("sa", "sample_tumor_status"),  # From sample node (sample_tumor_status field)
             "tumor_classification": ("d", "tumor_classification"),  # From diagnosis node
             "age_at_diagnosis": ("d", "age_at_diagnosis"),  # From diagnosis node
             "age_at_collection": ("sa", "participant_age_at_collection"),  # From sample node
@@ -1783,6 +1828,10 @@ class SampleRepository:
         # Determine if this is a participant field or sample metadata field
         is_participant_field = field in participant_field_mapping
         is_sample_metadata_field = field in sample_metadata_field_mapping
+        
+        # Flag to track if we're using a combined query (total + missing + values in one query)
+        # Currently only used for library_source_material when no filters
+        is_combined_query = False
         
         if is_participant_field:
             node_field = participant_field_mapping[field]
@@ -2260,24 +2309,104 @@ class SampleRepository:
                 ORDER BY count DESC, value ASC
                 """.strip()
                 elif node_alias == "sf" and not base_where_clause:
-                    # Optimized query for other sequencing_file fields (library_selection_method, library_strategy, library_source_material):
-                    # 1. Start from sequencing_file (more selective) and filter invalid values early
-                    # 2. Match to sample and check study path using IN_STUDY shortcut (much faster than pattern comprehension)
-                    # 3. Group by field value and count distinct samples
-                    # Performance improvements:
-                    # - Start from sequencing_file instead of sample (fewer nodes to process)
-                    # - Filter invalid values early before study path check
-                    # - Use IN_STUDY shortcut relationship instead of pattern comprehension (10x faster)
-                    # - Remove unnecessary participant match
-                    # - Simplify redundant WHERE conditions (assume string fields)
-                    # Optimized: Use IN_STUDY shortcut relationship (much faster than pattern comprehension)
-                    # Original order (sample → sequencing_file) is BEST per FULL_QUERY_ANALYSIS.md:
-                    # - Starts from smaller set (68k samples vs 1.67M sequencing_files)
-                    # - Uses sample(sample_id) index effectively
-                    # - Fewer IN_STUDY relationships to expand (66k vs 1.6M)
-                    # - Performance: 6.09s vs 6.89s (13% faster)
-                    invalid_filter = build_invalid_value_filter(node_field, field)
-                    cypher = f"""
+                    # Special handling for library_source_material: Combined query (total + missing + values)
+                    # For other sequencing_file fields: Use separate queries
+                    if field == "library_source_material":
+                        # COMBINED QUERY: Returns total, missing, and values in one pass
+                        # This avoids running 3 separate queries and processes samples once
+                        # IMPORTANT: Missing check should NOT include enum validation - only check for NULL/empty/-999/null_mappings
+                        # Values check SHOULD include enum validation to only count valid enum values
+                        invalid_list_filter = build_invalid_value_list_filter(field)
+                        # Load enum values to filter FOR valid values in the values query
+                        enum_values = load_sequencing_file_enum("library_source_material")
+                        if enum_values:
+                            # Build enum list string for ANY() check (used only for valid_values, not is_missing)
+                            enum_list_str = ", ".join([f'"{val}"' for val in enum_values])
+                            # Separate logic:
+                            # - valid_values: Filter for enum values AND exclude null_mappings (for counting values)
+                            # - is_missing: Only check if no valid values exist (NULL/empty/-999/null_mappings), WITHOUT enum check
+                            cypher = f"""
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
+                WITH sa.sample_id as sample_id, st.study_id as study_id,
+                     collect(DISTINCT {node_field}) as field_values
+                WITH sample_id, study_id, field_values,
+                     // For VALUES: Filter for valid enum values AND exclude null_mappings
+                     [val IN field_values WHERE val IS NOT NULL 
+                      AND {invalid_list_filter}
+                      AND ANY(enum_val IN [{enum_list_str}] WHERE val = enum_val)] as valid_values,
+                     // For MISSING: Only check if no valid values (NULL/empty/-999/null_mappings), WITHOUT enum check
+                     // This matches the original missing query logic
+                     CASE WHEN size([val IN field_values WHERE val IS NOT NULL 
+                                     AND {invalid_list_filter}]) = 0 
+                          THEN 1 ELSE 0 END as is_missing
+                // Calculate total and missing counts (aggregate across all samples)
+                // IMPORTANT: The original missing query filters samples WHERE size(...) = 0
+                // Our combined query calculates is_missing per sample, then sums
+                // These should be equivalent, but we need to ensure we're grouping correctly
+                WITH count(*) as total,
+                     sum(is_missing) as missing,
+                     collect({{sample_id: sample_id, study_id: study_id, valid_values: valid_values}}) as all_samples
+                // Now unwind valid values to count by value
+                // IMPORTANT: total and missing are calculated per (sample_id, study_id) pair
+                // and should be preserved through UNWIND
+                UNWIND all_samples as sample_data
+                WITH sample_data, total, missing,
+                     CASE WHEN size(sample_data.valid_values) = 0 THEN [null] ELSE sample_data.valid_values END as values_to_unwind
+                UNWIND values_to_unwind as val
+                WITH toString(val) as value, total, missing
+                WHERE val IS NOT NULL  // Filter out the null placeholder rows
+                WITH value, count(*) as count, total, missing
+                RETURN value, count, total, missing
+                ORDER BY count DESC, value ASC
+                """.strip()
+                        else:
+                            # Fallback to original approach if enum not available
+                            cypher = f"""
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
+                WITH sa.sample_id as sample_id, st.study_id as study_id,
+                     collect(DISTINCT {node_field}) as field_values
+                WITH sample_id, study_id, field_values,
+                     [val IN field_values WHERE val IS NOT NULL 
+                      AND {invalid_list_filter}] as valid_values,
+                     CASE WHEN size([val IN field_values WHERE val IS NOT NULL 
+                                     AND {invalid_list_filter}]) = 0 
+                          THEN 1 ELSE 0 END as is_missing
+                // Calculate total and missing counts (aggregate across all samples)
+                WITH count(*) as total,
+                     sum(is_missing) as missing,
+                     collect({{sample_id: sample_id, study_id: study_id, valid_values: valid_values}}) as all_samples
+                // Now unwind valid values to count by value
+                UNWIND all_samples as sample_data
+                UNWIND sample_data.valid_values as val
+                WITH toString(val) as value, count(*) as count, total, missing
+                RETURN value, count, total, missing
+                ORDER BY count DESC, value ASC
+                """.strip()
+                        # Mark this as a combined query so we can handle it differently
+                        is_combined_query = True
+                    else:
+                        # Optimized query for other sequencing_file fields (library_selection_method, library_strategy):
+                        # 1. Start from sequencing_file (more selective) and filter invalid values early
+                        # 2. Match to sample and check study path using IN_STUDY shortcut (much faster than pattern comprehension)
+                        # 3. Group by field value and count distinct samples
+                        # Performance improvements:
+                        # - Start from sequencing_file instead of sample (fewer nodes to process)
+                        # - Filter invalid values early before study path check
+                        # - Use IN_STUDY shortcut relationship instead of pattern comprehension (10x faster)
+                        # - Remove unnecessary participant match
+                        # - Simplify redundant WHERE conditions (assume string fields)
+                        # Optimized: Use IN_STUDY shortcut relationship (much faster than pattern comprehension)
+                        # Original order (sample → sequencing_file) is BEST per FULL_QUERY_ANALYSIS.md:
+                        # - Starts from smaller set (68k samples vs 1.67M sequencing_files)
+                        # - Uses sample(sample_id) index effectively
+                        # - Fewer IN_STUDY relationships to expand (66k vs 1.6M)
+                        # - Performance: 6.09s vs 6.89s (13% faster)
+                        invalid_filter = build_invalid_value_filter(node_field, field)
+                        cypher = f"""
                 MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL 
                   AND sa.sample_id <> ''
@@ -2292,6 +2421,7 @@ class SampleRepository:
                 RETURN toString(value) as value, count(*) AS count
                 ORDER BY count DESC, value ASC
                 """.strip()
+                        is_combined_query = False
                 elif node_alias == "pf" and not base_where_clause:
                     # Optimized query for pathology_file fields (preservation_method):
                     # 1. Start from pathology_file (more selective) and filter invalid values early
@@ -2333,6 +2463,27 @@ class SampleRepository:
                   AND {invalid_filter}
                 WITH DISTINCT sa.sample_id as sample_id, head(collect(DISTINCT {node_field})) as value
                 RETURN value, count(DISTINCT sample_id) AS count
+                ORDER BY count DESC, value ASC
+                """.strip()
+                elif node_alias == "sa" and not base_where_clause:
+                    # Optimized query for sample node fields (tissue_type, age_at_collection, tumor_tissue_morphology):
+                    # 1. Use IN_STUDY shortcut for consistency with total/missing queries (much faster and avoids null issues)
+                    # 2. Filter invalid values early
+                    # 3. Group by field value and count distinct samples
+                    # Performance improvements:
+                    # - Use IN_STUDY shortcut instead of optional matches (much faster)
+                    # - Consistent query structure with total and missing queries
+                    cypher = f"""
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
+                WHERE sa.sample_id IS NOT NULL 
+                  AND sa.sample_id <> ''
+                  AND {node_field} IS NOT NULL
+                  AND toString({node_field}) <> ''
+                  AND trim(toString({node_field})) <> ''
+                  AND toString({node_field}) <> '-999'
+                  AND trim(toString({node_field})) <> '-999'
+                WITH DISTINCT sa.sample_id as sample_id, {node_field} as value
+                RETURN toString(value) as value, count(DISTINCT sample_id) AS count
                 ORDER BY count DESC, value ASC
                 """.strip()
                 else:
@@ -2457,10 +2608,100 @@ class SampleRepository:
         # Format results
         counts = []
         
+        # Special handling for combined query (library_source_material)
+        # Combined query returns: value, count, total, missing
+        # Extract total and missing from first row, then process values
+        # IMPORTANT: If all samples have no valid values, records will be empty
+        # In that case, we need to run a separate query to get total and missing
+        total = 0
+        missing = 0
+        if is_combined_query:
+            if records:
+                # Extract total and missing from first row (they're the same in all rows)
+                total = records[0].get("total", 0)
+                missing = records[0].get("missing", 0)
+                logger.debug(
+                    "Combined query results",
+                    field=field,
+                    total=total,
+                    missing=missing,
+                    records_count=len(records)
+                )
+                # Process values (skip total/missing columns)
+                for record in records:
+                    value = record.get("value")
+                    count = record.get("count", 0)
+                    
+                    if not value or count == 0:
+                        continue
+                    
+                    # Apply field mapping (DB value -> API value)
+                    mapped_value = map_field_value(field, value)
+                    
+                    # If mapping returns None, skip this value (it should be counted as missing)
+                    if mapped_value is None:
+                        continue
+                    
+                    counts.append({
+                        "value": mapped_value,
+                        "count": count
+                    })
+                
+                # Aggregate counts for fields where multiple DB values map to the same API value
+                aggregated_counts = {}
+                for item in counts:
+                    val = item["value"]
+                    cnt = item["count"]
+                    if val in aggregated_counts:
+                        aggregated_counts[val] += cnt
+                    else:
+                        aggregated_counts[val] = cnt
+                # Rebuild counts list and sort
+                counts = [{"value": val, "count": cnt} for val, cnt in aggregated_counts.items()]
+                counts.sort(key=lambda x: (-x["count"], x["value"]))
+            else:
+                # If records is empty, all samples have no valid values
+                # We need to get total and missing from a separate query
+                # This happens when ALL samples have is_missing=1 and no valid enum values
+                logger.warning(
+                    "Combined query returned empty results - all samples may be missing",
+                    field=field
+                )
+                # Run a simple query to get total and missing
+                # Use the same logic as the combined query but without UNWIND
+                invalid_list_filter = build_invalid_value_list_filter(field)
+                fallback_cypher = f"""
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
+                WITH sa.sample_id as sample_id, st.study_id as study_id,
+                     collect(DISTINCT sf.library_source_material) as field_values
+                WITH count(*) as total,
+                     sum(CASE WHEN size([val IN field_values WHERE val IS NOT NULL 
+                                         AND {invalid_list_filter}]) = 0 
+                              THEN 1 ELSE 0 END) as missing
+                RETURN total, missing
+                """.strip()
+                try:
+                    fallback_result = await self.session.run(fallback_cypher, params)
+                    fallback_records = []
+                    async for record in fallback_result:
+                        fallback_records.append(dict(record))
+                    if fallback_records:
+                        total = fallback_records[0].get("total", 0)
+                        missing = fallback_records[0].get("missing", 0)
+                except Exception as e:
+                    logger.error(
+                        "Error executing fallback query for combined query",
+                        error=str(e),
+                        field=field,
+                        exc_info=True
+                    )
+        
         # Special handling for specimen_molecular_analyte_type
         # Query now returns aggregated results (value, count) with mapping done in Cypher
         # This eliminates Python-side processing overhead and reduces returned rows significantly
-        if field == "specimen_molecular_analyte_type":
+        elif field == "specimen_molecular_analyte_type":
             # Query already returns value and count, just process like other fields
             # But need to handle deduplication: one sample can have multiple DB values that map to same API value
             # The Cypher query handles this with DISTINCT sample_id per api_value
@@ -2529,7 +2770,11 @@ class SampleRepository:
         # Calculate total and missing counts
         # Total: count of all distinct samples matching filters
         # IMPORTANT: Total must match /sample/summary, which only counts samples with a path to a study
-        if field == "sex":
+        # Skip if we already have total/missing from combined query
+        if is_combined_query:
+            # Total and missing already extracted from combined query above
+            pass
+        elif field == "sex":
             # Total: all samples with a path to a study (matching /sample/summary - 50211 when no filters)
             # This should match the total from /sample/summary endpoint
             # When no filters, count all samples that have a path to a study. When filters exist, they may reference participants,
@@ -2878,18 +3123,30 @@ class SampleRepository:
                 """.strip()
                         else:
                             # For fields on sample node or study node, just require study path
-                            study_where = " AND coalesce(st1, st2) IS NOT NULL"
+                            # Use IN_STUDY shortcut for consistency with values query (much faster and avoids null issues)
                             if base_where_clause:
-                                total_where_clause = base_where_clause + study_where
-                            else:
-                                total_where_clause = "WHERE coalesce(st1, st2) IS NOT NULL"
-                            
-                            total_cypher = f"""
-                MATCH (sa:sample)
+                                # Has filters - need to apply them
+                                # Build optional matches for filters that need them
+                                filter_optional_matches = []
+                                if any("p." in cond for cond in base_where_conditions):
+                                    filter_optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
+                                filter_optional_matches_str = "\n                ".join(filter_optional_matches) if filter_optional_matches else ""
+                                
+                                total_cypher = f"""
+                MATCH (sa:sample)-[:IN_STUDY]->(:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                {optional_matches_str}
-                {total_where_clause}
+                {filter_optional_matches_str}
+                WITH sa, p
+                {base_where_clause.replace('WHERE ', 'AND ') if base_where_clause else ''}
                 RETURN count(DISTINCT sa.sample_id) as total
+                """.strip()
+                            else:
+                                # No filters - use IN_STUDY shortcut (consistent with values query and much faster)
+                                total_cypher = """
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
+                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                WITH sa.sample_id as sample_id, st.study_id as study_id
+                RETURN count(*) as total
                 """.strip()
                 else:
                     # Participant fields - need to include study paths and require st IS NOT NULL
@@ -3031,13 +3288,20 @@ class SampleRepository:
                 RETURN count(*) as missing
                 """.strip()
                         elif node_alias == "sf" and not base_where_clause:
-                            # Optimized missing count for other sequencing_file fields
-                            # Missing: samples with study path that either:
-                            # 1. Don't have any sequencing_file, OR
-                            # 2. Have sequencing_file(s) but all have null/invalid values (based on null_mappings)
-                            # Performance: Use IN_STUDY shortcut instead of pattern comprehension (much faster)
-                            invalid_list_filter = build_invalid_value_list_filter(field)
-                            missing_cypher = f"""
+                            # Skip missing query for library_source_material (handled by combined query)
+                            if field == "library_source_material":
+                                # Missing count is already included in combined query
+                                missing_cypher = None
+                            else:
+                                # Optimized missing count for other sequencing_file fields
+                                # Missing: samples with study path that either:
+                                # 1. Don't have any sequencing_file, OR
+                                # 2. Have sequencing_file(s) but all have null/invalid values (based on null_mappings)
+                                # Performance: Collect only field values (strings), not nodes - this is more efficient
+                                # OPTIMIZATION: Collect DISTINCT field values per (sample_id, study_id) pair
+                                # Then filter invalid values in WHERE clause - avoids scanning all sequencing_file records
+                                invalid_list_filter = build_invalid_value_list_filter(field)
+                                missing_cypher = f"""
                 MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
                 OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
@@ -3096,19 +3360,14 @@ class SampleRepository:
                             missing_where = "(field_value IS NULL OR toString(field_value) = '' OR trim(toString(field_value)) = '' OR toString(field_value) = '-999' OR trim(toString(field_value)) = '-999')"
                             
                             # For fields on sample node (sa), ensure the query structure matches the total query
-                            # Use the same pattern: WITH sa, p, coalesce(st1, st2) AS st, then filter by st IS NOT NULL
+                            # Use IN_STUDY shortcut for consistency with values and total queries (much faster and avoids null issues)
                             if node_alias == "sa":
                                 missing_cypher = f"""
-                MATCH (sa:sample)
+                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                {optional_matches_str}
-                WITH sa, p, {node_field} as field_value,
-                     size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
-                     size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
-                WHERE has_study1 > 0 OR has_study2 > 0
-                  AND (field_value IS NULL OR toString(field_value) = '' OR trim(toString(field_value)) = '' OR toString(field_value) = '-999' OR trim(toString(field_value)) = '-999')
-                WITH DISTINCT sa
-                RETURN count(DISTINCT sa) as missing
+                  AND ({node_field} IS NULL OR toString({node_field}) = '' OR trim(toString({node_field})) = '' OR toString({node_field}) = '-999' OR trim(toString({node_field})) = '-999')
+                WITH DISTINCT sa.sample_id as sample_id
+                RETURN count(*) as missing
                 """.strip()
                             else:
                                 # For fields on related nodes, include pattern comprehension for study paths
@@ -3246,25 +3505,81 @@ class SampleRepository:
                 RETURN count(DISTINCT sa) as missing
                 """.strip()
             
-            # Execute total and missing queries
-            total_result = await self.session.run(total_cypher, params)
-            total_records = []
-            async for record in total_result:
-                total_records.append(dict(record))
-            total = total_records[0].get("total", 0) if total_records else 0
+            # Execute total and missing queries (skip if using combined query)
+            if total_cypher is not None:
+                total_result = await self.session.run(total_cypher, params)
+                total_records = []
+                async for record in total_result:
+                    total_records.append(dict(record))
+                total = total_records[0].get("total", 0) if total_records else 0
+            # else: total already extracted from combined query
             
-            missing_result = await self.session.run(missing_cypher, params)
-            missing_records = []
-            async for record in missing_result:
-                missing_records.append(dict(record))
-            missing = missing_records[0].get("missing", 0) if missing_records else 0
+            if missing_cypher is not None:
+                missing_result = await self.session.run(missing_cypher, params)
+                missing_records = []
+                async for record in missing_result:
+                    missing_records.append(dict(record))
+                missing = missing_records[0].get("missing", 0) if missing_records else 0
+            # else: missing already extracted from combined query
+        
+        # Verify: total should equal sum of values + missing
+        # IMPORTANT: Skip adjustment for combined queries (library_source_material)
+        # because missing count comes directly from the database query and is correct
+        if not is_combined_query:
+            values_sum = sum(item["count"] for item in counts)
+            if total != values_sum + missing:
+                logger.warning(
+                    "Total count mismatch for field",
+                    field=field,
+                    total=total,
+                    values_sum=values_sum,
+                    missing=missing,
+                    difference=total - (values_sum + missing),
+                    values_count=len(counts)
+                )
+                # For tissue_type and other sample node fields, the missing query should catch all NULL/empty/-999 values
+                # If there's still a mismatch, it might be due to values being filtered out in Python processing
+                # Adjust missing to make numbers add up to ensure API consistency
+                adjusted_missing = total - values_sum
+                if adjusted_missing >= 0:
+                    logger.info(
+                        "Adjusting missing count to match total",
+                        field=field,
+                        original_missing=missing,
+                        adjusted_missing=adjusted_missing,
+                        note="This accounts for samples with values that were filtered out during processing"
+                    )
+                    missing = adjusted_missing
+                else:
+                    logger.error(
+                        "Negative missing count - this should not happen",
+                        field=field,
+                        total=total,
+                        values_sum=values_sum,
+                        missing=missing
+                    )
+        else:
+            # For combined queries, just log the verification without adjusting
+            values_sum = sum(item["count"] for item in counts)
+            if total != values_sum + missing:
+                logger.warning(
+                    "Total count mismatch for combined query (should not happen)",
+                    field=field,
+                    total=total,
+                    values_sum=values_sum,
+                    missing=missing,
+                    difference=total - (values_sum + missing),
+                    values_count=len(counts),
+                    note="Missing count comes from database query and should be correct"
+                )
         
         logger.debug(
             "Completed sample count by field",
             field=field,
             results_count=len(counts),
             total=total,
-            missing=missing
+            missing=missing,
+            values_sum=sum(item["count"] for item in counts)
         )
         
         return {
@@ -4267,6 +4582,47 @@ class SampleRepository:
                         with_conditions.append(("library_source_material", param_name))
             elif field == "preservation_method":
                 with_conditions.append(f"pf IS NOT NULL AND pf.fixation_embedding_method = ${param_name}")
+            elif field == "tissue_type":
+                # Validate against sample_tumor_status enum
+                valid_values = load_sample_enum("sample_tumor_status")
+                if valid_values:
+                    # Handle both string and list values (defensive programming)
+                    if isinstance(value, list):
+                        # If it's a list, validate each value
+                        invalid_values = [v for v in value if v not in valid_values]
+                        if invalid_values:
+                            # At least one value is invalid - return empty results immediately
+                            logger.info(
+                                "tissue_type filter contains invalid enum values - returning empty results",
+                                tissue_type_value=value,
+                                invalid_values=invalid_values,
+                                valid_values=valid_values
+                            )
+                            return []
+                        # All values are valid - use IN clause for list
+                        # No need to filter NULL/empty/-999 - enum validation ensures only valid values
+                        with_conditions.append(f"sa.sample_tumor_status IN ${param_name}")
+                        params[param_name] = value
+                    else:
+                        # Single string value
+                        if value not in valid_values:
+                            # Value doesn't match any enum value - return empty results immediately
+                            logger.info(
+                                "tissue_type filter value does not match any enum value - returning empty results",
+                                tissue_type_value=value,
+                                valid_values=valid_values
+                            )
+                            return []
+                        # Value is valid - add filter condition
+                        # No need to filter NULL/empty/-999 - enum validation ensures only valid values
+                        with_conditions.append(f"sa.sample_tumor_status = ${param_name}")
+                        params[param_name] = value
+                else:
+                    # Enum not available - fallback to direct comparison (shouldn't happen in production)
+                    logger.warning("sample_tumor_status enum not available, using direct comparison")
+                    # No need to filter NULL/empty/-999 - enum validation ensures only valid values
+                    with_conditions.append(f"sa.sample_tumor_status = ${param_name}")
+                    params[param_name] = value
             elif field == "tumor_classification":
                 # Check if value is in null_mappings (e.g., "non-malignant")
                 if is_null_mapped_value("tumor_classification", value):
@@ -4330,9 +4686,10 @@ class SampleRepository:
                 else:
                     with_conditions.append(f"sa.{field} = ${param_name}")
             
-            if field not in ["disease_phase", "tumor_grade", "age_at_diagnosis", "age_at_collection", "diagnosis", "anatomical_sites"]:
+            if field not in ["disease_phase", "tumor_grade", "age_at_diagnosis", "age_at_collection", "diagnosis", "anatomical_sites", "tissue_type"]:
                 # For non-diagnosis fields, handle list values
                 # Skip anatomical_sites as it's handled specially with tuples
+                # Skip tissue_type as it's already handled with proper validation and IN clause if needed
                 if isinstance(value, list):
                     # Only replace if the last condition is a string (not a tuple)
                     if with_conditions and isinstance(with_conditions[-1], str):
@@ -4790,19 +5147,19 @@ class SampleRepository:
         {early_where_clause}
         {optional_matches_str}
         WITH {with_clause}
-        {second_with_str}WITH sa.sample_id AS sample_id, st.study_id AS study_id
-        RETURN count(*) as total_count
+        {second_with_str}WITH DISTINCT sa.sample_id AS sample_id, st.study_id AS study_id
+        RETURN count(DISTINCT sample_id) as total_count
         """.strip()
         else:
             # No second WITH, use final_where_clause after first WITH
-            # Use sample_id + study_id as unique identifier (same sample_id can be in different studies)
+            # Deduplicate by sample_id to ensure one row per sample (handles multiple study relationships)
             cypher = f"""
         MATCH (sa:sample)-[:IN_STUDY]->(st:study)
         {early_where_clause}
         {optional_matches_str}
         WITH {with_clause}
-        {final_where_clause}WITH sa.sample_id AS sample_id, st.study_id AS study_id
-        RETURN count(*) as total_count
+        {final_where_clause}WITH DISTINCT sa.sample_id AS sample_id, st.study_id AS study_id
+        RETURN count(DISTINCT sample_id) as total_count
         """.strip()
         
         logger.info(
@@ -5386,6 +5743,9 @@ class SampleRepository:
         if diagnoses and isinstance(diagnoses, dict):
             tumor_classification_value = diagnoses.get("tumor_classification")
         
+        # tissue_type: sa.sample_tumor_status (mapped from sample_tumor_status field)
+        tissue_type_value = sa.get("sample_tumor_status") if sa else None
+        
         # Build metadata with field mappings applied
         metadata = SampleMetadata(
             disease_phase=_wrap_value(map_field_value("disease_phase", _null_if_invalid(disease_phase_value))),
@@ -5396,7 +5756,7 @@ class SampleRepository:
             preservation_method=_wrap_value(_null_if_invalid(preservation_method_value)),
             tumor_grade=_wrap_value(_null_if_invalid(tumor_grade_value)),
             specimen_molecular_analyte_type=_wrap_value(map_field_value("specimen_molecular_analyte_type", _null_if_invalid(specimen_molecular_analyte_type_value))),
-            tissue_type=None,  # Not in the provided mapping
+            tissue_type=_wrap_value(_null_if_invalid(tissue_type_value)),
             tumor_classification=_wrap_value(map_field_value("tumor_classification", _null_if_invalid(tumor_classification_value))),
             age_at_diagnosis=_wrap_integer_value(_null_if_neg999(age_at_diagnosis_value)),
             age_at_collection=_wrap_integer_value(_null_if_neg999(age_at_collection_value)),

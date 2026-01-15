@@ -213,7 +213,7 @@ async def list_files(
             page=pagination.page,
             per_page=pagination.per_page,
             total_pages=None,
-            total_count=total_count
+            total_items=total_count
         )
         
         # Add Link header for pagination
@@ -224,7 +224,7 @@ async def list_files(
         )
         
         if link_header:
-            response.headers["Link"] = link_header
+            response.headers["link"] = link_header
         
         # Convert files to dict format (exclude gateways)
         files_dicts = [file.model_dump(exclude={'gateways'}) if hasattr(file, 'model_dump') else {k: v for k, v in (file if isinstance(file, dict) else file.__dict__).items() if k != 'gateways'} for file in files]

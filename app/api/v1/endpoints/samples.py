@@ -273,7 +273,7 @@ async def list_samples(
             page=pagination.page,
             per_page=pagination.per_page,
             total_pages=None,
-            total_items=len(samples),
+            total_items=total_count,  # Use total_count from summary, not len(samples)
             has_next=len(samples) == pagination.per_page,  # If we got a full page, there might be more
             has_prev=pagination.page > 1
         )
@@ -286,7 +286,7 @@ async def list_samples(
         )
         
         if link_header:
-            response.headers["Link"] = link_header
+            response.headers["link"] = link_header
         
         logger.info(
             "List samples response",

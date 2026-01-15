@@ -250,7 +250,7 @@ async def search_samples_by_diagnosis(
             page=pagination.page,
             per_page=pagination.per_page,
             total_pages=None,
-            total_items=len(samples),
+            total_items=total_count,  # Use total_count from summary, not len(samples)
             has_next=len(samples) == pagination.per_page,  # If we got a full page, there might be more
             has_prev=pagination.page > 1
         )
@@ -263,7 +263,7 @@ async def search_samples_by_diagnosis(
         )
         
         if link_header:
-            response.headers["Link"] = link_header
+            response.headers["link"] = link_header
         
         # Exclude gateways from individual samples
         samples_dicts = [sample.model_dump(exclude={'gateways'}) if hasattr(sample, 'model_dump') else {k: v for k, v in (sample if isinstance(sample, dict) else sample.__dict__).items() if k != 'gateways'} for sample in samples]
@@ -566,7 +566,7 @@ async def search_subjects_by_diagnosis(
         )
         
         if link_header:
-            response.headers["Link"] = link_header
+            response.headers["link"] = link_header
         
         # Exclude gateways from individual subjects and always include required metadata keys
         # (`associated_diagnoses`, `vital_status`, `age_at_vital_status`) even when null.

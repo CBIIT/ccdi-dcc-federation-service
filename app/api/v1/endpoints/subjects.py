@@ -278,7 +278,7 @@ async def list_subjects(
             page=pagination.page,
             per_page=pagination.per_page,
             total_pages=None,
-            total_items=len(subjects),
+            total_items=total_count,  # Use total_count from summary, not len(subjects)
             has_next=len(subjects) == pagination.per_page,  # If we got a full page, there might be more
             has_prev=pagination.page > 1,
         )
@@ -290,7 +290,7 @@ async def list_subjects(
             extra_params=dict(request.query_params),
         )
         if link_header:
-            response.headers["Link"] = link_header
+            response.headers["link"] = link_header
         
         # Prepare subjects for response (exclude gateways from output)
         subjects_dicts = prepare_subjects_for_response(subjects)

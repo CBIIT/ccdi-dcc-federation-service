@@ -108,6 +108,31 @@ class SampleRepository:
         return True
     
     @staticmethod
+    def _get_next_param_name(params: Dict[str, Any], param_counter: int) -> str:
+        """
+        Get the next available parameter name to avoid conflicts.
+        
+        Finds the highest parameter number currently in use and returns
+        a new parameter name with the next number.
+        
+        Args:
+            params: Dictionary of current parameters
+            param_counter: Current parameter counter value
+            
+        Returns:
+            Next available parameter name (e.g., "param_8")
+        """
+        max_param_num = param_counter
+        for key in params.keys():
+            if key.startswith("param_"):
+                try:
+                    num = int(key.split("_")[1])
+                    max_param_num = max(max_param_num, num)
+                except (ValueError, IndexError):
+                    pass
+        return f"param_{max_param_num + 1}"
+    
+    @staticmethod
     def _validate_library_source_material_filter(
         value: Any,
         param_name: str,
@@ -746,17 +771,7 @@ class SampleRepository:
             
             if all_dep_values:
                 # Use a dedicated parameter name for depositions early filter to avoid conflicts
-                # Find the highest param number used so far and create a new one
-                max_param_num = param_counter
-                for key in params.keys():
-                    if key.startswith("param_"):
-                        try:
-                            num = int(key.split("_")[1])
-                            max_param_num = max(max_param_num, num)
-                        except (ValueError, IndexError):
-                            pass
-                # Create a new unique parameter name for depositions early filter
-                dep_early_param_name = f"param_{max_param_num + 1}"
+                dep_early_param_name = SampleRepository._get_next_param_name(params, param_counter)
                 if len(all_dep_values) > 1:
                     # Multiple values - use IN clause
                     params[dep_early_param_name] = all_dep_values
@@ -4235,17 +4250,7 @@ class SampleRepository:
             
             if all_dep_values:
                 # Use a dedicated parameter name for depositions early filter to avoid conflicts
-                # Find the highest param number used so far and create a new one
-                max_param_num = param_counter
-                for key in params.keys():
-                    if key.startswith("param_"):
-                        try:
-                            num = int(key.split("_")[1])
-                            max_param_num = max(max_param_num, num)
-                        except (ValueError, IndexError):
-                            pass
-                # Create a new unique parameter name for depositions early filter
-                dep_early_param_name = f"param_{max_param_num + 1}"
+                dep_early_param_name = SampleRepository._get_next_param_name(params, param_counter)
                 if len(all_dep_values) > 1:
                     # Multiple values - use IN clause
                     params[dep_early_param_name] = all_dep_values

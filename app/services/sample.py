@@ -250,7 +250,11 @@ class SampleService:
         # Transform repository format to response format
         from app.models.dto import SummaryCounts
         # Repository returns {"counts": {"total": ...}} or {"total_count": ...} (for filtered case)
-        if "counts" in summary_data:
+        # Handle case where repository returns empty list (shouldn't happen, but be defensive)
+        if isinstance(summary_data, list):
+            logger.warning("Repository returned list instead of dict for summary", summary_data=summary_data)
+            total_count = 0
+        elif "counts" in summary_data:
             total_count = summary_data["counts"].get("total", 0)
         else:
             total_count = summary_data.get("total_count", 0)

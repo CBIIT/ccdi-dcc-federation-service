@@ -494,7 +494,8 @@ class SampleRepository:
             elif field == "tissue_type":
                 # Use helper function to validate tissue_type filter
                 if self._validate_tissue_type_filter(value, param_name, params, with_conditions) is None:
-                    return []
+                    # Return empty summary dict instead of empty list
+                    return {"counts": {"total": 0}}
             elif field == "tumor_classification":
                 # Check if value is in null_mappings (e.g., "non-malignant")
                 if is_null_mapped_value("tumor_classification", value):
@@ -744,16 +745,26 @@ class SampleRepository:
                         all_dep_values.append(dep_value)
             
             if all_dep_values:
-                # Use the first param name for the combined filter
-                dep_param_name = self._depositions_early_params[0]
+                # Use a dedicated parameter name for depositions early filter to avoid conflicts
+                # Find the highest param number used so far and create a new one
+                max_param_num = param_counter
+                for key in params.keys():
+                    if key.startswith("param_"):
+                        try:
+                            num = int(key.split("_")[1])
+                            max_param_num = max(max_param_num, num)
+                        except (ValueError, IndexError):
+                            pass
+                # Create a new unique parameter name for depositions early filter
+                dep_early_param_name = f"param_{max_param_num + 1}"
                 if len(all_dep_values) > 1:
                     # Multiple values - use IN clause
-                    params[dep_param_name] = all_dep_values
-                    depositions_early_filter = f"st.study_id IN ${dep_param_name}"
+                    params[dep_early_param_name] = all_dep_values
+                    depositions_early_filter = f"st.study_id IN ${dep_early_param_name}"
                 else:
                     # Single value - use = for better performance
-                    params[dep_param_name] = all_dep_values[0]
-                    depositions_early_filter = f"st.study_id = ${dep_param_name}"
+                    params[dep_early_param_name] = all_dep_values[0]
+                    depositions_early_filter = f"st.study_id = ${dep_early_param_name}"
                 early_where_conditions.append(depositions_early_filter)
         late_where_conditions = [
             # st IS NOT NULL check removed - IN_STUDY MATCH ensures study path exists
@@ -3869,6 +3880,9 @@ class SampleRepository:
         param_counter = 0
         where_conditions = []
         
+        # Track depositions early params separately to avoid parameter conflicts
+        self._depositions_early_params = []
+        
         # Handle identifiers parameter normalization
         # Support || separator for OR logic (e.g., "SAMP001 || SAMP002")
         # OPTIMIZATION: Apply identifiers filter EARLY in MATCH WHERE clause to reduce dataset before OPTIONAL MATCHes
@@ -4018,7 +4032,8 @@ class SampleRepository:
             elif field == "tissue_type":
                 # Use helper function to validate tissue_type filter
                 if self._validate_tissue_type_filter(value, param_name, params, with_conditions) is None:
-                    return []
+                    # Return empty summary dict instead of empty list
+                    return {"counts": {"total": 0}}
             elif field == "tumor_classification":
                 # Check if value is in null_mappings (e.g., "non-malignant")
                 if is_null_mapped_value("tumor_classification", value):
@@ -4219,16 +4234,26 @@ class SampleRepository:
                         all_dep_values.append(dep_value)
             
             if all_dep_values:
-                # Use the first param name for the combined filter
-                dep_param_name = self._depositions_early_params[0]
+                # Use a dedicated parameter name for depositions early filter to avoid conflicts
+                # Find the highest param number used so far and create a new one
+                max_param_num = param_counter
+                for key in params.keys():
+                    if key.startswith("param_"):
+                        try:
+                            num = int(key.split("_")[1])
+                            max_param_num = max(max_param_num, num)
+                        except (ValueError, IndexError):
+                            pass
+                # Create a new unique parameter name for depositions early filter
+                dep_early_param_name = f"param_{max_param_num + 1}"
                 if len(all_dep_values) > 1:
                     # Multiple values - use IN clause
-                    params[dep_param_name] = all_dep_values
-                    depositions_early_filter = f"st.study_id IN ${dep_param_name}"
+                    params[dep_early_param_name] = all_dep_values
+                    depositions_early_filter = f"st.study_id IN ${dep_early_param_name}"
                 else:
                     # Single value - use = for better performance
-                    params[dep_param_name] = all_dep_values[0]
-                    depositions_early_filter = f"st.study_id = ${dep_param_name}"
+                    params[dep_early_param_name] = all_dep_values[0]
+                    depositions_early_filter = f"st.study_id = ${dep_early_param_name}"
                 early_where_conditions.append(depositions_early_filter)
         
         # Build early WHERE clause

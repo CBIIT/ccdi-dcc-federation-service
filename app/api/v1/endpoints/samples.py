@@ -264,6 +264,9 @@ async def list_samples(
                 logger.warning(
                     "Error getting samples summary, using 0 as total",
                     error=str(summary_error),
+                    error_type=type(summary_error).__name__,
+                    filters=filters,
+                    sample_count=len(samples),  # Log how many samples were actually returned
                     exc_info=True
                 )
             total_count = 0

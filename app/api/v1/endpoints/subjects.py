@@ -413,8 +413,9 @@ async def list_subjects(
                         "errors": [
                             {
                                 "kind": "UnsupportedField",
-                                "field": "handedness",
-                                "message": "Field 'handedness' is not supported: this field is not present for subjects."
+                                "field": "wrong field",
+                                "message": "Field is not supported for subjects.",
+                                "reason": "This field is not present for subjects."
                             }
                         ]
                     }

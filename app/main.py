@@ -372,7 +372,7 @@ def setup_exception_handlers(app: FastAPI) -> None:
     
     @app.exception_handler(RequestValidationError)
     async def request_validation_exception_handler(request: Request, exc: RequestValidationError):
-        """Handle FastAPI request validation errors - convert to InvalidParameters format."""
+        """Handle FastAPI request validation errors - convert to InvalidParameters or UnsupportedField format."""
         # Log the validation error details for debugging
         logger.warning(
             "Request validation error",
@@ -381,7 +381,45 @@ def setup_exception_handlers(app: FastAPI) -> None:
             errors=exc.errors()
         )
         
-        # Return sanitized InvalidParameters error
+        # Check if this is an enum violation for a "field" path parameter in a count endpoint
+        path_str = str(request.url.path)
+        is_count_endpoint = "/by/" in path_str and "/count" in path_str
+        
+        if is_count_endpoint:
+            errors = exc.errors()
+            for error in errors:
+                # Check if this is an enum violation for a path parameter named "field"
+                error_type = error.get("type", "")
+                error_loc = error.get("loc", ())
+                
+                # Enum violations can have types like "enum", "value_error.enum", or "literal"
+                is_enum_error = any(keyword in error_type.lower() for keyword in ["enum", "literal"])
+                is_field_param = len(error_loc) >= 2 and error_loc[0] == "path" and error_loc[1] == "field"
+                
+                if is_enum_error and is_field_param:
+                    # Determine entity type from path
+                    if "/file/" in path_str:
+                        entity_type = "files"
+                    elif "/sample/" in path_str:
+                        entity_type = "samples"
+                    elif "/subject/" in path_str:
+                        entity_type = "subjects"
+                    else:
+                        entity_type = "files"  # Default fallback
+                    
+                    # Return UnsupportedField error
+                    error_detail = ErrorDetail(
+                        kind=ErrorKind.UNSUPPORTED_FIELD,
+                        field="wrong field",  # Don't expose actual field name
+                        message=f"Field is not supported for {entity_type}.",
+                        reason=f"This field is not present for {entity_type}."
+                    )
+                    return JSONResponse(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+                    )
+        
+        # Return sanitized InvalidParameters error for other validation errors
         error_detail = ErrorDetail(
             kind=ErrorKind.INVALID_PARAMETERS,
             parameters=[],  # Empty array - don't expose parameter names

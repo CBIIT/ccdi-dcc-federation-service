@@ -393,8 +393,9 @@ async def list_samples(
                         "errors": [
                             {
                                 "kind": "UnsupportedField",
-                                "field": "handedness",
-                                "message": "Field 'handedness' is not supported: this field is not present for samples."
+                                "field": "wrong field",
+                                "message": "Field is not supported for samples.",
+                                "reason": "This field is not present for samples."
                             }
                         ]
                     }

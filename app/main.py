@@ -460,12 +460,12 @@ def setup_exception_handlers(app: FastAPI) -> None:
                 path=str(request.url.path)
             )
             
-            # Return sanitized error detail with route set to "/api"
+            # Return error detail matching Error-InvalidRoute-404.json format
             error_detail = ErrorDetail(
                 kind=ErrorKind.INVALID_ROUTE,
                 method=request.method,
-                route="/api",
-                message="Invalid route requested."
+                route="Invalid route requested.",
+                message="Invalid route requested."  # Not in specification
             )
             
             return JSONResponse(
@@ -538,12 +538,12 @@ def setup_exception_handlers(app: FastAPI) -> None:
                 path=str(request.url.path)
             )
             
-            # Return sanitized error detail (no route in response, generic message)
+            # Return error detail matching Error-InvalidRoute-404.json format
             error_detail = ErrorDetail(
                 kind=ErrorKind.INVALID_ROUTE,
                 method=request.method,
-                route=None,  # Don't include route in response
-                message="Invalid route requested."
+                route="Invalid route requested.",
+                message="Invalid route requested."  # Not in specification
             )
             
             return JSONResponse(
@@ -566,12 +566,12 @@ def setup_exception_handlers(app: FastAPI) -> None:
                     route=path,
                     suggested_path=suggested_path
                 )
-                # Return sanitized error detail (no route in response, generic message)
+                # Return error detail matching Error-InvalidRoute-404.json format
                 error_detail = ErrorDetail(
                     kind=ErrorKind.INVALID_ROUTE,
                     method=request.method,
-                    route=None,  # Don't include route in response
-                    message="Invalid route requested."
+                    route="Invalid route requested.",
+                    message="Invalid route requested."  # Not in specification
                 )
                 return JSONResponse(
                     status_code=status.HTTP_404_NOT_FOUND,
@@ -597,12 +597,12 @@ def setup_exception_handlers(app: FastAPI) -> None:
                                     route=path,
                                     suggested_path=suggested_path
                                 )
-                                # Return sanitized error detail (no route in response, generic message)
+                                # Return error detail matching Error-InvalidRoute-404.json format
                                 error_detail = ErrorDetail(
                                     kind=ErrorKind.INVALID_ROUTE,
                                     method=request.method,
-                                    route=None,  # Don't include route in response
-                                    message="Invalid route requested."
+                                    route="Invalid route requested.",
+                                    message="Invalid route requested."  # Not in specification
                                 )
                                 return JSONResponse(
                                     status_code=status.HTTP_404_NOT_FOUND,

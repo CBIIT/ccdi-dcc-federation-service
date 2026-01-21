@@ -858,15 +858,19 @@ paths:
       tags:
       - File
       summary: Groups the files by the specified metadata field and returns counts.
-      description: Groups the files by the specified metadata field and returns counts.
+      description: Groups the files by the specified metadata field and returns counts. Only 'type' and 'depositions' are supported.
       operationId: files_by_count
       parameters:
       - name: field
         in: path
-        description: The field to group by and count with.
+        description: The field to group by and count with. Only 'type' and 'depositions' are supported.
         required: true
         schema:
           type: string
+          enum:
+          - type
+          - depositions
+        example: type
       responses:
         '200':
           description: Successful operation.

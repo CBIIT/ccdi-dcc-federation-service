@@ -5,7 +5,7 @@ This module provides REST endpoints for sequencing file operations
 including listing, individual retrieval, counting, and summaries.
 """
 
-from typing import Dict, Any, Literal
+from typing import Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status, Path
 from neo4j import AsyncSession
@@ -365,8 +365,9 @@ async def list_files(
                         "errors": [
                             {
                                 "kind": "UnsupportedField",
-                                "field": "handedness",
-                                "message": "Field 'handedness' is not supported: this field is not present for files."
+                                "field": "wrong field",
+                                "message": "Field is not supported for files.",
+                                "reason": "This field is not present for files."
                             }
                         ]
                     }
@@ -377,14 +378,13 @@ async def list_files(
 )
 async def count_files_by_field(
     request: Request,
-    field: Literal["type", "depositions"] = Path(
+    field: str = Path(
         ...,
         description="The field to group by and count. Only 'type' and 'depositions' are supported.",
+        enum=["type", "depositions"],
         examples={
-            "default": {
-                "summary": "Count field",
-                "value": "type",
-            }
+            "type": {"value": "type", "summary": "Count by file type"},
+            "depositions": {"value": "depositions", "summary": "Count by depositions"}
         },
     ),
     filters: Dict[str, Any] = Depends(get_file_filters_no_descriptions),
@@ -394,6 +394,16 @@ async def count_files_by_field(
     _rate_limit: None = Depends(check_rate_limit)
 ):
     """Count sequencing files grouped by a specific field."""
+    # Validate field is supported - only "type" and "depositions" are allowed
+    allowed_fields = {"type", "depositions"}
+    if field not in allowed_fields:
+        logger.warning(
+            "Unsupported field for file count",
+            field=field,
+            path=request.url.path
+        )
+        raise UnsupportedFieldError(field, "file")
+    
     # Check if any query parameters are provided - count endpoints don't accept filters
     if request.query_params:
         logger.warning(

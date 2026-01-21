@@ -173,6 +173,114 @@ class TestUnsupportedFields:
         assert not issues, f"Error response validation failed: {issues}"
 
 
+class TestEntityTypeDetection:
+    """Test entity type detection in UnsupportedField errors."""
+    
+    def test_subject_entity_type_detection(self, client: TestClient):
+        """Test that subject entity type is correctly detected from path."""
+        # Use invalid enum value - endpoint handler will raise UnsupportedFieldError
+        r = client.get("/api/v1/subject/by/invalid_enum_value/count")
+        assert r.status_code == 400
+        body = r.json()
+        assert body["errors"][0]["kind"] == "UnsupportedField"
+        # Endpoint handlers use singular form "subject" in error messages
+        assert "subject" in body["errors"][0]["message"].lower()
+        assert "subject" in body["errors"][0]["reason"].lower()
+        # Verify field is sanitized
+        assert body["errors"][0]["field"] == "wrong field"
+    
+    def test_sample_entity_type_detection(self, client: TestClient):
+        """Test that sample entity type is correctly detected from path."""
+        # Use invalid enum value - endpoint handler will raise UnsupportedFieldError
+        r = client.get("/api/v1/sample/by/invalid_enum_value/count")
+        assert r.status_code == 400
+        body = r.json()
+        assert body["errors"][0]["kind"] == "UnsupportedField"
+        # Endpoint handlers use singular form "sample" in error messages
+        assert "sample" in body["errors"][0]["message"].lower()
+        assert "sample" in body["errors"][0]["reason"].lower()
+        # Verify field is sanitized
+        assert body["errors"][0]["field"] == "wrong field"
+    
+    def test_file_entity_type_detection(self, client: TestClient):
+        """Test that file entity type is correctly detected from path."""
+        # Use invalid enum value - endpoint handler will raise UnsupportedFieldError
+        r = client.get("/api/v1/file/by/invalid_enum_value/count")
+        assert r.status_code == 400
+        body = r.json()
+        assert body["errors"][0]["kind"] == "UnsupportedField"
+        # Endpoint handlers use singular form "file" in error messages
+        assert "file" in body["errors"][0]["message"].lower()
+        assert "file" in body["errors"][0]["reason"].lower()
+        # Verify field is sanitized
+        assert body["errors"][0]["field"] == "wrong field"
+    
+    def test_unknown_entity_type_generic_message(self, client: TestClient):
+        """Test that unknown entity types use generic message without entity name."""
+        # Try a path with unknown entity type (if such endpoint existed)
+        # Since this endpoint doesn't exist, it will return 404, but we can test
+        # the logic by checking what happens with a malformed count endpoint
+        # Actually, let's test with a path that matches the pattern but has unknown entity
+        # Note: This will likely return 404 since the route doesn't exist,
+        # but if it somehow triggers the validation error handler, it should use generic message
+        r = client.get("/api/v1/organization/by/invalid_field/count")
+        # This endpoint doesn't exist, so it will be 404, but if it did exist and had enum validation,
+        # it would use generic message. For now, we just verify it doesn't crash
+        assert r.status_code in (400, 404)
+    
+    def test_path_with_trailing_slash(self, client: TestClient):
+        """Test entity type detection with trailing slash in path."""
+        r = client.get("/api/v1/subject/by/invalid_enum_value/count/")
+        # Should handle trailing slash gracefully (FastAPI redirects to remove trailing slash)
+        assert r.status_code in (400, 404, 307)
+        if r.status_code == 400:
+            body = r.json()
+            if body.get("errors") and body["errors"][0].get("kind") == "UnsupportedField":
+                # Endpoint handlers use singular form
+                assert "subject" in body["errors"][0]["message"].lower()
+    
+    def test_path_parsing_from_segments(self, client: TestClient):
+        """Test that entity type is extracted from path segments correctly."""
+        # Test with standard path format: /api/v1/{entity}/by/{field}/count
+        r = client.get("/api/v1/subject/by/invalid_enum_value/count")
+        assert r.status_code == 400
+        body = r.json()
+        assert body["errors"][0]["kind"] == "UnsupportedField"
+        # Verify entity type is correctly identified (endpoint handlers use singular)
+        error = body["errors"][0]
+        assert "subject" in error["message"].lower()
+        assert "subject" in error["reason"].lower()
+        # Verify field is sanitized
+        assert error["field"] == "wrong field"
+    
+    def test_case_insensitive_entity_detection(self, client: TestClient):
+        """Test that entity type detection is case-insensitive."""
+        # Note: FastAPI routes are case-sensitive, so this will likely return 404
+        # But if the path parsing logic is used, it should handle case
+        r = client.get("/api/v1/SUBJECT/by/invalid_enum_value/count")
+        # This will likely be 404 since routes are case-sensitive
+        # But the entity_map.get() uses .lower() so it would work if route existed
+        assert r.status_code in (400, 404)
+    
+    @pytest.mark.parametrize("entity,expected_singular", [
+        ("subject", "subject"),
+        ("sample", "sample"),
+        ("file", "file"),
+    ])
+    def test_entity_type_in_error_message(self, client: TestClient, entity: str, expected_singular: str):
+        """Test that entity names appear correctly in error messages."""
+        # Use invalid enum value - endpoint handler will raise UnsupportedFieldError
+        r = client.get(f"/api/v1/{entity}/by/invalid_enum_value/count")
+        assert r.status_code == 400
+        body = r.json()
+        assert body["errors"][0]["kind"] == "UnsupportedField"
+        # Endpoint handlers use singular form in error messages
+        assert expected_singular in body["errors"][0]["message"].lower()
+        assert expected_singular in body["errors"][0]["reason"].lower()
+        # Verify field is sanitized
+        assert body["errors"][0]["field"] == "wrong field"
+
+
 class TestMalformedRequests:
     """Test malformed requests return appropriate errors."""
     

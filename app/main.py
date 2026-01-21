@@ -397,23 +397,55 @@ def setup_exception_handlers(app: FastAPI) -> None:
                 is_field_param = len(error_loc) >= 2 and error_loc[0] == "path" and error_loc[1] == "field"
                 
                 if is_enum_error and is_field_param:
-                    # Determine entity type from path
-                    if "/file/" in path_str:
+                    # Determine entity type from path more reliably
+                    # Path pattern: /api/v1/{entity}/by/{field}/count
+                    path_parts = path_str.strip("/").split("/")
+                    entity_type = None
+                    
+                    # Try to extract entity from path segments
+                    # Look for known entity patterns in the path
+                    if "/file/" in path_str or "/file" in path_str:
                         entity_type = "files"
-                    elif "/sample/" in path_str:
+                    elif "/sample/" in path_str or "/sample" in path_str:
                         entity_type = "samples"
-                    elif "/subject/" in path_str:
+                    elif "/subject/" in path_str or "/subject" in path_str:
                         entity_type = "subjects"
                     else:
-                        entity_type = "files"  # Default fallback
+                        # Try to extract from path segments: /api/v1/{entity}/by/{field}/count
+                        # Entity should be at index 2 (0=api, 1=v1, 2=entity)
+                        if len(path_parts) >= 3 and path_parts[0] == "api" and path_parts[1] == "v1":
+                            potential_entity = path_parts[2]
+                            # Map common entity names to plural form
+                            entity_map = {
+                                "file": "files",
+                                "sample": "samples",
+                                "subject": "subjects"
+                            }
+                            entity_type = entity_map.get(potential_entity.lower())
                     
-                    # Return UnsupportedField error
-                    error_detail = ErrorDetail(
-                        kind=ErrorKind.UNSUPPORTED_FIELD,
-                        field="wrong field",  # Don't expose actual field name
-                        message=f"Field is not supported for {entity_type}.",
-                        reason=f"This field is not present for {entity_type}."
-                    )
+                    # If still not determined, log warning and use generic message
+                    if entity_type is None:
+                        logger.warning(
+                            "Unable to determine entity type from path for UnsupportedField error",
+                            path=path_str,
+                            error_type=error_type,
+                            error_loc=error_loc
+                        )
+                        # Use generic message without entity type
+                        error_detail = ErrorDetail(
+                            kind=ErrorKind.UNSUPPORTED_FIELD,
+                            field="wrong field",
+                            message="Field is not supported.",
+                            reason="This field is not present."
+                        )
+                    else:
+                        # Return UnsupportedField error with determined entity type
+                        error_detail = ErrorDetail(
+                            kind=ErrorKind.UNSUPPORTED_FIELD,
+                            field="wrong field",  # Don't expose actual field name
+                            message=f"Field is not supported for {entity_type}.",
+                            reason=f"This field is not present for {entity_type}."
+                        )
                     return JSONResponse(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)

@@ -267,7 +267,9 @@ class TestErrorResponseFormat:
         for error in body["errors"]:
             message = error.get("message", "").lower()
             # Should use generic messages, not expose specific parameter values
-            assert "invalid" in message or "parameter" in message or "query" in message
+            # Message must be non-empty and must not include the concrete query parameter name
+            assert message, "Error message should not be empty"
+            assert "unknown_param" not in message, "Error message should not expose concrete parameter names"
             # Should not expose the actual parameter name in a way that reveals internals
             if "parameters" in error:
                 # Parameters array should be empty or sanitized

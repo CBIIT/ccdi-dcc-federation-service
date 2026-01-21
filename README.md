@@ -448,7 +448,7 @@ Returned when a requested resource is not found:
       "kind": "NotFound",
       "entity": "Subjects",
       "message": "Unable to find data for your request.",
-      "reason": "No data found."
+      "reason": "No data found"
     }
   ]
 }

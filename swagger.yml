@@ -207,6 +207,7 @@ paths:
               example:
                 errors:
                 - kind: InvalidParameters
+                  # Intentionally left empty to avoid echoing back user-supplied parameter names or values for security/privacy reasons.
                   parameters: []
                   message: Invalid query parameter(s) provided.
                   reason: Unknown query parameter(s)

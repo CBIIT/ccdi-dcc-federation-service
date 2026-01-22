@@ -28,7 +28,7 @@ jobs:
     
     - name: Run tests with coverage
       run: |
-        uv run pytest --cov=app --cov-report=lcov --cov-report=term-missing
+        uv run pytest --cov-report=lcov
     
     - name: Coveralls GitHub Action
       uses: coverallsapp/github-action@v2

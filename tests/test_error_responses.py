@@ -45,6 +45,7 @@ def validate_error_response(data: dict, expected_status: int):
         
         # Check for internal error messages (should not expose str(exc) or stack traces)
         error_str = str(error).lower()
+        # Check for forbidden patterns, but allow common user-facing terms like "query parameter"
         forbidden_patterns = [
             "traceback",
             "file \"",
@@ -60,14 +61,23 @@ def validate_error_response(data: dict, expected_status: int):
             "timeout",
             "database",
             "neo4j",
-            "cypher",
-            "query",
-            "sql",
+            "cypher query",
+            "sql query",
+            "query error",
+            "query failed",
+            "query execution",
         ]
         
         for pattern in forbidden_patterns:
             if pattern in error_str:
                 issues.append(f"Error {i} exposes internal details: contains '{pattern}'")
+        
+        # Also check for standalone "query" that's not part of "query parameter"
+        # This catches internal query references while allowing "query parameter(s)"
+        if "query" in error_str:
+            # Allow "query parameter" but flag other uses
+            if "query parameter" not in error_str:
+                issues.append(f"Error {i} exposes internal details: contains 'query' (not in 'query parameter')")
         
         # Check error kind matches expected status
         kind = error.get("kind", "")

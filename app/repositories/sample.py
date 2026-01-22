@@ -2328,22 +2328,54 @@ class SampleRepository:
                             # No mappings, return empty results
                             cypher = "RETURN '' as value, 0 AS count LIMIT 0"
                         else:
+                            # COMBINED QUERY: Returns total, missing, and values in one pass
+                            # This avoids running 3 separate queries and processes samples once
+                            # Performance: Collect → Filter → Map → Calculate total/missing/values
+                            # Use parameterized query for better index usage
+                            params["mapped_db_values"] = mapped_db_values
+                            invalid_list_filter = build_invalid_value_list_filter(field)
                             cypher = f"""
                 MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL 
                   AND sa.sample_id <> ''
-                MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
-                WHERE sf.library_source_molecule IN [{db_values_str}]
-                WITH sa.sample_id as sample_id, st.study_id as study_id,
+                OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
+                WITH toString(sa.sample_id) AS sample_id,
+                     toString(st.study_id) AS study_id,
                      collect(DISTINCT sf.library_source_molecule) as molecule_values
-                UNWIND molecule_values as molecule_value
+                WITH sample_id, study_id, molecule_values,
+                     // Filter to only mapped DB values using parameterized query
+                     [val IN molecule_values WHERE val IS NOT NULL AND val IN $mapped_db_values] as mapped_db_values_list,
+                     // For MISSING: Check if no valid values (NULL/empty/-999/null_mappings)
+                     CASE WHEN size([val IN molecule_values WHERE val IS NOT NULL 
+                                     AND {invalid_list_filter}]) = 0 
+                          THEN 1 ELSE 0 END as is_missing
+                // Calculate total and missing counts (aggregate across all samples)
+                // IMPORTANT: Calculate BEFORE unwinding to get correct totals
+                WITH count(*) as total,
+                     sum(is_missing) as missing,
+                     collect({{sample_id: sample_id, study_id: study_id, mapped_db_values_list: mapped_db_values_list}}) as all_samples
+                // Now unwind mapped values and map to API values
+                UNWIND all_samples as sample_data
+                WITH sample_data.sample_id as sample_id,
+                     sample_data.study_id as study_id,
+                     sample_data.mapped_db_values_list as mapped_db_values_list,
+                     total, missing,
+                     CASE WHEN size(sample_data.mapped_db_values_list) = 0 THEN [null] ELSE sample_data.mapped_db_values_list END as values_to_unwind
+                UNWIND values_to_unwind as molecule_value
+                WITH sample_id, study_id, molecule_value, total, missing
+                WHERE molecule_value IS NOT NULL  // Filter out the null placeholder rows
                 WITH sample_id, study_id,
-                     {case_statement} as api_value
+                     {case_statement} as api_value,
+                     total, missing
                 WHERE api_value IS NOT NULL
-                WITH sample_id, study_id, api_value
-                RETURN api_value as value, count(*) AS count
+                // Deduplicate by (sample_id, study_id, api_value) before counting
+                WITH DISTINCT sample_id, study_id, api_value, total, missing
+                WITH api_value as value, count(*) as count, total, missing
+                RETURN value, count, total, missing
                 ORDER BY count DESC, value ASC
                 """.strip()
+                            # Mark this as a combined query so we can handle it differently
+                            is_combined_query = True
                 elif node_alias == "sf" and not base_where_clause:
                     # Special handling for library_source_material: Combined query (total + missing + values)
                     # For other sequencing_file fields: Use separate queries
@@ -2785,8 +2817,12 @@ class SampleRepository:
                     if not value or count == 0:
                         continue
                     
-                    # Apply field mapping (DB value -> API value)
-                    mapped_value = map_field_value(field, value)
+                    # For specimen_molecular_analyte_type, the value is already mapped in Cypher (API value)
+                    # For other fields, apply field mapping (DB value -> API value)
+                    if field == "specimen_molecular_analyte_type":
+                        mapped_value = value  # Already mapped in Cypher CASE statement
+                    else:
+                        mapped_value = map_field_value(field, value)
                     
                     # If mapping returns None, skip this value (it should be counted as missing)
                     # Also explicitly check if the original value is in null_mappings as a safeguard
@@ -2828,9 +2864,9 @@ class SampleRepository:
                 # Determine the node and field based on field name
                 invalid_list_filter = build_invalid_value_list_filter(field)
                 # For combined queries, we know the field structure:
-                # - library_source_material, library_strategy: sequencing_file (sf)
+                # - library_source_material, library_strategy, specimen_molecular_analyte_type: sequencing_file (sf)
                 # - preservation_method: pathology_file (pf)
-                if field in ["library_source_material", "library_strategy"]:
+                if field in ["library_source_material", "library_strategy", "specimen_molecular_analyte_type"]:
                     node_alias = "sf"
                     relationship = "-[:of_sequencing_file]->"
                     node_type = "sequencing_file"
@@ -2843,6 +2879,17 @@ class SampleRepository:
                     node_alias = "sf"
                     relationship = "-[:of_sequencing_file]->"
                     node_type = "sequencing_file"
+                
+                # Determine the correct node_field based on field name
+                if field == "specimen_molecular_analyte_type":
+                    node_field = "sf.library_source_molecule"
+                elif field in ["library_source_material", "library_strategy"]:
+                    node_field = f"{node_alias}.{sample_metadata_field_mapping[field][1]}"
+                elif field == "preservation_method":
+                    node_field = f"{node_alias}.{sample_metadata_field_mapping[field][1]}"
+                else:
+                    # Fallback
+                    node_field = f"{node_alias}.{sample_metadata_field_mapping.get(field, ('', field))[1]}"
                 
                 fallback_cypher = f"""
                 MATCH (sa:sample)-[:IN_STUDY]->(st:study)
@@ -3376,7 +3423,8 @@ class SampleRepository:
                 MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
                 OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
-                WITH sa.sample_id as sample_id, st.study_id as study_id,
+                WITH toString(sa.sample_id) AS sample_id,
+                     toString(st.study_id) AS study_id,
                      collect(DISTINCT sf.library_source_molecule) as molecule_values
                 WHERE size([val IN molecule_values WHERE val IS NOT NULL 
                              AND {invalid_list_filter}]) = 0

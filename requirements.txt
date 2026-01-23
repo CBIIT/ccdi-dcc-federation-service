@@ -10,9 +10,7 @@ starlette>=0.40.0
 # Database
 neo4j==5.15.0
 
-# Caching
-redis==5.0.1
-hiredis==2.2.3
+## Caching (disabled)
 
 # Logging
 structlog==23.2.0

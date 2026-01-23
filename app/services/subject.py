@@ -7,15 +7,17 @@ repositories and API endpoints.
 """
 
 from typing import List, Dict, Any, Optional
+import asyncio
 from neo4j import AsyncSession
 
 from app.core.config import Settings
 from app.core.logging import get_logger
 from app.core.cache import CacheService
 from app.lib.field_allowlist import FieldAllowlist
-from app.models.dto import Subject, SubjectResponse, CountResponse, SummaryResponse
+from app.models.dto import Subject, SubjectResponse, CountResponse, SummaryResponse, SummaryCounts
 from app.models.errors import NotFoundError, ValidationError
 from app.repositories.subject import SubjectRepository
+from app.db.memgraph import DatabaseConnectionError
 
 logger = get_logger(__name__)
 
@@ -61,16 +63,59 @@ class SubjectService:
         )
         
         # Validate pagination limits
-        if limit > self.settings.pagination.max_per_page:
-            limit = self.settings.pagination.max_per_page
+        if limit > self.settings.pagination.max_page_size:
+            limit = self.settings.pagination.max_page_size
             logger.debug(
                 "Limiting page size",
                 requested=limit,
-                max_allowed=self.settings.pagination.max_per_page
+                max_allowed=self.settings.pagination.max_page_size
             )
         
-        # Get data from repository
-        subjects = await self.repository.get_subjects(filters, offset, limit, base_url=base_url)
+        # Get data from repository with retry for transient errors
+        max_retries = 2
+        retry_delay = 0.1  # 100ms
+        
+        for attempt in range(max_retries + 1):
+            try:
+                subjects = await self.repository.get_subjects(filters, offset, limit, base_url=base_url)
+                break
+            except DatabaseConnectionError as e:
+                # Database connection error - log clearly for AWS cloud monitoring
+                logger.error(
+                    "Database connection error while fetching subjects - returning empty result",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    attempt=attempt + 1,
+                    max_retries=max_retries,
+                    filters=filters,
+                    offset=offset,
+                    limit=limit,
+                    is_database_connection_error=True,
+                    will_return_empty=True
+                )
+                # Return empty list instead of raising - API will return 404
+                return []
+            except Exception as e:
+                # Check if this is a transient error that might benefit from retry
+                error_str = str(e).lower()
+                is_transient = any(keyword in error_str for keyword in [
+                    'timeout', 'connection', 'network', 'temporary', 'unavailable',
+                    'broken pipe', 'connection reset', 'connection closed'
+                ])
+                
+                if is_transient and attempt < max_retries:
+                    logger.warning(
+                        "Transient error detected, retrying",
+                        attempt=attempt + 1,
+                        max_retries=max_retries,
+                        error=str(e),
+                        error_type=type(e).__name__
+                    )
+                    await asyncio.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+                    continue
+                else:
+                    # Not a transient error or max retries reached, re-raise
+                    raise
         
         logger.info(
             "Retrieved subjects",
@@ -167,7 +212,21 @@ class SubjectService:
                 return CountResponse(**cached_result)
         
         # Get counts from repository
-        result = await self.repository.count_subjects_by_field(field, filters)
+        try:
+            result = await self.repository.count_subjects_by_field(field, filters)
+        except DatabaseConnectionError as e:
+            # Database connection error - log clearly for AWS cloud monitoring
+            logger.error(
+                "Database connection error while counting subjects by field - returning empty result",
+                error=str(e),
+                error_type=type(e).__name__,
+                field=field,
+                filters=filters,
+                is_database_connection_error=True,
+                will_return_empty=True
+            )
+            # Return empty count instead of raising - API will return 404
+            return CountResponse(total=0, missing=0, values=[])
         
         # Build response
         response = CountResponse(
@@ -230,18 +289,57 @@ class SubjectService:
                     return SummaryResponse(**cached_result)
                 else:
                     # Transform old format to new format
-                    from app.models.dto import SummaryCounts
                     return SummaryResponse(
                         counts=SummaryCounts(total=cached_result.get("total_count", 0))
                     )
         
-        # Get summary from repository
+        # Get summary from repository with retry for transient errors
+        max_retries = 2
+        retry_delay = 0.1  # 100ms
+        
         logger.debug("Calling repository.get_subjects_summary", filters=filters)
-        summary_data = await self.repository.get_subjects_summary(filters)
+        for attempt in range(max_retries + 1):
+            try:
+                summary_data = await self.repository.get_subjects_summary(filters)
+                break
+            except DatabaseConnectionError as e:
+                # Database connection error - log clearly for AWS cloud monitoring
+                logger.error(
+                    "Database connection error while fetching subjects summary - returning empty result",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    attempt=attempt + 1,
+                    max_retries=max_retries,
+                    filters=filters,
+                    is_database_connection_error=True,
+                    will_return_empty=True
+                )
+                # Return empty summary instead of raising - API will return 404
+                return SummaryResponse(counts=SummaryCounts(total=0))
+            except Exception as e:
+                # Check if this is a transient error that might benefit from retry
+                error_str = str(e).lower()
+                is_transient = any(keyword in error_str for keyword in [
+                    'timeout', 'connection', 'network', 'temporary', 'unavailable',
+                    'broken pipe', 'connection reset', 'connection closed'
+                ])
+                
+                if is_transient and attempt < max_retries:
+                    logger.warning(
+                        "Transient error detected in get_subjects_summary, retrying",
+                        attempt=attempt + 1,
+                        max_retries=max_retries,
+                        error=str(e),
+                        error_type=type(e).__name__
+                    )
+                    await asyncio.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+                    continue
+                else:
+                    # Not a transient error or max retries reached, re-raise
+                    raise
         logger.debug("Repository returned", total_count=summary_data.get("total_count"))
         
         # Transform repository format to response format
-        from app.models.dto import SummaryResponse, SummaryCounts
         response = SummaryResponse(
             counts=SummaryCounts(total=summary_data.get("total_count", 0))
         )

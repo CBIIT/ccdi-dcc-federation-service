@@ -19,7 +19,7 @@ router = APIRouter(tags=["Root"])
 DATA_PATH = Path(__file__).resolve().parents[3] / "config_data" / "info.json"
 
 
-@router.get("/", summary="API root JSON")
+@router.get("/", summary="API root JSON",  include_in_schema=False)
 def api_root():
     """
     Returns the API root JSON configuration.

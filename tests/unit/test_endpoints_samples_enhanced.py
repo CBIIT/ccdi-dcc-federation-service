@@ -107,7 +107,13 @@ class TestSampleEndpointsEnhanced:
         with patch('app.api.v1.endpoints.samples.SampleService') as mock_service_class:
             mock_service = AsyncMock(spec=SampleService)
             mock_sample = Mock()
-            mock_sample.model_dump = Mock(return_value={"id": {"name": "SAMPLE-001"}})
+            mock_sample.model_dump = Mock(return_value={
+                "id": {
+                    "namespace": {"organization": "CCDI-DCC", "name": "phs002431"},
+                    "name": "SAMPLE-001"
+                },
+                "metadata": {}
+            })
             mock_service.get_samples = AsyncMock(return_value=[mock_sample])
             mock_service.get_samples_summary = AsyncMock(
                 side_effect=DatabaseConnectionError("Connection failed")
@@ -128,7 +134,7 @@ class TestSampleEndpointsEnhanced:
                 
                 # Should still return samples but with total_count = 0
                 assert isinstance(result, SamplesResponse)
-                assert result.summary.counts.all == 0
+                assert result.summary["counts"]["all"] == 0
 
     async def test_list_samples_summary_connection_error(self, mock_request, mock_response, mock_session, mock_settings, mock_allowlist, mock_pagination):
         """Test list_samples handles connection-related error in summary."""
@@ -170,7 +176,7 @@ class TestSampleEndpointsEnhanced:
                 
                 # Should still return samples but with total_count = 0
                 assert isinstance(result, SamplesResponse)
-                assert result.summary.counts.all == 0
+                assert result.summary["counts"]["all"] == 0
 
     async def test_list_samples_summary_other_error(self, mock_request, mock_response, mock_session, mock_settings, mock_allowlist, mock_pagination):
         """Test list_samples handles other errors in summary."""
@@ -212,7 +218,7 @@ class TestSampleEndpointsEnhanced:
                 
                 # Should still return samples but with total_count = 0
                 assert isinstance(result, SamplesResponse)
-                assert result.summary.counts.all == 0
+                assert result.summary["counts"]["all"] == 0
 
     async def test_count_samples_by_field_unsupported_field_error(self, mock_request, mock_session, mock_settings, mock_allowlist):
         """Test count_samples_by_field handles UnsupportedFieldError."""

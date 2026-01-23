@@ -644,7 +644,7 @@ async def get_file(
         )
         # Return InvalidParameters error instead of organization-specific message
         raise InvalidParametersError(
-            parameters=[],
+            parameters=[],  # Empty array - don't expose parameter names
             message="Invalid query parameter(s) provided.",
             reason="Unknown query parameter(s)"
         )

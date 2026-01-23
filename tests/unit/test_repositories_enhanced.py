@@ -38,6 +38,7 @@ class TestSubjectRepositoryEnhanced:
         """Create mock settings."""
         settings = Mock()
         settings.subject_count_fields = ["sex", "race", "ethnicity", "vital_status", "age_at_vital_status", "associated_diagnoses"]
+        settings.sex_value_mappings = {}
         return settings
 
     @pytest.fixture

@@ -424,3 +424,138 @@ class TestSetupCustomDocsEndpoint:
                     await endpoint_func(mock_request)
                 break
 
+@pytest.mark.unit
+class TestOpenApiCustomization:
+    """Test cases for OpenAPI customization and filtering."""
+
+    def test_custom_openapi_rewrites_422(self):
+        """Test OpenAPI 422 descriptions and schema replacement."""
+        app_instance = create_app()
+        schema = app_instance.openapi()
+
+        found = False
+        for path_item in schema.get("paths", {}).values():
+            for operation in path_item.values():
+                responses = operation.get("responses", {})
+                if "422" in responses:
+                    assert responses["422"]["description"] == "Invalid query or path parameters."
+                    content = responses["422"].get("content", {}).get("application/json", {})
+                    assert content.get("schema", {}).get("$ref") == "#/components/schemas/ErrorsResponse"
+                    found = True
+                    break
+            if found:
+                break
+
+        assert found
+
+    def test_custom_openapi_removes_summary_and_count_responses(self):
+        """Test OpenAPI removes 404/422 for summary/count endpoints."""
+        app_instance = create_app()
+        schema = app_instance.openapi()
+
+        sample_summary = schema.get("paths", {}).get("/api/v1/sample/summary", {})
+        if sample_summary:
+            for operation in sample_summary.values():
+                assert "404" not in operation.get("responses", {})
+                assert "422" not in operation.get("responses", {})
+
+        file_summary = schema.get("paths", {}).get("/api/v1/file/summary", {})
+        if file_summary:
+            for operation in file_summary.values():
+                assert "404" not in operation.get("responses", {})
+                assert "422" not in operation.get("responses", {})
+
+        for path, path_item in schema.get("paths", {}).items():
+            if "/sample/by/" in path and path.endswith("/count"):
+                for operation in path_item.values():
+                    assert "422" not in operation.get("responses", {})
+            if "/file/by/" in path and path.endswith("/count"):
+                for operation in path_item.values():
+                    assert "422" not in operation.get("responses", {})
+                    assert "404" not in operation.get("responses", {})
+
+    async def test_filtered_openapi_excludes_paths(self):
+        """Test filtered OpenAPI endpoint removes excluded paths."""
+        app_instance = create_app()
+
+        endpoint_func = None
+        for route in app_instance.routes:
+            if hasattr(route, "path") and route.path == "/openapi-filtered.json":
+                endpoint_func = route.endpoint
+                break
+
+        assert endpoint_func is not None
+        schema = await endpoint_func()
+        excluded_paths = {"/health", "/ping", "/version", "/api/v1/errors/examples"}
+        assert not excluded_paths.intersection(set(schema.get("paths", {}).keys()))
+
+
+@pytest.mark.unit
+class TestHealthCheckEndpoints:
+    """Test cases for health endpoints."""
+
+    async def test_health_and_ping(self):
+        """Test /health and /ping responses."""
+        app_instance = create_app()
+
+        routes = {route.path: route.endpoint for route in app_instance.routes if hasattr(route, "path")}
+
+        health_response = await routes["/health"]()
+        assert health_response == {"status": "healthy", "service": "ccdi-federation-service"}
+
+        ping_response = await routes["/ping"]()
+        assert ping_response == {"status": "pong"}
+
+    async def test_version_uses_env(self, monkeypatch):
+        """Test /version uses API_VERSION env var."""
+        app_instance = create_app()
+        routes = {route.path: route.endpoint for route in app_instance.routes if hasattr(route, "path")}
+
+        mock_settings = Mock(spec=Settings)
+        mock_settings.app_version = "1.0.0"
+        monkeypatch.setenv("API_VERSION", "2.0.0")
+
+        version_response = await routes["/version"](settings=mock_settings)
+        assert version_response == {"version": "2.0.0"}
+
+
+@pytest.mark.unit
+class TestEmbeddedDocsAndRedoc:
+    """Test embedded docs and ReDoc endpoints."""
+
+    @patch('pathlib.Path.open')
+    async def test_serve_embedded_docs_success(self, mock_open):
+        """Test serving embedded docs successfully."""
+        mock_file = MagicMock()
+        mock_file.read.return_value = "<html>embedded</html>"
+        mock_file.__enter__ = Mock(return_value=mock_file)
+        mock_file.__exit__ = Mock(return_value=None)
+        mock_open.return_value = mock_file
+
+        app_instance = create_app()
+
+        endpoint_func = None
+        for route in app_instance.routes:
+            if hasattr(route, 'path') and route.path == "/docs-embedded":
+                endpoint_func = route.endpoint
+                break
+
+        response = await endpoint_func()
+        assert response.status_code == 200
+
+    async def test_serve_redoc_success(self):
+        """Test serving ReDoc HTML."""
+        app_instance = create_app()
+
+        endpoint_func = None
+        for route in app_instance.routes:
+            if hasattr(route, 'path') and route.path == "/redoc":
+                endpoint_func = route.endpoint
+                break
+
+        mock_request = Mock(spec=Request)
+        mock_request.base_url = "http://localhost:8000/"
+        response = await endpoint_func(mock_request)
+
+        assert response.status_code == 200
+        assert "redoc-container" in response.body.decode("utf-8")

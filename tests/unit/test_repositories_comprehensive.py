@@ -168,10 +168,28 @@ class TestFileRepositoryInternal:
         result = repository._map_file_type_to_enum(None)
         assert result is None
 
-    @pytest.mark.skip(reason="Complex method requires proper File DTO structure")
     def test_record_to_file(self, repository):
-        """Test _record_to_file conversion (skipped - complex)."""
-        pass
+        """Test _record_to_file conversion."""
+        record = {
+            "id": "file1.bam",
+            "file_type": "bam",
+            "file_size": 123,
+            "md5sum": "abc123",
+            "file_description": "test file",
+            "file_name": "file1.bam"
+        }
+        samples = [{"sample_id": "S1"}]
+        study = {"study_id": "phs002431"}
+
+        file_obj = repository._record_to_file(record, samples=samples, study=study)
+
+        assert file_obj.id["namespace"]["name"] == "phs002431"
+        assert file_obj.id["name"] == "file1.bam"
+        assert file_obj.samples[0]["name"] == "S1"
+        assert file_obj.metadata["type"]["value"] == "BAM"
+        assert file_obj.metadata["checksums"]["value"]["md5"] == "abc123"
+        assert file_obj.metadata["unharmonized"]["file_name"]["value"] == "file1.bam"
+        assert file_obj.metadata["depositions"][0]["value"] == "phs002431"
 
     @pytest.mark.skip(reason="Complex method requires extensive mocking of internal query building")
     async def test_count_files_by_depositions(self, repository, mock_session):
@@ -336,6 +354,60 @@ class TestSampleRepositoryInternal:
         assert sample.id.name == "SAMPLE-001"
         assert sample.metadata.tissue_type.value == "Tumor"
 
+    def test_record_to_sample_invalid_values_filtered(self, repository):
+        """Test _record_to_sample filters invalid values."""
+        sa = {
+            "sample_id": "SAMPLE-002",
+            "sample_tumor_status": "Invalid value",
+            "anatomic_site": ["brain", "Invalid value", ""],
+            "participant_age_at_collection": -999
+        }
+        p = {"participant_id": "TEST-002"}
+        st = {"study_id": "phs002431"}
+        sf = {
+            "library_selection": "Invalid value",
+            "library_strategy": "Invalid value",
+            "library_source_material": "Invalid value",
+            "library_source_molecule": "Invalid value"
+        }
+        pf = {"fixation_embedding_method": "Invalid value"}
+        diagnoses = {
+            "diagnosis": " ",
+            "age_at_diagnosis": -999,
+            "tumor_grade": "Invalid value",
+            "tumor_classification": "Invalid value",
+            "disease_phase": "Invalid value"
+        }
+
+        sample = repository._record_to_sample(sa, p, st, sf, pf, diagnoses)
+
+        assert [value.value for value in sample.metadata.anatomical_sites] == ["brain"]
+        assert sample.metadata.age_at_collection is None
+        assert sample.metadata.age_at_diagnosis is None
+        assert sample.metadata.library_selection_method is None
+        assert sample.metadata.tissue_type is None
+        assert sample.metadata.diagnosis is None
+
+    def test_record_to_sample_anatomical_sites_and_integer_values(self, repository):
+        """Test _record_to_sample processes anatomical sites and integer fields."""
+        sa = {
+            "sample_id": "SAMPLE-003",
+            "sample_tumor_status": "Tumor",
+            "anatomic_site": "Brain; Spinal cord",
+            "participant_age_at_collection": "10.0"
+        }
+        p = {"participant_id": "TEST-003"}
+        st = {"study_id": "phs002431"}
+        sf = {}
+        pf = {}
+        diagnoses = {"diagnosis": "Neuroblastoma", "age_at_diagnosis": 5}
+
+        sample = repository._record_to_sample(sa, p, st, sf, pf, diagnoses)
+
+        assert [value.value for value in sample.metadata.anatomical_sites] == ["Brain", "Spinal cord"]
+        assert sample.metadata.age_at_collection.value == 10
+        assert sample.metadata.age_at_diagnosis.value == 5
+        assert sample.metadata.diagnosis.value == "Neuroblastoma"
 
 @pytest.mark.unit
 class TestRepositoryHelperMethods:

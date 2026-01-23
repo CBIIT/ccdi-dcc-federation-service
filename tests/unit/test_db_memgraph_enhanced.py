@@ -170,6 +170,8 @@ class TestMemgraphConnection:
             mock_session
         ]
         mock_driver.close = AsyncMock()
+        mock_driver.verify_connectivity = AsyncMock()
+        mock_graph_db.driver.return_value = mock_driver
         connection._driver = mock_driver
         
         session = await connection.get_session(retry_on_error=True)
@@ -234,6 +236,8 @@ class TestMemgraphConnection:
             mock_session
         ]
         mock_driver.close = AsyncMock()
+        mock_driver.verify_connectivity = AsyncMock()
+        mock_graph_db.driver.return_value = mock_driver
         connection._driver = mock_driver
         
         result = await connection.execute_query("MATCH (n) RETURN n", {}, max_retries=3)
@@ -247,6 +251,8 @@ class TestMemgraphConnection:
         mock_driver = AsyncMock(spec=AsyncDriver)
         mock_driver.session.side_effect = ServiceUnavailable("Service unavailable")
         mock_driver.close = AsyncMock()
+        mock_driver.verify_connectivity = AsyncMock()
+        mock_graph_db.driver.return_value = mock_driver
         connection._driver = mock_driver
         
         with pytest.raises(DatabaseConnectionError):

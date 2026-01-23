@@ -57,6 +57,12 @@ class TestExperimentalEndpoints:
             
             def __iter__(self):
                 return iter(self._params.items())
+            
+            def __getitem__(self, key):
+                return self._params[key]
+            
+            def __iter__(self):
+                return iter(self._params.items())
         
         request.query_params = QueryParams({"search": "cancer", "page": "1", "per_page": "20"})
         return request
@@ -83,7 +89,13 @@ class TestExperimentalEndpoints:
         # Create a proper mock that has model_dump method
         class MockSample:
             def model_dump(self, exclude=None, exclude_none=None, exclude_unset=None):
-                return {"id": {"name": "sample1"}}
+                return {
+                    "id": {
+                        "namespace": {"organization": "CCDI-DCC", "name": "phs002431"},
+                        "name": "sample1"
+                    },
+                    "metadata": {}
+                }
         
         mock_samples = [MockSample()]
         
@@ -110,8 +122,8 @@ class TestExperimentalEndpoints:
         
         assert isinstance(result, SamplesResponse)
         assert len(result.data) == 1
-        assert result.summary.counts.all == 100
-        assert result.summary.counts.current == 1
+        assert result.summary["counts"]["all"] == 100
+        assert result.summary["counts"]["current"] == 1
 
     async def test_search_samples_by_diagnosis_invalid_params(
         self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
@@ -124,6 +136,12 @@ class TestExperimentalEndpoints:
             
             def keys(self):
                 return self._params.keys()
+            
+            def __iter__(self):
+                return iter(self._params.items())
+            
+            def __getitem__(self, key):
+                return self._params[key]
         
         mock_request.query_params = QueryParams({"invalid_param": "value", "search": "cancer"})
         
@@ -150,7 +168,13 @@ class TestExperimentalEndpoints:
         # Create a proper mock that has model_dump method
         class MockSample:
             def model_dump(self, exclude=None, exclude_none=None, exclude_unset=None):
-                return {"id": {"name": "sample1"}}
+                return {
+                    "id": {
+                        "namespace": {"organization": "CCDI-DCC", "name": "phs002431"},
+                        "name": "sample1"
+                    },
+                    "metadata": {}
+                }
         
         mock_samples = [MockSample()]
         
@@ -176,7 +200,7 @@ class TestExperimentalEndpoints:
         
         # Should still return results with total_count = 0 when summary fails
         assert isinstance(result, SamplesResponse)
-        assert result.summary.counts.all == 0
+        assert result.summary["counts"]["all"] == 0
         assert len(result.data) == 1  # Samples should still be returned
 
     async def test_search_subjects_by_diagnosis_success(
@@ -227,8 +251,8 @@ class TestExperimentalEndpoints:
         
         assert isinstance(result, SubjectResponse)
         assert len(result.data) == 1
-        assert result.summary.counts.all == 200
-        assert result.summary.counts.current == 1
+        assert result.summary["counts"]["all"] == 200
+        assert result.summary["counts"]["current"] == 1
 
     async def test_search_subjects_by_diagnosis_database_error(
         self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination

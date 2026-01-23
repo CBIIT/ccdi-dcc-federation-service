@@ -1,0 +1,23 @@
+{
+  "library_strategy": [
+    "AMPLICON",
+    "ATAC-seq",
+    "Bisulfite-Seq",
+    "miRNA-Seq",
+    "Other",
+    "RNA-Seq",
+    "Targeted-Capture",
+    "WGA",
+    "WGS",
+    "WXS"
+  ],
+  "library_source_material": [
+    "Bulk Cells",
+    "Bulk Nuclei",
+    "Bulk Tissue",
+    "Not Reported",
+    "Single-cells",
+    "Single-nuclei"
+  ]
+}
+

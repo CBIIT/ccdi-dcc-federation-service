@@ -47,9 +47,11 @@ A REST API service for querying the CCDI (Childhood Cancer Data Initiative) grap
 - **Layered Architecture**: Clean separation between API, Service, and Repository layers
 - **Dependency Injection**: Extensive use of FastAPI dependencies for shared concerns  
 - **Async Support**: Full async/await implementation with async Redis
-- **Error Handling**: Custom exception hierarchy with automatic HTTP status mapping
+- **Error Handling**: Custom exception hierarchy with automatic HTTP status mapping and security-first design
 - **Caching Strategy**: Redis-based caching with configurable TTLs per endpoint type
 - **Configuration Management**: Nested settings with environment-specific overrides
+- **Query Optimization**: Combined Cypher queries for performance (e.g., single-query count operations)
+- **Code Reusability**: Extracted validation logic into reusable helper methods
 
 ## API Endpoints
 
@@ -91,7 +93,10 @@ A REST API service for querying the CCDI (Childhood Cancer Data Initiative) grap
 #### Server Info
 - `GET /api/v1/info` - Server information and capabilities
 
-#### Standalone Diagnosis
+#### Error Examples
+- `GET /api/v1/errors/examples` - View error response examples for all error types
+
+#### Experimental Endpoints
 - `GET /api/v1/sample-diagnosis` - Standalone sample diagnosis search
 - `GET /api/v1/subject-diagnosis` - Standalone subject diagnosis search
 
@@ -280,15 +285,31 @@ poetry run pytest --cov=app --cov-report=html
 
 # Run specific test file
 poetry run pytest tests/test_subjects.py
+
+# Run error response tests
+poetry run pytest tests/test_error_responses.py
+
+# Run endpoint integration tests
+python test_all_endpoints.py
 ```
 
 **Test Structure:**
 ```
 tests/
 ├── __init__.py
-├── unit/
-└── integration/
+├── test_error_responses.py    # Error handling validation tests
+├── test_contract_subjects.py  # Subject endpoint contract tests
+├── test_contract_files.py     # File endpoint contract tests
+├── unit/                      # Unit tests
+└── integration/                # Integration tests
 ```
+
+**Test Coverage:**
+- Error response validation (no 500 errors, sanitized messages)
+- Endpoint contract compliance
+- Summary count accuracy
+- Pagination Link header correctness
+- Field validation and allowlist enforcement
 
 ## Data Model
 
@@ -357,42 +378,158 @@ All list endpoints support pagination:
 GET /api/v1/subject?page=2&per_page=50
 ```
 
-Response includes RFC 5988 compliant Link header:
+Response includes RFC 5988 compliant Link header with `first`, `last`, `next`, and `prev` relations:
 ```
-Link: <http://localhost:8000/api/v1/subject?page=1&per_page=20>; rel="prev",
+Link: <http://localhost:8000/api/v1/subject?page=1&per_page=20>; rel="first",
+      <http://localhost:8000/api/v1/subject?page=10&per_page=20>; rel="last",
+      <http://localhost:8000/api/v1/subject?page=1&per_page=20>; rel="prev",
       <http://localhost:8000/api/v1/subject?page=3&per_page=20>; rel="next"
 ```
 
+The `last` link always points to the final page based on total item count, ensuring accurate pagination navigation.
+
 ## Error Handling
 
-The API returns structured error responses matching the OpenAPI specification:
+The API returns structured error responses matching the OpenAPI specification. All error responses follow strict security guidelines: **no internal error messages or user inputs are exposed** in responses. These details are logged for debugging but never returned to clients.
 
+### Error Response Format
+
+All errors follow this structure:
 ```json
 {
   "errors": [
     {
-      "kind": "InvalidParameters",
-      "message": "Invalid value for parameter 'page': Must be a positive integer",  
-      "parameters": ["page"],
-      "reason": "Unable to calculate offset"
+      "kind": "ErrorKind",
+      "message": "User-friendly error message",
+      // Additional fields vary by error type
     }
   ]
 }
 ```
 
-**Error Types:**
-- `InvalidParameters` (400) - Invalid query/path parameters
-- `UnsupportedField` (400) - Field not available for filtering/counting  
-- `NotFound` (404) - Entity not found by identifier
-- `UnshareableData` (404) - Data sharing restrictions
-- `InternalServerError` (500) - Server-side errors
+### Error Types
 
-**Custom Exception Classes:**
+#### InvalidRoute (404)
+Returned when requesting a non-existent route:
+```json
+{
+  "errors": [
+    {
+      "kind": "InvalidRoute",
+      "method": "GET",
+      "route": "Invalid route requested."
+    }
+  ]
+}
+```
+
+#### InvalidParameters (400)
+Returned when query or path parameters are invalid:
+```json
+{
+  "errors": [
+    {
+      "kind": "InvalidParameters",
+      "parameters": [],
+      "message": "Invalid query parameter(s) provided.",
+      "reason": "Unknown query parameter(s)"
+    }
+  ]
+}
+```
+**Note:** The `parameters` array is always empty to avoid exposing user input.
+
+#### NotFound (404)
+Returned when a requested resource is not found:
+```json
+{
+  "errors": [
+    {
+      "kind": "NotFound",
+      "entity": "Subjects",
+      "message": "Unable to find data for your request.",
+      "reason": "No data found"
+    }
+  ]
+}
+```
+
+#### MessageOnly (404)
+Simplified error format with only a message:
+```json
+{
+  "errors": [
+    {
+      "message": "Unable to find data for your request."
+    }
+  ]
+}
+```
+
+#### UnsupportedField (400)
+Returned when a field is not supported for filtering or counting:
+```json
+{
+  "errors": [
+    {
+      "kind": "UnsupportedField",
+      "field": "wrong field",
+      "reason": "This field is not present for subjects.",
+      "message": "Field is not supported for subjects."
+    }
+  ]
+}
+```
+**Note:** The `field` value is always `"wrong field"` to avoid exposing user input.
+
+#### UnshareableData (404)
+Returned when data cannot be shared due to agreements:
+```json
+{
+  "errors": [
+    {
+      "kind": "UnshareableData",
+      "entity": "Sample",
+      "message": "Our agreement with data providers prohibits us from sharing line-level data.",
+      "reason": "Data sharing is restricted by agreement with data providers."
+    }
+  ]
+}
+```
+
+### Empty Data Responses (200)
+
+For list endpoints, when no data is found or errors occur, the API returns **200 OK with empty data** instead of 404:
+```json
+{
+  "data": [],
+  "summary": {
+    "counts": {
+      "all": 0,
+      "current": 0
+    }
+  }
+}
+```
+
+This follows the `NoDataFoundResponse-200.json` specification pattern.
+
+### Error Handling Principles
+
+1. **No 500 Errors**: All server errors are converted to 404 NotFound or 200 empty data responses
+2. **No Internal Details**: Internal error messages, stack traces, and database errors are never exposed
+3. **No User Input Exposure**: User-provided values (field names, parameter values) are sanitized in responses
+4. **Consistent Format**: All errors follow the structured `ErrorsResponse` format
+5. **Logging**: Full error details (including user inputs) are logged for debugging but not returned
+
+### Custom Exception Classes
+
 - `CCDIException` - Base exception with HTTP mapping
-- `InvalidParametersError` - Parameter validation failures
-- `UnsupportedFieldError` - Field allowlist violations
-- `NotFoundError` - Resource not found  
-- `UnshareableDataError` - Data sharing policy violations
+- `InvalidRouteError` - Invalid API route (404)
+- `InvalidParametersError` - Parameter validation failures (400)
+- `UnsupportedFieldError` - Field allowlist violations (400)
+- `NotFoundError` - Resource not found (404)
+- `UnshareableDataError` - Data sharing policy violations (404)
 
 ## Monitoring
 

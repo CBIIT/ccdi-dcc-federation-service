@@ -55,7 +55,8 @@ class DatabaseSettings(BaseModel):
 
 class CacheSettings(BaseModel):
     """Cache and Redis settings."""
-    enabled: bool = True
+    # Redis is not deployed in many environments; keep caching opt-in.
+    enabled: bool = False
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_db: int = 0
@@ -135,7 +136,8 @@ class Settings(BaseSettings):
     max_page_size: int = Field(default=1000, alias="MAX_PAGE_SIZE")
     
     # Cache settings
-    cache_enabled: bool = Field(default=True, alias="CACHE_ENABLED")
+    # Redis is not deployed yet; keep caching opt-in via CACHE_ENABLED=true.
+    cache_enabled: bool = Field(default=False, alias="CACHE_ENABLED")
     cache_ttl_count_endpoints: int = Field(
         default=1800,  # 30 minutes
         alias="CACHE_TTL_COUNT_ENDPOINTS"
@@ -218,6 +220,7 @@ class Settings(BaseSettings):
     cache_redis_password: Optional[str] = Field(default="", description="Redis password")
     cache_count_ttl: Optional[int] = Field(default=300, description="Cache TTL for count queries")
     cache_summary_ttl: Optional[int] = Field(default=600, description="Cache TTL for summary queries")
+    query_timeout: Optional[int] = Field(default=60, description="Query timeout in seconds")
     
     # CORS settings
     cors_enabled: Optional[bool] = Field(default=True, description="Enable CORS")
@@ -248,10 +251,16 @@ class Settings(BaseSettings):
         description="Mapping of database sex values to normalized output values"
     )
     
+    # NOTE:
+    # We intentionally do NOT hardcode `env_file=".env"` here.
+    #
+    # - In CI/unit tests, `.env` may not exist.
+    # - In sandboxed environments, reading dotfiles may be restricted.
+    #
+    # `get_settings()` below will opt-in to `.env` only when it is present and readable.
     model_config = {
         "extra": "allow",  # Allow extra fields that aren't defined
-        "env_file": ".env",
-        "case_sensitive": False
+        "case_sensitive": False,
     }
     
     # Nested settings properties
@@ -318,11 +327,16 @@ class Settings(BaseSettings):
         )
 
 
-# Create settings instance
-settings = Settings()
-
-
 @lru_cache()
 def get_settings() -> Settings:
     """Get cached application settings."""
-    return Settings()
+    # Only load `.env` when it exists and is readable; otherwise fall back to env vars/defaults.
+    # This prevents startup/test failures when `.env` is missing or not accessible.
+    try:
+        env_path = Path(".env")
+        if env_path.is_file():
+            return Settings(_env_file=".env")
+    except OSError:
+        # PermissionError / sandbox restrictions / etc.
+        pass
+    return Settings(_env_file=None)

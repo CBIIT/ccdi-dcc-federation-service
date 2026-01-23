@@ -1,0 +1,10 @@
+{
+  "sample_tumor_status": [
+    "Not Reported",
+    "Normal",
+    "Peritumoral",
+    "Tumor",
+    "Unknown"
+  ]
+}
+

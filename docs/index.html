@@ -73,42 +73,6 @@
         <p>REST API for querying CCDI-DCC  graph database</p>
     </div>
 
-    <div class="api-info">
-        <h2>🚀 Quick Start</h2>
-        <p>This API provides access to CCDI (Childhood Cancer Data Initiative) data including subjects, samples, and files.</p>
-        
-        <h3>📋 Key Endpoints</h3>
-        <div class="endpoint-highlight">
-            <h4>Subject Search (Single)</h4>
-            <code>GET /api/v1/subject/CCDI-DCC/CCDI-DCC/{participant_id}</code>
-            <p>Get a single subject by participant ID</p>
-        </div>
-        
-        <div class="endpoint-highlight">
-            <h4>Subject Search (Multiple)</h4>
-            <code>GET /api/v1/subject/CCDI-DCC/CCDI-DCC/{participant_id1,participant_id2}</code>
-            <p>Get multiple subjects by participant IDs (comma-separated)</p>
-        </div>
-        
-        <div class="endpoint-highlight">
-            <h4>Subject Search (Advanced)</h4>
-            <code>GET /api/v1/subject/search/CCDI-DCC/CCDI-DCC/{participant_ids}</code>
-            <p>Advanced search with pagination and filtering</p>
-        </div>
-        
-        <div class="endpoint-highlight">
-            <h4>List All Subjects</h4>
-            <code>GET /api/v1/subject?page=1&per_page=20</code>
-            <p>Get paginated list of all subjects with optional filters</p>
-        </div>
-
-        <h3>🔧 Base URL</h3>
-        <p><code>https://your-server.com</code></p>
-        
-        <h3>📖 Interactive Documentation</h3>
-        <p>Use the Swagger UI below to explore all available endpoints, try requests, and view responses.</p>
-    </div>
-
     <div id="swagger-ui"></div>
 
     <script src="https://unpkg.com/swagger-ui-dist@5.9.0/swagger-ui-bundle.js"></script>

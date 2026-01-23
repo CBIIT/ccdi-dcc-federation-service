@@ -35,10 +35,11 @@ from app.models.dto import (
 )
 from app.models.errors import NotFoundError, InvalidParametersError, InvalidRouteError
 from app.services.subject import SubjectService
+from app.db.memgraph import DatabaseConnectionError
 
 logger = get_logger(__name__)
 
-router = APIRouter(prefix="/subject", tags=["subjects"])
+router = APIRouter(prefix="/subject", tags=["Subject"])
 
 
 def prepare_subjects_for_response(subjects: List[Subject]) -> List[Dict[str, Any]]:
@@ -55,7 +56,8 @@ def prepare_subjects_for_response(subjects: List[Subject]) -> List[Dict[str, Any
     
     for subject in subjects:
         # Create subject dict excluding gateways field (keep as placeholder in code)
-        subject_dict = subject.model_dump(exclude={'gateways'})
+        # CRITICAL: Keep schema stable. Always include keys even when values are null/empty.
+        subject_dict = subject.model_dump(exclude={'gateways'}, exclude_none=False, exclude_unset=False)
         subjects_dicts.append(subject_dict)
     
     return subjects_dicts
@@ -69,7 +71,87 @@ def prepare_subjects_for_response(subjects: List[Subject]) -> List[Dict[str, Any
     "",
     response_model=SubjectResponse,
     summary="List subjects",
-    description="Get a paginated list of subjects with optional filtering"
+    description="Get a paginated list of subjects with optional filtering",
+    responses={
+        200: {
+            "description": "Successful operation.",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "summary": {
+                            "counts": {
+                                "all": 500,
+                                "current": 20
+                            }
+                        },
+                        "data": [
+                            {
+                                "id": {
+                                    "namespace": {
+                                        "organization": "CCDI-DCC",
+                                        "name": "phs002430"
+                                    },
+                                    "name": "SUBJECT-001"
+                                },
+                                "kind": "Participant",
+                                "metadata": {
+                                    "sex": {"value": "F"},
+                                    "race": [
+                                        {"value": "White"}
+                                    ],
+                                    "ethnicity": {"value": "Not reported"},
+                                    "identifiers": [
+                                        {
+                                            "value": {
+                                            "namespace": {
+                                                "organization": "CCDI-DCC",
+                                                "name": "phs002430"
+                                            },
+                                                "name": "SUBJECT-001",
+                                                "type": "Linked",
+                                                "server": "https://dcc.ccdi.cancer.gov/api/v1/subject/CCDI-DCC/phs002430/SUBJECT-001"
+                                            }
+                                        }
+                                    ],
+                                    "vital_status": {"value": "Alive"},
+                                    "age_at_vital_status": {"value": 45},
+                                    "associated_diagnoses": [
+                                        {
+                                            "value": "Neuroblastoma","comment": "null" 
+                                        }
+                                    ],
+                                    "depositions": [
+                                        {
+                                            "kind": "dbGaP",
+                                            "value": "phs002430"
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                }
+            }
+        },
+        404: {
+            "description": "Not found.",
+            "content": {
+                "application/json": {
+                    "schema": {"$ref": "#/components/schemas/ErrorsResponse"},
+                    "example": {
+                        "errors": [
+                            {
+                                "kind": "NotFound",
+                                "entity": "Subjects",
+                                "message": "Unable to find data for your request.",
+                                "reason": "No data found."
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+    }
 )
 async def list_subjects(
     request: Request,
@@ -191,21 +273,24 @@ async def list_subjects(
         summary_result = await service.get_subjects_summary(filters)
         total_count = summary_result.counts.total
         
-        # Calculate pagination info using the utility function
-        # pagination_info = calculate_pagination_info(
-        #     page=pagination.page,
-        #     per_page=pagination.per_page,
-        #     total_items=total_count
-        # )
+        # Build pagination info (match /sample behavior: do not require total_pages)
+        pagination_info = PaginationInfo(
+            page=pagination.page,
+            per_page=pagination.per_page,
+            total_pages=None,
+            total_items=total_count,  # Use total_count from summary, not len(subjects)
+            has_next=len(subjects) == pagination.per_page,  # If we got a full page, there might be more
+            has_prev=pagination.page > 1,
+        )
         
-        # Add Link header for pagination
-        # link_header = build_link_header(
-        #     request=request,
-        #     pagination=pagination_info
-        # )
-        
-        # if link_header:
-        #     response.headers["Link"] = link_header
+        # Add Link header for pagination (consistent with /sample)
+        link_header = build_link_header(
+            request=request,
+            pagination=pagination_info,
+            extra_params=dict(request.query_params),
+        )
+        if link_header:
+            response.headers["link"] = link_header
         
         # Prepare subjects for response (exclude gateways from output)
         subjects_dicts = prepare_subjects_for_response(subjects)
@@ -236,8 +321,55 @@ async def list_subjects(
     except InvalidParametersError as e:
         # Re-raise InvalidParametersError to let the exception handler process it
         raise e.to_http_exception()
+    except DatabaseConnectionError as e:
+        # Database connection error - log clearly for AWS cloud monitoring
+        logger.error(
+            "Database connection error in list_subjects endpoint - returning empty result",
+            error=str(e),
+            error_type=type(e).__name__,
+            filters=filters,
+            page=pagination.page,
+            per_page=pagination.per_page,
+            is_database_connection_error=True,
+            will_return_404=True,
+            aws_cloudwatch_alert=True
+        )
+        # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Subjects",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
     except Exception as e:
-        logger.error("Error listing subjects", error=str(e), exc_info=True)
+        # Check if this is a connection-related error
+        error_str = str(e).lower()
+        is_connection_error = any(keyword in error_str for keyword in [
+            'connection', 'database', 'unavailable', 'timeout', 'network',
+            'service unavailable', 'broken pipe', 'connection reset', 'connection closed'
+        ])
+        
+        if is_connection_error:
+            # Connection-related error - log clearly for AWS cloud monitoring
+            logger.error(
+                "Database connection issue in list_subjects endpoint - returning empty result",
+                error=str(e),
+                error_type=type(e).__name__,
+                filters=filters,
+                page=pagination.page,
+                per_page=pagination.per_page,
+                is_connection_related=True,
+                will_return_404=True,
+                aws_cloudwatch_alert=True,
+                exc_info=True
+            )
+        else:
+            logger.error("Error listing subjects", error=str(e), exc_info=True)
+        
         if hasattr(e, 'to_http_exception'):
             raise e.to_http_exception()
         # Return 404 instead of 500 - no 500 errors allowed
@@ -281,8 +413,9 @@ async def list_subjects(
                         "errors": [
                             {
                                 "kind": "UnsupportedField",
-                                "field": "handedness",
-                                "message": "Field 'handedness' is not supported: this field is not present for subjects."
+                                "field": "wrong field",
+                                "message": "Field is not supported for subjects.",
+                                "reason": "This field is not present for subjects."
                             }
                         ]
                     }
@@ -336,8 +469,53 @@ async def count_subjects_by_field(
         
         return result
         
+    except DatabaseConnectionError as e:
+        # Database connection error - log clearly for AWS cloud monitoring
+        logger.error(
+            "Database connection error in count_subjects_by_field endpoint - returning empty result",
+            error=str(e),
+            error_type=type(e).__name__,
+            field=field_name,
+            filters=filters,
+            is_database_connection_error=True,
+            will_return_404=True,
+            aws_cloudwatch_alert=True
+        )
+        # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Subjects",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
     except Exception as e:
-        logger.error("Error counting subjects by field", error=str(e), exc_info=True)
+        # Check if this is a connection-related error
+        error_str = str(e).lower()
+        is_connection_error = any(keyword in error_str for keyword in [
+            'connection', 'database', 'unavailable', 'timeout', 'network',
+            'service unavailable', 'broken pipe', 'connection reset', 'connection closed'
+        ])
+        
+        if is_connection_error:
+            # Connection-related error - log clearly for AWS cloud monitoring
+            logger.error(
+                "Database connection issue in count_subjects_by_field endpoint - returning empty result",
+                error=str(e),
+                error_type=type(e).__name__,
+                field=field_name,
+                filters=filters,
+                is_connection_related=True,
+                will_return_404=True,
+                aws_cloudwatch_alert=True,
+                exc_info=True
+            )
+        else:
+            logger.error("Error counting subjects by field", error=str(e), exc_info=True)
+        
         if hasattr(e, 'to_http_exception'):
             raise e.to_http_exception()
         # Return 404 instead of 500 - no 500 errors allowed
@@ -361,7 +539,77 @@ async def count_subjects_by_field(
     "/{organization}/{namespace}/{name}",
     response_model=None,  # Will return different types based on input
     summary="Get subject by identifier or filter by field",
-    description="Get a specific subject by organization, namespace, and name. Organization defaults to 'CCDI-DCC'. Namespace is the study_id value from the database. 'name' is the participant ID."
+    description="Get a specific subject by organization, namespace, and name. Organization defaults to 'CCDI-DCC'. Namespace is the study_id value from the database. 'name' is the participant ID.",
+    responses={
+        200: {
+            "description": "Successful operation.",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "id": {
+                            "namespace": {
+                                "organization": "CCDI-DCC",
+                                "name": "phs002430"
+                            },
+                            "name": "TARGET-10-DCC001"
+                        },
+                        "kind": "Participant",
+                        "metadata": {
+                            "sex": {"value": "M"},
+                            "race": [
+                                {"value": "White"}
+                            ],
+                            "ethnicity": {"value": "Not reported"},
+                            "identifiers": [
+                                {
+                                    "value": {
+                                        "namespace": {
+                                            "organization": "CCDI-DCC",
+                                            "name": "phs002430"
+                                        },
+                                        "name": "TARGET-10-DCC001",
+                                        "type": "Linked",
+                                        "server": "https://dcc.ccdi.cancer.gov/api/v1/subject/CCDI-DCC/phs002430/TARGET-10-DCC001"
+                                    }
+                                }
+                            ],
+                            "vital_status": {"value": "Alive"},
+                            "age_at_vital_status": {"value": 15},
+                            "associated_diagnoses": [
+                                {
+                                    "value": "Neuroblastoma","comment": "null" 
+                                }
+                            ],
+                            "depositions": [
+                                {
+                                    "kind": "dbGaP",
+                                    "value": "phs002430"
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        404: {
+            "description": "Not found.",
+            "content": {
+                "application/json": {
+                    "schema": {"$ref": "#/components/schemas/ErrorsResponse"},
+                    "example": {
+                        "errors": [
+                            {
+                                "kind": "NotFound",
+                                "entity": "Subjects",
+                                "message": "Unable to find data for your request.",
+                                "reason": "No data found."
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+    }
 )
 async def get_subject(
     organization: str,
@@ -400,10 +648,17 @@ async def get_subject(
                 if namespace.lower() in valid_fields:
                     # This is likely a typo for /subject/by/{field}/count
                     suggested_path = f"/api/v1/subject/by/{namespace}/count"
+                    # Log the suggested path but don't include it in the response
+                    logger.info(
+                        "Invalid route detected, possible typo",
+                        method=request.method,
+                        route=str(request.url.path),
+                        suggested_path=suggested_path
+                    )
                     raise InvalidRouteError(
                         method=request.method,
                         route=str(request.url.path),
-                        message=f"Invalid route. Did you mean '{suggested_path}'?"
+                        message="Invalid route requested."
                     )
         
         # Normalize and validate organization (defaults to CCDI-DCC)
@@ -617,7 +872,7 @@ async def get_subject(
                 if subjects:
                     subject = subjects[0]
                     # Return subject dict excluding gateways (keep as placeholder in code)
-                    subject_dict = subject.model_dump(exclude={'gateways'})
+                    subject_dict = subject.model_dump(exclude={'gateways'}, exclude_none=False, exclude_unset=False)
                     logger.info(
                         "Get subject response (single participant ID)",
                         organization=organization,
@@ -731,7 +986,7 @@ async def get_subject(
             )
             
             # Return subject dict excluding gateways (keep as placeholder in code)
-            return subject.model_dump(exclude={'gateways'})
+            return subject.model_dump(exclude={'gateways'}, exclude_none=False, exclude_unset=False)
         
     except (InvalidRouteError, InvalidParametersError) as e:
         # Re-raise route/parameter errors to let the exception handler process them
@@ -791,6 +1046,7 @@ async def get_subject(
 )
 async def get_subjects_summary(
     request: Request,
+    filters: Dict[str, Any] = Depends(get_subject_filters),
     session: AsyncSession = Depends(get_database_session),
     settings: Settings = Depends(get_app_settings),
     allowlist: FieldAllowlist = Depends(get_allowlist),
@@ -807,12 +1063,46 @@ async def get_subjects_summary(
     )
     
     try:
+        # Validate that no unknown query parameters are provided (match /subject behavior)
+        allowed_params = {
+            "sex", "race", "ethnicity", "identifiers", "vital_status",
+            "age_at_vital_status", "depositions", "page", "per_page", "search"
+        }
+        unknown_params = []
+        for key in request.query_params.keys():
+            if not key.startswith("metadata.unharmonized.") and key not in allowed_params:
+                unknown_params.append(key)
+        if unknown_params or filters.get("_unknown_parameters"):
+            raise InvalidParametersError(
+                parameters=[],  # Empty array - don't expose parameter names
+                message="Invalid query parameter(s) provided.",
+                reason="Unknown query parameter(s)"
+            )
+
+        # If any invalid value marker is present, return empty summary (match /subject behavior)
+        if (
+            filters.get("_invalid_ethnicity")
+            or filters.get("_invalid_sex")
+            or filters.get("_invalid_race")
+            or filters.get("_invalid_vital_status")
+            or filters.get("_invalid_age_at_vital_status")
+        ):
+            return SummaryResponse(counts=SummaryCounts(total=0))
+
+        # Remove markers if present (safe)
+        filters.pop("_invalid_ethnicity", None)
+        filters.pop("_invalid_sex", None)
+        filters.pop("_invalid_race", None)
+        filters.pop("_invalid_vital_status", None)
+        filters.pop("_invalid_age_at_vital_status", None)
+        filters.pop("_age_at_vital_status_reason", None)
+
         # Create service
         cache_service = get_cache_service()
         service = SubjectService(session, allowlist, settings, cache_service)
         
-        # Get summary (no filters - return total count)
-        result = await service.get_subjects_summary({})
+        # Get summary (respect query filters)
+        result = await service.get_subjects_summary(filters)
         
         logger.info(
             "Get subjects summary response",
@@ -821,8 +1111,51 @@ async def get_subjects_summary(
         
         return result
         
+    except DatabaseConnectionError as e:
+        # Database connection error - log clearly for AWS cloud monitoring
+        logger.error(
+            "Database connection error in get_subjects_summary endpoint - returning empty result",
+            error=str(e),
+            error_type=type(e).__name__,
+            filters=filters,
+            is_database_connection_error=True,
+            will_return_404=True,
+            aws_cloudwatch_alert=True
+        )
+        # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Subjects",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
     except Exception as e:
-        logger.error("Error getting subjects summary", error=str(e), exc_info=True)
+        # Check if this is a connection-related error
+        error_str = str(e).lower()
+        is_connection_error = any(keyword in error_str for keyword in [
+            'connection', 'database', 'unavailable', 'timeout', 'network',
+            'service unavailable', 'broken pipe', 'connection reset', 'connection closed'
+        ])
+        
+        if is_connection_error:
+            # Connection-related error - log clearly for AWS cloud monitoring
+            logger.error(
+                "Database connection issue in get_subjects_summary endpoint - returning empty result",
+                error=str(e),
+                error_type=type(e).__name__,
+                filters=filters,
+                is_connection_related=True,
+                will_return_404=True,
+                aws_cloudwatch_alert=True,
+                exc_info=True
+            )
+        else:
+            logger.error("Error getting subjects summary", error=str(e), exc_info=True)
+        
         if hasattr(e, 'to_http_exception'):
             raise e.to_http_exception()
         # Return 404 instead of 500 - no 500 errors allowed

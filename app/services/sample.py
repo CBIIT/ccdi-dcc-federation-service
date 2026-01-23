@@ -16,6 +16,7 @@ from app.lib.field_allowlist import FieldAllowlist
 from app.models.dto import Sample, CountResponse, SummaryResponse
 from app.models.errors import NotFoundError, ValidationError
 from app.repositories.sample import SampleRepository
+from app.db.memgraph import DatabaseConnectionError
 
 logger = get_logger(__name__)
 
@@ -31,7 +32,7 @@ class SampleService:
         cache_service: Optional[CacheService] = None
     ):
         """Initialize service with dependencies."""
-        self.repository = SampleRepository(session, allowlist)
+        self.repository = SampleRepository(session, allowlist, settings)
         self.settings = settings
         self.cache_service = cache_service
         
@@ -60,16 +61,34 @@ class SampleService:
         )
         
         # Validate pagination limits
-        if limit > self.settings.pagination.max_per_page:
-            limit = self.settings.pagination.max_per_page
+        if limit > self.settings.pagination.max_page_size:
+            limit = self.settings.pagination.max_page_size
             logger.debug(
                 "Limiting page size",
                 requested=limit,
-                max_allowed=self.settings.pagination.max_per_page
+                max_allowed=self.settings.pagination.max_page_size
             )
         
+        # Get base URL from settings
+        base_url = self.settings.identifier_server_url.rstrip("/") if hasattr(self.settings, 'identifier_server_url') and self.settings.identifier_server_url else None
+        
         # Get data from repository
-        samples = await self.repository.get_samples(filters, offset, limit)
+        try:
+            samples = await self.repository.get_samples(filters, offset, limit, base_url=base_url)
+        except DatabaseConnectionError as e:
+            # Database connection error - log clearly for AWS cloud monitoring
+            logger.error(
+                "Database connection error while fetching samples - returning empty result",
+                error=str(e),
+                error_type=type(e).__name__,
+                filters=filters,
+                offset=offset,
+                limit=limit,
+                is_database_connection_error=True,
+                will_return_empty=True
+            )
+            # Return empty list instead of raising - API will return 404
+            return []
         
         logger.info(
             "Retrieved samples",
@@ -110,8 +129,11 @@ class SampleService:
         # Validate parameters
         self._validate_identifier_params(organization, namespace, name)
         
+        # Get base URL from settings
+        base_url = self.settings.identifier_server_url.rstrip("/") if hasattr(self.settings, 'identifier_server_url') and self.settings.identifier_server_url else None
+        
         # Get from repository
-        sample = await self.repository.get_sample_by_identifier(organization, namespace, name)
+        sample = await self.repository.get_sample_by_identifier(organization, namespace, name, base_url=base_url)
         
         if not sample:
             raise NotFoundError("Samples")
@@ -157,12 +179,13 @@ class SampleService:
                 return CountResponse(**cached_result)
         
         # Get counts from repository
-        counts = await self.repository.count_samples_by_field(field, filters)
+        result = await self.repository.count_samples_by_field(field, filters)
         
         # Build response
         response = CountResponse(
-            field=field,
-            counts=counts
+            total=result.get("total", 0),
+            missing=result.get("missing", 0),
+            values=result.get("values", [])
         )
         
         # Cache result
@@ -176,7 +199,9 @@ class SampleService:
         logger.info(
             "Completed sample count by field",
             field=field,
-            result_count=len(counts)
+            total=response.total,
+            missing=response.missing,
+            values_count=len(response.values)
         )
         
         return response
@@ -206,25 +231,53 @@ class SampleService:
                 return SummaryResponse(**cached_result)
         
         # Get summary from repository
-        summary_data = await self.repository.get_samples_summary(filters)
+        try:
+            summary_data = await self.repository.get_samples_summary(filters)
+        except DatabaseConnectionError as e:
+            # Database connection error - log clearly for AWS cloud monitoring
+            logger.error(
+                "Database connection error while fetching samples summary - returning empty result",
+                error=str(e),
+                error_type=type(e).__name__,
+                filters=filters,
+                is_database_connection_error=True,
+                will_return_empty=True
+            )
+            # Return empty summary instead of raising - API will return 404
+            from app.models.dto import SummaryCounts
+            return SummaryResponse(counts=SummaryCounts(total=0))
         
-        # Build response
-        response = SummaryResponse(**summary_data)
+        # Transform repository format to response format
+        from app.models.dto import SummaryCounts
+        # Repository returns {"counts": {"total": ...}} or {"total_count": ...} (for filtered case)
+        # Handle case where repository returns empty list (shouldn't happen, but be defensive)
+        if isinstance(summary_data, list):
+            logger.warning("Repository returned list instead of dict for summary", summary_data=summary_data)
+            total_count = 0
+        elif "counts" in summary_data:
+            total_count = summary_data["counts"].get("total", 0)
+        else:
+            total_count = summary_data.get("total_count", 0)
+        
+        response = SummaryResponse(
+            counts=SummaryCounts(total=total_count)
+        )
         
         # Cache result
         if self.cache_service and cache_key:
             await self.cache_service.set(
                 cache_key,
-                response.dict(),
-                ttl=self.settings.cache.summary_ttl
+                response.model_dump(),
+                ttl=self.settings.cache_ttl_summary_endpoints
             )
         
         logger.info(
             "Completed samples summary",
-            total_count=response.total_count
+            total_count=response.counts.total
         )
         
         return response
+    
     
     def _validate_identifier_params(self, organization: str, namespace: str, name: str) -> None:
         """

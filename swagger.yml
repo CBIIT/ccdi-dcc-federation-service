@@ -207,11 +207,10 @@ paths:
               example:
                 errors:
                 - kind: InvalidParameters
-                  parameters:
-                  - page
-                  - per_page
-                  reason: Unable to calculate offset.
-                  message: 'Invalid value for parameters ''page'' and ''per_page'': unable to calculate offset.'
+                  # Intentionally left empty to avoid echoing back user-supplied parameter names or values for security/privacy reasons.
+                  parameters: []
+                  message: Invalid query parameter(s) provided.
+                  reason: Unknown query parameter(s)
   /subject/{organization}/{namespace}/{name}:
     get:
       tags:
@@ -257,7 +256,8 @@ paths:
                 errors:
                 - kind: NotFound
                   entity: Subjects
-                  message: Subjects not found.
+                  message: Unable to find data for your request.
+                  reason: No data found.
   /subject/by/{field}/count:
     get:
       tags:
@@ -288,9 +288,9 @@ paths:
               example:
                 errors:
                 - kind: UnsupportedField
-                  field: handedness
+                  field: wrong field
                   reason: This field is not present for subjects.
-                  message: 'Field ''handedness'' is not supported: this field is not present for subjects.'
+                  message: Field is not supported for subjects.
   /subject/summary:
     get:
       tags:
@@ -544,11 +544,9 @@ paths:
               example:
                 errors:
                 - kind: InvalidParameters
-                  parameters:
-                  - page
-                  - per_page
-                  reason: Unable to calculate offset.
-                  message: 'Invalid value for parameters ''page'' and ''per_page'': unable to calculate offset.'
+                  parameters: []
+                  message: Invalid query parameter(s) provided.
+                  reason: Unknown query parameter(s)
   /sample/{organization}/{namespace}/{name}:
     get:
       tags:
@@ -593,8 +591,9 @@ paths:
               example:
                 errors:
                 - kind: NotFound
-                  entity: Sample with namespace 'foo' and name 'bar'
-                  message: Sample with namespace 'foo' and name 'bar' not found.
+                  entity: Samples
+                  message: Unable to find data for your request.
+                  reason: No data found.
   /sample/by/{field}/count:
     get:
       tags:
@@ -625,9 +624,9 @@ paths:
               example:
                 errors:
                 - kind: UnsupportedField
-                  field: handedness
+                  field: wrong field
                   reason: This field is not present for samples.
-                  message: 'Field ''handedness'' is not supported: this field is not present for samples.'
+                  message: Field is not supported for samples.
   /sample/summary:
     get:
       tags:
@@ -737,6 +736,10 @@ paths:
           * Filtering on field with multiple values should include the `File` in the results if the query exactly matches any of the values of the field for that `File` (case-sensitive).
           * Unlike harmonized fields, unharmonized fields must be prefixed with `metadata.unharmonized`.
 
+          **Examples:**
+          * `?metadata.unharmonized.file_name=UTYE.fastq` - Filter files by file_name
+          * `?metadata.unharmonized.custom_field=value1` - Filter by any custom unharmonized field
+
           **Note:** this query parameter is intended to be symbolic of any unharmonized field. Because of limitations within Swagger UI, it will show up as a query parameter that can be optionally be submitted as part of a request within Swagger UI. Please keep in mind that the literal query parameter `?metadata.unharmonized.<field>=value` is not supported, so attempting to use it within Swagger UI will not work!
         required: false
         schema:
@@ -800,11 +803,9 @@ paths:
               example:
                 errors:
                 - kind: InvalidParameters
-                  parameters:
-                  - page
-                  - per_page
-                  reason: Unable to calculate offset.
-                  message: 'Invalid value for parameters ''page'' and ''per_page'': unable to calculate offset.'
+                  parameters: []
+                  message: Invalid query parameter(s) provided.
+                  reason: Unknown query parameter(s)
   /file/{organization}/{namespace}/{name}:
     get:
       tags:
@@ -825,7 +826,7 @@ paths:
         required: true
         schema:
           type: string
-      - name: name
+      - name: file.id
         in: path
         description: The name portion of the file identifier.
         required: true
@@ -849,22 +850,27 @@ paths:
               example:
                 errors:
                 - kind: NotFound
-                  entity: File with namespace 'foo' and name 'bar'
-                  message: File with namespace 'foo' and name 'bar' not found.
+                  entity: Files
+                  message: Unable to find data for your request.
+                  reason: No data found.
   /file/by/{field}/count:
     get:
       tags:
       - File
       summary: Groups the files by the specified metadata field and returns counts.
-      description: Groups the files by the specified metadata field and returns counts.
+      description: Groups the files by the specified metadata field and returns counts. Only 'type' and 'depositions' are supported.
       operationId: files_by_count
       parameters:
       - name: field
         in: path
-        description: The field to group by and count with.
+        description: The field to group by and count with. Only 'type' and 'depositions' are supported.
         required: true
         schema:
           type: string
+          enum:
+          - type
+          - depositions
+        example: type
       responses:
         '200':
           description: Successful operation.
@@ -881,9 +887,9 @@ paths:
               example:
                 errors:
                 - kind: UnsupportedField
-                  field: handedness
+                  field: wrong field
                   reason: This field is not present for files.
-                  message: 'Field ''handedness'' is not supported: this field is not present for files.'
+                  message: Field is not supported for files.
   /file/summary:
     get:
       tags:
@@ -991,7 +997,8 @@ paths:
                 errors:
                 - kind: NotFound
                   entity: Namespaces
-                  message: Namespaces not found.
+                  message: Unable to find data for your request.
+                  reason: No data found.
   /organization:
     get:
       tags:
@@ -1037,7 +1044,8 @@ paths:
                 errors:
                 - kind: NotFound
                   entity: Organizations
-                  message: Organizations not found.
+                  message: Unable to find data for your request.
+                  reason: No data found.
   /info:
     get:
       tags:
@@ -1302,11 +1310,9 @@ paths:
               example:
                 errors:
                 - kind: InvalidParameters
-                  parameters:
-                  - page
-                  - per_page
-                  reason: Unable to calculate offset.
-                  message: 'Invalid value for parameters ''page'' and ''per_page'': unable to calculate offset.'
+                  parameters: []
+                  message: Invalid query parameter(s) provided.
+                  reason: Unknown query parameter(s)
   /subject-diagnosis:
     get:
       tags:
@@ -1504,11 +1510,9 @@ paths:
               example:
                 errors:
                 - kind: InvalidParameters
-                  parameters:
-                  - page
-                  - per_page
-                  reason: Unable to calculate offset.
-                  message: 'Invalid value for parameters ''page'' and ''per_page'': unable to calculate offset.'
+                  parameters: []
+                  message: Invalid query parameter(s) provided.
+                  reason: Unknown query parameter(s)
 components:
   schemas:
     cde.v1.deposition.DbgapPhsAccession:
@@ -2025,7 +2029,6 @@ components:
       - U
       - F
       - M
-      - UNDIFFERENTIATED
     cde.v1.subject.VitalStatus:
       type: string
       description: |-
@@ -19033,12 +19036,14 @@ components:
           example:
             kind: InvalidRoute
             method: GET
-            route: /foobar
+            route: Invalid route requested.
+            message: Invalid route requested.
         - type: object
           description: One or more invalid query or path parameters were provided.
           required:
           - reason
           - kind
+          - message
           properties:
             parameters:
               type: array
@@ -19046,37 +19051,49 @@ components:
                 type: string
               description: |-
                 If known, the parameters that are invalid. If not known or the list
-                of invalid fields is not desirable to share, pass `null` to this
-                field for a more general error message.
-              nullable: true
+                of invalid fields is not desirable to share, pass an empty array `[]`
+                for a more general error message.
             reason:
               type: string
               description: A plain-text reason describing why the parameters are invalid.
+            message:
+              type: string
+              description: A plain-text description of the error.
             kind:
               type: string
               enum:
               - InvalidParameters
           example:
             kind: InvalidParameters
-            parameters:
-            - id
-            reason: The parameter was a non-integer value.
+            parameters: []
+            message: Invalid query parameter(s) provided.
+            reason: Unknown query parameter(s)
         - type: object
           description: An entity was not found.
           required:
           - entity
           - kind
+          - message
+          - reason
           properties:
             entity:
               type: string
               description: The entity (or entities) that are not found.
+            message:
+              type: string
+              description: A plain-text description of the error.
+            reason:
+              type: string
+              description: A plain-text reason describing why the entity was not found.
             kind:
               type: string
               enum:
               - NotFound
           example:
             kind: NotFound
-            entity: Samples
+            entity: Subjects
+            message: Unable to find data for your request.
+            reason: No data found.
         - type: object
           description: Line-level data cannot be shared for the specified entity.
           required:
@@ -19104,6 +19121,7 @@ components:
           - field
           - reason
           - kind
+          - message
           properties:
             field:
               type: string
@@ -19111,14 +19129,18 @@ components:
             reason:
               type: string
               description: The reason that the field is not supported.
+            message:
+              type: string
+              description: A plain-text description of the error.
             kind:
               type: string
               enum:
               - UnsupportedField
           example:
             kind: UnsupportedField
-            field: field
-            reason: The field was not found in the metadata object.
+            field: wrong field
+            reason: This field is not present for subjects.
+            message: Field is not supported for subjects.
         description: An inner type of a [Kind](super::Kind).
         discriminator:
           propertyName: kind
@@ -19134,6 +19156,8 @@ components:
               This field is intended to be shown within a user interface or similar if
               needed. Please use this field if you intend to pass the error along to a
               user.
+        example:
+          message: Unable to find data for your request.
       description: A response indicating an error from the API.
     responses.info.api.Information:
       type: object

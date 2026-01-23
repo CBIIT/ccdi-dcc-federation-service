@@ -34,7 +34,7 @@ class ErrorDetail(BaseModel):
     
     model_config = ConfigDict(exclude_none=True)
     
-    kind: str
+    kind: Optional[str] = None  # Optional to support MessageOnly format
     message: Optional[str] = None
     # InvalidRoute fields
     method: Optional[str] = None
@@ -60,7 +60,7 @@ class CCDIException(Exception):
     
     def __init__(
         self, 
-        kind: str,
+        kind: Optional[str],
         status_code: int = status.HTTP_500_INTERNAL_SERVER_ERROR,
         method: Optional[str] = None,
         route: Optional[str] = None,
@@ -84,6 +84,8 @@ class CCDIException(Exception):
     
     def _generate_message(self) -> str:
         """Generate error message from error details."""
+        if not self.kind:
+            return "Unable to find data for your request."
         if self.kind == ErrorKind.INVALID_ROUTE:
             return f"Invalid route: {self.method} {self.route}"
         elif self.kind == ErrorKind.INVALID_PARAMETERS:
@@ -140,15 +142,14 @@ class InvalidRouteError(CCDIException):
         )
     
     def to_error_detail(self) -> ErrorDetail:
-        """Convert exception to error detail - sanitize route from response."""
-        # Return error detail without the route field and with generic message
+        """Convert exception to error detail - match Error-InvalidRoute-404.json format."""
+        # Match specification: route should be "Invalid route requested." as a string
         return ErrorDetail(
             kind=self.kind,
-            method=self.method,
-            # Don't include route in response - keep it generic
-            route=None,
-            message="Invalid route requested.",
-            reason=None
+            method=self.method or "GET",
+            route="Invalid route requested.",
+            message="Invalid route requested.",  # Not in specification
+            reason=None  # Not in specification
         )
 
 
@@ -212,6 +213,9 @@ class UnsupportedFieldError(CCDIException):
         if reason is None:
             reason = f"This field is not present for {entity_type}."
         
+        # Store entity_type for use in to_error_detail
+        self._entity_type = entity_type
+        
         super().__init__(
             kind=ErrorKind.UNSUPPORTED_FIELD,
             status_code=status_code,
@@ -221,16 +225,17 @@ class UnsupportedFieldError(CCDIException):
         )
     
     def to_error_detail(self) -> ErrorDetail:
-        """Convert exception to error detail, using 'wrong field' instead of actual field value."""
+        """Convert exception to error detail - match Error-UnsupportedField-400-template.json format."""
+        # Match specification: use "wrong field" instead of actual field name to avoid exposing user inputs
         return ErrorDetail(
             kind=self.kind,
             method=self.method,
             route=self.route,
             parameters=self.parameters if self.parameters else None,
-            field="wrong field",  # Use "wrong field" instead of actual field value
+            field="wrong field",  # Use generic value instead of actual field name to avoid exposing user input
             entity=self.entity,
-            message=self.message,
-            reason=self.reason
+            message=self.message,  # "Field is not supported for {entity_type}."
+            reason=self.reason  # "This field is not present for {entity_type}."
         )
 
 
@@ -325,11 +330,13 @@ def create_entity_not_found_error(
     namespace: Optional[str] = None, 
     name: Optional[str] = None
 ) -> NotFoundError:
-    """Create an entity not found error."""
-    if organization and namespace and name:
-        entity = f"{entity_type} with namespace '{namespace}' and name '{name}'"
-    else:
-        entity = entity_type.title() + "s"
+    """Create an entity not found error.
+    
+    Note: Invalid values (organization, namespace, name) are not included in the error message
+    to avoid exposing user input. They should be logged separately.
+    """
+    # Don't include invalid values in the entity description
+    entity = entity_type.title() + "s"
     
     return NotFoundError(entity)
 
@@ -337,3 +344,29 @@ def create_entity_not_found_error(
 def create_unshareable_data_error(entity_type: str) -> UnshareableDataError:
     """Create an unshareable data error."""
     return UnshareableDataError(entity_type.title() + "s")
+
+
+def create_message_only_error(message: str = "Unable to find data for your request.") -> ErrorDetail:
+    """
+    Create a message-only error detail matching Error-MessageOnly.json format.
+    
+    This format is used for simpler 404 errors that only include a message field,
+    without kind, entity, or reason fields.
+    
+    Args:
+        message: Error message (defaults to standard message)
+        
+    Returns:
+        ErrorDetail with only message field set (other fields will be excluded via exclude_none)
+    """
+    # Create ErrorDetail with only message - other fields will be None and excluded via exclude_none
+    return ErrorDetail(
+        kind=None,  # Not included in MessageOnly format
+        message=message,
+        entity=None,
+        reason=None,
+        method=None,
+        route=None,
+        parameters=None,
+        field=None
+    )

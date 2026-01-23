@@ -5,8 +5,13 @@ Tests the enum classes and validation methods for race, ethnicity,
 vital status, and file types.
 """
 
+import importlib
+import json
+from unittest.mock import mock_open, patch
+
 import pytest
-from app.core.constants import Race, Ethnicity, VitalStatus, FileType, load_file_enum
+
+from app.core.constants import Race, Ethnicity, VitalStatus, FileType, load_file_enum, _to_enum_name
 
 
 @pytest.mark.unit
@@ -154,4 +159,46 @@ class TestLoadFileEnum:
         # This is tested implicitly by the fact it doesn't crash
         result = load_file_enum()
         assert isinstance(result, list)
+
+    def test_load_file_enum_legacy_list_format(self):
+        """Test load_file_enum supports legacy list format."""
+        with patch("pathlib.Path.open", mock_open(read_data='["BAM", "CRAM"]')), \
+            patch("json.load", return_value=["BAM", "CRAM"]):
+            result = load_file_enum()
+
+        assert result == ["BAM", "CRAM"]
+
+    def test_load_file_enum_invalid_json(self):
+        """Test load_file_enum returns empty list on invalid JSON."""
+        with patch("pathlib.Path.open", mock_open(read_data="invalid")), \
+            patch("json.load", side_effect=json.JSONDecodeError("bad json", "invalid", 0)):
+            result = load_file_enum()
+
+        assert result == []
+
+
+@pytest.mark.unit
+class TestEnumNameHelpers:
+    """Test cases for internal enum name helper."""
+
+    def test_to_enum_name_sanitizes_special_chars(self):
+        """Test _to_enum_name sanitizes and normalizes values."""
+        assert _to_enum_name("BAM/CRAM") == "BAM_CRAM"
+        assert _to_enum_name("f-a s") == "F_A_S"
+
+    def test_to_enum_name_handles_numeric_and_empty(self):
+        """Test _to_enum_name handles numeric/empty values."""
+        assert _to_enum_name("123") == "_123"
+        assert _to_enum_name("") == "UNNAMED"
+
+
+@pytest.mark.unit
+def test_file_type_fallback_enum_empty():
+    """Test FileType fallback when file enum cannot be loaded."""
+    import app.core.constants as constants
+
+    with patch("pathlib.Path.open", side_effect=FileNotFoundError):
+        reloaded = importlib.reload(constants)
+
+    assert reloaded.FileType.values() == []
 

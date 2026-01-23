@@ -297,6 +297,8 @@ class TestGetFieldMappings:
     @patch('app.core.field_mappings._load_field_mappings')
     def test_get_cached_mappings(self, mock_load):
         """Test that mappings are cached."""
+        import app.core.field_mappings
+        app.core.field_mappings._field_mappings_cache = None
         mock_load.return_value = {"sample": {}}
         
         # First call should load
@@ -307,6 +309,7 @@ class TestGetFieldMappings:
         assert result1 == result2
         # Should only load once
         assert mock_load.call_count == 1
+        app.core.field_mappings._field_mappings_cache = None
 
     @patch('app.core.field_mappings._load_field_mappings')
     def test_get_mappings_loads_on_first_call(self, mock_load):

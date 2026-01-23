@@ -14,7 +14,7 @@ from app.core.config import Settings
 from app.core.logging import get_logger
 from app.core.cache import CacheService
 from app.lib.field_allowlist import FieldAllowlist
-from app.models.dto import Subject, SubjectResponse, CountResponse, SummaryResponse
+from app.models.dto import Subject, SubjectResponse, CountResponse, SummaryResponse, SummaryCounts
 from app.models.errors import NotFoundError, ValidationError
 from app.repositories.subject import SubjectRepository
 from app.db.memgraph import DatabaseConnectionError
@@ -289,7 +289,6 @@ class SubjectService:
                     return SummaryResponse(**cached_result)
                 else:
                     # Transform old format to new format
-                    from app.models.dto import SummaryCounts
                     return SummaryResponse(
                         counts=SummaryCounts(total=cached_result.get("total_count", 0))
                     )
@@ -316,7 +315,6 @@ class SubjectService:
                     will_return_empty=True
                 )
                 # Return empty summary instead of raising - API will return 404
-                from app.models.dto import SummaryResponse, SummaryCounts
                 return SummaryResponse(counts=SummaryCounts(total=0))
             except Exception as e:
                 # Check if this is a transient error that might benefit from retry
@@ -342,7 +340,6 @@ class SubjectService:
         logger.debug("Repository returned", total_count=summary_data.get("total_count"))
         
         # Transform repository format to response format
-        from app.models.dto import SummaryResponse, SummaryCounts
         response = SummaryResponse(
             counts=SummaryCounts(total=summary_data.get("total_count", 0))
         )

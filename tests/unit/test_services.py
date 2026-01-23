@@ -279,14 +279,8 @@ class TestSubjectService:
         assert result.counts.total == 1000
         mock_cache_service.set.assert_called_once()
 
-    @pytest.mark.skip(reason="Service code has UnboundLocalError bug in cache hit path (line 293)")
     async def test_get_subjects_summary_cache_hit(self, service, mock_cache_service):
-        """Test get_subjects_summary returns cached result.
-        
-        Note: Skipped due to bug in service code where SummaryResponse
-        local import (line 345) shadows top-level import, causing
-        UnboundLocalError when using SummaryResponse at line 293.
-        """
+        """Test get_subjects_summary returns cached result."""
         from app.models.dto import SummaryResponse
         cached_summary = {
             "total_count": 500
@@ -299,6 +293,63 @@ class TestSubjectService:
         assert isinstance(result, SummaryResponse)
         assert result.counts.total == 500
         service.repository.get_subjects_summary.assert_not_called()
+
+    async def test_get_subjects_summary_cache_new_format(self, service, mock_cache_service):
+        """Test get_subjects_summary handles new cache format with counts."""
+        from app.models.dto import SummaryResponse, SummaryCounts
+        cached_summary = {
+            "counts": {"total": 250}
+        }
+        mock_cache_service.get = AsyncMock(return_value=cached_summary)
+        service.repository.get_subjects_summary = AsyncMock()
+
+        result = await service.get_subjects_summary(filters={})
+
+        assert isinstance(result, SummaryResponse)
+        assert result.counts == SummaryCounts(total=250)
+        service.repository.get_subjects_summary.assert_not_called()
+
+    async def test_get_subjects_summary_database_connection_error(self, service, mock_cache_service):
+        """Test get_subjects_summary handles database connection error."""
+        service.repository.get_subjects_summary = AsyncMock(
+            side_effect=DatabaseConnectionError("Connection failed")
+        )
+        mock_cache_service.get = AsyncMock(return_value=None)
+
+        result = await service.get_subjects_summary(filters={})
+
+        assert result.counts.total == 0
+
+    async def test_get_subjects_summary_retries_transient_error(self, service, mock_cache_service):
+        """Test get_subjects_summary retries on transient errors."""
+        service.repository.get_subjects_summary = AsyncMock(
+            side_effect=[
+                Exception("Connection timeout"),
+                {"total_count": 10}
+            ]
+        )
+        mock_cache_service.get = AsyncMock(return_value=None)
+
+        with patch('asyncio.sleep', new_callable=AsyncMock):
+            result = await service.get_subjects_summary(filters={})
+
+        assert result.counts.total == 10
+        assert service.repository.get_subjects_summary.call_count == 2
+
+    def test_validate_identifier_params_invalid_characters(self, service):
+        """Test _validate_identifier_params rejects invalid characters."""
+        with pytest.raises(ValidationError):
+            service._validate_identifier_params("CCDI-DCC", "phs/002431", "name")
+        with pytest.raises(ValidationError):
+            service._validate_identifier_params("CCDI-DCC", "phs002431", "bad name")
+
+    def test_build_cache_key_normalizes_filters(self, service):
+        """Test _build_cache_key sorts and normalizes filters."""
+        filters = {"race": ["White", "Black"], "sex": "F", "empty": None}
+        key = service._build_cache_key("subject_count", "race", filters)
+        assert key.startswith("subject_count:race:")
+        assert "race:Black,White" in key
+        assert "sex:F" in key
 
 
 @pytest.mark.unit

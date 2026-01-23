@@ -4,9 +4,9 @@
 
 This document summarizes the comprehensive test coverage improvements made to the CCDI Federation Service.
 
-**Total Test Files Created**: 12  
-**Total Tests**: 243+ tests  
-**Test Status**: 242 passing, 1 skipped (due to known service bug)
+**Total Test Files Created**: 14  
+**Total Tests**: 711 tests  
+**Test Status**: 698 passing, 13 skipped
 
 ## Test Files Created
 
@@ -23,7 +23,7 @@ This document summarizes the comprehensive test coverage improvements made to th
 
 ---
 
-### 2. `test_constants.py` - 17 tests ✅
+### 2. `test_constants.py` - 22 tests ✅
 **Module**: `app/core/constants.py`
 
 **Coverage**:
@@ -207,35 +207,61 @@ This document summarizes the comprehensive test coverage improvements made to th
 
 ---
 
+### 11. `test_cypher_validator.py` - 5 tests ✅
+**Module**: `app/utils/cypher_validator.py`
+
+**Coverage**:
+- UNWIND scoping validation
+- WITH clause variable extraction
+- Warning/validation return structure
+
+**Status**: All tests passing
+
+---
+
+### 12. `test_logging.py` - 10 tests ✅
+**Module**: `app/core/logging.py`
+
+**Coverage**:
+- JSON vs console renderer selection
+- log level configuration
+- logger retrieval + request context binding
+
+**Status**: All tests passing
+
+---
+
 ## Test Statistics
 
 ### By Category
 
 | Category | Test Files | Tests | Status |
 |----------|-----------|-------|--------|
-| Core Utilities | 3 | 48 | ✅ All passing |
+| Core Utilities | 5 | 85 | ✅ All passing |
 | Configuration | 1 | 22 | ✅ All passing |
 | Dependencies | 1 | 51 | ✅ All passing |
-| Repositories | 1 | 29 | ✅ All passing |
+| Repositories | 1 | 80+ | ✅ All passing |
 | Services | 2 | 43 | ✅ 42 passing, 1 skipped |
 | Endpoints | 1 | 19 | ✅ All passing |
 | Database Utils | 1 | 8 | ✅ All passing |
-| **Total** | **10** | **220** | **✅ 219 passing, 1 skipped** |
+| **Total** | **12** | **711** | **✅ 698 passing, 13 skipped** |
 
 ### By Module
 
 | Module | Tests | Coverage |
 |--------|-------|----------|
 | `app/lib/url_builder.py` | 10 | ✅ Complete |
-| `app/core/constants.py` | 17 | ✅ Complete |
+| `app/core/constants.py` | 22 | ✅ Complete |
+| `app/core/logging.py` | 10 | ✅ Complete |
 | `app/lib/field_allowlist.py` | 21 | ✅ Complete |
 | `app/core/config.py` | 22 | ✅ Complete |
 | `app/api/v1/deps.py` | 51 | ✅ Complete |
-| `app/repositories/*.py` | 29 | ✅ Complete |
+| `app/repositories/*.py` | 80+ | ✅ Ongoing (sample repo still low) |
 | `app/services/*.py` | 43 | ✅ Complete (1 known bug) |
 | `app/api/v1/endpoints/*.py` | 19 | ✅ Complete |
 | `app/services/materialized_views.py` | 16 | ✅ Complete |
 | `app/db/memgraph.py` | 8 | ✅ Partial (utilities) |
+| `app/utils/cypher_validator.py` | 5 | ✅ Partial |
 
 ## Key Testing Patterns Used
 
@@ -276,9 +302,9 @@ def test_validation(self):
 - **Focus**: Limited coverage of core functionality
 
 ### After
-- **Coverage**: Estimated 50%+ (significant improvement)
-- **Test Files**: 12 comprehensive test files
-- **Focus**: Complete coverage of:
+- **Coverage**: Summary report - Coveralls: https://coveralls.io/jobs/176955186
+- **Test Files**: 14 comprehensive test files
+- **Focus**: Broader coverage of:
   - Core utilities
   - Configuration management
   - API dependencies
@@ -340,7 +366,7 @@ uv run pytest tests/unit/test_services.py::TestSubjectService::test_get_subjects
 
 ---
 
-**Last Updated**: 2026-01-22  
+**Last Updated**: 2026-01-23  
 **Test Framework**: pytest 7.4.4  
 **Python Version**: 3.12.6
 

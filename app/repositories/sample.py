@@ -1907,7 +1907,7 @@ class SampleRepository:
             "tumor_classification": ("d", "tumor_classification"),  # From diagnosis node
             "age_at_diagnosis": ("d", "age_at_diagnosis"),  # From diagnosis node
             "age_at_collection": ("sa", "participant_age_at_collection"),  # From sample node
-            "tumor_tissue_morphology": ("sa", "tumor_tissue_morphology"),  # From sample node (if exists)
+            "tumor_tissue_morphology": ("d", "tumor_tissue_morphology"),  # From diagnosis node
             "depositions": ("st", "study_id"),  # From study node
             "diagnosis": ("d", "diagnosis")  # From diagnosis node
         }

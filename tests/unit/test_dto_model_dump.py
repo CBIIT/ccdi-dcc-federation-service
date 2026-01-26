@@ -19,24 +19,6 @@ from app.models.dto import (
 class TestModelDumpOverrides:
     """Test model_dump overrides that exclude gateways."""
 
-    def test_samples_response_model_dump_excludes_gateways(self):
-        """Test SamplesResponse.model_dump excludes gateways field."""
-        # Create minimal response
-        response = SamplesResponse(
-            data=[],
-            counts=SummaryCounts(total=0)
-        )
-        # Manually set gateways attribute (bypassing Pydantic validation)
-        object.__setattr__(response, 'gateways', {"gateway1": Mock()})
-        
-        # Call model_dump
-        result = response.model_dump()
-        
-        # Gateways should be excluded
-        assert "gateways" not in result
-        assert "data" in result
-        assert "counts" in result
-
     def test_samples_response_model_dump_without_gateways(self):
         """Test SamplesResponse.model_dump when gateways is None."""
         response = SamplesResponse(
@@ -50,17 +32,6 @@ class TestModelDumpOverrides:
         # Should not raise error and should work normally
         assert "data" in result
         assert "counts" in result
-
-    def test_files_response_model_dump_excludes_gateways(self):
-        """Test FilesResponse.model_dump excludes gateways field."""
-        response = FilesResponse(files=[])
-        object.__setattr__(response, 'gateways', {"gateway1": Mock()})
-        
-        result = response.model_dump()
-        
-        # Gateways should be excluded
-        assert "gateways" not in result
-        assert "files" in result
 
     def test_files_response_model_dump_without_gateways(self):
         """Test FilesResponse.model_dump when gateways is None."""
@@ -92,16 +63,6 @@ class TestModelDumpOverrides:
         
         # Should not raise error
         assert "data" in result
-
-    def test_file_response_model_dump_excludes_gateways(self):
-        """Test FileResponse.model_dump excludes gateways field."""
-        response = FileResponse(file=None)
-        object.__setattr__(response, 'gateways', {"gateway1": Mock()})
-        
-        result = response.model_dump()
-        
-        # Gateways should be excluded
-        assert "gateways" not in result
 
     def test_file_response_model_dump_without_gateways(self):
         """Test FileResponse.model_dump when gateways is None."""

@@ -311,8 +311,8 @@ class TestSampleRepositoryComplexQueries:
     async def test_get_samples_with_complex_anatomical_sites_filter(self, repository, mock_session):
         """Test get_samples with complex anatomical_sites filter (list with multiple values)."""
         async def async_gen():
-            return
-            yield
+            if False:
+                yield  # Makes this an async generator, but never executes
         
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
@@ -359,8 +359,8 @@ class TestSampleRepositoryQueryBuilding:
         """Test get_samples with disease_phase that maps to multiple DB values."""
         with patch('app.repositories.sample.reverse_map_field_value', return_value=["Primary", "Recurrent"]):
             async def async_gen():
-                return
-                yield
+                if False:
+                    yield  # Makes this an async generator, but never executes
             
             mock_result = AsyncMock()
             mock_result.__aiter__ = Mock(return_value=async_gen())
@@ -381,8 +381,8 @@ class TestSampleRepositoryQueryBuilding:
         """Test get_samples with tumor_classification that is null-mapped."""
         with patch('app.repositories.sample.is_null_mapped_value', return_value=True):
             async def async_gen():
-                return
-                yield
+                if False:
+                    yield  # Makes this an async generator, but never executes
             
             mock_result = AsyncMock()
             mock_result.__aiter__ = Mock(return_value=async_gen())

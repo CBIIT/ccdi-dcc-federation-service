@@ -331,8 +331,8 @@ class TestSampleRepositoryGetSamples:
         """Test get_samples with no filters uses early pagination optimization."""
         # Mock empty result
         async def async_gen():
-            return
-            yield
+            if False:
+                yield  # Makes this an async generator, but never executes
         
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
@@ -367,8 +367,8 @@ class TestSampleRepositoryGetSamples:
         """Test get_samples with valid tissue_type filter."""
         with patch('app.repositories.sample.load_sample_enum', return_value=["Tumor", "Normal"]):
             async def async_gen():
-                return
-                yield
+                if False:
+                    yield  # Makes this an async generator, but never executes
             
             mock_result = AsyncMock()
             mock_result.__aiter__ = Mock(return_value=async_gen())
@@ -397,8 +397,8 @@ class TestSampleRepositoryGetSamples:
              patch('app.repositories.sample.is_null_mapped_value', return_value=False), \
              patch('app.repositories.sample.reverse_map_field_value', return_value="DNA_DB"):
             async def async_gen():
-                return
-                yield
+                if False:
+                    yield  # Makes this an async generator, but never executes
             
             mock_result = AsyncMock()
             mock_result.__aiter__ = Mock(return_value=async_gen())
@@ -411,8 +411,8 @@ class TestSampleRepositoryGetSamples:
     async def test_get_samples_with_depositions_filter(self, repository, mock_session):
         """Test get_samples with depositions filter."""
         async def async_gen():
-            return
-            yield
+            if False:
+                yield  # Makes this an async generator, but never executes
         
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
@@ -425,8 +425,8 @@ class TestSampleRepositoryGetSamples:
     async def test_get_samples_with_identifiers_filter(self, repository, mock_session):
         """Test get_samples with identifiers filter."""
         async def async_gen():
-            return
-            yield
+            if False:
+                yield  # Makes this an async generator, but never executes
         
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
@@ -439,8 +439,8 @@ class TestSampleRepositoryGetSamples:
     async def test_get_samples_with_identifiers_filter_multiple(self, repository, mock_session):
         """Test get_samples with multiple identifiers (|| separator)."""
         async def async_gen():
-            return
-            yield
+            if False:
+                yield  # Makes this an async generator, but never executes
         
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
@@ -453,8 +453,8 @@ class TestSampleRepositoryGetSamples:
     async def test_get_samples_with_anatomical_sites_filter(self, repository, mock_session):
         """Test get_samples with anatomical_sites filter."""
         async def async_gen():
-            return
-            yield
+            if False:
+                yield  # Makes this an async generator, but never executes
         
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
@@ -467,8 +467,8 @@ class TestSampleRepositoryGetSamples:
     async def test_get_samples_with_race_filter(self, repository, mock_session):
         """Test get_samples with race filter."""
         async def async_gen():
-            return
-            yield
+            if False:
+                yield  # Makes this an async generator, but never executes
         
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
@@ -481,8 +481,8 @@ class TestSampleRepositoryGetSamples:
     async def test_get_samples_with_diagnosis_search(self, repository, mock_session):
         """Test get_samples with diagnosis search filter."""
         async def async_gen():
-            return
-            yield
+            if False:
+                yield  # Makes this an async generator, but never executes
         
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
@@ -496,8 +496,8 @@ class TestSampleRepositoryGetSamples:
         """Test get_samples with multiple filters combined."""
         with patch('app.repositories.sample.load_sample_enum', return_value=["Tumor"]):
             async def async_gen():
-                return
-                yield
+                if False:
+                    yield  # Makes this an async generator, but never executes
             
             mock_result = AsyncMock()
             mock_result.__aiter__ = Mock(return_value=async_gen())
@@ -518,8 +518,8 @@ class TestSampleRepositoryGetSamples:
     async def test_get_samples_with_pagination(self, repository, mock_session):
         """Test get_samples with pagination parameters."""
         async def async_gen():
-            return
-            yield
+            if False:
+                yield  # Makes this an async generator, but never executes
         
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
@@ -979,8 +979,8 @@ class TestSampleRepositoryGetSamplesBySequencingFileFilters:
     async def test_get_samples_by_sequencing_file_filters_library_strategy(self, repository, mock_session):
         """Test _get_samples_by_sequencing_file_filters with library_strategy filter."""
         async def async_gen():
-            return
-            yield
+            if False:
+                yield  # Makes this an async generator, but never executes
         
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
@@ -1001,8 +1001,8 @@ class TestSampleRepositoryGetSamplesBySequencingFileFilters:
     async def test_get_samples_by_sequencing_file_filters_specimen_molecular_analyte_type_list(self, repository, mock_session):
         """Test _get_samples_by_sequencing_file_filters with specimen_molecular_analyte_type (list mapping)."""
         async def async_gen():
-            return
-            yield
+            if False:
+                yield  # Makes this an async generator, but never executes
         
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
@@ -1146,8 +1146,8 @@ class TestSampleRepositoryAdditionalFilters:
         with patch('app.repositories.sample.is_null_mapped_value', return_value=False), \
              patch('app.repositories.sample.reverse_map_field_value', return_value="Malignant"):
             async def async_gen():
-                return
-                yield
+                if False:
+                    yield  # Makes this an async generator, but never executes
             
             mock_result = AsyncMock()
             mock_result.__aiter__ = Mock(return_value=async_gen())
@@ -1164,8 +1164,8 @@ class TestSampleRepositoryAdditionalFilters:
     async def test_get_samples_with_preservation_method_filter(self, repository, mock_session):
         """Test get_samples with preservation_method filter."""
         async def async_gen():
-            return
-            yield
+            if False:
+                yield  # Makes this an async generator, but never executes
         
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
@@ -1182,8 +1182,8 @@ class TestSampleRepositoryAdditionalFilters:
     async def test_get_samples_with_tumor_grade_filter(self, repository, mock_session):
         """Test get_samples with tumor_grade filter."""
         async def async_gen():
-            return
-            yield
+            if False:
+                yield  # Makes this an async generator, but never executes
         
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
@@ -1200,8 +1200,8 @@ class TestSampleRepositoryAdditionalFilters:
     async def test_get_samples_with_age_at_diagnosis_filter(self, repository, mock_session):
         """Test get_samples with age_at_diagnosis filter."""
         async def async_gen():
-            return
-            yield
+            if False:
+                yield  # Makes this an async generator, but never executes
         
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
@@ -1218,8 +1218,8 @@ class TestSampleRepositoryAdditionalFilters:
     async def test_get_samples_with_age_at_collection_filter(self, repository, mock_session):
         """Test get_samples with age_at_collection filter."""
         async def async_gen():
-            return
-            yield
+            if False:
+                yield  # Makes this an async generator, but never executes
         
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
@@ -1237,8 +1237,8 @@ class TestSampleRepositoryAdditionalFilters:
         """Test get_samples with disease_phase filter."""
         with patch('app.repositories.sample.reverse_map_field_value', return_value="Primary"):
             async def async_gen():
-                return
-                yield
+                if False:
+                    yield  # Makes this an async generator, but never executes
             
             mock_result = AsyncMock()
             mock_result.__aiter__ = Mock(return_value=async_gen())
@@ -1255,8 +1255,8 @@ class TestSampleRepositoryAdditionalFilters:
     async def test_get_samples_with_diagnosis_filter(self, repository, mock_session):
         """Test get_samples with diagnosis filter."""
         async def async_gen():
-            return
-            yield
+            if False:
+                yield  # Makes this an async generator, but never executes
         
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())

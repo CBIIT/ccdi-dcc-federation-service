@@ -99,6 +99,48 @@ class TestCypherWhereBuilder:
         assert result == "a = 1 AND b = 2"
         assert "WHERE" not in result
 
+    def test_build_conditions_only_empty_after_filtering(self):
+        """Test build_conditions_only returns empty when all conditions filtered out."""
+        builder = CypherWhereBuilder()
+        builder.add("   ")  # Empty condition
+        builder.add("")  # Another empty condition
+        
+        result = builder.build_conditions_only()
+        
+        assert result == ""
+
+    def test_build_empty_after_filtering(self):
+        """Test build returns empty when all conditions filtered out."""
+        builder = CypherWhereBuilder()
+        builder.add("   ")  # Empty condition
+        builder.add("")  # Another empty condition
+        
+        result = builder.build()
+        
+        assert result == ""
+
+    def test_build_empty_when_filtered_empty(self):
+        """Test build returns empty when filtered list is empty (line 64)."""
+        builder = CypherWhereBuilder()
+        # Add conditions that will be filtered out
+        builder.conditions = ["   ", ""]
+        # Manually trigger the filtered check
+        filtered = [c for c in builder.conditions if c and c.strip()]
+        if not filtered:
+            result = builder.build()
+            assert result == ""
+
+    def test_build_conditions_only_empty_when_filtered_empty(self):
+        """Test build_conditions_only returns empty when filtered list is empty (line 81)."""
+        builder = CypherWhereBuilder()
+        # Add conditions that will be filtered out
+        builder.conditions = ["   ", ""]
+        # Manually trigger the filtered check
+        filtered = [c for c in builder.conditions if c and c.strip()]
+        if not filtered:
+            result = builder.build_conditions_only()
+            assert result == ""
+
     def test_build_conditions_only_empty(self):
         """Test building conditions only when empty."""
         builder = CypherWhereBuilder()
@@ -147,6 +189,105 @@ class TestCombineWhereClauses:
         result = combine_where_clauses("WHERE a = 1", "b = 2", "c = 3")
         
         assert result == "WHERE a = 1 AND b = 2 AND c = 3"
+
+    def test_combine_where_clauses_skip_empty_after_where_removal(self):
+        """Test combine_where_clauses skips clause that becomes empty after WHERE removal."""
+        # This tests line 129-130 in cypher_builder.py
+        result = combine_where_clauses("WHERE a = 1", "WHERE")
+        
+        assert result == "WHERE a = 1"
+
+    def test_combine_where_clauses_skip_empty_clause(self):
+        """Test combine_where_clauses skips empty clause."""
+        # This tests line 120 in cypher_builder.py
+        result = combine_where_clauses("WHERE a = 1", "")
+        
+        assert result == "WHERE a = 1"
+
+    def test_append_where_conditions_with_empty_strings(self):
+        """Test append_where_conditions filters out empty conditions."""
+        # This tests line 177 in cypher_builder.py
+        result = append_where_conditions("WHERE a = 1", "", "   ", "b = 2")
+        
+        assert result == "WHERE a = 1 AND b = 2"
+
+    def test_ensure_study_id_in_with_file_entity_type(self):
+        """Test ensure_study_id_in_with for file entity type."""
+        from app.utils.cypher_builder import ensure_study_id_in_with
+        
+        # Test file entity type (line 282)
+        result = ensure_study_id_in_with("WITH sf", entity_type="file", output_var="study_id_val")
+        assert "study_id_val" in result
+        
+        # Test when study_id_val already present (line 282)
+        result2 = ensure_study_id_in_with("WITH sf, study_id_val", entity_type="file", output_var="study_id_val")
+        assert result2 == "WITH sf, study_id_val"
+
+    def test_ensure_study_id_in_with_empty_content(self):
+        """Test ensure_study_id_in_with when content is empty."""
+        from app.utils.cypher_builder import ensure_study_id_in_with
+        
+        # Test when content is empty (line 303)
+        result = ensure_study_id_in_with("WITH", entity_type="subject")
+        assert "study_id" in result
+        
+        # Test without WITH keyword and empty content
+        result2 = ensure_study_id_in_with("", entity_type="subject")
+        assert "study_id" in result2
+
+    def test_cypher_query_builder_with_where_conditions(self):
+        """Test CypherQueryBuilder.with_clause with where_conditions."""
+        from app.utils.cypher_builder import CypherQueryBuilder
+        
+        builder = CypherQueryBuilder(entity_type="subject")
+        builder.match("(p:participant)")
+        
+        # Test with where_conditions (line 456)
+        builder.with_clause(
+            variables=["p"],
+            where_conditions=["p.participant_id IS NOT NULL"],
+            distinct=False
+        )
+        
+        query = builder.build()
+        assert "WHERE" in query
+        assert "p.participant_id IS NOT NULL" in query
+
+    def test_append_where_conditions_empty_existing(self):
+        """Test append_where_conditions when existing_conditions becomes empty (line 177)."""
+        # Test when all conditions are filtered out
+        result = append_where_conditions("", "", "   ")
+        assert result == ""
+
+    def test_ensure_study_id_in_with_file_already_has_study_id_val(self):
+        """Test ensure_study_id_in_with for file when study_id_val already present (line 282)."""
+        from app.utils.cypher_builder import ensure_study_id_in_with
+        
+        # Test when study_id_val already in clause (line 282)
+        result = ensure_study_id_in_with("WITH sf, study_id_val", entity_type="file", output_var="study_id_val")
+        assert result == "WITH sf, study_id_val"
+        
+        # Test when study_id_val is in clause but not as exact match
+        result2 = ensure_study_id_in_with("WITH sf, st.study_id AS study_id_val", entity_type="file", output_var="study_id_val")
+        # Should return as-is since study_id_val is present
+        assert "study_id_val" in result2
+
+    def test_cypher_query_builder_with_clause_output_var_in_current_vars(self):
+        """Test CypherQueryBuilder.with_clause when output_var in current_vars (line 427)."""
+        from app.utils.cypher_builder import CypherQueryBuilder
+        
+        builder = CypherQueryBuilder(entity_type="subject", auto_include_study_id=True)
+        builder.match("(p:participant)")
+        
+        # First WITH clause to add study_id to current_vars
+        builder.with_clause(variables=["p", "st.study_id AS study_id"])
+        
+        # Second WITH clause - study_id should already be in current_vars
+        builder.with_clause(variables=["p"])
+        
+        query = builder.build()
+        # Should include study_id from current_vars (line 427)
+        assert "study_id" in query
 
     def test_combine_clauses_with_and(self):
         """Test combining clauses that already contain AND."""

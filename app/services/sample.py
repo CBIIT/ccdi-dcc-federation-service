@@ -192,7 +192,7 @@ class SampleService:
         if self.cache_service and cache_key:
             await self.cache_service.set(
                 cache_key,
-                response.dict(),
+                response.model_dump(),
                 ttl=self.settings.cache.count_ttl
             )
         

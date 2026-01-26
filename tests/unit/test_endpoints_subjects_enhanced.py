@@ -304,10 +304,30 @@ class TestSubjectEndpointsEnhanced:
         
         assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
 
-    @pytest.mark.skip(reason="Code has NameError bug: SummaryCounts not imported in error path")
     async def test_get_subjects_summary_invalid_value_markers(self, mock_request, mock_session, mock_settings, mock_allowlist):
-        """Test get_subjects_summary with invalid value markers (skipped - code bug)."""
-        pass
+        """Test get_subjects_summary with invalid value markers returns empty summary."""
+        from app.api.v1.deps import get_subject_filters
+        
+        # Mock request with invalid value markers in query params
+        mock_request.query_params = {"sex": "InvalidValue"}
+        
+        # Mock get_subject_filters to return filters with invalid markers
+        with patch('app.api.v1.endpoints.subjects.get_subject_filters') as mock_get_filters:
+            mock_get_filters.return_value = {"_invalid_sex": True}
+            
+            result = await get_subjects_summary(
+                request=mock_request,
+                filters={"_invalid_sex": True},
+                session=mock_session,
+                settings=mock_settings,
+                allowlist=mock_allowlist,
+                _rate_limit=None
+            )
+            
+            # Should return SummaryResponse with total=0
+            # Note: SummaryCounts bug was fixed (previously would have caused NameError)
+            assert isinstance(result, SummaryResponse)
+            assert result.counts.total == 0
 
     async def test_get_subjects_summary_database_error(self, mock_request, mock_session, mock_settings, mock_allowlist):
         """Test get_subjects_summary handles database connection errors."""
@@ -334,15 +354,65 @@ class TestSubjectEndpointsEnhanced:
                 
                 assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
 
-    @pytest.mark.skip(reason="Code has NameError bugs in error handler (field_name, filters not defined)")
     async def test_count_subjects_by_field_database_error(self, mock_request, mock_session, mock_settings, mock_allowlist):
-        """Test count_subjects_by_field handles database connection errors (skipped - code bug)."""
-        pass
+        """Test count_subjects_by_field handles database connection errors."""
+        from app.services.subject import SubjectService
+        
+        # Mock service to raise database error
+        with patch('app.api.v1.endpoints.subjects.SubjectService') as mock_service_class:
+            mock_service = AsyncMock(spec=SubjectService)
+            mock_service.count_subjects_by_field = AsyncMock(
+                side_effect=DatabaseConnectionError("Connection failed")
+            )
+            mock_service_class.return_value = mock_service
+            
+            with patch('app.api.v1.endpoints.subjects.get_cache_service', return_value=None):
+                with pytest.raises(HTTPException) as exc_info:
+                    await count_subjects_by_field(
+                        request=mock_request,
+                        field="sex",
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None
+                    )
+                
+                # Should return 404
+                # Note: field_name and filters bugs were fixed (previously would have caused NameError)
+                assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+                error_detail = exc_info.value.detail["errors"][0]
+                assert error_detail["kind"] == ErrorKind.NOT_FOUND
 
-    @pytest.mark.skip(reason="Code has NameError bugs in error handler (field_name, filters not defined)")
     async def test_count_subjects_by_field_connection_error_detection(self, mock_request, mock_session, mock_settings, mock_allowlist):
-        """Test count_subjects_by_field detects connection-related errors (skipped - code bug)."""
-        pass
+        """Test count_subjects_by_field detects connection-related errors."""
+        from app.services.subject import SubjectService
+        
+        # Mock service to raise connection-related error (not DatabaseConnectionError)
+        connection_error = Exception("Database connection timeout")
+        
+        with patch('app.api.v1.endpoints.subjects.SubjectService') as mock_service_class:
+            mock_service = AsyncMock(spec=SubjectService)
+            mock_service.count_subjects_by_field = AsyncMock(
+                side_effect=connection_error
+            )
+            mock_service_class.return_value = mock_service
+            
+            with patch('app.api.v1.endpoints.subjects.get_cache_service', return_value=None):
+                with pytest.raises(HTTPException) as exc_info:
+                    await count_subjects_by_field(
+                        request=mock_request,
+                        field="sex",
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None
+                    )
+                
+                # Should detect connection error and return 404
+                # Note: field_name and filters bugs were fixed (previously would have caused NameError)
+                assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+                error_detail = exc_info.value.detail["errors"][0]
+                assert error_detail["kind"] == ErrorKind.NOT_FOUND
 
 
 @pytest.mark.unit

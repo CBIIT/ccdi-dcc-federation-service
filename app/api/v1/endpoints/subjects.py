@@ -31,6 +31,7 @@ from app.models.dto import (
     SubjectResponse,
     CountResponse,
     SummaryResponse,
+    SummaryCounts,
     NamedGateway
 )
 from app.models.errors import NotFoundError, InvalidParametersError, InvalidRouteError
@@ -475,8 +476,8 @@ async def count_subjects_by_field(
             "Database connection error in count_subjects_by_field endpoint - returning empty result",
             error=str(e),
             error_type=type(e).__name__,
-            field=field_name,
-            filters=filters,
+            field=field,
+            filters={},
             is_database_connection_error=True,
             will_return_404=True,
             aws_cloudwatch_alert=True
@@ -506,8 +507,8 @@ async def count_subjects_by_field(
                 "Database connection issue in count_subjects_by_field endpoint - returning empty result",
                 error=str(e),
                 error_type=type(e).__name__,
-                field=field_name,
-                filters=filters,
+                field=field,
+                filters={},
                 is_connection_related=True,
                 will_return_404=True,
                 aws_cloudwatch_alert=True,

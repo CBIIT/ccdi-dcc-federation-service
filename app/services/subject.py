@@ -239,7 +239,7 @@ class SubjectService:
         if self.cache_service and cache_key:
             await self.cache_service.set(
                 cache_key,
-                response.dict(),
+                response.model_dump(),
                 ttl=self.settings.cache.count_ttl
             )
         
@@ -349,7 +349,7 @@ class SubjectService:
             logger.debug("Caching summary result", cache_key=cache_key, total=response.counts.total)
             await self.cache_service.set(
                 cache_key,
-                response.dict(),
+                response.model_dump(),
                 ttl=self.settings.cache.summary_ttl
             )
         

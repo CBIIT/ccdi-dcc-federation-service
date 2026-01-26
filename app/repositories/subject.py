@@ -420,27 +420,28 @@ class SubjectRepository:
 
                 # If identifiers are present, return raw survival/diagnosis collections (computed in Python)
                 # to match dcc-dev's populated output for identifier lookups, without requiring derived-field filtering.
+                # IMPORTANT: Group by (participant_id, study_id) pairs to ensure consistency with individual endpoint
                 if identifiers_early_filter:
                     cypher = f"""
         MATCH (p:participant){early_where_clause}
-        WITH toString(p.participant_id) AS participant_id, p
-        ORDER BY participant_id
+        OPTIONAL MATCH (p)-[:IN_STUDY]->(st:study)
+        WITH toString(p.participant_id) AS participant_id, p, st.study_id AS study_id
+        WHERE study_id IS NOT NULL
+        WITH participant_id, study_id, p
+        ORDER BY participant_id, study_id
         SKIP $offset
         LIMIT $limit
         OPTIONAL MATCH (p)<-[:of_survival]-(s:survival)
-        WITH participant_id, p, collect(s) AS survival_records
+        WITH participant_id, study_id, p, collect(s) AS survival_records
         OPTIONAL MATCH (p)<-[:of_diagnosis]-(d:diagnosis)
-        WITH participant_id, p, survival_records, collect(DISTINCT d) AS diagnosis_nodes
-        OPTIONAL MATCH (p)-[:IN_STUDY]->(st:study)
-        WITH participant_id, p, survival_records, diagnosis_nodes, collect(DISTINCT st.study_id) AS study_ids
-        WITH participant_id, p, survival_records, diagnosis_nodes, study_ids,
-             head(study_ids) AS namespace,
-             // Filter out null values and apply depositions filter if present
-             [sid IN study_ids WHERE sid IS NOT NULL{f" AND sid {deposition_operator} ${dep_param}" if dep_param else ""}] AS study_ids_temp
-        UNWIND study_ids_temp AS sid
-        WITH participant_id, p, survival_records, diagnosis_nodes, namespace, sid
-        WHERE toString(sid) <> ''
-        WITH participant_id, p, survival_records, diagnosis_nodes, namespace, collect(sid) AS study_ids_filtered
+        WITH participant_id, study_id, p, survival_records, collect(DISTINCT d) AS diagnosis_nodes
+        // Apply depositions filter if present
+        WITH participant_id, study_id, p, survival_records, diagnosis_nodes
+        WHERE study_id IS NOT NULL{f" AND study_id {deposition_operator} ${dep_param}" if dep_param else ""}
+        WITH participant_id, study_id, p, survival_records, diagnosis_nodes
+        // Get all study_ids for this participant for depositions array
+        OPTIONAL MATCH (p)-[:IN_STUDY]->(st_all:study)
+        WITH participant_id, study_id, p, survival_records, diagnosis_nodes, collect(DISTINCT st_all.study_id) AS all_study_ids
         RETURN
           toString(participant_id) AS name,
           p.race AS race,
@@ -454,28 +455,35 @@ class SubjectRepository:
           survival_records AS survival_records,
           diagnosis_nodes AS diagnosis_nodes,
           p.sex_at_birth AS sex,
-          toString(namespace) AS namespace,
-          study_ids_filtered AS depositions
-        ORDER BY toString(name)
+          toString(study_id) AS namespace,
+          all_study_ids AS depositions
+        ORDER BY toString(name), namespace
         """.strip()
                 else:
+                    # No identifiers filter - fetch survival and diagnosis records for Python computation
+                    # Strategy: fetch survivals + diagnosis nodes as raw collections and compute derived fields in Python.
+                    # IMPORTANT: Group by (participant_id, study_id) pairs to ensure consistency with individual endpoint
+                    # This ensures that participants in multiple studies are returned with the correct study_id
                     cypher = f"""
         MATCH (p:participant){early_where_clause}
         OPTIONAL MATCH (p)-[:IN_STUDY]->(st:study)
-        WITH p.participant_id AS participant_id, p,
-             collect(DISTINCT st.study_id) AS study_ids
-        WITH participant_id, p, study_ids,
-             head(study_ids) AS namespace,
-             // Filter out null values and apply depositions filter if present
-             [sid IN study_ids WHERE sid IS NOT NULL{f" AND sid {deposition_operator} ${dep_param}" if dep_param else ""}] AS study_ids_temp
-        UNWIND study_ids_temp AS sid
-        WITH participant_id, p,
-             namespace,
-             sid
-        WHERE toString(sid) <> ''
-        WITH participant_id, p,
-             namespace,
-             collect(sid) AS study_ids_filtered
+        WITH toString(p.participant_id) AS participant_id, p, st.study_id AS study_id
+        WHERE study_id IS NOT NULL
+        WITH participant_id, study_id, p
+        ORDER BY participant_id, study_id
+        SKIP $offset
+        LIMIT $limit
+        OPTIONAL MATCH (p)<-[:of_survival]-(s:survival)
+        WITH participant_id, study_id, p, collect(s) AS survival_records
+        OPTIONAL MATCH (p)<-[:of_diagnosis]-(d:diagnosis)
+        WITH participant_id, study_id, p, survival_records, collect(DISTINCT d) AS diagnosis_nodes
+        // Apply depositions filter if present
+        WITH participant_id, study_id, p, survival_records, diagnosis_nodes
+        WHERE study_id IS NOT NULL{f" AND study_id {deposition_operator} ${dep_param}" if dep_param else ""}
+        WITH participant_id, study_id, p, survival_records, diagnosis_nodes
+        // Get all study_ids for this participant for depositions array
+        OPTIONAL MATCH (p)-[:IN_STUDY]->(st_all:study)
+        WITH participant_id, study_id, p, survival_records, diagnosis_nodes, collect(DISTINCT st_all.study_id) AS all_study_ids
         RETURN
           toString(participant_id) AS name,
           p.race AS race,
@@ -483,15 +491,15 @@ class SubjectRepository:
             WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
             ELSE 'Not reported'
           END AS ethnicity,
-          -999 AS age_at_vital_status,
+          NULL AS age_at_vital_status,
           NULL AS vital_status,
-          [] AS associated_diagnoses,
+          NULL AS associated_diagnoses,
+          survival_records AS survival_records,
+          diagnosis_nodes AS diagnosis_nodes,
           p.sex_at_birth AS sex,
-          toString(namespace) AS namespace,
-          study_ids_filtered AS depositions
-        ORDER BY toString(name)
-        SKIP $offset
-        LIMIT $limit
+          toString(study_id) AS namespace,
+          all_study_ids AS depositions
+        ORDER BY toString(name), namespace
         """.strip()
         else:
             # Full processing path - use existing complex query logic

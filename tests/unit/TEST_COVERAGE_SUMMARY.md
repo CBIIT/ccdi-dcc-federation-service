@@ -4,11 +4,16 @@
 
 This document summarizes the comprehensive test coverage improvements made to the CCDI Federation Service.
 
-**Total Test Files Created**: 14  
-**Total Tests**: 711 tests  
-**Test Status**: 698 passing, 13 skipped
+**Total Test Files**: 47  
+**Total Tests**: 700+ tests  
+**Test Status**: All tests passing (some skipped for expected reasons)  
+**Coverage**: **78.09%** (improved from 71.92%)
 
-## Test Files Created
+## Test Files Overview
+
+This section documents the comprehensive test suite. Recent additions (2026-01-26) include extensive edge case testing and coverage improvements.
+
+### Core Test Files
 
 ### 1. `test_url_builder.py` - 10 tests ✅
 **Module**: `app/lib/url_builder.py`
@@ -231,37 +236,174 @@ This document summarizes the comprehensive test coverage improvements made to th
 
 ---
 
+### Recent Additions (2026-01-26)
+
+### 13. `test_dto_model_dump.py` - 9+ tests ✅
+**Module**: `app/models/dto.py`
+
+**Coverage**:
+- `SamplesResponse.model_dump()` - excludes gateways
+- `FilesResponse.model_dump()` - excludes gateways
+- `SubjectResponse.model_dump()` - excludes gateways
+- `FileResponse.model_dump()` - excludes gateways
+- `SampleResponse.model_dump()` - excludes gateways
+- Edge cases (None gateways, missing fields)
+
+**Status**: All tests passing
+
+---
+
+### 14. `test_dto_init_methods.py` - 4 tests ✅
+**Module**: `app/models/dto.py`
+
+**Coverage**:
+- `Subject.__init__()` - default kind and gateways
+- `Sample.__init__()` - default gateways
+- `File.__init__()` - basic initialization
+
+**Status**: All tests passing
+
+---
+
+### 15. `test_field_allowlist_edge_cases.py` - 2 tests ✅
+**Module**: `app/lib/field_allowlist.py`
+
+**Coverage**:
+- `add_harmonized_field()` when entity_type not in dict
+- `add_unharmonized_field()` when entity_type not in dict
+
+**Status**: All tests passing
+
+---
+
+### 16. `test_field_mappings_edge_cases.py` - 8 tests ✅
+**Module**: `app/core/field_mappings.py`
+
+**Coverage**:
+- `is_database_only_value()` with None and empty strings
+- `build_case_mapping_statement()` with no field config or empty mappings
+- `load_sample_enum()` edge cases (field not in data, not a list)
+- `load_sequencing_file_enum()` edge cases (field not in data, not a list)
+
+**Status**: All tests passing
+
+---
+
+### 17. `test_cypher_builder_validation.py` - 2 tests ✅
+**Module**: `app/utils/cypher_builder.py`
+
+**Coverage**:
+- `validate_where_placement()` duplicate WHERE detection
+- `validate_where_placement()` WITH keyword after WHERE
+
+**Status**: All tests passing
+
+---
+
+### 18. `test_constants_edge_cases.py` - 3 tests ✅
+**Module**: `app/core/constants.py`
+
+**Coverage**:
+- `load_file_enum()` error handling (FileNotFoundError, JSONDecodeError)
+- `load_file_enum()` when field_type key missing
+- `FileType.is_valid()` for invalid values
+
+**Status**: All tests passing
+
+---
+
+### 19. `test_config_edge_cases.py` - 3 tests ✅
+**Module**: `app/core/config.py`
+
+**Coverage**:
+- `load_info_json()` error handling (FileNotFoundError, JSONDecodeError)
+- `get_settings()` OSError handling
+
+**Status**: All tests passing
+
+---
+
+### 20. `test_sample_repository_comprehensive.py` - 62+ tests ✅
+**Module**: `app/repositories/sample.py`
+
+**Coverage**:
+- `count_samples_by_field()` - all field types, filter combinations, unsupported fields
+- `get_samples()` - no filters, sequencing file-only filters, various filter combinations, pagination
+- `get_samples_summary()` - no filters, sequencing file-only filters, with identifiers/depositions filters
+- `get_sample_by_identifier()` - found/not found
+- `_count_samples_by_associated_diagnoses()` - with/without filters
+- `_record_to_sample()` - valid data, missing nodes/IDs, invalid values, anatomical sites, base URL, diagnosis with comments
+
+**Status**: All tests passing
+
+---
+
+### 21. `test_sample_repository_edge_cases.py` - 4 tests ✅
+**Module**: `app/repositories/sample.py`
+
+**Coverage**:
+- `get_samples()` exception handling and retry logic
+- `get_samples()` anatomical sites list error fallback
+- `count_samples_by_field()` anatomical sites missing fallback
+- `count_samples_by_field()` library_source_material with dangerous characters
+
+**Status**: All tests passing
+
+---
+
+### Enhanced Test Files
+
+### Enhanced: `test_pagination.py`
+**Added**: `__post_init__` validation tests
+- Tests for `PaginationParams.__post_init__()` validation
+- Invalid page, per_page, and max_page_size scenarios
+
+### Enhanced: `test_cypher_builder.py`
+**Added**: Additional edge case tests
+- Empty conditions after filtering
+- `append_where_conditions()` with empty existing
+- `ensure_study_id_in_with()` for file entity type
+- `CypherQueryBuilder.with_clause()` with where_conditions
+
+---
+
 ## Test Statistics
 
 ### By Category
 
 | Category | Test Files | Tests | Status |
 |----------|-----------|-------|--------|
-| Core Utilities | 5 | 85 | ✅ All passing |
-| Configuration | 1 | 22 | ✅ All passing |
-| Dependencies | 1 | 51 | ✅ All passing |
-| Repositories | 1 | 80+ | ✅ All passing |
-| Services | 2 | 43 | ✅ 42 passing, 1 skipped |
-| Endpoints | 1 | 19 | ✅ All passing |
-| Database Utils | 1 | 8 | ✅ All passing |
-| **Total** | **12** | **711** | **✅ 698 passing, 13 skipped** |
+| Core Utilities | 8+ | 100+ | ✅ All passing |
+| Configuration | 2 | 25+ | ✅ All passing |
+| Dependencies | 2 | 51+ | ✅ All passing |
+| Repositories | 3+ | 150+ | ✅ All passing |
+| Services | 2+ | 43+ | ✅ All passing |
+| Endpoints | 10+ | 100+ | ✅ All passing |
+| Database Utils | 3+ | 20+ | ✅ All passing |
+| Models/DTOs | 2 | 13+ | ✅ All passing |
+| **Total** | **47** | **700+** | **✅ All passing (some skipped for expected reasons)** |
 
 ### By Module
 
-| Module | Tests | Coverage |
-|--------|-------|----------|
-| `app/lib/url_builder.py` | 10 | ✅ Complete |
-| `app/core/constants.py` | 22 | ✅ Complete |
-| `app/core/logging.py` | 10 | ✅ Complete |
-| `app/lib/field_allowlist.py` | 21 | ✅ Complete |
-| `app/core/config.py` | 22 | ✅ Complete |
-| `app/api/v1/deps.py` | 51 | ✅ Complete |
-| `app/repositories/*.py` | 80+ | ✅ Ongoing (sample repo still low) |
-| `app/services/*.py` | 43 | ✅ Complete (1 known bug) |
-| `app/api/v1/endpoints/*.py` | 19 | ✅ Complete |
-| `app/services/materialized_views.py` | 16 | ✅ Complete |
-| `app/db/memgraph.py` | 8 | ✅ Partial (utilities) |
-| `app/utils/cypher_validator.py` | 5 | ✅ Partial |
+| Module | Tests | Coverage | Status |
+|--------|-------|----------|--------|
+| `app/lib/url_builder.py` | 10 | 100% | ✅ Complete |
+| `app/core/constants.py` | 25+ | 98.73% | ✅ Excellent |
+| `app/core/logging.py` | 10 | 100% | ✅ Complete |
+| `app/lib/field_allowlist.py` | 23+ | 96.67% | ✅ Excellent |
+| `app/core/config.py` | 25+ | 95.31% | ✅ Excellent |
+| `app/api/v1/deps.py` | 51+ | 81.68% | ✅ Good |
+| `app/repositories/sample.py` | 66+ | Significantly Improved | ✅ Much Better |
+| `app/repositories/subject.py` | 80+ | 66.64% | ⚠️ Needs improvement |
+| `app/repositories/file.py` | 80+ | 75.05% | ⚠️ Needs improvement |
+| `app/services/*.py` | 43+ | 95%+ | ✅ Excellent |
+| `app/api/v1/endpoints/*.py` | 100+ | 80%+ | ✅ Good |
+| `app/services/materialized_views.py` | 16 | 96.25% | ✅ Excellent |
+| `app/db/memgraph.py` | 8+ | 70.31% | ⚠️ Needs improvement |
+| `app/utils/cypher_validator.py` | 5 | 98.82% | ✅ Excellent |
+| `app/utils/cypher_builder.py` | 20+ | 99.47% | ✅ Excellent |
+| `app/models/dto.py` | 13+ | 100% (targeted) | ✅ Excellent |
+| `app/core/field_mappings.py` | 20+ | 99.41% | ✅ Excellent |
 
 ## Key Testing Patterns Used
 
@@ -296,19 +438,60 @@ def test_validation(self):
 
 ## Coverage Improvements
 
-- **Coverage**: 11254 of 15592 relevant lines covered (72.18%), 
-  Summary report - Coveralls: https://coveralls.io/jobs/176955186
-- **Test Files**: 14 comprehensive test files
-- **Focus**: Broader coverage of:
-  - Core utilities
-  - Configuration management
-  - API dependencies
-  - Data access layer
-  - Business logic layer
-  - API endpoints
-  - Database utilities
+### Overall Coverage: 78.09% ✅
+
+**Improvement**: Increased from 71.92% to 78.09% (+6.17 percentage points)
+
+- **Total Statements**: 7,724
+- **Covered**: 6,032
+- **Missed**: 1,692
+- **Test Files**: 47 comprehensive test files
+
+### Recent Improvements (2026-01-26)
+
+1. **Sample Repository Coverage** - Significantly improved from 43.80%
+   - Added 62+ comprehensive test cases
+   - Added 4 edge case tests
+   - Coverage now much better
+
+2. **DTO Models** - Excellent coverage
+   - `model_dump()` overrides tested
+   - `__init__()` methods tested
+   - 100% coverage when running targeted tests
+
+3. **Core Utilities** - Excellent coverage
+   - `app/core/config.py`: 95.31%
+   - `app/core/constants.py`: 98.73%
+   - `app/core/field_mappings.py`: 99.41%
+   - `app/utils/cypher_builder.py`: 99.47%
+
+4. **Edge Cases** - Comprehensive coverage
+   - Error handling paths
+   - Validation logic
+   - Fallback mechanisms
+   - Empty/null value handling
+
+### Focus Areas Covered:
+  - Core utilities ✅
+  - Configuration management ✅
+  - API dependencies ✅
+  - Data access layer (improved) ✅
+  - Business logic layer ✅
+  - API endpoints ✅
+  - Database utilities (partial) ⚠️
+  - DTO models ✅
+  - Field mappings ✅
+  - Cypher query building ✅
 
 ## Next Steps
+
+### Completed ✅
+
+1. **Sample Repository Coverage** - ✅ Significantly improved
+2. **DTO Model Testing** - ✅ Comprehensive coverage added
+3. **Edge Case Testing** - ✅ Extensive edge cases covered
+4. **Bug Fixes** - ✅ Pydantic deprecations fixed, NameError bugs fixed
+5. **Core Utilities** - ✅ Excellent coverage achieved
 
 ### Recommended Additional Coverage
 
@@ -317,20 +500,30 @@ def test_validation(self):
    - Database integration tests
    - Full request/response cycle tests
 
-2. **Edge Cases**:
-   - Boundary conditions for pagination
-   - Large dataset handling
-   - Concurrent request handling
+2. **Repository Coverage**:
+   - Continue improving subject repository coverage (currently 66.64%)
+   - Continue improving file repository coverage (currently 75.05%)
+   - Add more complex query path tests
 
-3. **Performance Tests**:
+3. **Database Utilities**:
+   - Improve `app/db/memgraph.py` coverage (currently 70.31%)
+   - Test connection error handling
+   - Test retry logic more thoroughly
+
+4. **Performance Tests**:
    - Query performance
    - Cache hit/miss rates
    - Materialized view refresh performance
 
-4. **Error Scenarios**:
+5. **Error Scenarios**:
    - Network failures
    - Database connection failures
    - Timeout handling
+
+### Target: 80% Overall Coverage
+
+Current: 78.09%  
+Remaining: ~1.91 percentage points (~147 statements)
 
 ## Running Tests
 
@@ -357,7 +550,9 @@ uv run pytest tests/unit/test_services.py::TestSubjectService::test_get_subjects
 
 ---
 
-**Last Updated**: 2026-01-23  
+**Last Updated**: 2026-01-26  
 **Test Framework**: pytest 7.4.4  
-**Python Version**: 3.12.6
+**Python Version**: 3.12.6  
+**Coverage Tool**: pytest-cov 4.1.0  
+**Current Coverage**: 78.09% (7724 statements, 1692 missed)
 

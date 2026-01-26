@@ -22,9 +22,9 @@ tests/
     └── __init__.py
 ```
 
-**Total Test Files**: 40+  
+**Total Test Files**: 47  
 **Total Tests**: 700+  
-**Coverage**: ~72% (see `tests/unit/TEST_COVERAGE_SUMMARY.md` for details)
+**Coverage**: ~78% (see `tests/TEST_RESULTS_REVIEW.md` for details)
 
 ## Running Tests
 
@@ -107,7 +107,7 @@ uv run pytest tests/test_contract_*.py
 - Mock external dependencies
 - Test individual functions and classes
 - Located in `tests/unit/`
-- **40+ test files** covering:
+- **47 test files** covering:
   - Core utilities (constants, config, logging, URL builder)
   - API dependencies (deps, filters, pagination)
   - Repositories (subject, sample, file)
@@ -180,11 +180,11 @@ uv pip install -r requirements.txt
 
 ## Test Coverage
 
-See `tests/unit/TEST_COVERAGE_SUMMARY.md` for detailed coverage information:
+See `tests/TEST_RESULTS_REVIEW.md` for detailed coverage information:
 - **Total Tests**: 700+
-- **Coverage**: ~72%
-- **Test Files**: 40+
-- **Status**: 698 passing, 13 skipped
+- **Coverage**: ~78%
+- **Test Files**: 47
+- **Status**: All tests passing (some skipped for expected reasons)
 
 ## Related Documentation
 

@@ -120,3 +120,35 @@ def test_parse_pagination_params_defaults_and_validation():
         with pytest.raises(ValueError):
             parse_pagination_params(page=1, per_page=101)
 
+    def test_pagination_params_post_init_validation(self):
+        """Test PaginationParams.__post_init__ validation (called manually)."""
+        from app.core.pagination import PaginationParams
+        from unittest.mock import patch
+        
+        mock_settings = Mock()
+        mock_settings.max_page_size = 100
+        
+        with patch('app.core.pagination.get_settings', return_value=mock_settings):
+            # Create instance
+            params = PaginationParams(page=1, per_page=10)
+            
+            # Test __post_init__ validation by calling it manually
+            # This tests lines 25-34 in pagination.py
+            params.__post_init__()  # Should not raise for valid values
+            
+            # Test invalid page
+            params.page = 0
+            with pytest.raises(ValueError, match="Page must be >= 1"):
+                params.__post_init__()
+            
+            # Test invalid per_page
+            params.page = 1
+            params.per_page = 0
+            with pytest.raises(ValueError, match="per_page must be >= 1"):
+                params.__post_init__()
+            
+            # Test per_page exceeds max
+            params.per_page = 101
+            with pytest.raises(ValueError, match="per_page cannot exceed"):
+                params.__post_init__()
+

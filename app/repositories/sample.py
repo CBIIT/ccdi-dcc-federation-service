@@ -3518,7 +3518,7 @@ class SampleRepository:
                 MATCH (sa:sample)-[:IN_STUDY]->(st:study)
                 WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
                   AND ({node_field} IS NULL OR toString({node_field}) = '' OR trim(toString({node_field})) = '' OR toString({node_field}) = '-999' OR trim(toString({node_field})) = '-999')
-                WITH DISTINCT sa.sample_id as sample_id
+                WITH sa.sample_id as sample_id, st.study_id as study_id
                 RETURN count(*) as missing
                 """.strip()
                             else:

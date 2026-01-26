@@ -296,13 +296,8 @@ def test_validation(self):
 
 ## Coverage Improvements
 
-### Before
-- **Coverage**: 37.49% (5,847 of 15,597 lines)
-- **Test Files**: Existing files (models, pagination)
-- **Focus**: Limited coverage of core functionality
-
-### After
-- **Coverage**: Summary report - Coveralls: https://coveralls.io/jobs/176955186
+- **Coverage**: 11254 of 15592 relevant lines covered (72.18%), 
+  Summary report - Coveralls: https://coveralls.io/jobs/176955186
 - **Test Files**: 14 comprehensive test files
 - **Focus**: Broader coverage of:
   - Core utilities
@@ -312,10 +307,6 @@ def test_validation(self):
   - Business logic layer
   - API endpoints
   - Database utilities
-
-## Known Issues
-
-1. **Service Bug**: `test_services.py::test_get_subjects_summary_cache_hit` is skipped due to a known `UnboundLocalError` bug in `app/services/subject.py` line 293. The bug occurs when `SummaryResponse` is used before a local import shadows the top-level import.
 
 ## Next Steps
 

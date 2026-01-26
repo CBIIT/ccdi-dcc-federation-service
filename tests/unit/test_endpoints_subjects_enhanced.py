@@ -324,7 +324,8 @@ class TestSubjectEndpointsEnhanced:
                 _rate_limit=None
             )
             
-            # Should return SummaryResponse with total=0 (SummaryCounts bug is now fixed)
+            # Should return SummaryResponse with total=0
+            # Note: SummaryCounts bug was fixed (previously would have caused NameError)
             assert isinstance(result, SummaryResponse)
             assert result.counts.total == 0
 
@@ -376,7 +377,8 @@ class TestSubjectEndpointsEnhanced:
                         _rate_limit=None
                     )
                 
-                # Should return 404 (field_name and filters bugs are now fixed)
+                # Should return 404
+                # Note: field_name and filters bugs were fixed (previously would have caused NameError)
                 assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
                 error_detail = exc_info.value.detail["errors"][0]
                 assert error_detail["kind"] == ErrorKind.NOT_FOUND
@@ -406,7 +408,8 @@ class TestSubjectEndpointsEnhanced:
                         _rate_limit=None
                     )
                 
-                # Should detect connection error and return 404 (field_name and filters bugs are now fixed)
+                # Should detect connection error and return 404
+                # Note: field_name and filters bugs were fixed (previously would have caused NameError)
                 assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
                 error_detail = exc_info.value.detail["errors"][0]
                 assert error_detail["kind"] == ErrorKind.NOT_FOUND

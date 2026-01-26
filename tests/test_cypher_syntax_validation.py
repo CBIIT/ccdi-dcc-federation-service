@@ -40,16 +40,17 @@ def test_no_consecutive_where_clauses_in_depositions_path():
     """
     Test that depositions path with diagnosis search doesn't generate duplicate WHERE clauses.
     
-    This test would have caught the bug where:
+    Tests the combination:
     - search=Neuroblastoma + depositions=phs002431
-    - Generated two consecutive WHERE clauses
+    - Should not generate two consecutive WHERE clauses
+    - Note: This was a bug that was fixed (consecutive WHERE clauses causing syntax errors)
     """
     session = _CapturingSession()
     repo = SubjectRepository(session=session, allowlist=_DummyAllowlist(), settings=Settings())
     
     import asyncio
     
-    # The problematic combination that caused the bug
+    # Test the problematic combination that previously caused a bug
     try:
         asyncio.run(repo.get_subjects({
             "_diagnosis_search": "Neuroblastoma",
@@ -141,15 +142,16 @@ def test_cypher_syntax_no_mismatched_input_errors():
     Test that generated Cypher queries don't have syntax errors that would cause
     "mismatched input" errors from Memgraph.
     
-    This test would have caught the bug where:
+    This test checks for a specific issue where:
     - Error: "mismatched input 'WHERE' expecting {<EOF>, ';'}"
+    - Note: This was a bug that was fixed (consecutive WHERE clauses causing syntax errors)
     """
     session = _CapturingSession()
     repo = SubjectRepository(session=session, allowlist=_DummyAllowlist(), settings=Settings())
     
     import asyncio
     
-    # Test the specific combination that caused the bug
+    # Test the specific combination that previously caused a bug
     problematic_filters = {
         "_diagnosis_search": "Neuroblastoma",
         "depositions": "phs002431"
@@ -174,7 +176,8 @@ def test_cypher_syntax_no_mismatched_input_errors():
     # Check for common syntax issues
     cypher = session.last_cypher
     
-    # Check for consecutive WHERE clauses (the bug we fixed)
+    # Check for consecutive WHERE clauses
+    # Note: This was a bug that was fixed (consecutive WHERE clauses would cause syntax errors)
     if re.search(r'WHERE[^\n]*\n[^\n]*WHERE', cypher):
         # This might be OK if separated by comments, but check carefully
         lines = cypher.split('\n')

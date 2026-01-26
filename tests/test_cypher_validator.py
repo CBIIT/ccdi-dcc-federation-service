@@ -83,7 +83,9 @@ def test_validate_unwind_missing_preserved_variables():
 
 
 def test_validate_complex_query_with_race_filter():
-    """Test validation of complex query similar to the bug we found."""
+    """Test validation of complex query with race filter and UNWIND scoping."""
+    # Note: This test case is based on a bug that was found and fixed
+    # (variables used after UNWIND without being in WITH clause)
     # This is similar to the actual buggy query
     complex_query = """
     WITH p, st, collect(DISTINCT study_id) AS study_ids

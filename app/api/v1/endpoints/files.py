@@ -719,7 +719,6 @@ async def get_file(
 )
 async def get_files_summary(
     request: Request,
-    filters: Dict[str, Any] = Depends(get_file_filters_no_descriptions),
     session: AsyncSession = Depends(get_database_session),
     settings: Settings = Depends(get_app_settings),
     allowlist: FieldAllowlist = Depends(get_allowlist),
@@ -728,17 +727,24 @@ async def get_files_summary(
     """Get summary statistics for sequencing files."""
     logger.info(
         "Get sequencing files summary request",
-        filters=filters,
         path=request.url.path
     )
     
     try:
+        # Validate that no query parameters are provided
+        if request.query_params:
+            raise InvalidParametersError(
+                parameters=[],  # Empty array - don't expose parameter names
+                message="Invalid query parameter(s) provided.",
+                reason="Summary endpoint does not accept any query parameters"
+            )
+
         # Create service
         cache_service = get_cache_service()
         service = FileService(session, allowlist, settings, cache_service)
         
-        # Get summary
-        result = await service.get_files_summary(filters)
+        # Get summary (no filters - returns total count of all files)
+        result = await service.get_files_summary({})
         
         logger.info(
             "Get sequencing files summary response",
@@ -747,8 +753,49 @@ async def get_files_summary(
         
         return result
         
+    except DatabaseConnectionError as e:
+        # Database connection error - log clearly for AWS cloud monitoring
+        logger.error(
+            "Database connection error in get_files_summary endpoint - returning empty result",
+            error=str(e),
+            error_type=type(e).__name__,
+            is_database_connection_error=True,
+            will_return_404=True,
+            aws_cloudwatch_alert=True
+        )
+        # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Files",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
     except Exception as e:
-        logger.error("Error getting sequencing files summary", error=str(e), exc_info=True)
+        # Check if this is a connection-related error
+        error_str = str(e).lower()
+        is_connection_error = any(keyword in error_str for keyword in [
+            'connection', 'database', 'unavailable', 'timeout', 'network',
+            'service unavailable', 'broken pipe', 'connection reset', 'connection closed'
+        ])
+        
+        if is_connection_error:
+            # Connection-related error - log clearly for AWS cloud monitoring
+            logger.error(
+                "Database connection issue in get_files_summary endpoint - returning empty result",
+                error=str(e),
+                error_type=type(e).__name__,
+                is_connection_related=True,
+                will_return_404=True,
+                aws_cloudwatch_alert=True,
+                exc_info=True
+            )
+        else:
+            logger.error("Error getting sequencing files summary", error=str(e), exc_info=True)
+        
         if hasattr(e, 'to_http_exception'):
             raise e.to_http_exception()
         # Return 404 instead of 500 - no 500 errors allowed

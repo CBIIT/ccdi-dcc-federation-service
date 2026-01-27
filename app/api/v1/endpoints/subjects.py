@@ -1028,7 +1028,7 @@ async def get_subject(
     "/summary",
     response_model=SummaryResponse,
     summary="Reports summary information for the subjects known by this server.",
-    description="Reports summary information for the subjects known by this server.",
+    description="Returns the total count of all subjects. This endpoint does not accept any query parameters.",
     operation_id="subject_summary",
     responses={
         200: {
@@ -1047,7 +1047,6 @@ async def get_subject(
 )
 async def get_subjects_summary(
     request: Request,
-    filters: Dict[str, Any] = Depends(get_subject_filters),
     session: AsyncSession = Depends(get_database_session),
     settings: Settings = Depends(get_app_settings),
     allowlist: FieldAllowlist = Depends(get_allowlist),
@@ -1056,7 +1055,8 @@ async def get_subjects_summary(
     """
     Reports summary information for the subjects known by this server.
     
-    Returns summary counts for all subjects.
+    Returns the total count of all subjects. This endpoint does not accept any query parameters.
+    For filtered counts, use the /subject endpoint with filters.
     """
     logger.info(
         "Get subjects summary request",
@@ -1064,46 +1064,20 @@ async def get_subjects_summary(
     )
     
     try:
-        # Validate that no unknown query parameters are provided (match /subject behavior)
-        allowed_params = {
-            "sex", "race", "ethnicity", "identifiers", "vital_status",
-            "age_at_vital_status", "depositions", "page", "per_page", "search"
-        }
-        unknown_params = []
-        for key in request.query_params.keys():
-            if not key.startswith("metadata.unharmonized.") and key not in allowed_params:
-                unknown_params.append(key)
-        if unknown_params or filters.get("_unknown_parameters"):
+        # Validate that no query parameters are provided
+        if request.query_params:
             raise InvalidParametersError(
                 parameters=[],  # Empty array - don't expose parameter names
                 message="Invalid query parameter(s) provided.",
-                reason="Unknown query parameter(s)"
+                reason="Summary endpoint does not accept any query parameters"
             )
-
-        # If any invalid value marker is present, return empty summary (match /subject behavior)
-        if (
-            filters.get("_invalid_ethnicity")
-            or filters.get("_invalid_sex")
-            or filters.get("_invalid_race")
-            or filters.get("_invalid_vital_status")
-            or filters.get("_invalid_age_at_vital_status")
-        ):
-            return SummaryResponse(counts=SummaryCounts(total=0))
-
-        # Remove markers if present (safe)
-        filters.pop("_invalid_ethnicity", None)
-        filters.pop("_invalid_sex", None)
-        filters.pop("_invalid_race", None)
-        filters.pop("_invalid_vital_status", None)
-        filters.pop("_invalid_age_at_vital_status", None)
-        filters.pop("_age_at_vital_status_reason", None)
 
         # Create service
         cache_service = get_cache_service()
         service = SubjectService(session, allowlist, settings, cache_service)
         
-        # Get summary (respect query filters)
-        result = await service.get_subjects_summary(filters)
+        # Get summary (no filters - returns total count of all subjects)
+        result = await service.get_subjects_summary({})
         
         logger.info(
             "Get subjects summary response",
@@ -1118,7 +1092,6 @@ async def get_subjects_summary(
             "Database connection error in get_subjects_summary endpoint - returning empty result",
             error=str(e),
             error_type=type(e).__name__,
-            filters=filters,
             is_database_connection_error=True,
             will_return_404=True,
             aws_cloudwatch_alert=True
@@ -1148,7 +1121,6 @@ async def get_subjects_summary(
                 "Database connection issue in get_subjects_summary endpoint - returning empty result",
                 error=str(e),
                 error_type=type(e).__name__,
-                filters=filters,
                 is_connection_related=True,
                 will_return_404=True,
                 aws_cloudwatch_alert=True,

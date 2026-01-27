@@ -250,6 +250,161 @@ def get_subject_filters(
     return filters
 
 
+def get_subject_summary_filters(
+    sex: Optional[str] = Query(
+        None, 
+        description="Matches any subject where the `sex` field matches the string provided.",
+        enum=["M", "F", "U"]
+    ),
+    race: Optional[str] = Query(
+        None, 
+        description="Matches any subject where any member of the `race` field matches any of the provided values. Multiple race values can be provided separated by `||` (double pipe).",
+        enum=[r.value for r in Race]
+    ),
+    ethnicity: Optional[str] = Query(
+        None, 
+        description="Matches any subject where the `ethnicity` field matches the string provided.",
+        enum=[e.value for e in Ethnicity]
+    ),
+    identifiers: Optional[str] = Query(None, description="Matches any subject where any member of the `identifiers` field matches the string provided."),
+    vital_status: Optional[str] = Query(
+        None, 
+        description="Matches any subject where the `vital_status` field matches the string provided.",
+        enum=[v.value for v in VitalStatus]
+    ),
+    age_at_vital_status: Optional[str] = Query(None, description="Matches any subject where the `age_at_vital_status` field matches the string provided."),
+    depositions: Optional[str] = Query(
+        None, 
+        description="Filter by study_id. Matches any subject where the `depositions` field contains the specified study_id value.",
+        examples={
+            "default": {
+                "summary": "Example study_id",
+                "value": "phs002431",
+            }
+        },
+    ),
+    request: Request = None
+) -> Dict[str, Any]:
+    """Get subject filter parameters for summary endpoint (excludes pagination and search)."""
+    filters = {}
+    
+    # Validate that no unknown query parameters are provided
+    if request:
+        # Summary endpoint only allows filter parameters, not pagination or search
+        allowed_params = {
+            "sex", "race", "ethnicity", "identifiers", "vital_status", 
+            "age_at_vital_status", "depositions"
+        }
+        
+        # Check for unknown parameters (excluding unharmonized fields)
+        unknown_params = []
+        for key in request.query_params.keys():
+            if not key.startswith("metadata.unharmonized.") and key not in allowed_params:
+                unknown_params.append(key)
+        
+        if unknown_params:
+            # Store unknown parameters for error handling in endpoint
+            filters["_unknown_parameters"] = unknown_params
+            return filters
+    
+    # Validate ethnicity first if provided
+    if ethnicity is not None:
+        from app.core.constants import Ethnicity
+        ethnicity_str = str(ethnicity).strip() if ethnicity else None
+        if ethnicity_str:
+            if ethnicity_str not in Ethnicity.values():
+                filters["_invalid_ethnicity"] = ethnicity_str
+                return filters
+            filters["ethnicity"] = ethnicity_str
+    
+    # Validate sex if provided
+    if sex is not None:
+        valid_sex_values = ["M", "F", "U"]
+        if sex not in valid_sex_values:
+            filters["_invalid_sex"] = sex
+            return filters
+        filters["sex"] = sex
+    
+    # Validate race if provided
+    if race is not None:
+        from app.core.constants import Race
+        valid_race_values = Race.values()
+        
+        race_str = str(race).strip() if race else None
+        race_list = []
+        
+        if race_str:
+            if '%7C%7C' in race_str:
+                race_str = race_str.replace('%7C%7C', '||')
+            
+            if '||' in race_str:
+                race_list = [r.strip() for r in race_str.split('||') if r.strip()]
+            else:
+                race_list = [race_str]
+        
+        if race_list:
+            valid_race_list = [r for r in race_list if r in valid_race_values]
+            invalid_races = [r for r in race_list if r not in valid_race_values]
+            
+            if valid_race_list:
+                if len(valid_race_list) > 1:
+                    filters["race"] = valid_race_list
+                elif len(valid_race_list) == 1:
+                    filters["race"] = valid_race_list[0]
+            else:
+                filters["_invalid_race"] = invalid_races[0] if len(invalid_races) == 1 else invalid_races
+                return filters
+    
+    if identifiers is not None:
+        identifiers_str = str(identifiers).strip()
+        if identifiers_str:
+            if '||' in identifiers_str:
+                identifiers_list = [id.strip() for id in identifiers_str.split('||') if id.strip()]
+                if len(identifiers_list) > 1:
+                    filters["identifiers"] = identifiers_list
+                elif len(identifiers_list) == 1:
+                    filters["identifiers"] = identifiers_list[0]
+            else:
+                filters["identifiers"] = identifiers_str
+    
+    # Validate vital_status if provided
+    if vital_status is not None:
+        from app.core.constants import VitalStatus
+        vital_status_str = str(vital_status).strip() if vital_status else None
+        if vital_status_str:
+            if vital_status_str not in VitalStatus.values():
+                filters["_invalid_vital_status"] = vital_status_str
+                return filters
+            filters["vital_status"] = vital_status_str
+    
+    # Validate age_at_vital_status if provided
+    if age_at_vital_status is not None:
+        age_str = str(age_at_vital_status).strip() if age_at_vital_status else None
+        if age_str:
+            try:
+                age_int = int(age_str)
+                if age_int < 0 or age_int > 73000:
+                    filters["_invalid_age_at_vital_status"] = age_str
+                    filters["_age_at_vital_status_reason"] = "Age must be a valid non-negative integer (stored in days)."
+                    return filters
+                filters["age_at_vital_status"] = age_int
+            except ValueError:
+                filters["_invalid_age_at_vital_status"] = age_str
+                filters["_age_at_vital_status_reason"] = "Age must be a valid integer (stored in days)."
+                return filters
+    
+    if depositions is not None:
+        filters["depositions"] = depositions
+    
+    # Handle unharmonized fields from query parameters
+    if request:
+        for key, value in request.query_params.items():
+            if key.startswith("metadata.unharmonized."):
+                filters[key] = value
+    
+    return filters
+
+
 def get_sample_filters(
     disease_phase: Optional[str] = Query(
         None, 

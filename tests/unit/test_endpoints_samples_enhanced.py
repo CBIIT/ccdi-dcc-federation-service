@@ -246,6 +246,46 @@ class TestSampleEndpointsEnhanced:
                 # UnsupportedFieldError is converted to HTTPException
                 assert exc_info.value.status_code in [status.HTTP_400_BAD_REQUEST, status.HTTP_404_NOT_FOUND]
 
+    async def test_list_samples_query_error_path(self, mock_request, mock_response, mock_session, mock_settings, mock_allowlist, mock_pagination):
+        """Test list_samples handles query/parameter errors (lines 335-344)."""
+        from app.services.sample import SampleService
+        
+        # Mock query_params
+        mock_query_params = Mock()
+        mock_query_params.keys = Mock(return_value=[])
+        mock_request.query_params = mock_query_params
+        
+        # Mock service to raise an error that matches query error keywords
+        with patch('app.api.v1.endpoints.samples.SampleService') as mock_service_class:
+            mock_service = AsyncMock(spec=SampleService)
+            mock_service.get_samples = AsyncMock(
+                side_effect=Exception("unbound variable 'x' in query")
+            )
+            mock_service.get_samples_summary = AsyncMock(
+                return_value={"counts": {"total": 0}}
+            )
+            mock_service_class.return_value = mock_service
+            
+            with patch('app.api.v1.endpoints.samples.get_cache_service', return_value=None):
+                with pytest.raises(HTTPException) as exc_info:
+                    await list_samples(
+                        request=mock_request,
+                        response=mock_response,
+                        filters={},
+                        pagination=mock_pagination,
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None
+                    )
+                
+                # Should return 404 for query errors
+                assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+                error_detail = exc_info.value.detail.get("errors", [])[0] if isinstance(exc_info.value.detail, dict) else None
+                if error_detail:
+                    assert error_detail.get("kind") == "NotFound"
+                    assert "Query or parameter error" in error_detail.get("reason", "")
+
     async def test_count_samples_by_field_query_error(self, mock_request, mock_session, mock_settings, mock_allowlist):
         """Test count_samples_by_field handles query errors."""
         from app.services.sample import SampleService
@@ -387,18 +427,68 @@ class TestSampleEndpointsEnhanced:
                 
                 assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
 
-    @pytest.mark.skip(reason="get_samples_summary doesn't validate query parameters like subjects does")
-    async def test_get_samples_summary_invalid_parameters(self, mock_request, mock_session, mock_settings, mock_allowlist):
-        """Test get_samples_summary with invalid query parameters (skipped - not implemented)."""
-        pass
+    async def test_get_samples_summary_rejects_parameters(self, mock_request, mock_session, mock_settings, mock_allowlist):
+        """Test get_samples_summary rejects any query parameters."""
+        # Mock request with query parameters
+        mock_query_params = Mock()
+        mock_query_params.keys = Mock(return_value=["library_strategy"])
+        mock_query_params.__bool__ = Mock(return_value=True)  # Make it truthy
+        mock_request.query_params = mock_query_params
+        
+        # The endpoint should reject any parameters and raise InvalidParametersError
+        with pytest.raises(HTTPException) as exc_info:
+            await get_samples_summary(
+                request=mock_request,
+                session=mock_session,
+                settings=mock_settings,
+                allowlist=mock_allowlist,
+                _rate_limit=None
+            )
+        
+        assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
+        error_detail = exc_info.value.detail.get("errors", [])[0] if isinstance(exc_info.value.detail, dict) else None
+        if error_detail:
+            assert error_detail.get("kind") == "InvalidParameters"
+            assert "does not accept any query parameters" in error_detail.get("reason", "")
+
+    async def test_get_samples_summary_no_parameters(self, mock_request, mock_session, mock_settings, mock_allowlist):
+        """Test get_samples_summary works correctly with no parameters."""
+        from app.models.dto import SummaryResponse, SummaryCounts
+        
+        # Mock request with no query parameters
+        mock_query_params = Mock()
+        mock_query_params.keys = Mock(return_value=[])
+        mock_query_params.__bool__ = Mock(return_value=False)
+        mock_request.query_params = mock_query_params
+        
+        mock_summary = SummaryResponse(counts=SummaryCounts(total=500))
+        
+        with patch('app.api.v1.endpoints.samples.SampleService') as mock_service_class:
+            mock_service = Mock()
+            mock_service.get_samples_summary = AsyncMock(return_value=mock_summary)
+            mock_service_class.return_value = mock_service
+            
+            with patch('app.api.v1.endpoints.samples.get_cache_service', return_value=None):
+                with patch('app.api.v1.endpoints.samples.check_rate_limit', return_value=None):
+                    result = await get_samples_summary(
+                        request=mock_request,
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None
+                    )
+        
+        assert isinstance(result, SummaryResponse)
+        assert result.counts.total == 500
 
     async def test_get_samples_summary_database_error(self, mock_request, mock_session, mock_settings, mock_allowlist):
         """Test get_samples_summary handles database connection errors."""
         from app.services.sample import SampleService
         
-        # Mock query_params
+        # Mock request with no query parameters
         mock_query_params = Mock()
         mock_query_params.keys = Mock(return_value=[])
+        mock_query_params.__bool__ = Mock(return_value=False)
         mock_request.query_params = mock_query_params
         
         # Mock service to raise database error
@@ -410,15 +500,15 @@ class TestSampleEndpointsEnhanced:
             mock_service_class.return_value = mock_service
             
             with patch('app.api.v1.endpoints.samples.get_cache_service', return_value=None):
-                with pytest.raises(HTTPException) as exc_info:
-                    await get_samples_summary(
-                        request=mock_request,
-                        filters={},
-                        session=mock_session,
-                        settings=mock_settings,
-                        allowlist=mock_allowlist,
-                        _rate_limit=None
-                    )
+                with patch('app.api.v1.endpoints.samples.check_rate_limit', return_value=None):
+                    with pytest.raises(HTTPException) as exc_info:
+                        await get_samples_summary(
+                            request=mock_request,
+                            session=mock_session,
+                            settings=mock_settings,
+                            allowlist=mock_allowlist,
+                            _rate_limit=None
+                        )
                 
                 assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
 
@@ -426,9 +516,10 @@ class TestSampleEndpointsEnhanced:
         """Test get_samples_summary handles connection-related errors."""
         from app.services.sample import SampleService
         
-        # Mock query_params
+        # Mock request with no query parameters
         mock_query_params = Mock()
         mock_query_params.keys = Mock(return_value=[])
+        mock_query_params.__bool__ = Mock(return_value=False)
         mock_request.query_params = mock_query_params
         
         # Mock service to raise connection error
@@ -440,15 +531,15 @@ class TestSampleEndpointsEnhanced:
             mock_service_class.return_value = mock_service
             
             with patch('app.api.v1.endpoints.samples.get_cache_service', return_value=None):
-                with pytest.raises(HTTPException) as exc_info:
-                    await get_samples_summary(
-                        request=mock_request,
-                        filters={},
-                        session=mock_session,
-                        settings=mock_settings,
-                        allowlist=mock_allowlist,
-                        _rate_limit=None
-                    )
+                with patch('app.api.v1.endpoints.samples.check_rate_limit', return_value=None):
+                    with pytest.raises(HTTPException) as exc_info:
+                        await get_samples_summary(
+                            request=mock_request,
+                            session=mock_session,
+                            settings=mock_settings,
+                            allowlist=mock_allowlist,
+                            _rate_limit=None
+                        )
                 
                 assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
 

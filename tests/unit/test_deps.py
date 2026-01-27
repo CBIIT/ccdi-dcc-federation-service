@@ -10,6 +10,7 @@ from fastapi import Request, HTTPException
 from app.api.v1.deps import (
     get_pagination_params,
     get_subject_filters,
+    get_subject_summary_filters,
     get_sample_filters,
     get_file_filters,
     get_app_settings,
@@ -353,6 +354,22 @@ class TestGetSubjectFilters:
         assert "id1" in result["identifiers"]
         assert "id2" in result["identifiers"]
         assert "id3" in result["identifiers"]
+
+    def test_identifiers_single_after_split(self, mock_request):
+        """Test identifiers single value after split (line 204-205)."""
+        result = get_subject_filters(
+            sex=None,
+            race=None,
+            ethnicity=None,
+            identifiers="PBBHCR||",  # Split results in single item after stripping
+            vital_status=None,
+            age_at_vital_status=None,
+            depositions=None,
+            request=mock_request
+        )
+        # When split results in single item, should be stored as string
+        assert result["identifiers"] == "PBBHCR"
+        assert not isinstance(result["identifiers"], list)
 
     def test_depositions_filter(self, mock_request):
         """Test depositions filter."""

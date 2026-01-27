@@ -679,6 +679,13 @@ class TestSampleRepositoryInternal:
         params["param_1"] = "value"
         result = SampleRepository._get_next_param_name(params, 0)
         assert result == "param_2"
+        
+        # Test exception handling path (lines 131-132)
+        params["invalid_key"] = "value"  # Key that doesn't start with "param_"
+        params["param_abc"] = "value"  # Key that starts with "param_" but has non-numeric suffix
+        params["param_5"] = "value"
+        result = SampleRepository._get_next_param_name(params, 0)
+        assert result == "param_6"  # Should use max from existing param_ keys
 
     def test_validate_tissue_type_filter_valid(self):
         """Test _validate_tissue_type_filter with valid value."""
@@ -720,6 +727,24 @@ class TestSampleRepositoryInternal:
         assert result is None
         assert params == {}
         assert with_conditions == []
+
+    def test_validate_tissue_type_filter_list_valid(self):
+        """Test _validate_tissue_type_filter with list containing all valid values (covers lines 85-86)."""
+        params = {}
+        with_conditions = []
+
+        with patch("app.repositories.sample.load_sample_enum", return_value=["Tumor", "Normal", "Cell Line"]):
+            result = SampleRepository._validate_tissue_type_filter(
+                ["Tumor", "Normal"], "tissue_param", params, with_conditions
+            )
+
+        assert result is True
+        assert "tissue_param" in params
+        assert params["tissue_param"] == ["Tumor", "Normal"]
+        assert len(with_conditions) == 1
+        # Check that the condition contains the IN clause (line 85) - uses $param_name format
+        condition = with_conditions[0]
+        assert "IN $tissue_param" in condition
 
     def test_validate_tissue_type_filter_no_enum_fallback(self):
         """Test _validate_tissue_type_filter falls back when enum missing."""

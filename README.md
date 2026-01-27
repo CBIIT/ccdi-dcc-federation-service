@@ -1,12 +1,13 @@
 # CCDI Federation Service
 
+**Version: 1.2.0**
+
 A REST API service for querying the CCDI (Childhood Cancer Data Initiative) graph database. This service provides endpoints for retrieving subjects, samples, files, and metadata from a Memgraph graph database.
 
 ## Features
 
 - **REST API**: FastAPI-based service with automatic OpenAPI documentation
 - **Graph Database**: Memgraph integration with Cypher query support  
-- **Caching**: Redis-based caching for count and summary endpoints
 - **Pagination**: RFC 5988 compliant pagination with Link headers
 - **Field Validation**: Allowlist-based field filtering for security
 - **Error Handling**: Comprehensive error handling matching OpenAPI specification
@@ -29,8 +30,7 @@ A REST API service for querying the CCDI (Childhood Cancer Data Initiative) grap
 │   ├── core/                # Core utilities
 │   │   ├── config.py        # Comprehensive configuration management
 │   │   ├── logging.py       # Structured logging with correlation IDs
-│   │   ├── pagination.py    # RFC 5988 compliant pagination 
-│   │   └── cache.py         # Async Redis caching service
+│   │   └── pagination.py    # RFC 5988 compliant pagination
 │   ├── db/                  # Database layer
 │   │   └── memgraph.py      # Memgraph connection with lifecycle management
 │   ├── lib/                 # Shared libraries
@@ -46,9 +46,8 @@ A REST API service for querying the CCDI (Childhood Cancer Data Initiative) grap
 ### Key Architectural Features
 - **Layered Architecture**: Clean separation between API, Service, and Repository layers
 - **Dependency Injection**: Extensive use of FastAPI dependencies for shared concerns  
-- **Async Support**: Full async/await implementation with async Redis
+- **Async Support**: Full async/await implementation
 - **Error Handling**: Custom exception hierarchy with automatic HTTP status mapping and security-first design
-- **Caching Strategy**: Redis-based caching with configurable TTLs per endpoint type
 - **Configuration Management**: Nested settings with environment-specific overrides
 - **Query Optimization**: Combined Cypher queries for performance (e.g., single-query count operations)
 - **Code Reusability**: Extracted validation logic into reusable helper methods
@@ -59,23 +58,19 @@ A REST API service for querying the CCDI (Childhood Cancer Data Initiative) grap
 - `GET /api/v1/subject` - List subjects with pagination and filtering
 - `GET /api/v1/subject/{organization}/{namespace}/{name}` - Get specific subject by identifier
 - `GET /api/v1/subject/by/{field}/count` - Count subjects by field value
-- `GET /api/v1/subject/summary` - Get subject summary statistics
-- `GET /api/v1/subject/diagnosis/search` - Search subjects by diagnosis
-- `GET /api/v1/subject/diagnosis/by/{field}/count` - Count subjects by field with diagnosis
-- `GET /api/v1/subject/diagnosis/summary` - Subject summary with diagnosis filtering
+- `GET /api/v1/subject/summary` - Get subject summary statistics (total count only, no parameters accepted)
 
 #### Samples
 - `GET /api/v1/sample` - List samples with pagination and filtering
 - `GET /api/v1/sample/{organization}/{namespace}/{name}` - Get specific sample by identifier
 - `GET /api/v1/sample/by/{field}/count` - Count samples by field value
-- `GET /api/v1/sample/summary` - Get sample summary statistics
-- `GET /api/v1/sample/diagnosis/*` - Sample diagnosis endpoints (similar to subjects)
+- `GET /api/v1/sample/summary` - Get sample summary statistics (total count only, no parameters accepted)
 
 #### Files
 - `GET /api/v1/file` - List files with pagination and filtering
 - `GET /api/v1/file/{organization}/{namespace}/{name}` - Get specific file by identifier
 - `GET /api/v1/file/by/{field}/count` - Count files by field value
-- `GET /api/v1/file/summary` - Get file summary statistics
+- `GET /api/v1/file/summary` - Get file summary statistics (total count only, no parameters accepted)
 
 #### Metadata
 - `GET /api/v1/metadata/fields/subject` - Get filterable subject fields
@@ -102,7 +97,7 @@ A REST API service for querying the CCDI (Childhood Cancer Data Initiative) grap
 
 ### Health & System
 - `GET /health` - Service health check
-- `GET /` - Service information
+- `GET /api/v1` - Service information
 
 ## Quick Start
 
@@ -123,7 +118,6 @@ A REST API service for querying the CCDI (Childhood Cancer Data Initiative) grap
    - API: http://localhost:8000
    - API Documentation: http://localhost:8000/docs
    - Memgraph Lab: http://localhost:3000
-   - Redis: localhost:6379
 
 ### Manual Setup
 
@@ -597,6 +591,5 @@ The service provides structured logging with configurable format:
      -p 8000:8000 \
      -e DEBUG=false \
      -e MEMGRAPH_URI=bolt://your-memgraph:7687 \
-     -e CACHE_REDIS_HOST=your-redis \
      ccdi-federation-service
    ```

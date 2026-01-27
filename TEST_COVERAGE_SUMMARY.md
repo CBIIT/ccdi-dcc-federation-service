@@ -9,7 +9,12 @@ This document provides a comprehensive summary of test coverage for the CCDI Fed
 
 ## Overall Coverage
 
-**Current Overall Coverage: ~80%**
+**Current Overall Coverage: 80.25%** (6272 of 7816 lines covered). 
+
+Coverage reports are available via:
+- **Local HTML report**: Run `uv run pytest --cov=app --cov-report=html` then open `htmlcov/index.html`
+- **GitHub Actions**: Coverage reports are generated in the [coverage workflow](.github/workflows/coverage.yml)
+- **Coveralls**: https://coveralls.io/jobs/177046266 (reference) 
 
 Coverage is measured using `pytest-cov` and includes:
 - Unit tests for API endpoints

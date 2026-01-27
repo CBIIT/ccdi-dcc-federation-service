@@ -283,19 +283,18 @@ class TestSubjectEndpointsEnhanced:
                 # Should succeed with default organization
                 assert isinstance(result, dict)
 
-    async def test_get_subjects_summary_invalid_parameters(self, mock_request, mock_session, mock_settings, mock_allowlist):
-        """Test get_subjects_summary with invalid query parameters."""
-        # Make query_params dict-like with keys() method
+    async def test_get_subjects_summary_rejects_parameters(self, mock_request, mock_session, mock_settings, mock_allowlist):
+        """Test get_subjects_summary rejects any query parameters."""
+        # Mock request with query parameters
         mock_query_params = Mock()
-        mock_query_params.keys = Mock(return_value=["invalid_param"])
+        mock_query_params.keys = Mock(return_value=["sex"])
+        mock_query_params.__bool__ = Mock(return_value=True)  # Make it truthy
         mock_request.query_params = mock_query_params
         
-        # The endpoint checks for unknown params and raises InvalidParametersError
-        # which is then converted to HTTPException
+        # The endpoint should reject any parameters and raise InvalidParametersError
         with pytest.raises(HTTPException) as exc_info:
             await get_subjects_summary(
                 request=mock_request,
-                filters={"_unknown_parameters": True},  # This triggers the error
                 session=mock_session,
                 settings=mock_settings,
                 allowlist=mock_allowlist,
@@ -303,35 +302,50 @@ class TestSubjectEndpointsEnhanced:
             )
         
         assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
+        error_detail = exc_info.value.detail.get("errors", [])[0] if isinstance(exc_info.value.detail, dict) else None
+        if error_detail:
+            assert error_detail.get("kind") == "InvalidParameters"
+            assert "does not accept any query parameters" in error_detail.get("reason", "")
 
-    async def test_get_subjects_summary_invalid_value_markers(self, mock_request, mock_session, mock_settings, mock_allowlist):
-        """Test get_subjects_summary with invalid value markers returns empty summary."""
-        from app.api.v1.deps import get_subject_filters
+    async def test_get_subjects_summary_no_parameters(self, mock_request, mock_session, mock_settings, mock_allowlist):
+        """Test get_subjects_summary with no parameters returns summary."""
+        from app.services.subject import SubjectService
         
-        # Mock request with invalid value markers in query params
-        mock_request.query_params = {"sex": "InvalidValue"}
+        # Mock request with no query parameters
+        mock_query_params = Mock()
+        mock_query_params.keys = Mock(return_value=[])
+        mock_query_params.__bool__ = Mock(return_value=False)  # Make it falsy
+        mock_request.query_params = mock_query_params
         
-        # Mock get_subject_filters to return filters with invalid markers
-        with patch('app.api.v1.endpoints.subjects.get_subject_filters') as mock_get_filters:
-            mock_get_filters.return_value = {"_invalid_sex": True}
+        # Mock service
+        with patch('app.api.v1.endpoints.subjects.SubjectService') as mock_service_class:
+            mock_service = AsyncMock(spec=SubjectService)
+            mock_service.get_subjects_summary = AsyncMock(return_value=SummaryResponse(counts=SummaryCounts(total=100)))
+            mock_service_class.return_value = mock_service
             
-            result = await get_subjects_summary(
-                request=mock_request,
-                filters={"_invalid_sex": True},
-                session=mock_session,
-                settings=mock_settings,
-                allowlist=mock_allowlist,
-                _rate_limit=None
-            )
-            
-            # Should return SummaryResponse with total=0
-            # Note: SummaryCounts bug was fixed (previously would have caused NameError)
-            assert isinstance(result, SummaryResponse)
-            assert result.counts.total == 0
+            with patch('app.api.v1.endpoints.subjects.get_cache_service', return_value=None):
+                result = await get_subjects_summary(
+                    request=mock_request,
+                    session=mock_session,
+                    settings=mock_settings,
+                    allowlist=mock_allowlist,
+                    _rate_limit=None
+                )
+                
+                assert isinstance(result, SummaryResponse)
+                assert result.counts.total == 100
+                # Verify service was called with empty filters dict
+                mock_service.get_subjects_summary.assert_called_once_with({})
 
     async def test_get_subjects_summary_database_error(self, mock_request, mock_session, mock_settings, mock_allowlist):
         """Test get_subjects_summary handles database connection errors."""
         from app.services.subject import SubjectService
+        
+        # Mock request with no query parameters
+        mock_query_params = Mock()
+        mock_query_params.keys = Mock(return_value=[])
+        mock_query_params.__bool__ = Mock(return_value=False)
+        mock_request.query_params = mock_query_params
         
         # Mock service to raise database error
         with patch('app.api.v1.endpoints.subjects.SubjectService') as mock_service_class:
@@ -345,7 +359,6 @@ class TestSubjectEndpointsEnhanced:
                 with pytest.raises(HTTPException) as exc_info:
                     await get_subjects_summary(
                         request=mock_request,
-                        filters={},
                         session=mock_session,
                         settings=mock_settings,
                         allowlist=mock_allowlist,
@@ -353,6 +366,8 @@ class TestSubjectEndpointsEnhanced:
                     )
                 
                 assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+                # Verify service was called with empty filters dict
+                mock_service.get_subjects_summary.assert_called_once_with({})
 
     async def test_count_subjects_by_field_database_error(self, mock_request, mock_session, mock_settings, mock_allowlist):
         """Test count_subjects_by_field handles database connection errors."""

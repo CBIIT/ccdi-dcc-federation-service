@@ -278,16 +278,16 @@ poetry run pytest
 
 ```bash
 # Run all tests
-poetry run pytest
+uv run pytest
 
 # Run with coverage
-poetry run pytest --cov=app --cov-report=html
+uv run pytest --cov=app --cov-report=html
 
 # Run specific test file
-poetry run pytest tests/test_subjects.py
+uv run pytest tests/unit/test_services.py
 
 # Run error response tests
-poetry run pytest tests/test_error_responses.py
+uv run pytest tests/test_error_responses.py
 
 # Run endpoint integration tests
 python test_all_endpoints.py
@@ -304,12 +304,18 @@ tests/
 └── integration/                # Integration tests
 ```
 
+**Test Documentation:**
+- [TEST_README.md](TEST_README.md) - Comprehensive test documentation
+- [TEST_COVERAGE_SUMMARY.md](TEST_COVERAGE_SUMMARY.md) - Detailed coverage information
+
+
 **Test Coverage:**
 - Error response validation (no 500 errors, sanitized messages)
 - Endpoint contract compliance
 - Summary count accuracy
 - Pagination Link header correctness
 - Field validation and allowlist enforcement
+- **Current Overall Coverage: ~80%**
 
 ## Data Model
 

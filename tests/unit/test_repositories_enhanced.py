@@ -77,6 +77,8 @@ class TestSubjectRepositoryEnhanced:
 
     async def test_get_subjects_with_race_list_filter(self, repository, mock_session):
         """Test get_subjects with race as a list."""
+        # This test covers the race filter path but may not cover line 129 (empty race_list)
+        # Let's add a test for that
         async def async_gen():
             return
             yield
@@ -290,6 +292,72 @@ class TestSubjectRepositoryEnhanced:
         assert isinstance(result, dict)
         # The result structure is {"total_count": ...}
         assert "total_count" in result
+
+    async def test_get_subjects_with_empty_race_list(self, repository, mock_session):
+        """Test get_subjects with empty race list (covers line 129)."""
+        async def async_gen():
+            return
+            yield
+        
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_session.run = AsyncMock(return_value=mock_result)
+        
+        # Test with race filter that results in empty list (line 129)
+        result = await repository.get_subjects(
+            filters={"race": ""},  # Empty string should result in empty race_list
+            offset=0,
+            limit=20
+        )
+        
+        assert isinstance(result, list)
+
+    async def test_get_subjects_with_race_not_reported(self, repository, mock_session):
+        """Test get_subjects with race filter including 'Not Reported' (covers line 145)."""
+        async def async_gen():
+            return
+            yield
+        
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_session.run = AsyncMock(return_value=mock_result)
+        
+        # Test with race filter that includes "Not Reported" (line 145)
+        result = await repository.get_subjects(
+            filters={"race": "Not Reported"},
+            offset=0,
+            limit=20
+        )
+        
+        assert isinstance(result, list)
+
+    async def test_get_subjects_with_ethnicity_filter(self, repository, mock_session):
+        """Test get_subjects with ethnicity filter (covers lines 255-268)."""
+        async def async_gen():
+            return
+            yield
+        
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_session.run = AsyncMock(return_value=mock_result)
+        
+        # Test with ethnicity filter (covers the ethnicity handling path)
+        result = await repository.get_subjects(
+            filters={"ethnicity": "Hispanic or Latino"},
+            offset=0,
+            limit=20
+        )
+        
+        assert isinstance(result, list)
+        
+        # Test with "Not reported" ethnicity
+        result2 = await repository.get_subjects(
+            filters={"ethnicity": "Not reported"},
+            offset=0,
+            limit=20
+        )
+        
+        assert isinstance(result2, list)
 
 
 @pytest.mark.unit

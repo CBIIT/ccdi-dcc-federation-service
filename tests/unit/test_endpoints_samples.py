@@ -256,6 +256,12 @@ class TestSampleEndpoints:
         """Test get_samples_summary returns summary successfully."""
         from app.models.dto import SummaryResponse, SummaryCounts
         
+        # Mock request with no query parameters
+        mock_query_params = Mock()
+        mock_query_params.keys = Mock(return_value=[])
+        mock_query_params.__bool__ = Mock(return_value=False)
+        mock_request.query_params = mock_query_params
+        
         mock_summary = SummaryResponse(counts=SummaryCounts(total=500))
         
         with patch('app.api.v1.endpoints.samples.SampleService') as mock_service_class:
@@ -266,7 +272,6 @@ class TestSampleEndpoints:
             with patch('app.api.v1.endpoints.samples.get_cache_service', return_value=None):
                 with patch('app.api.v1.endpoints.samples.check_rate_limit', return_value=None):
                     result = await get_samples_summary(
-                        filters={},
                         request=mock_request,
                         session=mock_session,
                         settings=mock_settings,
@@ -281,6 +286,12 @@ class TestSampleEndpoints:
         self, mock_session, mock_settings, mock_allowlist, mock_request
     ):
         """Test get_samples_summary handles database connection errors."""
+        # Mock request with no query parameters
+        mock_query_params = Mock()
+        mock_query_params.keys = Mock(return_value=[])
+        mock_query_params.__bool__ = Mock(return_value=False)
+        mock_request.query_params = mock_query_params
+        
         with patch('app.api.v1.endpoints.samples.SampleService') as mock_service_class:
             mock_service = Mock()
             mock_service.get_samples_summary = AsyncMock(
@@ -292,7 +303,6 @@ class TestSampleEndpoints:
                 with patch('app.api.v1.endpoints.samples.check_rate_limit', return_value=None):
                     with pytest.raises(HTTPException) as exc_info:
                         await get_samples_summary(
-                            filters={},
                             request=mock_request,
                             session=mock_session,
                             settings=mock_settings,

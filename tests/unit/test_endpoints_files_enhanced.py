@@ -92,6 +92,44 @@ class TestFileEndpointsEnhanced:
 
         assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
 
+    async def test_list_files_http_exception_re_raise(self, mock_request, mock_response, mock_session, mock_settings, mock_allowlist, mock_pagination):
+        """Test list_files re-raises HTTPException (line 254)."""
+        from app.services.file import FileService
+        
+        # Mock query_params
+        mock_query_params = Mock()
+        mock_query_params.keys = Mock(return_value=[])
+        mock_request.query_params = mock_query_params
+        
+        # Create an HTTPException to be raised
+        http_exception = HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "Test error"}
+        )
+        
+        # Mock service to raise HTTPException
+        with patch('app.api.v1.endpoints.files.FileService') as mock_service_class:
+            mock_service = AsyncMock(spec=FileService)
+            mock_service.get_files = AsyncMock(side_effect=http_exception)
+            mock_service.get_files_summary = AsyncMock(return_value={"counts": {"total": 0}})
+            mock_service_class.return_value = mock_service
+            
+            with patch('app.api.v1.endpoints.files.get_cache_service', return_value=None):
+                with pytest.raises(HTTPException) as exc_info:
+                    await list_files(
+                        request=mock_request,
+                        response=mock_response,
+                        filters={},
+                        pagination=mock_pagination,
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None
+                    )
+                
+                # Should re-raise the same HTTPException
+                assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
+
     async def test_list_files_database_error(self, mock_request, mock_response, mock_session, mock_settings, mock_allowlist, mock_pagination):
         """Test list_files handles database connection errors."""
         from app.services.file import FileService
@@ -116,6 +154,41 @@ class TestFileEndpointsEnhanced:
                         _rate_limit=None
                     )
 
+                assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+
+    async def test_list_files_non_connection_error(self, mock_request, mock_response, mock_session, mock_settings, mock_allowlist, mock_pagination):
+        """Test list_files handles non-connection errors (line 305)."""
+        from app.services.file import FileService
+        
+        # Mock query_params
+        mock_query_params = Mock()
+        mock_query_params.keys = Mock(return_value=[])
+        mock_request.query_params = mock_query_params
+        
+        # Mock service to raise a non-connection error (not matching connection keywords)
+        with patch('app.api.v1.endpoints.files.FileService') as mock_service_class:
+            mock_service = AsyncMock(spec=FileService)
+            mock_service.get_files = AsyncMock(
+                side_effect=ValueError("Some non-connection error")
+            )
+            mock_service.get_files_summary = AsyncMock(return_value={"counts": {"total": 0}})
+            mock_service_class.return_value = mock_service
+            
+            with patch('app.api.v1.endpoints.files.get_cache_service', return_value=None):
+                # Should raise HTTPException (404) for non-connection errors
+                with pytest.raises(HTTPException) as exc_info:
+                    await list_files(
+                        request=mock_request,
+                        response=mock_response,
+                        filters={},
+                        pagination=mock_pagination,
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None
+                    )
+                
+                # Should return 404
                 assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
 
     async def test_list_files_connection_error(self, mock_request, mock_response, mock_session, mock_settings, mock_allowlist, mock_pagination):
@@ -289,7 +362,11 @@ class TestFileEndpointsEnhanced:
         """Test get_files_summary handles errors."""
         from app.services.file import FileService
 
-        mock_request.query_params = {}
+        # Mock request with no query parameters
+        mock_query_params = Mock()
+        mock_query_params.keys = Mock(return_value=[])
+        mock_query_params.__bool__ = Mock(return_value=False)
+        mock_request.query_params = mock_query_params
 
         with patch('app.api.v1.endpoints.files.FileService') as mock_service_class:
             mock_service = AsyncMock(spec=FileService)
@@ -299,15 +376,69 @@ class TestFileEndpointsEnhanced:
             mock_service_class.return_value = mock_service
 
             with patch('app.api.v1.endpoints.files.get_cache_service', return_value=None):
-                with pytest.raises(HTTPException) as exc_info:
-                    await get_files_summary(
+                with patch('app.api.v1.endpoints.files.check_rate_limit', return_value=None):
+                    with pytest.raises(HTTPException) as exc_info:
+                        await get_files_summary(
+                            request=mock_request,
+                            session=mock_session,
+                            settings=mock_settings,
+                            allowlist=mock_allowlist,
+                            _rate_limit=None
+                        )
+
+                assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+
+    async def test_get_files_summary_rejects_parameters(self, mock_request, mock_session, mock_settings, mock_allowlist):
+        """Test get_files_summary rejects any query parameters."""
+        # Mock request with query parameters
+        mock_query_params = Mock()
+        mock_query_params.keys = Mock(return_value=["type"])
+        mock_query_params.__bool__ = Mock(return_value=True)  # Make it truthy
+        mock_request.query_params = mock_query_params
+        
+        # The endpoint should reject any parameters and raise InvalidParametersError
+        with pytest.raises(HTTPException) as exc_info:
+            await get_files_summary(
+                request=mock_request,
+                session=mock_session,
+                settings=mock_settings,
+                allowlist=mock_allowlist,
+                _rate_limit=None
+            )
+        
+        assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
+        error_detail = exc_info.value.detail.get("errors", [])[0] if isinstance(exc_info.value.detail, dict) else None
+        if error_detail:
+            assert error_detail.get("kind") == "InvalidParameters"
+            assert "does not accept any query parameters" in error_detail.get("reason", "")
+
+    async def test_get_files_summary_no_parameters(self, mock_request, mock_session, mock_settings, mock_allowlist):
+        """Test get_files_summary works correctly with no parameters."""
+        from app.models.dto import SummaryResponse, SummaryCounts
+        
+        # Mock request with no query parameters
+        mock_query_params = Mock()
+        mock_query_params.keys = Mock(return_value=[])
+        mock_query_params.__bool__ = Mock(return_value=False)
+        mock_request.query_params = mock_query_params
+        
+        mock_summary = SummaryResponse(counts=SummaryCounts(total=500))
+        
+        with patch('app.api.v1.endpoints.files.FileService') as mock_service_class:
+            mock_service = Mock()
+            mock_service.get_files_summary = AsyncMock(return_value=mock_summary)
+            mock_service_class.return_value = mock_service
+            
+            with patch('app.api.v1.endpoints.files.get_cache_service', return_value=None):
+                with patch('app.api.v1.endpoints.files.check_rate_limit', return_value=None):
+                    result = await get_files_summary(
                         request=mock_request,
-                        filters={},
                         session=mock_session,
                         settings=mock_settings,
                         allowlist=mock_allowlist,
                         _rate_limit=None
                     )
-
-                assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+        
+        assert isinstance(result, SummaryResponse)
+        assert result.counts.total == 500
 

@@ -203,7 +203,7 @@ class SubjectRepository:
                     logger.debug(f"Depositions filter: param={dep_param}, operator={deposition_operator}, value={params[dep_param]}")
                     # IMPORTANT:
                     # Do NOT append any `st.study_id ...` condition into the generic `where_conditions` list.
-                    # `st` is only bound in query shapes that explicitly `MATCH ... (p)-[:IN_STUDY]->(st:study)`.
+                    # `st` is only bound in query shapes that explicitly match participant -> consent_group -> study.
                     # The depositions filter must be applied only in those query blocks (after `st` is in scope),
                     # otherwise we get recurring "Unbound variable: st." / "mismatched input" errors.
             else:
@@ -382,7 +382,7 @@ class SubjectRepository:
                 #
                 # Strategy: fetch survivals + diagnosis nodes as raw collections and compute derived fields in Python.
                 cypher = f"""
-        MATCH (p:participant)-[:IN_STUDY]->(st:study){early_where_clause}
+        MATCH (p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study){early_where_clause}
         WITH toString(p.participant_id) AS participant_id, p, st.study_id AS study_id
         ORDER BY participant_id
         SKIP $offset
@@ -424,7 +424,7 @@ class SubjectRepository:
                 if identifiers_early_filter:
                     cypher = f"""
         MATCH (p:participant){early_where_clause}
-        OPTIONAL MATCH (p)-[:IN_STUDY]->(st:study)
+        OPTIONAL MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
         WITH toString(p.participant_id) AS participant_id, p, st.study_id AS study_id
         WHERE study_id IS NOT NULL
         WITH participant_id, study_id, p
@@ -440,7 +440,7 @@ class SubjectRepository:
         WHERE study_id IS NOT NULL{f" AND study_id {deposition_operator} ${dep_param}" if dep_param else ""}
         WITH participant_id, study_id, p, survival_records, diagnosis_nodes
         // Get all study_ids for this participant for depositions array
-        OPTIONAL MATCH (p)-[:IN_STUDY]->(st_all:study)
+        OPTIONAL MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st_all:study)
         WITH participant_id, study_id, p, survival_records, diagnosis_nodes, collect(DISTINCT st_all.study_id) AS all_study_ids
         RETURN
           toString(participant_id) AS name,
@@ -466,7 +466,7 @@ class SubjectRepository:
                     # This ensures that participants in multiple studies are returned with the correct study_id
                     cypher = f"""
         MATCH (p:participant){early_where_clause}
-        OPTIONAL MATCH (p)-[:IN_STUDY]->(st:study)
+        OPTIONAL MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
         WITH toString(p.participant_id) AS participant_id, p, st.study_id AS study_id
         WHERE study_id IS NOT NULL
         WITH participant_id, study_id, p
@@ -482,7 +482,7 @@ class SubjectRepository:
         WHERE study_id IS NOT NULL{f" AND study_id {deposition_operator} ${dep_param}" if dep_param else ""}
         WITH participant_id, study_id, p, survival_records, diagnosis_nodes
         // Get all study_ids for this participant for depositions array
-        OPTIONAL MATCH (p)-[:IN_STUDY]->(st_all:study)
+        OPTIONAL MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st_all:study)
         WITH participant_id, study_id, p, survival_records, diagnosis_nodes, collect(DISTINCT st_all.study_id) AS all_study_ids
         RETURN
           toString(participant_id) AS name,
@@ -558,7 +558,7 @@ class SubjectRepository:
                             other_filters = ""
                 
                 # Build WITH clause with optional WHERE
-                # Note: 'c' (consent_group) is no longer needed since we use IN_STUDY relationship
+                # Note: 'c' (consent_group) is no longer needed since we use participant -> consent_group -> study relationship
                 with_clause = f"WITH p, s, d, st{race_condition}{identifiers_condition}"
                 # Build WHERE conditions for WITH clause
                 with_where_conditions = []
@@ -616,7 +616,7 @@ class SubjectRepository:
                     cypher = f"""
         // Step 1: Match participants with studies, apply filters, and paginate EARLY
         MATCH (p:participant)
-        MATCH (p)-[:IN_STUDY]->(st:study){early_where_clause}
+        MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study){early_where_clause}
         {pagination_with_clause}
         // Group by participant_id + study_id, then paginate BEFORE processing survival/diagnosis
         WITH toString(p.participant_id) AS participant_id, st.study_id AS study_id, p, st{", race_tokens, pr_tokens" if race_condition else ""}
@@ -775,7 +775,7 @@ class SubjectRepository:
                     cypher = f"""
         // Step 1: Match participants with studies and apply direct filters
         MATCH (p:participant)
-        MATCH (p)-[:IN_STUDY]->(st:study){early_where_clause}
+        MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study){early_where_clause}
         {alt_with_clause}
         // Step 2: Process survival/diagnosis BEFORE filtering by derived fields
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
@@ -1085,8 +1085,8 @@ class SubjectRepository:
         OPTIONAL MATCH (p)<-[:of_diagnosis]-(d:diagnosis)
         WITH p, participant_id{", race_tokens, pr_tokens" if race_condition else ""}, survival_records, collect(DISTINCT d) AS diagnosis_nodes
         // Collect studies separately (no cartesian product)
-        // OPTIMIZATION: Use IN_STUDY relationship (5-10x faster than consent_group traversal)
-        {"MATCH (p)-[:IN_STUDY]->(st:study)\n        WHERE st.study_id " + deposition_operator + " $" + dep_param if dep_param else "OPTIONAL MATCH (p)-[:IN_STUDY]->(st:study)"}
+        // Use participant -> consent_group -> study relationship
+        {"MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)\n        WHERE st.study_id " + deposition_operator + " $" + dep_param if dep_param else "OPTIONAL MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)"}
         // Bind a scalar `study_id` for the row. Avoid carrying a LIST of study IDs through long WITH chains,
         // which Memgraph can mis-handle and report as "Unbound variable".
         WITH p, participant_id{", race_tokens, pr_tokens" if race_condition else ""}, survival_records, diagnosis_nodes,
@@ -1252,8 +1252,8 @@ class SubjectRepository:
         OPTIONAL MATCH (p)<-[:of_diagnosis]-(d:diagnosis)
         WITH p{", race_tokens, pr_tokens" if race_condition else ""}, survival_records, collect(DISTINCT d) AS diagnosis_nodes
         // Collect studies separately (no cartesian product)
-        // OPTIMIZATION: Use IN_STUDY relationship (5-10x faster than consent_group traversal)
-        OPTIONAL MATCH (p)-[:IN_STUDY]->(st:study)
+        // Use participant -> consent_group -> study relationship
+        OPTIONAL MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
         // Bind a scalar `study_id` for the row. Avoid carrying a LIST of study IDs through long WITH chains,
         // which Memgraph can mis-handle and report as "Unbound variable".
         WITH p{", race_tokens, pr_tokens" if race_condition else ""}, survival_records, diagnosis_nodes,
@@ -1918,7 +1918,7 @@ class SubjectRepository:
                     race_condition = f""",
                     // race tokens (already normalized to list in Python)
                     ${race_param} AS race_tokens,
-                    // tokenize stored semicolon-separated race string
+                    // tokenize stored race (data is always string format with semicolon separator)
                     [pt IN SPLIT(COALESCE(p.race, ''), ';') | trim(pt)] AS pr_tokens"""
                     
                     if includes_not_reported:
@@ -2075,12 +2075,12 @@ WITH p, d, c, st,
         RETURN count(*) as total
         """.strip()
             else:
-                # No filters - use IN_STUDY for study traversal (still need survival processing)
-                # OPTIMIZATION: Use IN_STUDY relationship with edge index for study traversal
+                # No filters - use participant -> consent_group -> study relationship (still need survival processing)
+                # Use participant -> consent_group -> study relationship for study traversal
                 # Note: For total count, we don't need survival/diagnosis records (they're only needed for values/missing)
                 # This avoids cartesian products from multiple survival/diagnosis records per participant
                 total_cypher = f"""
-        MATCH (p:participant)-[:IN_STUDY]->(st:study)
+        MATCH (p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
         WITH p.participant_id AS participant_id, st.study_id AS study_id
         RETURN count(*) as total
         """.strip()
@@ -2101,10 +2101,10 @@ WITH p, d, c, st,
         RETURN count(*) as total
         """.strip()
             else:
-                # No filters - use optimized IN_STUDY with edge index (7x faster)
-                # OPTIMIZATION: Use IN_STUDY relationship with edge index, no unnecessary OPTIONAL MATCHes
+                # No filters - use participant -> consent_group -> study relationship
+                # Use participant -> consent_group -> study relationship, no unnecessary OPTIONAL MATCHes
                 total_cypher = """
-        MATCH (p:participant)-[:IN_STUDY]->(st:study)
+        MATCH (p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
         WITH p.participant_id AS participant_id, st.study_id AS study_id
         RETURN count(*) as total
         """.strip()
@@ -2168,7 +2168,7 @@ WITH p, d, c, st,
                WHEN all_ages_are_999 THEN NULL
                ELSE max_age
              END AS final_age_at_vital_status
-        MATCH (p)-[:IN_STUDY]->(st:study)
+        MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
         WITH p.participant_id AS participant_id, st.study_id AS study_id, final_age_at_vital_status
         WHERE final_age_at_vital_status IS NULL
         RETURN count(*) as missing
@@ -2191,11 +2191,11 @@ WITH p, d, c, st,
         RETURN count(*) as missing
         """.strip()
                 else:
-                    # No filters - use IN_STUDY for study traversal (still need survival processing)
-                    # OPTIMIZATION: Start from IN_STUDY (uses edge index), only match survival records (not diagnosis)
+                    # No filters - use participant -> consent_group -> study relationship (still need survival processing)
+                    # Start from participant -> consent_group -> study, only match survival records (not diagnosis)
                     # Diagnosis is not needed for vital_status processing
                     missing_cypher = f"""
-        MATCH (p:participant)-[:IN_STUDY]->(st:study)
+        MATCH (p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
         WITH p, st,
              // Collect all survival records for this participant
@@ -2260,10 +2260,10 @@ WITH p, d, c, st,
         RETURN count(*) as missing
         """.strip()
             else:
-                # No filters - use optimized IN_STUDY with edge index (7x faster)
-                # OPTIMIZATION: Use IN_STUDY relationship with edge index, no unnecessary OPTIONAL MATCHes
+                # No filters - use participant -> consent_group -> study relationship
+                # Use participant -> consent_group -> study relationship, no unnecessary OPTIONAL MATCHes
                 missing_cypher = f"""
-        MATCH (p:participant)-[:IN_STUDY]->(st:study)
+        MATCH (p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
         WHERE {null_check}
         WITH p.participant_id AS participant_id, st.study_id AS study_id
         RETURN count(*) as missing
@@ -2309,8 +2309,8 @@ WITH p, d, c, st,
         ORDER BY count DESC, value ASC
         """.strip()
             else:
-                # No filters - use IN_STUDY for study traversal (still need survival processing)
-                # OPTIMIZATION: Start from IN_STUDY (uses edge index), only match survival records (not diagnosis)
+                # No filters - use participant -> consent_group -> study relationship (still need survival processing)
+                # Start from participant -> consent_group -> study, only match survival records (not diagnosis)
                 # Diagnosis is not needed for vital_status processing
                 if field == "age_at_vital_status":
                     # Compute derived age ONCE per participant, then expand to studies for counting.
@@ -2346,7 +2346,7 @@ WITH p, d, c, st,
                WHEN all_ages_are_999 THEN NULL
                ELSE max_age
              END AS final_age_at_vital_status
-        MATCH (p)-[:IN_STUDY]->(st:study)
+        MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
         WITH p.participant_id AS participant_id, st.study_id AS study_id, final_age_at_vital_status as field_val
         WHERE field_val IS NOT NULL
         WITH DISTINCT participant_id, study_id, toString(field_val) AS normalized_value
@@ -2355,7 +2355,7 @@ WITH p, d, c, st,
         """.strip()
                 else:
                     values_cypher = f"""
-        MATCH (p:participant)-[:IN_STUDY]->(st:study)
+        MATCH (p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
         WITH p, st,
              // Collect all survival records for this participant
@@ -2456,10 +2456,10 @@ WITH p, d, c, st,
         ORDER BY count DESC, value ASC
         """.strip()
             else:
-                # No filters - use optimized IN_STUDY with edge index (7x faster)
-                # OPTIMIZATION: Use IN_STUDY relationship with edge index, no unnecessary OPTIONAL MATCHes
+                # No filters - use participant -> consent_group -> study relationship
+                # Use participant -> consent_group -> study relationship, no unnecessary OPTIONAL MATCHes
                 values_cypher = f"""
-        MATCH (p:participant)-[:IN_STUDY]->(st:study)
+        MATCH (p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
         WHERE {not_null_check}
         WITH p.participant_id AS participant_id, st.study_id AS study_id, 
              CASE 
@@ -2653,10 +2653,10 @@ WITH p, d, c, st,
         """.strip()
         else:
             # No filters - use required MATCH for study (same as summary query)
-            # OPTIMIZATION: Use IN_STUDY relationship with edge index (7x faster with edge index)
-            # Note: WHERE st IS NOT NULL is redundant since IN_STUDY is a required match
+            # Use participant -> consent_group -> study relationship
+            # Note: WHERE st IS NOT NULL is redundant since the relationship is a required match
             total_cypher = """
-        MATCH (p:participant)-[:IN_STUDY]->(st:study)
+        MATCH (p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
         WITH DISTINCT p.participant_id AS participant_id, st.study_id AS study_id
         RETURN count(*) as total
         """.strip()
@@ -2682,10 +2682,10 @@ WITH p, d, c, st,
         """.strip()
         else:
             # No filters - use required MATCH for study (same as summary query)
-            # OPTIMIZATION: Use IN_STUDY relationship with edge index (7x faster with edge index)
-            # Note: WHERE st IS NOT NULL is redundant since IN_STUDY is a required match
+            # Use participant -> consent_group -> study relationship
+            # Note: WHERE st IS NOT NULL is redundant since the relationship is a required match
             missing_cypher = """
-        MATCH (p:participant)-[:IN_STUDY]->(st:study)
+        MATCH (p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
         WHERE (p.race IS NULL OR toString(p.race) = '' OR trim(toString(p.race)) = '')
         WITH DISTINCT p.participant_id AS participant_id, st.study_id AS study_id
         RETURN count(*) as missing
@@ -2710,16 +2710,20 @@ WITH p, d, c, st,
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         WITH p, s, d, c, st{identifiers_condition}
         {combined_where}
-        WITH p.participant_id AS participant_id, st.study_id AS study_id, toString(p.race) as race
-        WITH participant_id, study_id, race,
-             // Split race by semicolon and trim each part
-             [r IN SPLIT(race, ';') | trim(r)] as race_parts
-        WITH participant_id, study_id, race, race_parts,
+        WITH p.participant_id AS participant_id, st.study_id AS study_id, p.race as race_raw
+        WITH participant_id, study_id, race_raw,
+             // Data is always string format with semicolon separator
+             CASE 
+                 WHEN toString(race_raw) CONTAINS ';' THEN [r IN SPLIT(toString(race_raw), ';') | trim(r)]
+                 WHEN race_raw IS NOT NULL THEN [trim(toString(race_raw))]
+                 ELSE []
+             END as race_parts
+        WITH participant_id, study_id, race_raw, race_parts,
              // Check if original race contained "Hispanic or Latino"
              any(r IN race_parts WHERE r = 'Hispanic or Latino') as had_hispanic,
              // Filter out "Hispanic or Latino" - it's not a valid race value
              [r IN race_parts WHERE r <> 'Hispanic or Latino'] as race_list_filtered
-        WITH participant_id, study_id, race, race_list_filtered, had_hispanic
+        WITH participant_id, study_id, race_raw, race_list_filtered, had_hispanic
         // Process race values: if only "Hispanic or Latino", convert to "Not Reported" if valid
         // Otherwise, use the filtered race values
         WITH participant_id, study_id,
@@ -2736,23 +2740,27 @@ WITH p, d, c, st,
         """.strip()
         else:
             # No filters - use required MATCH for study (same as summary query)
-            # OPTIMIZATION: Use IN_STUDY relationship with edge index (7x faster with edge index)
-            # Note: WHERE st IS NOT NULL is redundant since IN_STUDY is a required match
+            # Use participant -> consent_group -> study relationship
+            # Note: WHERE st IS NOT NULL is redundant since the relationship is a required match
             values_cypher = f"""
-        MATCH (p:participant)-[:IN_STUDY]->(st:study)
+        MATCH (p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
         WHERE p.race IS NOT NULL 
           AND toString(p.race) <> '' 
           AND trim(toString(p.race)) <> ''
-        WITH DISTINCT p.participant_id AS participant_id, st.study_id AS study_id, toString(p.race) as race
-        WITH participant_id, study_id, race,
-             // Split race by semicolon and trim each part
-             [r IN SPLIT(race, ';') | trim(r)] as race_parts
+        WITH DISTINCT p.participant_id AS participant_id, st.study_id AS study_id, p.race as race_raw
+        WITH participant_id, study_id, race_raw,
+             // Data is always string format with semicolon separator
+             CASE 
+                 WHEN toString(race_raw) CONTAINS ';' THEN [r IN SPLIT(toString(race_raw), ';') | trim(r)]
+                 WHEN race_raw IS NOT NULL THEN [trim(toString(race_raw))]
+                 ELSE []
+             END as race_parts
         WITH participant_id, study_id, race, race_parts,
              // Check if original race contained "Hispanic or Latino"
              any(r IN race_parts WHERE r = 'Hispanic or Latino') as had_hispanic,
              // Filter out "Hispanic or Latino" - it's not a valid race value
              [r IN race_parts WHERE r <> 'Hispanic or Latino'] as race_list_filtered
-        WITH participant_id, study_id, race, race_list_filtered, had_hispanic
+        WITH participant_id, study_id, race_raw, race_list_filtered, had_hispanic
         // Process race values: if only "Hispanic or Latino", convert to "Not Reported" if valid
         // Otherwise, use the filtered race values
         WITH participant_id, study_id,
@@ -2783,16 +2791,20 @@ WITH p, d, c, st,
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         WITH p, s, d, c, st{identifiers_condition}
         {combined_where}
-        WITH p.participant_id AS participant_id, st.study_id AS study_id, toString(p.race) as race
-        WITH participant_id, study_id, race,
-             // Split race by semicolon and trim each part
-             [r IN SPLIT(race, ';') | trim(r)] as race_parts
-        WITH participant_id, study_id, race, race_parts,
+        WITH p.participant_id AS participant_id, st.study_id AS study_id, p.race as race_raw
+        WITH participant_id, study_id, race_raw,
+             // Data is always string format with semicolon separator
+             CASE 
+                 WHEN toString(race_raw) CONTAINS ';' THEN [r IN SPLIT(toString(race_raw), ';') | trim(r)]
+                 WHEN race_raw IS NOT NULL THEN [trim(toString(race_raw))]
+                 ELSE []
+             END as race_parts
+        WITH participant_id, study_id, race_raw, race_parts,
              // Check if original race contained "Hispanic or Latino"
              any(r IN race_parts WHERE r = 'Hispanic or Latino') as had_hispanic,
              // Filter out "Hispanic or Latino" - it's not a valid race value
              [r IN race_parts WHERE r <> 'Hispanic or Latino'] as race_list_filtered
-        WITH participant_id, study_id, race, race_list_filtered, had_hispanic
+        WITH participant_id, study_id, race_raw, race_list_filtered, had_hispanic
         // Process race values: if only "Hispanic or Latino", convert to "Not Reported" if valid
         // Otherwise, use the filtered race values
         WITH participant_id, study_id,
@@ -2808,23 +2820,27 @@ WITH p, d, c, st,
         """.strip()
         else:
             # No filters - use required MATCH for study (same as summary query)
-            # OPTIMIZATION: Use IN_STUDY relationship with edge index (7x faster with edge index)
-            # Note: WHERE st IS NOT NULL is redundant since IN_STUDY is a required match
+            # Use participant -> consent_group -> study relationship
+            # Note: WHERE st IS NOT NULL is redundant since the relationship is a required match
             unique_with_valid_race_cypher = f"""
-        MATCH (p:participant)-[:IN_STUDY]->(st:study)
+        MATCH (p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
         WHERE p.race IS NOT NULL 
           AND toString(p.race) <> '' 
           AND trim(toString(p.race)) <> ''
-        WITH DISTINCT p.participant_id AS participant_id, st.study_id AS study_id, toString(p.race) as race
-        WITH participant_id, study_id, race,
-             // Split race by semicolon and trim each part
-             [r IN SPLIT(race, ';') | trim(r)] as race_parts
+        WITH DISTINCT p.participant_id AS participant_id, st.study_id AS study_id, p.race as race_raw
+        WITH participant_id, study_id, race_raw,
+             // Data is always string format with semicolon separator
+             CASE 
+                 WHEN toString(race_raw) CONTAINS ';' THEN [r IN SPLIT(toString(race_raw), ';') | trim(r)]
+                 WHEN race_raw IS NOT NULL THEN [trim(toString(race_raw))]
+                 ELSE []
+             END as race_parts
         WITH participant_id, study_id, race, race_parts,
              // Check if original race contained "Hispanic or Latino"
              any(r IN race_parts WHERE r = 'Hispanic or Latino') as had_hispanic,
              // Filter out "Hispanic or Latino" - it's not a valid race value
              [r IN race_parts WHERE r <> 'Hispanic or Latino'] as race_list_filtered
-        WITH participant_id, study_id, race, race_list_filtered, had_hispanic
+        WITH participant_id, study_id, race_raw, race_list_filtered, had_hispanic
         // Process race values: if only "Hispanic or Latino", convert to "Not Reported" if valid
         // Otherwise, use the filtered race values
         WITH participant_id, study_id,
@@ -3021,9 +3037,9 @@ WITH p, d, c, st,
         RETURN count(*) as total
         """.strip()
         else:
-            # No filters - use optimized IN_STUDY with edge index (7x faster)
+            # No filters - use participant -> consent_group -> study relationship
             total_cypher = """
-        MATCH (p:participant)-[:IN_STUDY]->(st:study)
+        MATCH (p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
         WITH p.participant_id AS participant_id, st.study_id AS study_id
         RETURN count(*) as total
         """.strip()
@@ -3043,9 +3059,9 @@ WITH p, d, c, st,
         RETURN count(*) as missing
         """.strip()
         else:
-            # No filters - use optimized IN_STUDY with edge index (7x faster)
+            # No filters - use participant -> consent_group -> study relationship
             missing_cypher = """
-        MATCH (p:participant)-[:IN_STUDY]->(st:study)
+        MATCH (p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
         WHERE p.race IS NULL
         WITH p.participant_id AS participant_id, st.study_id AS study_id
         RETURN count(*) as missing
@@ -3074,14 +3090,14 @@ WITH p, d, c, st,
         ORDER BY value ASC
         """.strip()
         else:
-            # No filters - use optimized IN_STUDY with edge index (7x faster)
+            # No filters - use participant -> consent_group -> study relationship
             values_cypher = """
-        MATCH (p:participant)-[:IN_STUDY]->(st:study)
+        MATCH (p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
         WHERE p.race IS NOT NULL
-        WITH p.participant_id AS participant_id, st.study_id AS study_id, toString(p.race) as race
-        WITH participant_id, study_id, race,
+        WITH p.participant_id AS participant_id, st.study_id AS study_id, p.race as race_raw
+        WITH participant_id, study_id, race_raw,
              CASE 
-               WHEN race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
+               WHEN toString(race_raw) CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
                ELSE 'Not reported'
              END as ethnicity_value
         WITH DISTINCT participant_id, study_id, ethnicity_value
@@ -3252,10 +3268,10 @@ WITH p, d, c, st,
         """.strip()
         else:
             # No filters - simple count
-            # OPTIMIZATION: Use IN_STUDY relationship with edge index (7x faster with edge index)
-            # Note: WHERE st IS NOT NULL is redundant since IN_STUDY is a required match
+            # Use participant -> consent_group -> study relationship
+            # Note: WHERE st IS NOT NULL is redundant since the relationship is a required match
             total_cypher = """
-        MATCH (p:participant)-[:IN_STUDY]->(st:study)
+        MATCH (p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
         WITH p.participant_id AS participant_id, st.study_id AS study_id
         RETURN count(*) as total
         """.strip()
@@ -3278,10 +3294,10 @@ WITH p, d, c, st,
         """.strip()
         else:
             # No filters - simple check for missing diagnoses
-            # OPTIMIZATION: Use IN_STUDY relationship with edge index (7x faster with edge index)
-            # Note: WHERE st IS NOT NULL is redundant since IN_STUDY is a required match
+            # Use participant -> consent_group -> study relationship
+            # Note: WHERE st IS NOT NULL is redundant since the relationship is a required match
             missing_cypher = """
-        MATCH (p:participant)-[:IN_STUDY]->(st:study)
+        MATCH (p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
         WITH p.participant_id AS participant_id, st.study_id AS study_id, collect(d) as diagnoses
         WHERE size([d IN diagnoses WHERE d IS NOT NULL]) = 0
@@ -3670,7 +3686,7 @@ WITH p, d, c, st,
         survival_processing = ""
         if needs_survival_processing:
             # IMPORTANT: This fragment must NOT reference `c` (consent_group). `get_subjects_summary`
-            # uses the optimized `IN_STUDY` relationship, so `c` is not bound in these queries.
+            # uses the participant -> consent_group -> study relationship, so `c` is not bound in these queries.
             survival_processing = """
 WITH p, d, st, 
      // Collect all survival records for this participant
@@ -3815,8 +3831,8 @@ WITH p, d, st,
         MATCH (p:participant)
         WHERE p.participant_id IN id_list
         WITH DISTINCT p.participant_id AS participant_id, p
-        // OPTIMIZATION: Use IN_STUDY relationship (faster and simpler than consent_group traversal)
-        MATCH (p)-[:IN_STUDY]->(st:study)
+        // Use participant -> consent_group -> study relationship
+        MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
         {combined_where}
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
@@ -3884,7 +3900,7 @@ WITH p, d, st,
         // Bind studies and count per (participant_id, study_id) pair.
         // IMPORTANT: avoid carrying a LIST of study IDs through long WITH/aggregation chains
         // (Memgraph can drop list vars and report them as \"Unbound variable\").
-        MATCH (p)-[:IN_STUDY]->(st:study)
+        MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
         WITH participant_id, p, survival_records, diagnosis_nodes, st.study_id AS study_id
         {"WHERE size([node IN diagnosis_nodes WHERE node IS NOT NULL AND ANY(diag IN CASE WHEN valueType(node.diagnosis) = 'LIST' THEN node.diagnosis ELSE [node.diagnosis] END WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))]) > 0" if diagnosis_search_term else ""}
         // Apply filters
@@ -3956,8 +3972,8 @@ WITH p, d, st,
                     
                     cypher = f"""
         MATCH (p:participant)
-        // OPTIMIZATION: Use IN_STUDY relationship (faster and simpler than consent_group traversal)
-        MATCH (p)-[:IN_STUDY]->(st:study)
+        // Use participant -> consent_group -> study relationship
+        MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
         WHERE st.study_id {deposition_operator} ${dep_param}
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
@@ -4031,7 +4047,7 @@ WITH p, d, st,
         MATCH (p:participant)
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
-        OPTIONAL MATCH (p)-[:IN_STUDY]->(st:study)
+        OPTIONAL MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
         WITH p, s, d, st{race_condition}
         {where_clause_clean_for_summary}{survival_processing}
         WHERE st IS NOT NULL
@@ -4403,8 +4419,8 @@ WITH p, d, st,
         MATCH (p:participant)
         WHERE p.participant_id IN id_list
         WITH DISTINCT p.participant_id AS participant_id, p
-        // Use IN_STUDY relationship to match the main query's relationship path
-        {"MATCH (p)-[:IN_STUDY]->(st:study)\n        WHERE st.study_id " + deposition_operator + " $" + dep_param if dep_param else "OPTIONAL MATCH (p)-[:IN_STUDY]->(st:study)\n        WHERE st IS NOT NULL"}
+        // Use participant -> consent_group -> study relationship to match the main query's relationship path
+        {"MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)\n        WHERE st.study_id " + deposition_operator + " $" + dep_param if dep_param else "OPTIONAL MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)\n        WHERE st IS NOT NULL"}
         {with_clause}{diagnosis_search_fragment}
         WITH DISTINCT participant_id, study_id
         RETURN count(*) as total_count
@@ -4489,8 +4505,8 @@ WITH p, d, st,
                             
                             cypher = f"""
         MATCH (p:participant)
-        // Use IN_STUDY relationship to match the main query's relationship path
-        {"MATCH (p)-[:IN_STUDY]->(st:study)\n        WHERE st.study_id " + deposition_operator + " $" + dep_param if dep_param else "OPTIONAL MATCH (p)-[:IN_STUDY]->(st:study)\n        WHERE st IS NOT NULL"}
+        // Use participant -> consent_group -> study relationship to match the main query's relationship path
+        {"MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)\n        WHERE st.study_id " + deposition_operator + " $" + dep_param if dep_param else "OPTIONAL MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)\n        WHERE st IS NOT NULL"}
         {with_clause}{diagnosis_search_fragment}
         WITH DISTINCT participant_id, study_id
         RETURN count(*) as total_count
@@ -4499,10 +4515,10 @@ WITH p, d, st,
                 # No filters at all - but check for diagnosis search
                 if race_filter_condition:
                     # Race-only filter (or race was popped out of `filters`) must still be applied.
-                    # Use IN_STUDY edge for fast traversal, apply race token filter in the WITH clause
+                    # Use participant -> consent_group -> study relationship for traversal, apply race token filter in the WITH clause
                     # while race_tokens/pr_tokens are in scope.
                     cypher = f"""
-        MATCH (p:participant)-[:IN_STUDY]->(st:study)
+        MATCH (p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
         WITH p, st{race_condition}
         {race_where_clause}
         WITH DISTINCT p.participant_id AS participant_id, st.study_id AS study_id
@@ -4516,8 +4532,8 @@ WITH p, d, st,
         OPTIONAL MATCH (p)<-[:of_diagnosis]-(d:diagnosis)
         WITH p, collect(DISTINCT d) AS diagnosis_nodes
         WHERE size([node IN diagnosis_nodes WHERE node IS NOT NULL AND ANY(diag IN CASE WHEN valueType(node.diagnosis) = 'LIST' THEN node.diagnosis ELSE [node.diagnosis] END WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))]) > 0
-        // Use IN_STUDY relationship to match the main query's relationship path
-        {"MATCH (p)-[:IN_STUDY]->(st:study)\n        WHERE st.study_id " + deposition_operator + " $" + dep_param if dep_param else "OPTIONAL MATCH (p)-[:IN_STUDY]->(st:study)\n        WHERE st IS NOT NULL"}
+        // Use participant -> consent_group -> study relationship to match the main query's relationship path
+        {"MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)\n        WHERE st.study_id " + deposition_operator + " $" + dep_param if dep_param else "OPTIONAL MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)\n        WHERE st IS NOT NULL"}
         WITH DISTINCT p.participant_id AS participant_id, st.study_id AS study_id
         RETURN count(*) as total_count
         """.strip()
@@ -4526,17 +4542,17 @@ WITH p, d, st,
                     if dep_param:
                         # Apply depositions filter
                         cypher = f"""
-        MATCH (p:participant)-[:IN_STUDY]->(st:study)
+        MATCH (p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
         WHERE st.study_id {deposition_operator} ${dep_param}
         WITH DISTINCT p.participant_id AS participant_id, st.study_id AS study_id
         RETURN count(*) as total_count
         """.strip()
                     else:
                         # No filters at all - simple count
-                        # OPTIMIZATION: Use IN_STUDY relationship with edge index (7x faster with edge index)
-                        # Note: WHERE st IS NOT NULL is redundant since IN_STUDY is a required match
+                        # Use participant -> consent_group -> study relationship
+                        # Note: WHERE st IS NOT NULL is redundant since the relationship is a required match
                         cypher = """
-        MATCH (p:participant)-[:IN_STUDY]->(st:study)
+        MATCH (p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
         WITH DISTINCT p.participant_id AS participant_id, st.study_id AS study_id
         RETURN count(*) as total_count
         """.strip()

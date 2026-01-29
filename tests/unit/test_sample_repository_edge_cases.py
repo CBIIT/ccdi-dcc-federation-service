@@ -88,21 +88,35 @@ class TestSampleRepositoryErrorHandling:
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         
+        # Mock TWO_QUERY_APPROACH for total count (anatomical_sites uses TWO_QUERY_APPROACH when no filters)
+        mock_result_path2 = AsyncMock()
+        mock_result_path2.data = AsyncMock(return_value=[
+            {"sample_id": "S1", "study_id": "ST1"}
+        ])
+        mock_result_path2.consume = AsyncMock()
+        
+        mock_result_path1 = AsyncMock()
+        mock_result_path1.data = AsyncMock(return_value=[
+            {"sample_id": "S2", "study_id": "ST1"}
+        ])
+        mock_result_path1.consume = AsyncMock()
+        
         # First missing query fails with "all list string" error, second (string) succeeds
         mock_missing_string = AsyncMock()
         mock_missing_string.__aiter__ = Mock(return_value=async_gen_missing())
         
-        # Create a result that raises exception on iteration
+        # Create a result that raises exception on async iteration (the code uses async for record in missing_result)
         class FailingResult:
             def __aiter__(self):
                 return self
             async def __anext__(self):
                 raise Exception("all list string error")
         
-        # values query, total query, missing list query fails, missing string query succeeds
+        # values query, total query (TWO_QUERY_APPROACH - 2 calls), missing list query fails, missing string query succeeds
         mock_session.run = AsyncMock(side_effect=[
             mock_result,  # values query
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"total": 5}]))),  # total query
+            mock_result_path2,  # total query - path 2
+            mock_result_path1,  # total query - path 1
             FailingResult(),  # missing list query fails
             mock_missing_string  # missing string query succeeds
         ])
@@ -120,12 +134,39 @@ class TestSampleRepositoryErrorHandling:
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         
-        # List query fails, string query also fails
+        # Mock TWO_QUERY_APPROACH for total count
+        mock_result_path2 = AsyncMock()
+        mock_result_path2.data = AsyncMock(return_value=[
+            {"sample_id": "S1", "study_id": "ST1"}
+        ])
+        mock_result_path2.consume = AsyncMock()
+        
+        mock_result_path1 = AsyncMock()
+        mock_result_path1.data = AsyncMock(return_value=[
+            {"sample_id": "S2", "study_id": "ST1"}
+        ])
+        mock_result_path1.consume = AsyncMock()
+        
+        # Create failing results for missing queries
+        class FailingResultList:
+            async def data(self):
+                raise Exception("all list string error")
+            async def consume(self):
+                pass
+        
+        class FailingResultString:
+            async def data(self):
+                raise Exception("string query also fails")
+            async def consume(self):
+                pass
+        
+        # values query, total query (TWO_QUERY_APPROACH - 2 calls), missing list query fails, missing string query also fails
         mock_session.run = AsyncMock(side_effect=[
             mock_result,  # values query
-            AsyncMock(__aiter__=Mock(return_value=async_gen())),  # total query
-            Exception("all list string error"),  # missing list query fails
-            Exception("string query also fails"),  # missing string query also fails
+            mock_result_path2,  # total query - path 2
+            mock_result_path1,  # total query - path 1
+            FailingResultList(),  # missing list query fails
+            FailingResultString(),  # missing string query also fails
         ])
         
         result = await repository.count_samples_by_field("anatomical_sites", {})
@@ -162,14 +203,28 @@ class TestSampleRepositoryComplexQueries:
         return SampleRepository(mock_session, mock_allowlist, mock_settings)
 
     async def test_count_samples_by_field_specimen_molecular_analyte_type_combined_query(self, repository, mock_session):
-        """Test count_samples_by_field uses combined query for specimen_molecular_analyte_type."""
+        """Test count_samples_by_field uses separate queries for specimen_molecular_analyte_type (combined query disabled)."""
         async def async_gen():
-            yield {"value": "DNA", "count": 10, "total": 20, "missing": 2}
+            yield {"value": "DNA", "count": 10}
         
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         
-        mock_session.run = AsyncMock(return_value=mock_result)
+        # Mock TWO_QUERY_APPROACH for total count (2 queries) + missing query
+        mock_result_path2 = AsyncMock()
+        mock_result_path2.data = AsyncMock(return_value=[
+            {"sample_id": "S1", "study_id": "ST1"},
+            {"sample_id": "S2", "study_id": "ST1"}
+        ])
+        mock_result_path1 = AsyncMock()
+        mock_result_path1.data = AsyncMock(return_value=[])
+        
+        mock_session.run = AsyncMock(side_effect=[
+            mock_result,  # values query
+            mock_result_path2,  # total query path2
+            mock_result_path1,  # total query path1
+            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 2}])))  # missing query
+        ])
         
         with patch('app.repositories.sample.get_mapped_db_values', return_value=["DNA", "RNA"]), \
              patch('app.repositories.sample.build_case_mapping_statement', return_value="CASE WHEN molecule_value = 'DNA' THEN 'DNA' END"), \
@@ -180,19 +235,29 @@ class TestSampleRepositoryComplexQueries:
             assert "total" in result
             assert "missing" in result
             assert "values" in result
-            # Combined query should return all three in one result
-            cypher = mock_session.run.call_args[0][0]
-            assert "total" in cypher and "missing" in cypher  # Combined query includes both
 
     async def test_count_samples_by_field_library_source_material_combined_query(self, repository, mock_session):
-        """Test count_samples_by_field uses combined query for library_source_material when no filters."""
+        """Test count_samples_by_field uses separate queries for library_source_material (combined query disabled)."""
         async def async_gen():
-            yield {"value": "DNA", "count": 15, "total": 25, "missing": 3}
+            yield {"value": "DNA", "count": 15}
         
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         
-        mock_session.run = AsyncMock(return_value=mock_result)
+        # Mock TWO_QUERY_APPROACH for total count (2 queries) + missing query
+        mock_result_path2 = AsyncMock()
+        mock_result_path2.data = AsyncMock(return_value=[
+            {"sample_id": "S1", "study_id": "ST1"} for _ in range(25)
+        ])
+        mock_result_path1 = AsyncMock()
+        mock_result_path1.data = AsyncMock(return_value=[])
+        
+        mock_session.run = AsyncMock(side_effect=[
+            mock_result,  # values query
+            mock_result_path2,  # total query path2
+            mock_result_path1,  # total query path1
+            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 3}])))  # missing query
+        ])
         
         with patch('app.repositories.sample.build_invalid_value_list_filter', return_value="val <> '-999'"), \
              patch('app.repositories.sample.load_sequencing_file_enum', return_value=["DNA", "RNA"]):
@@ -203,14 +268,27 @@ class TestSampleRepositoryComplexQueries:
             assert "values" in result
 
     async def test_count_samples_by_field_library_source_material_combined_query_no_filters(self, repository, mock_session):
-        """Test count_samples_by_field uses combined query for library_source_material when no filters."""
+        """Test count_samples_by_field uses separate queries for library_source_material (combined query disabled)."""
         async def async_gen():
-            yield {"value": "DNA", "count": 10, "total": 20, "missing": 2}
+            yield {"value": "DNA", "count": 10}
         
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         
-        mock_session.run = AsyncMock(return_value=mock_result)
+        # Mock TWO_QUERY_APPROACH for total count (2 queries) + missing query
+        mock_result_path2 = AsyncMock()
+        mock_result_path2.data = AsyncMock(return_value=[
+            {"sample_id": "S1", "study_id": "ST1"} for _ in range(20)
+        ])
+        mock_result_path1 = AsyncMock()
+        mock_result_path1.data = AsyncMock(return_value=[])
+        
+        mock_session.run = AsyncMock(side_effect=[
+            mock_result,  # values query
+            mock_result_path2,  # total query path2
+            mock_result_path1,  # total query path1
+            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 2}])))  # missing query
+        ])
         
         with patch('app.repositories.sample.build_invalid_value_list_filter', return_value="val <> '-999'"), \
              patch('app.repositories.sample.load_sequencing_file_enum', return_value=["DNA", "RNA"]):
@@ -219,9 +297,6 @@ class TestSampleRepositoryComplexQueries:
             assert "total" in result
             assert "missing" in result
             assert "values" in result
-            # Combined query should return all three in one result
-            cypher = mock_session.run.call_args[0][0]
-            assert "total" in cypher and "missing" in cypher  # Combined query includes both
 
     async def test_count_samples_by_field_anatomical_sites_with_filters(self, repository, mock_session):
         """Test count_samples_by_field for anatomical_sites with base filters."""

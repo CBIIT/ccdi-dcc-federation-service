@@ -220,7 +220,8 @@ class FileRepository:
         
         if file_where_conditions and has_depositions_filter:
             # PATTERN 1: OPTIMIZED QUERY (for type + depositions queries)
-            # OPTIMIZATION: Use IN_STUDY relationship via samples (uses edge index, much faster!)
+            # Use multi-hop traversal: sample -> participant -> consent_group -> study (preferred)
+            # or sample -> cell_line -> study (fallback)
             # Use stored depositions parameter name
             deposition_param = depositions_param_name
             deposition_operator = "=" if len(depositions_list) == 1 else "IN"
@@ -229,11 +230,20 @@ class FileRepository:
             // Step 1: Match files and apply file property filters FIRST
             MATCH (sf:sequencing_file)
             {file_where_clause}
-            // Step 2: Find study path using IN_STUDY relationship (uses edge index, applies study filter)
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)-[:IN_STUDY]->(st:study)
-            WHERE st.study_id {deposition_operator} ${deposition_param}
+            // Step 2: Find study path using multi-hop traversal (with WITH clauses to prevent cartesian products)
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+            // study path 2 — via participant → consent → study (preferred path)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)
+                       -[:of_participant]->(:consent_group)
+                       -[:of_consent_group]->(st2:study)
+            WHERE st2.study_id {deposition_operator} ${deposition_param}
+            WITH sf, sa, collect(DISTINCT st2) AS st2_list
+            // study path 1 — via cell_line (fallback)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            WHERE st1.study_id {deposition_operator} ${deposition_param}
+            WITH sf, sa, st2_list, collect(DISTINCT st1) AS st1_list
+            WITH sf, sa, coalesce(st2_list[0], st1_list[0]) AS st
             // Step 3: Filter out nulls
-            WITH DISTINCT sf, st
             WHERE st IS NOT NULL
             // Step 4: Order and paginate
             WITH sf
@@ -243,23 +253,39 @@ class FileRepository:
             // Step 5: Collect samples for final results only
             OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa2:sample)
             WITH sf, collect(DISTINCT sa2) as samples
-            // Step 6: Get study for response (using IN_STUDY)
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa3:sample)-[:IN_STUDY]->(st3:study)
+            // Step 6: Get study for response (using multi-hop traversal)
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa3:sample)
+            OPTIONAL MATCH (sa3)-[:of_sample]->(:participant)
+                       -[:of_participant]->(:consent_group)
+                       -[:of_consent_group]->(st3:study)
             WHERE st3.study_id {deposition_operator} ${deposition_param}
-            WITH sf, samples, head(collect(DISTINCT st3)) as study
+            WITH sf, samples, collect(DISTINCT st3) AS st3_list
+            OPTIONAL MATCH (sa3)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st4:study)
+            WHERE st4.study_id {deposition_operator} ${deposition_param}
+            WITH sf, samples, st3_list, collect(DISTINCT st4) AS st4_list
+            WITH sf, samples, head(collect(DISTINCT coalesce(st3_list[0], st4_list[0]))) as study
             RETURN sf, samples, study as st
             """.strip()
         elif file_where_conditions:
             # OPTIMIZED QUERY (for queries with file filters like type=BAM)
-            # OPTIMIZATION: Use IN_STUDY relationship via samples (much faster than multi-hop)
-            # Apply file filters FIRST, then traverse to study using IN_STUDY
+            # Use multi-hop traversal: sample -> participant -> consent_group -> study (preferred)
+            # or sample -> cell_line -> study (fallback)
+            # Apply file filters FIRST, then traverse to study using multi-hop
             cypher = f"""
             // Step 1: Match files and apply file property filters FIRST (before any traversals)
             MATCH (sf:sequencing_file)
             {file_where_clause}
-            // Step 2: Find study path using IN_STUDY relationship (uses edge index, much faster!)
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)-[:IN_STUDY]->(st:study)
-            WITH DISTINCT sf, st
+            // Step 2: Find study path using multi-hop traversal (with WITH clauses to prevent cartesian products)
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+            // study path 2 — via participant → consent → study (preferred path)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)
+                       -[:of_participant]->(:consent_group)
+                       -[:of_consent_group]->(st2:study)
+            WITH sf, sa, collect(DISTINCT st2) AS st2_list
+            // study path 1 — via cell_line (fallback)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            WITH sf, sa, st2_list, collect(DISTINCT st1) AS st1_list
+            WITH sf, coalesce(st2_list[0], st1_list[0]) AS st
             {study_where_clause}
             // Step 3: Apply pagination early (before collecting samples)
             WITH sf
@@ -269,15 +295,22 @@ class FileRepository:
             // Step 4: Collect samples only for paginated files (much faster!)
             OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa3:sample)
             WITH sf, collect(DISTINCT sa3) AS samples
-            // Step 5: Get study for response (only for the 20 returned files, using IN_STUDY)
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa4:sample)-[:IN_STUDY]->(st4:study)
-            WITH sf, samples, head(collect(DISTINCT st4)) AS st
+            // Step 5: Get study for response (only for the 20 returned files, using multi-hop traversal)
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa4:sample)
+            OPTIONAL MATCH (sa4)-[:of_sample]->(:participant)
+                       -[:of_participant]->(:consent_group)
+                       -[:of_consent_group]->(st4:study)
+            WITH sf, samples, collect(DISTINCT st4) AS st4_list
+            OPTIONAL MATCH (sa4)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st5:study)
+            WITH sf, samples, st4_list, collect(DISTINCT st5) AS st5_list
+            WITH sf, samples, head(collect(DISTINCT coalesce(st4_list[0], st5_list[0]))) AS st
             RETURN sf, samples, st
             """.strip()
         elif has_depositions_filter:
             # PATTERN 2b: OPTIMIZED REVERSE TRAVERSAL for depositions-only queries (no file filters)
-            # OPTIMIZATION: Use IN_STUDY relationship (uses edge index, much faster!)
-            # Start from studies (2-10 nodes) instead of files (1M+ nodes)
+            # Use multi-hop traversal: Start from studies (2-10 nodes) instead of files (1M+ nodes)
+            # Traverse: study <- consent_group <- participant <- sample <- sequencing_file
+            # or: study <- cell_line <- sample <- sequencing_file
             deposition_param = depositions_param_name
             deposition_operator = "=" if len(depositions_list) == 1 else "IN"
             
@@ -285,22 +318,30 @@ class FileRepository:
             // Step 1: Start from study nodes (only a few studies to process!)
             MATCH (st:study)
             WHERE st.study_id {deposition_operator} ${deposition_param}
-            // Step 2: Collect files using IN_STUDY relationship (uses edge index, much faster!)
-            MATCH (st)<-[:IN_STUDY]-(sa:sample)<-[:of_sequencing_file]-(sf:sequencing_file)
+            // Step 2: Collect files using multi-hop traversal (path 2 - preferred)
+            OPTIONAL MATCH (st)<-[:of_consent_group]-(:consent_group)<-[:of_participant]-(:participant)<-[:of_sample]-(sa:sample)<-[:of_sequencing_file]-(sf:sequencing_file)
+            WITH st, sf, sa, collect(DISTINCT sf) AS sf_list_path2
+            // Step 2b: Collect files using multi-hop traversal (path 1 - fallback)
+            OPTIONAL MATCH (st)<-[:of_cell_line]-(:cell_line)<-[:of_sample]-(sa2:sample)<-[:of_sequencing_file]-(sf2:sequencing_file)
+            WITH st, sf_list_path2, collect(DISTINCT sf2) AS sf_list_path1
+            // Combine files from both paths
+            WITH st, [sf IN sf_list_path2 WHERE sf IS NOT NULL | sf] + [sf IN sf_list_path1 WHERE sf IS NOT NULL] AS all_sf
+            UNWIND all_sf AS sf
             // Step 3: Deduplicate and paginate
             WITH DISTINCT sf, st
             ORDER BY sf.id
             SKIP $offset
             LIMIT $limit
             // Step 4: Collect samples for paginated files
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa2:sample)
-            WITH sf, st, collect(DISTINCT sa2) AS samples
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa3:sample)
+            WITH sf, st, collect(DISTINCT sa3) AS samples
             RETURN sf, samples, st
             """.strip()
         else:
             # PATTERN 3: SIMPLE QUERY (no filters at all - basic pagination only)
-            # PERFORMANCE OPTIMIZATION: Apply pagination FIRST, then traverse using IN_STUDY
-            # OPTIMIZATION: Use IN_STUDY relationship via samples (uses edge index, much faster!)
+            # PERFORMANCE OPTIMIZATION: Apply pagination FIRST, then traverse using multi-hop
+            # Use multi-hop traversal: sample -> participant -> consent_group -> study (preferred)
+            # or sample -> cell_line -> study (fallback)
             cypher = f"""
             // Step 1: Apply pagination immediately to sequencing_file (no filters)
             MATCH (sf:sequencing_file)
@@ -311,9 +352,17 @@ class FileRepository:
             // Step 2: Now traverse only for the paginated files
             OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
             WITH sf, collect(DISTINCT sa) AS samples
-            // Step 3: Get study for response (only for paginated files, using IN_STUDY)
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa2:sample)-[:IN_STUDY]->(st:study)
-            WITH sf, samples, head(collect(DISTINCT st)) as study
+            // Step 3: Get study for response (only for paginated files, using multi-hop traversal)
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa2:sample)
+            // study path 2 — via participant → consent → study (preferred path)
+            OPTIONAL MATCH (sa2)-[:of_sample]->(:participant)
+                       -[:of_participant]->(:consent_group)
+                       -[:of_consent_group]->(st2:study)
+            WITH sf, samples, collect(DISTINCT st2) AS st2_list
+            // study path 1 — via cell_line (fallback)
+            OPTIONAL MATCH (sa2)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            WITH sf, samples, st2_list, collect(DISTINCT st1) AS st1_list
+            WITH sf, samples, head(collect(DISTINCT coalesce(st2_list[0], st1_list[0]))) as study
             RETURN sf, samples, study as st
             """.strip()
         
@@ -1146,39 +1195,59 @@ class FileRepository:
         # Detect if we have depositions filter for CALL+UNION optimization
         has_depositions_filter = depositions_list is not None
         
-        # CONDITIONAL OPTIMIZATION: Match get_files pattern (same 4 patterns, using IN_STUDY)
+        # CONDITIONAL OPTIMIZATION: Match get_files pattern (same 4 patterns, using multi-hop traversal)
         if file_where_conditions and has_depositions_filter:
             # PATTERN 1: OPTIMIZED SUMMARY (with file filters + depositions)
-            # OPTIMIZATION: Use IN_STUDY relationship via samples (uses edge index, much faster!)
+            # Use multi-hop traversal: sample -> participant -> consent_group -> study (preferred)
+            # or sample -> cell_line -> study (fallback)
             deposition_param = depositions_param_name
             deposition_operator = "=" if len(depositions_list) == 1 else "IN"
             
             cypher = f"""
             MATCH (sf:sequencing_file)
             {file_where_clause}
-            // Use IN_STUDY relationship (uses edge index, much faster!)
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)-[:IN_STUDY]->(st:study)
-            WHERE st.study_id {deposition_operator} ${deposition_param}
-            WITH DISTINCT sf, st
+            // Use multi-hop traversal (with WITH clauses to prevent cartesian products)
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+            // study path 2 — via participant → consent → study (preferred path)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)
+                       -[:of_participant]->(:consent_group)
+                       -[:of_consent_group]->(st2:study)
+            WHERE st2.study_id {deposition_operator} ${deposition_param}
+            WITH sf, sa, collect(DISTINCT st2) AS st2_list
+            // study path 1 — via cell_line (fallback)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            WHERE st1.study_id {deposition_operator} ${deposition_param}
+            WITH sf, sa, st2_list, collect(DISTINCT st1) AS st1_list
+            WITH sf, coalesce(st2_list[0], st1_list[0]) AS st
             WHERE st IS NOT NULL
             RETURN count(DISTINCT sf) as total_count
             """.strip()
         elif file_where_conditions:
             # PATTERN 2: OPTIMIZED SUMMARY (with file filters only)
-            # OPTIMIZATION: Use IN_STUDY relationship via samples (uses edge index, much faster!)
+            # Use multi-hop traversal: sample -> participant -> consent_group -> study (preferred)
+            # or sample -> cell_line -> study (fallback)
             cypher = f"""
             MATCH (sf:sequencing_file)
             {file_where_clause}
-            // Use IN_STUDY relationship (uses edge index, much faster!)
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)-[:IN_STUDY]->(st:study)
-            WITH DISTINCT sf, st
+            // Use multi-hop traversal (with WITH clauses to prevent cartesian products)
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+            // study path 2 — via participant → consent → study (preferred path)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)
+                       -[:of_participant]->(:consent_group)
+                       -[:of_consent_group]->(st2:study)
+            WITH sf, sa, collect(DISTINCT st2) AS st2_list
+            // study path 1 — via cell_line (fallback)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            WITH sf, sa, st2_list, collect(DISTINCT st1) AS st1_list
+            WITH sf, coalesce(st2_list[0], st1_list[0]) AS st
             {study_where_clause}
             RETURN count(DISTINCT sf) as total_count
             """.strip()
         elif has_depositions_filter:
             # PATTERN 2b: OPTIMIZED REVERSE TRAVERSAL SUMMARY (depositions only)
-            # OPTIMIZATION: Use IN_STUDY relationship (uses edge index, much faster!)
-            # Start from studies (2-10 nodes) instead of files (1M+ nodes)
+            # Use multi-hop traversal: Start from studies (2-10 nodes) instead of files (1M+ nodes)
+            # Traverse: study <- consent_group <- participant <- sample <- sequencing_file
+            # or: study <- cell_line <- sample <- sequencing_file
             deposition_param = depositions_param_name
             deposition_operator = "=" if len(depositions_list) == 1 else "IN"
             
@@ -1186,16 +1255,32 @@ class FileRepository:
             // Start from study nodes (only a few studies)
             MATCH (st:study)
             WHERE st.study_id {deposition_operator} ${deposition_param}
-            // Collect files using IN_STUDY relationship (uses edge index, much faster!)
-            MATCH (st)<-[:IN_STUDY]-(sa:sample)<-[:of_sequencing_file]-(sf:sequencing_file)
+            // Collect files using multi-hop traversal (path 2 - preferred)
+            OPTIONAL MATCH (st)<-[:of_consent_group]-(:consent_group)<-[:of_participant]-(:participant)<-[:of_sample]-(sa:sample)<-[:of_sequencing_file]-(sf:sequencing_file)
+            WITH st, collect(DISTINCT sf) AS sf_list_path2
+            // Collect files using multi-hop traversal (path 1 - fallback)
+            OPTIONAL MATCH (st)<-[:of_cell_line]-(:cell_line)<-[:of_sample]-(sa2:sample)<-[:of_sequencing_file]-(sf2:sequencing_file)
+            WITH st, sf_list_path2, collect(DISTINCT sf2) AS sf_list_path1
+            // Combine files from both paths and count distinct
+            UNWIND [sf IN sf_list_path2 WHERE sf IS NOT NULL | sf] + [sf IN sf_list_path1 WHERE sf IS NOT NULL] AS sf
             RETURN count(DISTINCT sf) as total_count
             """.strip()
         else:
             # PATTERN 3: SIMPLE SUMMARY (no filters at all)
-            # OPTIMIZATION: Use IN_STUDY relationship (uses edge index, much faster!)
+            # Use multi-hop traversal: sample -> participant -> consent_group -> study (preferred)
+            # or sample -> cell_line -> study (fallback)
             # Must verify study path to match count_files_by_field logic
             cypher = f"""
-            MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)-[:IN_STUDY]->(st:study)
+            MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
+            // study path 2 — via participant → consent → study (preferred path)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)
+                       -[:of_participant]->(:consent_group)
+                       -[:of_consent_group]->(st2:study)
+            WITH sf, sa, collect(DISTINCT st2) AS st2_list
+            // study path 1 — via cell_line (fallback)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            WITH sf, sa, st2_list, collect(DISTINCT st1) AS st1_list
+            WITH sf, coalesce(st2_list[0], st1_list[0]) AS st
             WHERE st IS NOT NULL
             RETURN count(DISTINCT sf) as total_count
             """.strip()

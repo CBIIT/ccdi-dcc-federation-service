@@ -241,14 +241,29 @@ class SampleRepository:
         # This is 10-100x faster than collecting all sequencing_files first
         sequencing_file_filter_keys = {"library_selection_method", "library_strategy", "library_source_material", "specimen_molecular_analyte_type"}
         has_sf_filters = any(k in filters for k in sequencing_file_filter_keys)
-        has_other_filters = any(k not in sequencing_file_filter_keys for k in filters.keys())
         
-        if has_sf_filters and not has_other_filters:
+        # PERFORMANCE OPTIMIZATION: Reverse query for pathology_file-only filters
+        # When ONLY preservation_method filter is present, use a reverse query that matches
+        # pathology_files FIRST (using index), then finds samples
+        # This is 10-100x faster than collecting all pathology_files first
+        pathology_file_filter_keys = {"preservation_method"}
+        has_pf_filters = any(k in filters for k in pathology_file_filter_keys)
+        
+        has_other_filters = any(k not in sequencing_file_filter_keys and k not in pathology_file_filter_keys for k in filters.keys())
+        
+        if has_sf_filters and not has_other_filters and not has_pf_filters:
             logger.info(
                 "Using optimized reverse query for sequencing_file-only filters",
                 filters=filters
             )
             return await self._get_samples_by_sequencing_file_filters(filters, offset, limit, base_url)
+        
+        if has_pf_filters and not has_other_filters and not has_sf_filters:
+            logger.info(
+                "Using optimized reverse query for pathology_file-only filters",
+                filters=filters
+            )
+            return await self._get_samples_by_pathology_file_filters(filters, offset, limit, base_url)
         
         # PERFORMANCE OPTIMIZATION: Early Pagination for No-Filter Queries
         # Problem: Current query processes ALL 50,211 samples before pagination (SLOW)
@@ -1664,10 +1679,7 @@ class SampleRepository:
         
         # Build optimized reverse query
         # Key optimization: Start from sequencing_file (uses index), then find samples
-        # Note: For large result sets (10k+ samples), study path traversal is inherently expensive
-        # Further optimization would require database-level changes (e.g., indexed has_study property)
-        # PERFORMANCE: use the precomputed IN_STUDY relationship for sample->study lookup.
-        # This avoids the expensive traversal through cell_line/participant/consent_group.
+        # Use multi-hop traversal for study path (via cell_line or participant->consent_group->study)
         # IMPORTANT: We also deduplicate matching sequencing_files per (sample, study) before pagination
         # to prevent row explosion when multiple sf match the filter for the same sample.
         cypher = f"""
@@ -1675,7 +1687,16 @@ class SampleRepository:
         WHERE {where_clause}
         MATCH (sf)-[:of_sequencing_file]->(sa:sample)
         WHERE sa.sample_id IS NOT NULL AND toString(sa.sample_id) <> ''
-        MATCH (sa)-[:IN_STUDY]->(st:study)
+        // study path 1 — via cell_line
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        WITH sa, sf, collect(DISTINCT st1) AS st1_list
+        // study path 2 — via participant → consent → study
+        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)
+                   -[:of_participant]->(:consent_group)
+                   -[:of_consent_group]->(st2:study)
+        WITH sa, sf, st1_list, collect(DISTINCT st2) AS st2_list
+        WITH sa, sf, coalesce(st2_list[0], st1_list[0]) AS st
+        WHERE st IS NOT NULL  // Filter out samples without studies
         WITH sa, st, collect(DISTINCT sf) AS matching_sfs
         WITH sa, st, head(matching_sfs) AS sf
         ORDER BY toString(sa.sample_id)
@@ -1693,6 +1714,124 @@ class SampleRepository:
         
         logger.info(
             "Executing optimized reverse query",
+            cypher=cypher[:300],
+            params=params
+        )
+        
+        # Execute query
+        try:
+            result = await self.session.run(cypher, params)
+            records = []
+            async for record in result:
+                records.append(dict(record))
+            await result.consume()
+            
+            logger.info(
+                "Reverse query executed successfully",
+                records_count=len(records)
+            )
+            
+            # Convert records to Sample objects
+            samples = []
+            for record in records:
+                try:
+                    sa_node = record.get("sa")
+                    p_node = record.get("p")
+                    st_node = record.get("st")
+                    sf_node = record.get("sf")
+                    pf_node = record.get("pf")
+                    diagnoses_node = record.get("diagnoses")
+                    
+                    # Convert nodes to dictionaries
+                    sa = dict(sa_node) if sa_node else {}
+                    p = dict(p_node) if p_node else {}
+                    st = dict(st_node) if st_node else {}
+                    sf = dict(sf_node) if sf_node else {}
+                    pf = dict(pf_node) if pf_node else {}
+                    diagnoses = dict(diagnoses_node) if diagnoses_node else {}
+                    
+                    sample = self._record_to_sample(sa, p, st, sf, pf, diagnoses, base_url=base_url)
+                    samples.append(sample)
+                except Exception as e:
+                    logger.error("Error converting record to sample", error=str(e), record=str(record)[:200])
+                    continue
+            
+            return samples
+            
+        except Exception as e:
+            logger.error("Error executing reverse query", error=str(e), exc_info=True)
+            raise
+    
+    async def _get_samples_by_pathology_file_filters(
+        self,
+        filters: Dict[str, Any],
+        offset: int = 0,
+        limit: int = 20,
+        base_url: Optional[str] = None
+    ) -> List[Sample]:
+        """
+        Optimized query for pathology_file-only filters.
+        
+        Uses REVERSE query approach:
+        1. Match pathology_files with the filter (uses index - FAST)
+        2. Find samples related to those files
+        3. Do other relationship traversals
+        
+        This is 10-100x faster than the standard approach of collecting all files first.
+        """
+        params = {"offset": offset, "limit": limit}
+        where_conditions = []
+        param_counter = 0
+        
+        # Build WHERE conditions for pathology_file properties
+        for field, value in filters.items():
+            param_counter += 1
+            param_name = f"param_{param_counter}"
+            
+            if field == "preservation_method":
+                params[param_name] = value
+                where_conditions.append(f"pf.fixation_embedding_method = ${param_name}")
+        
+        # Build WHERE clause
+        where_clause = " AND ".join(where_conditions) if where_conditions else "TRUE"
+        
+        # Build optimized reverse query
+        # Key optimization: Start from pathology_file (uses index), then find samples
+        # Use multi-hop traversal for study path (via cell_line or participant->consent_group->study)
+        # IMPORTANT: We also deduplicate matching pathology_files per (sample, study) before pagination
+        # to prevent row explosion when multiple pf match the filter for the same sample.
+        cypher = f"""
+        MATCH (pf:pathology_file)
+        WHERE {where_clause}
+        MATCH (pf)-[:of_pathology_file]->(sa:sample)
+        WHERE sa.sample_id IS NOT NULL AND toString(sa.sample_id) <> ''
+        // study path 1 — via cell_line
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        WITH sa, pf, collect(DISTINCT st1) AS st1_list
+        // study path 2 — via participant → consent → study
+        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)
+                   -[:of_participant]->(:consent_group)
+                   -[:of_consent_group]->(st2:study)
+        WITH sa, pf, st1_list, collect(DISTINCT st2) AS st2_list
+        WITH sa, pf, coalesce(st2_list[0], st1_list[0]) AS st
+        WHERE st IS NOT NULL  // Filter out samples without studies
+        WITH sa, st, collect(DISTINCT pf) AS matching_pfs
+        WITH sa, st, head(matching_pfs) AS pf
+        ORDER BY toString(sa.sample_id)
+        SKIP $offset
+        LIMIT $limit
+        OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+        OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
+        OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
+        WITH sa, p, st,
+             head(collect(DISTINCT d)) AS diagnoses,
+             pf,
+             head(collect(DISTINCT sf)) AS sf
+        RETURN sa, p, st, sf, pf, diagnoses
+        """.strip()
+        
+        logger.info(
+            "Executing optimized reverse query for pathology_file filters",
             cypher=cypher[:300],
             params=params
         )

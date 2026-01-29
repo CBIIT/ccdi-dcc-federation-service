@@ -225,7 +225,6 @@ class TestFileEndpointsEnhanced:
             await count_files_by_field(
                 request=mock_request,
                 field="invalid_field",
-                filters={},
                 session=mock_session,
                 settings=mock_settings,
                 allowlist=mock_allowlist,
@@ -237,16 +236,17 @@ class TestFileEndpointsEnhanced:
         mock_request.query_params = {"foo": "bar"}
         mock_request.url.path = "/api/v1/file/by/type/count"
 
-        with pytest.raises(InvalidRouteError):
+        with pytest.raises(HTTPException) as exc_info:
             await count_files_by_field(
                 request=mock_request,
                 field="type",
-                filters={},
                 session=mock_session,
                 settings=mock_settings,
                 allowlist=mock_allowlist,
                 _rate_limit=None
             )
+        
+        assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
 
     async def test_count_files_by_field_invalid_parameters_error(self, mock_request, mock_session, mock_settings, mock_allowlist):
         """Test count_files_by_field handles InvalidParametersError."""
@@ -266,7 +266,6 @@ class TestFileEndpointsEnhanced:
                     await count_files_by_field(
                         request=mock_request,
                         field="type",
-                        filters={},
                         session=mock_session,
                         settings=mock_settings,
                         allowlist=mock_allowlist,
@@ -293,7 +292,6 @@ class TestFileEndpointsEnhanced:
                     await count_files_by_field(
                         request=mock_request,
                         field="type",
-                        filters={},
                         session=mock_session,
                         settings=mock_settings,
                         allowlist=mock_allowlist,

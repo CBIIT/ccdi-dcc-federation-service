@@ -453,11 +453,19 @@ async def count_subjects_by_field(
     )
     
     try:
+        # Validate that no query parameters are provided
+        if request.query_params:
+            raise InvalidParametersError(
+                parameters=[],  # Empty array - don't expose parameter names
+                message="Invalid query parameter(s) provided.",
+                reason="Count endpoint does not accept any query parameters"
+            )
+
         # Create service
         cache_service = get_cache_service()
         service = SubjectService(session, allowlist, settings, cache_service)
         
-        # Get counts (no filters - return all counts)
+        # Get counts (no filters - returns counts for all subjects)
         result = await service.count_subjects_by_field(field, {})
         
         logger.info(
@@ -470,6 +478,10 @@ async def count_subjects_by_field(
         
         return result
         
+    except InvalidParametersError as e:
+        # Re-raise InvalidParametersError with proper HTTP exception
+        logger.error("Invalid parameters in count_subjects_by_field request", error=str(e), exc_info=True)
+        raise e.to_http_exception()
     except DatabaseConnectionError as e:
         # Database connection error - log clearly for AWS cloud monitoring
         logger.error(

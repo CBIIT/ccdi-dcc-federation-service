@@ -16,7 +16,6 @@ from app.api.v1.deps import (
     get_allowlist,
     get_pagination_params,
     get_sample_filters,
-    get_sample_filters_no_descriptions,
     check_rate_limit
 )
 from app.core.config import Settings
@@ -417,7 +416,6 @@ async def count_samples_by_field(
             "tumor_tissue_morphology", "diagnosis"
         ],
     ),
-    filters: Dict[str, Any] = Depends(get_sample_filters_no_descriptions),
     session: AsyncSession = Depends(get_database_session),
     settings: Settings = Depends(get_app_settings),
     allowlist: FieldAllowlist = Depends(get_allowlist),
@@ -427,17 +425,24 @@ async def count_samples_by_field(
     logger.info(
         "Count samples by field request",
         field=field,
-        filters=filters,
         path=request.url.path
     )
     
     try:
+        # Validate that no query parameters are provided
+        if request.query_params:
+            raise InvalidParametersError(
+                parameters=[],  # Empty array - don't expose parameter names
+                message="Invalid query parameter(s) provided.",
+                reason="Count endpoint does not accept any query parameters"
+            )
+
         # Create service
         cache_service = get_cache_service()
         service = SampleService(session, allowlist, settings, cache_service)
         
-        # Get counts
-        result = await service.count_samples_by_field(field, filters)
+        # Get counts (no filters - returns counts for all samples)
+        result = await service.count_samples_by_field(field, {})
         
         logger.info(
             "Count samples by field response",
@@ -447,6 +452,10 @@ async def count_samples_by_field(
         
         return result
         
+    except InvalidParametersError as e:
+        # Re-raise InvalidParametersError with proper HTTP exception
+        logger.error("Invalid parameters in count_samples_by_field request", error=str(e), exc_info=True)
+        raise e.to_http_exception()
     except UnsupportedFieldError as e:
         # Re-raise UnsupportedFieldError with proper HTTP exception
         raise e.to_http_exception()
@@ -465,7 +474,6 @@ async def count_samples_by_field(
                 error=str(e), 
                 error_type=type(e).__name__,
                 field=field,
-                filters=filters,
                 exc_info=True
             )
             if hasattr(e, 'to_http_exception'):

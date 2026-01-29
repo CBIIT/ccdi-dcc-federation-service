@@ -239,7 +239,6 @@ class TestFileEndpoints:
                     result = await count_files_by_field(
                         field="type",
                         request=mock_request,
-                        filters={},
                         session=mock_session,
                         settings=mock_settings,
                         allowlist=mock_allowlist,

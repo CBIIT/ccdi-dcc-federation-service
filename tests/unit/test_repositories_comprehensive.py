@@ -17,6 +17,14 @@ from app.models.errors import UnsupportedFieldError
 from app.core.config import Settings
 
 
+def async_gen_from_list(items):
+    """Create an async generator from a list."""
+    async def gen():
+        for item in items:
+            yield item
+    return gen()
+
+
 @pytest.mark.unit
 class TestSubjectRepositoryInternal:
     """Test cases for SubjectRepository internal methods."""
@@ -1109,13 +1117,30 @@ class TestSampleRepositoryInternal:
         repository._count_samples_by_associated_diagnoses.assert_called_once()
 
     async def test_count_samples_by_field_library_source_material_combined(self, repository, mock_session):
-        """Test combined query path for library_source_material."""
+        """Test separate query path for library_source_material (combined query disabled)."""
+        async def async_gen():
+            yield {"value": "GENOMIC", "count": 2}
+            yield {"value": "GENOMIC", "count": 1}
+        
         mock_result = AsyncMock()
-        mock_result.__aiter__.return_value = [
-            {"value": "GENOMIC", "count": 2, "total": 3, "missing": 1},
-            {"value": "GENOMIC", "count": 1, "total": 3, "missing": 1},
-        ]
-        mock_session.run = AsyncMock(return_value=mock_result)
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        
+        # Mock TWO_QUERY_APPROACH for total count (2 queries) + missing query
+        mock_result_path2 = AsyncMock()
+        mock_result_path2.data = AsyncMock(return_value=[
+            {"sample_id": "S1", "study_id": "ST1"},
+            {"sample_id": "S2", "study_id": "ST1"},
+            {"sample_id": "S3", "study_id": "ST1"}
+        ])
+        mock_result_path1 = AsyncMock()
+        mock_result_path1.data = AsyncMock(return_value=[])
+        
+        mock_session.run = AsyncMock(side_effect=[
+            mock_result,  # values query
+            mock_result_path2,  # total query path2
+            mock_result_path1,  # total query path1
+            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 1}])))  # missing query
+        ])
 
         with patch("app.repositories.sample.load_sequencing_file_enum", return_value=["GENOMIC"]), \
             patch("app.repositories.sample.map_field_value", side_effect=lambda field, value: value), \
@@ -1128,12 +1153,28 @@ class TestSampleRepositoryInternal:
         assert result["values"][0]["count"] == 3
 
     async def test_count_samples_by_field_library_source_material_combined_empty(self, repository, mock_session):
-        """Test combined query fallback when no values returned."""
+        """Test separate query path when no values returned."""
         empty_result = AsyncMock()
-        empty_result.__aiter__.return_value = []
-        fallback_result = AsyncMock()
-        fallback_result.__aiter__.return_value = [{"total": 5, "missing": 2}]
-        mock_session.run = AsyncMock(side_effect=[empty_result, fallback_result])
+        empty_result.__aiter__ = Mock(return_value=async_gen_from_list([]))
+        
+        # Mock TWO_QUERY_APPROACH for total count (2 queries) + missing query
+        mock_result_path2 = AsyncMock()
+        mock_result_path2.data = AsyncMock(return_value=[
+            {"sample_id": "S1", "study_id": "ST1"},
+            {"sample_id": "S2", "study_id": "ST1"},
+            {"sample_id": "S3", "study_id": "ST1"},
+            {"sample_id": "S4", "study_id": "ST1"},
+            {"sample_id": "S5", "study_id": "ST1"}
+        ])
+        mock_result_path1 = AsyncMock()
+        mock_result_path1.data = AsyncMock(return_value=[])
+        
+        mock_session.run = AsyncMock(side_effect=[
+            empty_result,  # values query
+            mock_result_path2,  # total query path2
+            mock_result_path1,  # total query path1
+            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 2}])))  # missing query
+        ])
 
         with patch("app.repositories.sample.load_sequencing_file_enum", return_value=["GENOMIC"]), \
             patch("app.repositories.sample.map_field_value", side_effect=lambda field, value: value), \
@@ -1143,7 +1184,7 @@ class TestSampleRepositoryInternal:
         assert result["total"] == 5
         assert result["missing"] == 2
         assert result["values"] == []
-        assert mock_session.run.call_count == 2
+        assert mock_session.run.call_count == 4
 
     async def test_count_samples_by_field_anatomical_sites_list(self, repository, mock_session):
         """Test count_samples_by_field handles anatomical_sites list values."""

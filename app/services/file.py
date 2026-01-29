@@ -179,62 +179,36 @@ class FileService:
                 logger.debug("Returning cached sequencing file count", field=field)
                 return CountResponse(**cached_result)
         
-        # Try materialized view first (only works for type/depositions with no filters)
-        result = None
-        if field in ("type", "depositions") and not filters:
-            try:
-                if field == "type":
-                    result = await self.materialized_view_service.get_file_count_by_type(filters)
-                elif field == "depositions":
-                    result = await self.materialized_view_service.get_file_count_by_depositions(filters)
-                
-                if result:
-                    logger.info(
-                        "Using materialized view for file count",
-                        field=field,
-                        total=result.get("total", 0),
-                        missing=result.get("missing", 0),
-                        values_count=len(result.get("values", [])),
-                        last_updated=result.get("last_updated")
-                    )
-            except Exception as e:
+        # Always use live query from repository (does not use IN_STUDY materialized view)
+        # Materialized view usage disabled to ensure consistent results without materialized view dependency
+        query_timeout = self.settings.query_timeout or 60  # Default to 60 seconds
+        start_time = time.time()
+        try:
+            result = await asyncio.wait_for(
+                self.repository.count_files_by_field(field, filters),
+                timeout=query_timeout
+            )
+            elapsed_time = time.time() - start_time
+            if elapsed_time > 10:  # Log warning if query takes more than 10 seconds
                 logger.warning(
-                    "Failed to read from materialized view, falling back to live query",
+                    "Slow query detected",
                     field=field,
-                    error=str(e)
-                )
-                result = None
-        
-        # Fall back to live query if materialized view not available or failed
-        if result is None:
-            query_timeout = self.settings.query_timeout or 60  # Default to 60 seconds
-            start_time = time.time()
-            try:
-                result = await asyncio.wait_for(
-                    self.repository.count_files_by_field(field, filters),
+                    elapsed_time=elapsed_time,
                     timeout=query_timeout
                 )
-                elapsed_time = time.time() - start_time
-                if elapsed_time > 10:  # Log warning if query takes more than 10 seconds
-                    logger.warning(
-                        "Slow query detected",
-                        field=field,
-                        elapsed_time=elapsed_time,
-                        timeout=query_timeout
-                    )
-            except asyncio.TimeoutError:
-                elapsed_time = time.time() - start_time
-                logger.error(
-                    "Query timeout exceeded",
-                    field=field,
-                    timeout=query_timeout,
-                    elapsed_time=elapsed_time,
-                    filters=filters
-                )
-                raise ValidationError(
-                    "Query execution exceeded the allowed timeout. "
-                    "The request may be too complex or the database is under heavy load."
-                )
+        except asyncio.TimeoutError:
+            elapsed_time = time.time() - start_time
+            logger.error(
+                "Query timeout exceeded",
+                field=field,
+                timeout=query_timeout,
+                elapsed_time=elapsed_time,
+                filters=filters
+            )
+            raise ValidationError(
+                "Query execution exceeded the allowed timeout. "
+                "The request may be too complex or the database is under heavy load."
+            )
         
         # Build response
         response = CountResponse(

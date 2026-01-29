@@ -220,6 +220,18 @@ class TestSampleEndpoints:
         """Test count_samples_by_field returns count successfully."""
         from app.models.dto import CountResponse
         
+        # The count endpoint doesn't accept query parameters
+        # Create a new request without query params
+        class QueryParams(dict):
+            def __init__(self, params):
+                super().__init__(params)
+                self._params = params
+            
+            def keys(self):
+                return self._params.keys()
+        
+        mock_request.query_params = QueryParams({})  # Empty query params
+        
         # The service returns a CountResponse object with total, missing, and values attributes
         mock_count_response = CountResponse(
             total=1000,

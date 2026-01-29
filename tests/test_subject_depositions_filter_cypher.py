@@ -59,8 +59,9 @@ def test_get_subjects_summary_depositions_only_applies_filter():
     assert session.last_cypher is not None
     cypher = session.last_cypher
     
-    # Must use required MATCH (not OPTIONAL MATCH)
-    assert "MATCH (p:participant)-[:IN_STUDY]->(st:study)" in cypher or "MATCH (p)-[:IN_STUDY]->(st:study)" in cypher
+    # Must use required MATCH (not OPTIONAL MATCH) - replaced IN_STUDY with 2-path traversal
+    assert ("MATCH (p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)" in cypher or 
+            "MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)" in cypher)
     
     # Must apply depositions filter
     assert "WHERE st.study_id" in cypher
@@ -125,8 +126,9 @@ def test_get_subjects_summary_depositions_with_vital_status_applies_both_filters
     assert session.last_cypher is not None
     cypher = session.last_cypher
     
-    # Must use required MATCH for depositions
-    assert "MATCH (p)-[:IN_STUDY]->(st:study)" in cypher or "MATCH (p:participant)-[:IN_STUDY]->(st:study)" in cypher
+    # Must use required MATCH for depositions - replaced IN_STUDY with 2-path traversal
+    assert ("MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)" in cypher or 
+            "MATCH (p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)" in cypher)
     
     # Must apply depositions filter
     assert "WHERE st.study_id" in cypher
@@ -182,8 +184,9 @@ def test_get_subjects_depositions_only_applies_filter():
     assert session.last_cypher is not None
     cypher = session.last_cypher
     
-    # Must use required MATCH for depositions
-    assert "MATCH (p)-[:IN_STUDY]->(st:study)" in cypher or "MATCH (p:participant)-[:IN_STUDY]->(st:study)" in cypher
+    # Must use required MATCH for depositions - replaced IN_STUDY with 2-path traversal
+    assert ("MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)" in cypher or 
+            "MATCH (p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)" in cypher)
     
     # Must apply depositions filter
     assert "WHERE st.study_id" in cypher
@@ -225,8 +228,9 @@ def test_get_subjects_depositions_with_vital_status_applies_both_filters():
     assert session.last_cypher is not None
     cypher = session.last_cypher
     
-    # Must use required MATCH (depositions path)
-    assert "MATCH (p)-[:IN_STUDY]->(st:study)" in cypher or "MATCH (p:participant)-[:IN_STUDY]->(st:study)" in cypher
+    # Must use required MATCH (depositions path) - replaced IN_STUDY with 2-path traversal
+    assert ("MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)" in cypher or 
+            "MATCH (p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)" in cypher)
     
     # Must apply depositions filter early in MATCH clause
     assert "WHERE st.study_id" in cypher
@@ -325,11 +329,11 @@ def test_get_subjects_summary_depositions_uses_required_match():
     assert session.last_cypher is not None
     cypher = session.last_cypher
     
-    # Must use required MATCH (not OPTIONAL MATCH for studies)
+    # Must use required MATCH (not OPTIONAL MATCH for studies) - replaced IN_STUDY with 2-path traversal
     # Check that we have a MATCH (not OPTIONAL MATCH) for the study relationship
     has_required_match = (
-        "MATCH (p)-[:IN_STUDY]->(st:study)" in cypher or 
-        "MATCH (p:participant)-[:IN_STUDY]->(st:study)" in cypher
+        "MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)" in cypher or 
+        "MATCH (p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)" in cypher
     )
     assert has_required_match, "Should use required MATCH for studies when depositions filter is present"
     

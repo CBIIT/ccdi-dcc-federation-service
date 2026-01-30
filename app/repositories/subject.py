@@ -918,7 +918,6 @@ class SubjectRepository:
           p.sex_at_birth AS sex,
           toString(namespace) AS namespace,
           [sid] AS depositions
-        ORDER BY toString(name)
         """.strip()
             else:
                 # CRITICAL SAFEGUARD: If cypher is already set (from depositions path), skip this entire else block

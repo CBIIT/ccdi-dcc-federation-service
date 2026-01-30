@@ -151,6 +151,8 @@ class SampleDiagnosisSearch:
         
         # Convert depositions_study_filter to depositions_sid_filter for use in UNWIND clause
         depositions_sid_filter = depositions_study_filter.replace("st.study_id", "sid") if depositions_study_filter else ""
+        # Build WHERE clause for depositions filter (remove " AND " prefix since it will be in WHERE clause)
+        depositions_where_clause = f"WHERE {depositions_sid_filter.replace(' AND ', '')}" if depositions_sid_filter else ""
         
         # When return_total: run lightweight count first, then list query
         total_count_diag = None
@@ -169,7 +171,8 @@ class SampleDiagnosisSearch:
         WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
         WITH sa, [id IN (st1_list + st2_list) WHERE id IS NOT NULL | id] AS combined_ids
         UNWIND combined_ids AS sid
-        MATCH (st:study {{study_id: sid}}){depositions_sid_filter if depositions_sid_filter else ""}
+        MATCH (st:study {{study_id: sid}})
+        {depositions_where_clause}
         
         // collect ALL diagnoses that match search + phase (per sample-study pair)
         // Note: We collect ALL matching diagnoses per (sample_id, study_id) pair, not just one
@@ -213,7 +216,8 @@ class SampleDiagnosisSearch:
         // combine and drop nulls; unwind to ensure sample matches a study (one row per pair)
         WITH sa, [id IN (st1_list + st2_list) WHERE id IS NOT NULL | id] AS combined_ids
         UNWIND combined_ids AS sid
-        MATCH (st:study {{study_id: sid}}){depositions_sid_filter if depositions_sid_filter else ""}
+        MATCH (st:study {{study_id: sid}})
+        {depositions_where_clause}
         
         // collect ALL diagnoses that match search + phase (per sample-study pair)
         // CRITICAL OPTIMIZATION: Filter diagnoses in OPTIONAL MATCH WHERE clause to avoid collecting all then filtering
@@ -251,7 +255,6 @@ class SampleDiagnosisSearch:
         WITH sa, st, diagnoses, p, pf, head(collect(DISTINCT sf0)) AS sf
         
         RETURN sa, p, st, pf, sf, diagnoses
-        ORDER BY toString(sa.sample_id), toString(st.study_id)
         """.strip()
         
         logger.info(
@@ -444,6 +447,9 @@ class SampleDiagnosisSearch:
                 depositions_study_filter = f" AND st.study_id = ${dep_param}"
                 depositions_sid_filter_summary = f" AND sid = ${dep_param}"
         
+        # Build WHERE clause for depositions filter in summary query
+        depositions_where_clause_summary = f"WHERE {depositions_sid_filter_summary.replace(' AND ', '')}" if depositions_sid_filter_summary else ""
+        
         # Build optimized summary query
         sa_where_parts = ["sa.sample_id IS NOT NULL", "trim(toString(sa.sample_id)) <> ''"]
         if identifiers_early_filter:
@@ -474,7 +480,8 @@ class SampleDiagnosisSearch:
         // combine and drop nulls; unwind to ensure sample matches a study (one row per pair)
         WITH sa, [id IN (st1_list + st2_list) WHERE id IS NOT NULL | id] AS combined_ids
         UNWIND combined_ids AS sid
-        MATCH (st:study {{study_id: sid}}){depositions_sid_filter_summary if depositions_sid_filter_summary else ""}
+        MATCH (st:study {{study_id: sid}})
+        {depositions_where_clause_summary}
         
         // collect ALL diagnoses that match search + phase (per sample-study pair)
         // CRITICAL OPTIMIZATION: Filter in OPTIONAL MATCH WHERE clause to avoid cartesian product

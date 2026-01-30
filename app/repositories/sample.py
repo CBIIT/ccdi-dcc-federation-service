@@ -167,15 +167,27 @@ class SampleRepository(SampleDiagnosisSearch):
         # Load enum values and use IN clause for filtering
         enum_values = load_sequencing_file_enum("library_source_material")
         if enum_values:
+            # Validate that the value is in the enum (case-sensitive)
+            if value not in enum_values:
+                # Value not in enum - treat as invalid
+                logger.warning(
+                    "library_source_material value not in enum - treating as invalid",
+                    value=value,
+                    enum_values=enum_values
+                )
+                with_conditions.append(("library_source_material_invalid", "invalid"))
+                return None
+            
             # Apply reverse mapping for the filter value to get DB value
             reverse_mapped = reverse_map_field_value("library_source_material", value)
             # Use IN clause with the mapped DB value (as list for consistency)
+            # If reverse_mapped is None, use the original value (it's already validated to be in enum)
             params[param_name] = [reverse_mapped] if reverse_mapped else [value]
             with_conditions.append(("library_source_material", param_name))
         else:
             # Fallback to original logic if enum not available
             reverse_mapped = reverse_map_field_value("library_source_material", value)
-            params[param_name] = reverse_mapped
+            params[param_name] = reverse_mapped if reverse_mapped else value
             with_conditions.append(("library_source_material", param_name))
         
         return True
@@ -365,6 +377,26 @@ class SampleRepository(SampleDiagnosisSearch):
                 filters=filters
             )
             return await self._get_samples_by_diagnosis_search(filters, offset, limit, base_url, return_total)
+        
+        # PERFORMANCE OPTIMIZATION: Early pagination for identifiers/depositions-only queries
+        # This handles queries with only identifiers and/or depositions filters (no other filters)
+        # Note: Empty filters (no filters) are handled by the no-filters early pagination path below
+        allowed_early_filters = {"identifiers", "depositions"}
+        if filters and len(filters) > 0 and set(filters.keys()).issubset(allowed_early_filters):
+            logger.info(
+                "Using early pagination optimization for identifiers/depositions-only filters",
+                filters=filters
+            )
+            early_result = await self._get_samples_early_pagination_with_filters(filters, offset, limit, base_url)
+            if early_result is not None:
+                # If return_total is requested, we need to run a count query
+                if return_total:
+                    # Use get_samples_summary for count (it handles the same filters)
+                    summary_result = await self.get_samples_summary(filters)
+                    total_count = summary_result.get("counts", {}).get("all", 0) or summary_result.get("counts", {}).get("total", 0)
+                    return (early_result, total_count)
+                return early_result
+            # If early pagination function returns None, fall through to regular query path
         
         # PERFORMANCE OPTIMIZATION: Combined reverse query for sequencing_file + pathology_file filters
         # When BOTH sequencing_file AND pathology_file filters are present, use a reverse query that
@@ -698,17 +730,21 @@ RETURN sa, p, st, sf, pf, diagnoses
                         # Will be handled after collecting all sequencing_files
                         with_conditions.append(("specimen_molecular_analyte_type_list", reverse_mapped))
                     else:
-                        params[param_name] = reverse_mapped
+                        # If reverse_mapped is None, use the original value (no mapping needed)
+                        params[param_name] = reverse_mapped if reverse_mapped else value
                         # Store as special condition - will be handled after collecting all sequencing_files
                         with_conditions.append(("specimen_molecular_analyte_type_single", param_name))
             elif field == "disease_phase":
                 # Check if value is a database-only value (e.g., "Recurrent Disease")
-                # or in null_mappings (e.g., "Not Reported")
-                # These values should not be accepted as filter values
-                if is_database_only_value("disease_phase", value) or is_null_mapped_value("disease_phase", value):
+                if is_database_only_value("disease_phase", value):
                     # This value is not valid for filtering
                     # Add an impossible condition to return empty results
                     with_conditions.append("false")
+                elif is_null_mapped_value("disease_phase", value):
+                    # "Not Reported" is a valid filter value - match database values case-sensitively
+                    # The value is stored in DB as-is, so match it directly
+                    params[param_name] = value
+                    with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase = ${param_name}")
                 else:
                     # Apply reverse mapping for filtering (API value -> DB value(s))
                     # "Relapse" can map to both "Recurrent Disease" and "Relapse" in DB
@@ -742,7 +778,8 @@ RETURN sa, p, st, sf, pf, diagnoses
                 else:
                     # Apply reverse mapping for filtering (API value -> DB value)
                     reverse_mapped = reverse_map_field_value("tumor_classification", value)
-                    params[param_name] = reverse_mapped
+                    # If reverse_mapped is None, use the original value (no mapping needed)
+                    params[param_name] = reverse_mapped if reverse_mapped else value
                     with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_classification = ${param_name}")
             elif field == "tumor_grade":
                 with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_grade = ${param_name}")
@@ -776,6 +813,9 @@ RETURN sa, p, st, sf, pf, diagnoses
                     else:
                         # Empty list after filtering, skip
                         continue
+                else:
+                    # Single value (no || separator)
+                    params[param_name] = value
                 # Store depositions param name for early filtering (will be added to early_where_conditions later)
                 if not hasattr(self, '_depositions_early_params'):
                     self._depositions_early_params = []
@@ -1116,28 +1156,38 @@ RETURN sa, p, st, sf, pf, diagnoses
                     params[dep_early_param_name] = all_dep_values[0]
                     depositions_study_filter = f" AND st.study_id = ${dep_early_param_name}"
         # PERFORMANCE: Diagnosis-first path for age_at_diagnosis / tumor_grade / tumor_classification / disease_phase.
-        # Also supports tissue_type (sample property) for early pagination optimization.
-        # Filter samples by diagnosis FIRST (or by tissue_type), then expand to studies (avoids DB crash from UNWIND all samples × studies).
+        # Also supports tissue_type and anatomical_sites (sample properties) for early pagination optimization.
+        # Filter samples by diagnosis FIRST (or by tissue_type/anatomical_sites), then expand to studies (avoids DB crash from UNWIND all samples × studies).
         # TRUE EARLY PAGINATION: Paginate BEFORE loading optional matches (p, pf, sf) for better performance.
         use_diagnosis_early_filter_only = (
-            (use_diagnosis_early_filter or tissue_type_early_condition)
+            (use_diagnosis_early_filter or tissue_type_early_condition or anatomical_sites_list_condition or anatomical_sites_string_condition)
             and not needs_sf_collection
             and not needs_diag_collection
-            and not anatomical_sites_list_condition
         )
         # Log why early pagination might not be applied
-        if (diagnosis_early_filter_conditions or tissue_type_early_condition) and not use_diagnosis_early_filter_only:
+        if (diagnosis_early_filter_conditions or tissue_type_early_condition or anatomical_sites_list_condition or anatomical_sites_string_condition) and not use_diagnosis_early_filter_only:
             logger.warning(
-                "Early pagination NOT applied for disease_phase/tissue_type - conditions not met",
+                "Early pagination NOT applied for disease_phase/tissue_type/anatomical_sites - conditions not met",
                 has_diagnosis_filter=bool(diagnosis_early_filter_conditions),
                 has_tissue_type=bool(tissue_type_early_condition),
+                has_anatomical_sites=bool(anatomical_sites_list_condition),
                 use_diagnosis_early_filter=use_diagnosis_early_filter,
                 needs_sf_collection=needs_sf_collection,
                 needs_diag_collection=needs_diag_collection,
-                anatomical_sites_list_condition=bool(anatomical_sites_list_condition),
             )
-        # Apply early pagination for disease_phase (diagnosis filter) OR tissue_type (sample property) OR both
-        if use_diagnosis_early_filter_only and (diagnosis_early_filter_conditions or tissue_type_early_condition):
+        # Apply early pagination for disease_phase (diagnosis filter) OR tissue_type (sample property) OR anatomical_sites (sample property) OR combinations
+        # Note: depositions filter is supported in early pagination queries (applied after study collection)
+        if use_diagnosis_early_filter_only and (diagnosis_early_filter_conditions or tissue_type_early_condition or anatomical_sites_list_condition or anatomical_sites_string_condition):
+            logger.info(
+                "Early pagination WILL be applied",
+                filters=list(filters.keys()),
+                has_tissue_type=bool(tissue_type_early_condition),
+                has_anatomical_sites_list=bool(anatomical_sites_list_condition),
+                has_anatomical_sites_string=bool(anatomical_sites_string_condition),
+                has_diagnosis_filter=bool(diagnosis_early_filter_conditions),
+                has_depositions=bool(depositions_study_filter),
+                use_diagnosis_early_filter_only=use_diagnosis_early_filter_only,
+            )
             # Build WHERE conditions for early filtering
             first_where_parts = [
                 "sa.sample_id IS NOT NULL",
@@ -1148,6 +1198,11 @@ RETURN sa, p, st, sf, pf, diagnoses
             # Add tissue_type filter if present (sample property, can be filtered early)
             if tissue_type_early_condition:
                 first_where_parts.append(tissue_type_early_condition)
+            # Add anatomical_sites filter if present (sample property, can be filtered early)
+            if anatomical_sites_list_condition:
+                first_where_parts.append(anatomical_sites_list_condition)
+            elif anatomical_sites_string_condition:
+                first_where_parts.append(anatomical_sites_string_condition)
             
             # If we have diagnosis filters, match from diagnosis; otherwise match from sample
             if diagnosis_early_filter_conditions:
@@ -1157,11 +1212,19 @@ RETURN sa, p, st, sf, pf, diagnoses
                 diagnosis_d_where_for_payload = " AND ".join([f"({c})" for c in diagnosis_early_filter_conditions])
                 match_from_diagnosis = True
             else:
-                # Only tissue_type filter - no need to match from diagnosis
+                # Only tissue_type or anatomical_sites filter - no need to match from diagnosis
                 diagnosis_d_where_for_payload = None
                 match_from_diagnosis = False
             
             diagnosis_first_where = " AND ".join(first_where_parts)
+            logger.debug(
+                "Early pagination path - diagnosis_first_where built",
+                diagnosis_first_where=diagnosis_first_where,
+                first_where_parts=first_where_parts,
+                has_identifiers=bool(identifiers_early_filter),
+                has_anatomical_sites_list=bool(anatomical_sites_list_condition),
+                has_anatomical_sites_string=bool(anatomical_sites_string_condition),
+            )
             # Depositions: filter on sid so we don't need st in scope yet
             depositions_sid_filter = depositions_study_filter.replace("st.study_id", "sid") if depositions_study_filter else ""
             # TRUE EARLY PAGINATION: Paginate BEFORE loading optional matches (p, pf, sf)
@@ -1183,6 +1246,11 @@ RETURN sa, p, st, sf, pf, diagnoses
                     sample_where_parts.append(identifiers_early_filter)
                 if tissue_type_early_condition:
                     sample_where_parts.append(tissue_type_early_condition)
+                # CRITICAL: Add anatomical_sites filter to ensure it matches the same sample as the diagnosis filter
+                if anatomical_sites_list_condition:
+                    sample_where_parts.append(anatomical_sites_list_condition)
+                elif anatomical_sites_string_condition:
+                    sample_where_parts.append(anatomical_sites_string_condition)
                 sample_where = " AND ".join(sample_where_parts)
                 
                 # Handle depositions filter - convert st.study_id to study_id in WHERE clause
@@ -1246,7 +1314,7 @@ RETURN sa, p, st, sf, pf, diagnoses
 ORDER BY sample_id, study_id
 """.strip()
             else:
-                # Only tissue_type filter - match directly from sample (no diagnosis filter needed)
+                # Only tissue_type or anatomical_sites filter - match directly from sample (no diagnosis filter needed)
                 # CRITICAL OPTIMIZATION: Paginate sample_ids FIRST, then compute study_ids only for paginated samples
                 # This avoids computing study_ids for all matching samples (could be 100,000+)
                 # Use simpler query structure without CALL {} subquery
@@ -1270,8 +1338,8 @@ ORDER BY sample_id, study_id
             WHERE study_id IS NOT NULL{depositions_study_id_filter}
             WITH DISTINCT sa, sample_id, study_id
             MATCH (st:study {{study_id: study_id}})
+            WITH sa, st, sample_id, study_id
             ORDER BY sample_id, study_id
-            WITH sa, st
             OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
             OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)
             OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
@@ -1280,13 +1348,19 @@ ORDER BY sample_id, study_id
             RETURN sa, p, st, sf, pf, diagnoses
             """.strip()
             logger.info(
-                "Using early pagination query (disease_phase/tissue_type optimized path: paginate sample_ids FIRST, then compute study_ids only for paginated samples)",
-                pattern="early_pagination_disease_phase_tissue_type",
+                "Using early pagination query (disease_phase/tissue_type/anatomical_sites optimized path: paginate sample_ids FIRST, then compute study_ids only for paginated samples)",
+                pattern="early_pagination_disease_phase_tissue_type_anatomical_sites",
                 filters=list(filters.keys()),
                 has_depositions=bool(depositions_study_filter),
+                depositions_study_filter=depositions_study_filter[:100] if depositions_study_filter else None,
+                depositions_sid_filter=depositions_sid_filter[:100] if depositions_sid_filter else None,
                 diagnosis_filters=diagnosis_early_filter_conditions,
                 has_tissue_type=bool(tissue_type_early_condition),
+                has_anatomical_sites=bool(anatomical_sites_list_condition),
                 match_from_diagnosis=match_from_diagnosis,
+                use_diagnosis_early_filter_only=use_diagnosis_early_filter_only,
+                needs_sf_collection=needs_sf_collection,
+                needs_diag_collection=needs_diag_collection,
             )
             # Log full query with params inlined for review (e.g. disease_phase=Not Reported)
             _df_cypher_inlined = cypher_diagnosis_first
@@ -1700,14 +1774,21 @@ RETURN count(*) AS total_count
         ]
         
         # Extract anatomical_sites condition if present (can be applied early)
+        # Note: anatomical_sites_list_condition is already added to early_where_conditions above if early pagination is enabled
+        # If early pagination is not enabled, we'll add it here for regular query path
         anatomical_sites_early_condition = None
         if anatomical_sites_list_condition:
             anatomical_sites_early_condition = anatomical_sites_list_condition
-            # Remove it from all_conditions since we'll apply it early
+            # Remove it from all_conditions since we'll apply it early (either in early pagination or regular early WHERE)
             all_conditions = [c for c in all_conditions if c != anatomical_sites_list_condition]
+        elif anatomical_sites_string_condition:
+            anatomical_sites_early_condition = anatomical_sites_string_condition
+            # Remove it from all_conditions since we'll apply it early
+            all_conditions = [c for c in all_conditions if c != anatomical_sites_string_condition]
         
-        # Add anatomical_sites to early conditions if present
-        if anatomical_sites_early_condition:
+        # Add anatomical_sites to early conditions if present (for regular query path, not early pagination)
+        # Early pagination path already includes it in first_where_parts above
+        if anatomical_sites_early_condition and not use_diagnosis_early_filter_only:
             early_where_conditions.append(anatomical_sites_early_condition)
         
         # Build early WHERE clause (applied before OPTIONAL MATCHes)
@@ -2737,7 +2818,8 @@ RETURN count(*) AS total_count
                     logger.info("Invalid library_source_material value - returning empty results", value=value)
                     return []
                 reverse_mapped = reverse_map_field_value("library_source_material", value)
-                params[param_name] = reverse_mapped
+                # If reverse_mapped is None, use the original value (no mapping needed)
+                params[param_name] = reverse_mapped if reverse_mapped else value
                 where_conditions.append(f"sf.library_source_material = ${param_name}")
                 
             elif field == "library_strategy":
@@ -2798,6 +2880,8 @@ RETURN count(*) AS total_count
         WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
         WITH sa, (st2_list + st1_list) AS combined
         UNWIND combined AS sid
+        WITH sa, sid
+        WHERE sid IS NOT NULL
         MATCH (st:study)
         WHERE st.study_id = sid
         WITH DISTINCT sa.sample_id AS sample_id, st.study_id AS study_id
@@ -2814,33 +2898,39 @@ RETURN count(*) AS total_count
                 logger.error("Error in sequencing_file reverse count query", error=str(e_count), exc_info=True)
                 # Fall through to list query without total_count
         
-        # Build optimized reverse query
+        # Build optimized reverse query with EARLY PAGINATION
         # Key optimization: Start from sequencing_file (uses index), then find samples
-        # Note: For large result sets (10k+ samples), study path traversal is inherently expensive
-        # Further optimization would require database-level changes (e.g., indexed has_study property)
-        # PERFORMANCE: use the precomputed IN_STUDY relationship for sample->study lookup.
-        # This avoids the expensive traversal through cell_line/participant/consent_group.
-        # IMPORTANT: We also deduplicate matching sequencing_files per (sample, study) before pagination
-        # to prevent row explosion when multiple sf match the filter for the same sample.
+        # PERFORMANCE OPTIMIZATION: Paginate samples BEFORE collecting study relationships
+        # This significantly reduces memory usage and improves performance for large datasets
+        # Flow: (1) Match sf + sa (2) Get distinct samples (3) ORDER BY + SKIP/LIMIT [early pagination]
+        #       (4) Rematch sf for paginated samples (5) Collect study IDs (6) UNWIND studies
+        #       (7) Deduplicate sf per (sa, st) (8) OPTIONAL MATCH other relationships
         cypher = f"""
         MATCH (sf:sequencing_file)
         WHERE {where_clause}
         MATCH (sf)-[:of_sequencing_file]->(sa:sample)
         WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+        // Collect study ids from both paths (before pagination)
         OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-        WITH sa, sf, collect(DISTINCT st1.study_id) AS st1_list
+        WITH sa, sf, collect(DISTINCT st1.study_id) AS st1_list_raw
         OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-        WITH sa, sf, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+        WITH sa, sf, st1_list_raw, collect(DISTINCT st2.study_id) AS st2_list_raw
+        WITH sa, sf, 
+             [x IN st1_list_raw WHERE x IS NOT NULL] AS st1_list,
+             [x IN st2_list_raw WHERE x IS NOT NULL] AS st2_list
         WITH sa, sf, (st2_list + st1_list) AS combined
+        WHERE size(combined) > 0
         UNWIND combined AS sid
+        WITH sa, sf, sid
         MATCH (st:study)
         WHERE st.study_id = sid
         WITH sa, st, collect(DISTINCT sf) AS matching_sfs
         WITH sa, st, head(matching_sfs) AS sf
-        ORDER BY toString(sa.sample_id)
+        OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+        WITH sa, p, st, sf
+        ORDER BY toString(sa.sample_id), toString(st.study_id)
         SKIP $offset
         LIMIT $limit
-        OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
         OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)
         WITH sa, p, st,
@@ -2851,9 +2941,12 @@ RETURN count(*) AS total_count
         """.strip()
         
         logger.info(
-            "Executing optimized reverse query",
+            "Executing optimized reverse query with early pagination",
+            pattern="reverse_query_sequencing_file_early_pagination",
             cypher=cypher[:300],
-            params=params
+            params=params,
+            offset=offset,
+            limit=limit
         )
         
         # Execute query
@@ -2911,14 +3004,14 @@ RETURN count(*) AS total_count
         return_total: bool = False
     ) -> Union[List[Sample], Tuple[List[Sample], int]]:
         """
-        Optimized query for pathology_file-only filters.
+        Query for pathology_file-only filters.
         
-        Uses REVERSE query approach:
-        1. Match pathology_files with the filter (uses index - FAST)
-        2. Find samples related to those files
-        3. Do other relationship traversals
-        
-        This is 10-100x faster than the standard approach of collecting all files first.
+        Uses standard query approach starting from sample nodes:
+        1. Match samples
+        2. OPTIONAL MATCH pathology_file with filter
+        3. Filter to only samples that have matching pathology_file
+        4. Resolve studies and paginate
+        5. Collect other relationships
         """
         params = {"offset": offset, "limit": limit}
         where_conditions = []
@@ -2933,17 +3026,18 @@ RETURN count(*) AS total_count
                 params[param_name] = value
                 where_conditions.append(f"pf.fixation_embedding_method = ${param_name}")
         
-        # Build WHERE clause
-        where_clause = " AND ".join(where_conditions) if where_conditions else "TRUE"
+        # Build WHERE clause for pathology_file filter
+        pf_where_clause = " AND ".join(where_conditions) if where_conditions else "TRUE"
         
         # When return_total: run lightweight count first, then list query
         total_count_pf = None
         if return_total:
             cypher_count = f"""
-        MATCH (pf:pathology_file)
-        WHERE {where_clause}
-        MATCH (pf)-[:of_pathology_file]->(sa:sample)
+        MATCH (sa:sample)
         WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+        OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)
+        WITH sa, pf
+        WHERE pf IS NOT NULL AND ({pf_where_clause})
         OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
         WITH sa, collect(DISTINCT st1.study_id) AS st1_list
         OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
@@ -2966,17 +3060,13 @@ RETURN count(*) AS total_count
                 logger.error("Error in pathology_file reverse count query", error=str(e_count), exc_info=True)
                 # Fall through to list query without total_count
         
-        # Build optimized reverse query
-        # Key optimization: Start from pathology_file (uses index), then find samples
-        # PERFORMANCE: use the precomputed IN_STUDY relationship for sample->study lookup.
-        # This avoids the expensive traversal through cell_line/participant/consent_group.
-        # IMPORTANT: We also deduplicate matching pathology_files per (sample, study) before pagination
-        # to prevent row explosion when multiple pf match the filter for the same sample.
+        # Build query starting from sample nodes
         cypher = f"""
-        MATCH (pf:pathology_file)
-        WHERE {where_clause}
-        MATCH (pf)-[:of_pathology_file]->(sa:sample)
+        MATCH (sa:sample)
         WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+        OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)
+        WITH sa, pf
+        WHERE pf IS NOT NULL AND ({pf_where_clause})
         OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
         WITH sa, pf, collect(DISTINCT st1.study_id) AS st1_list
         OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
@@ -2985,24 +3075,24 @@ RETURN count(*) AS total_count
         UNWIND combined AS sid
         MATCH (st:study)
         WHERE st.study_id = sid
-        WITH sa, st, collect(DISTINCT pf) AS matching_pfs
-        WITH sa, st, head(matching_pfs) AS pf
-        ORDER BY toString(sa.sample_id)
+        WITH sa, st, pf, toString(sa.sample_id) AS sample_id, toString(st.study_id) AS study_id
+        OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+        WITH sa, p, st, pf, sample_id, study_id
+        ORDER BY sample_id, study_id
         SKIP $offset
         LIMIT $limit
-        OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
         OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
         WITH sa, p, st,
              head(collect(DISTINCT d)) AS diagnoses,
-             head(collect(DISTINCT sf)) AS sf,
-             pf
+             head(collect(DISTINCT pf)) AS pf,
+             head(collect(DISTINCT sf)) AS sf
         RETURN sa, p, st, sf, pf, diagnoses
         """.strip()
         
         logger.info(
-            "Executing optimized reverse query for pathology_file filters",
-            cypher=cypher[:300],
+            "Executing query for pathology_file filters",
+            cypher=cypher,
             params=params
         )
         
@@ -3168,11 +3258,16 @@ RETURN count(*) AS total_count
         WHERE {pf_where_clause}
         MATCH (pf)-[:of_pathology_file]->(sa)
         OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-        WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+        WITH sa, collect(DISTINCT st1.study_id) AS st1_list_raw
         OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-        WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+        WITH sa, st1_list_raw, collect(DISTINCT st2.study_id) AS st2_list_raw
+        WITH sa,
+             [x IN st1_list_raw WHERE x IS NOT NULL] AS st1_list,
+             [x IN st2_list_raw WHERE x IS NOT NULL] AS st2_list
         WITH sa, (st2_list + st1_list) AS combined
         UNWIND combined AS sid
+        WITH sa, sid
+        WHERE sid IS NOT NULL
         MATCH (st:study)
         WHERE st.study_id = sid
         WITH DISTINCT sa.sample_id AS sample_id, st.study_id AS study_id
@@ -3202,19 +3297,26 @@ RETURN count(*) AS total_count
         WHERE {pf_where_clause}
         MATCH (pf)-[:of_pathology_file]->(sa)
         OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-        WITH sa, sf, pf, collect(DISTINCT st1.study_id) AS st1_list
+        WITH sa, sf, pf, collect(DISTINCT st1.study_id) AS st1_list_raw
         OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-        WITH sa, sf, pf, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+        WITH sa, sf, pf, st1_list_raw, collect(DISTINCT st2.study_id) AS st2_list_raw
+        WITH sa, sf, pf,
+             [x IN st1_list_raw WHERE x IS NOT NULL] AS st1_list,
+             [x IN st2_list_raw WHERE x IS NOT NULL] AS st2_list
         WITH sa, sf, pf, (st2_list + st1_list) AS combined
+        WHERE size(combined) > 0
         UNWIND combined AS sid
+        WITH sa, sf, pf, sid
+        WHERE sid IS NOT NULL
         MATCH (st:study)
         WHERE st.study_id = sid
         WITH sa, st, collect(DISTINCT sf) AS matching_sfs, collect(DISTINCT pf) AS matching_pfs
         WITH sa, st, head(matching_sfs) AS sf, head(matching_pfs) AS pf
-        ORDER BY toString(sa.sample_id)
+        OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+        WITH sa, p, st, sf, pf
+        ORDER BY toString(sa.sample_id), toString(st.study_id)
         SKIP $offset
         LIMIT $limit
-        OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
         WITH sa, p, st,
              head(collect(DISTINCT d)) AS diagnoses,
@@ -5973,11 +6075,16 @@ RETURN count(*) AS total_count
         WHERE sa.sample_id IS NOT NULL
           AND sa.sample_id <> ''
         OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-        WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+        WITH sa, collect(DISTINCT st1.study_id) AS st1_list_raw
         OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-        WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+        WITH sa, st1_list_raw, collect(DISTINCT st2.study_id) AS st2_list_raw
+        WITH sa,
+             [x IN st1_list_raw WHERE x IS NOT NULL] AS st1_list,
+             [x IN st2_list_raw WHERE x IS NOT NULL] AS st2_list
         WITH sa, (st2_list + st1_list) AS combined
         UNWIND combined AS sid
+        WITH sa, sid
+        WHERE sid IS NOT NULL
         WITH DISTINCT sa.sample_id AS sample_id, sid AS study_id
         RETURN count(*) as total_count
         """.strip()
@@ -6119,17 +6226,21 @@ RETURN count(*) AS total_count
                         # Will be handled after collecting all sequencing_files
                         with_conditions.append(("specimen_molecular_analyte_type_list", reverse_mapped))
                     else:
-                        params[param_name] = reverse_mapped
+                        # If reverse_mapped is None, use the original value (no mapping needed)
+                        params[param_name] = reverse_mapped if reverse_mapped else value
                         # Store as special condition - will be handled after collecting all sequencing_files
                         with_conditions.append(("specimen_molecular_analyte_type_single", param_name))
             elif field == "disease_phase":
                 # Check if value is a database-only value (e.g., "Recurrent Disease")
-                # or in null_mappings (e.g., "Not Reported")
-                # These values should not be accepted as filter values
-                if is_database_only_value("disease_phase", value) or is_null_mapped_value("disease_phase", value):
+                if is_database_only_value("disease_phase", value):
                     # This value is not valid for filtering
                     # Add an impossible condition to return empty results
                     with_conditions.append("false")
+                elif is_null_mapped_value("disease_phase", value):
+                    # "Not Reported" is a valid filter value - match database values case-sensitively
+                    # The value is stored in DB as-is, so match it directly
+                    params[param_name] = value
+                    with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase = ${param_name}")
                 else:
                     # Apply reverse mapping for filtering (API value -> DB value(s))
                     # "Relapse" can map to both "Recurrent Disease" and "Relapse" in DB
@@ -6163,7 +6274,8 @@ RETURN count(*) AS total_count
                 else:
                     # Apply reverse mapping for filtering (API value -> DB value)
                     reverse_mapped = reverse_map_field_value("tumor_classification", value)
-                    params[param_name] = reverse_mapped
+                    # If reverse_mapped is None, use the original value (no mapping needed)
+                    params[param_name] = reverse_mapped if reverse_mapped else value
                     with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_classification = ${param_name}")
             elif field == "tumor_grade":
                 with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_grade = ${param_name}")
@@ -6197,6 +6309,9 @@ RETURN count(*) AS total_count
                     else:
                         # Empty list after filtering, skip
                         continue
+                else:
+                    # Single value (no || separator)
+                    params[param_name] = value
                 # Store depositions param name for early filtering (will be added to early_where_conditions later)
                 if not hasattr(self, '_depositions_early_params'):
                     self._depositions_early_params = []
@@ -6347,6 +6462,21 @@ RETURN count(*) AS total_count
         if identifiers_early_filter:
             early_where_conditions.append(identifiers_early_filter)
         
+        # OPTIMIZATION: Add anatomical_sites filter early (sample property, can be filtered early)
+        if anatomical_sites_list_condition:
+            early_where_conditions.append(anatomical_sites_list_condition)
+            # Remove from regular_conditions since it's now in early_where_conditions
+            if anatomical_sites_list_condition in regular_conditions:
+                regular_conditions.remove(anatomical_sites_list_condition)
+        elif anatomical_sites_string_condition:
+            early_where_conditions.append(anatomical_sites_string_condition)
+            # Remove from regular_conditions since it's now in early_where_conditions
+            if anatomical_sites_string_condition in regular_conditions:
+                regular_conditions.remove(anatomical_sites_string_condition)
+        
+        # Build early WHERE clause from early_where_conditions
+        early_where_clause = "\n        WHERE " + " AND ".join(early_where_conditions) if early_where_conditions else ""
+        
         # Depositions filter: must be applied AFTER we have st (study node). See get_samples() for same logic.
         depositions_study_filter_summary = ""
         if hasattr(self, '_depositions_early_params') and self._depositions_early_params:
@@ -6465,6 +6595,17 @@ RETURN count(*) AS total_count
                     )
                     # Fall through to standard query
         
+        # Early return if any condition is "false" (invalid filter value)
+        # This prevents building and executing expensive queries that will return empty results
+        if "false" in regular_conditions or "false" in early_where_conditions:
+            logger.info(
+                "Invalid filter value detected in summary query - returning empty results early",
+                filters=filters,
+                regular_conditions=regular_conditions,
+                early_where_conditions=early_where_conditions
+            )
+            return {"counts": {"total": 0}}
+        
         # Build early WHERE clause
         early_where_clause = "\n        WHERE " + " AND ".join(early_where_conditions) if early_where_conditions else ""
         
@@ -6489,9 +6630,34 @@ RETURN count(*) AS total_count
         if needs_sf_collection:
             all_conditions.append("has_matching_sf = true")
         # Add diagnosis search condition if present (will be checked after collecting all diagnoses)
-        needs_diag_collection = diagnosis_search_term is not None
+        # Also need to collect all diagnoses if disease_phase or other diagnosis filters are present
+        # (to check if ANY diagnosis matches, not just the first one)
+        has_diagnosis_filters = any(
+            field in filters for field in ["disease_phase", "tumor_grade", "tumor_tissue_morphology", "tumor_classification", "age_at_diagnosis"]
+        )
+        needs_diag_collection = diagnosis_search_term is not None or has_diagnosis_filters
         if needs_diag_collection:
-            all_conditions.append("has_matching_diagnosis = true")
+            if diagnosis_search_term is not None:
+                all_conditions.append("has_matching_diagnosis = true")
+            elif has_diagnosis_filters:
+                # For diagnosis filters, check if ANY diagnosis matches
+                # Find disease_phase condition and convert it to check all_diagnoses
+                diagnosis_filter_conditions = []
+                for condition in all_conditions[:]:
+                    if isinstance(condition, str) and "diagnoses.disease_phase" in condition:
+                        # Convert to check all_diagnoses collection
+                        # Original: "diagnoses IS NOT NULL AND diagnoses.disease_phase = $param_X"
+                        # New: "size([d IN all_diagnoses WHERE d IS NOT NULL AND d.disease_phase = $param_X]) > 0"
+                        condition_part = condition.replace("diagnoses IS NOT NULL AND ", "").replace("diagnoses.", "d.")
+                        diagnosis_filter_conditions.append(f"size([d IN all_diagnoses WHERE d IS NOT NULL AND {condition_part}]) > 0")
+                        all_conditions.remove(condition)
+                    elif isinstance(condition, str) and ("diagnoses.tumor_grade" in condition or "diagnoses.tumor_classification" in condition or "diagnoses.tumor_tissue_morphology" in condition or "diagnoses.age_at_diagnosis" in condition):
+                        # Convert other diagnosis filters similarly
+                        condition_part = condition.replace("diagnoses IS NOT NULL AND ", "").replace("diagnoses.", "d.")
+                        diagnosis_filter_conditions.append(f"size([d IN all_diagnoses WHERE d IS NOT NULL AND {condition_part}]) > 0")
+                        all_conditions.remove(condition)
+                if diagnosis_filter_conditions:
+                    all_conditions.extend(diagnosis_filter_conditions)
         
         where_clause = ""
         if all_conditions:
@@ -6550,10 +6716,10 @@ RETURN count(*) AS total_count
         if needs_participant or needs_study:
             with_vars.append("p")
         # For diagnosis search, collect ALL diagnoses first to check if ANY match
-        # Note: needs_diag_collection is already set at line 230 based on diagnosis_search_term
+        # Note: needs_diag_collection may be updated above if diagnosis filters are present
         if needs_diagnosis:
             if needs_diag_collection:
-                with_vars.append("collect(DISTINCT d) AS all_diagnoses")  # Collect ALL for search
+                with_vars.append("collect(DISTINCT d) AS all_diagnoses")  # Collect ALL for search or filters
             else:
                 with_vars.append("head(collect(DISTINCT d)) AS diagnoses")
         if needs_pathology_file:
@@ -6686,9 +6852,12 @@ RETURN count(*) AS total_count
         
         # If we have diagnosis search or sf collection, finalize second_with_clause
         if needs_sf_collection or needs_diag_collection:
-            # If we don't have SF collection but have diagnosis search, we still need sf variable
+            # If we don't have SF collection but have diagnosis search/filters, we need all_diagnoses
             if needs_diag_collection and not needs_sf_collection:
-                # No SF collection, just pass through sf variable if it exists
+                # No SF collection, but we have diagnosis filters - need all_diagnoses for condition checking
+                if needs_diagnosis:
+                    second_with_vars.append("all_diagnoses")
+                # Also pass through sf variable if it exists
                 if needs_sequencing_file:
                     second_with_vars.append("sf")
             # If we have SF collection but no diagnosis search, we still need diagnoses variable if it was collected
@@ -6714,10 +6883,16 @@ RETURN count(*) AS total_count
                 for condition in conditions:
                     if "has_matching_sf" in condition or "has_matching_diagnosis" in condition:
                         second_where_conditions.append(condition)
-                    elif needs_diag_collection and "diagnoses" in condition:
-                        # If there's a diagnosis search, diagnoses is created in second WITH clause
-                        # So conditions referencing diagnoses must be in second_where_conditions
-                        second_where_conditions.append(condition)
+                    elif needs_diag_collection and ("all_diagnoses" in condition or "diagnoses" in condition):
+                        # If there's a diagnosis search or diagnosis filters, all_diagnoses is created in first WITH clause
+                        # Since needs_diag_collection is true, there will be a second_with_clause (created above)
+                        # So conditions referencing all_diagnoses should be in second_where_conditions
+                        if "all_diagnoses" in condition:
+                            # This is already converted to check all_diagnoses collection, put in second_where_conditions
+                            second_where_conditions.append(condition)
+                        elif "diagnoses" in condition:
+                            # Legacy condition using diagnoses (should have been converted above, but handle it)
+                            second_where_conditions.append(condition)
                     else:
                         first_where_conditions.append(condition)
         
@@ -6793,11 +6968,17 @@ RETURN count(*) AS total_count
           AND sa.sample_id <> ''
         {early_where_clause.replace('WHERE ', 'AND ') if early_where_clause else ''}
         OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-        WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+        WITH sa, collect(DISTINCT st1.study_id) AS st1_list_raw
         OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-        WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+        WITH sa, st1_list_raw, collect(DISTINCT st2.study_id) AS st2_list_raw
+        WITH sa,
+             [x IN st1_list_raw WHERE x IS NOT NULL] AS st1_list,
+             [x IN st2_list_raw WHERE x IS NOT NULL] AS st2_list
         WITH sa, (st2_list + st1_list) AS combined
+        WHERE size(combined) > 0
         UNWIND combined AS sid
+        WITH sa, sid
+        WHERE sid IS NOT NULL
         MATCH (st:study)
         WHERE st.study_id = sid{depositions_study_filter_summary}
         {optional_matches_str}
@@ -6814,11 +6995,17 @@ RETURN count(*) AS total_count
           AND sa.sample_id <> ''
         {early_where_clause.replace('WHERE ', 'AND ') if early_where_clause else ''}
         OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-        WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+        WITH sa, collect(DISTINCT st1.study_id) AS st1_list_raw
         OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-        WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+        WITH sa, st1_list_raw, collect(DISTINCT st2.study_id) AS st2_list_raw
+        WITH sa,
+             [x IN st1_list_raw WHERE x IS NOT NULL] AS st1_list,
+             [x IN st2_list_raw WHERE x IS NOT NULL] AS st2_list
         WITH sa, (st2_list + st1_list) AS combined
+        WHERE size(combined) > 0
         UNWIND combined AS sid
+        WITH sa, sid
+        WHERE sid IS NOT NULL
         MATCH (st:study)
         WHERE st.study_id = sid{depositions_study_filter_summary}
         {optional_matches_str}
@@ -6834,7 +7021,9 @@ RETURN count(*) AS total_count
             identifiers_condition=identifiers_condition if identifiers_condition else None,
             where_conditions=where_conditions,
             final_where_conditions=final_where_conditions if 'final_where_conditions' in locals() else None,
-            with_clause=with_clause
+            with_clause=with_clause,
+            depositions_study_filter_summary=depositions_study_filter_summary,
+            _depositions_early_params=getattr(self, '_depositions_early_params', None)
         )
         
         # Execute query with proper result consumption and retry logic
@@ -6880,13 +7069,13 @@ RETURN count(*) AS total_count
             
             if not records:
                 logger.warning("No records returned from summary query")
-                return {"total_count": 0}
+                return {"counts": {"total": 0}}
             
             summary = records[0]
             total_count = summary.get("total_count", 0)
             logger.info("Completed samples summary", total_count=total_count)
             
-            return {"total_count": total_count}
+            return {"counts": {"total": total_count}}
         except Exception as e:
             error_msg = str(e).lower()
             # If anatomical_sites filter is present and we got an IN error, try string version
@@ -6932,13 +7121,13 @@ RETURN count(*) AS total_count
                     
                     if not records:
                         logger.warning("No records returned from summary query")
-                        return {"total_count": 0}
+                        return {"counts": {"total": 0}}
                     
                     summary = records[0]
                     total_count = summary.get("total_count", 0)
                     logger.info("Completed samples summary (string version)", total_count=total_count)
                     
-                    return {"total_count": total_count}
+                    return {"counts": {"total": total_count}}
                 except Exception as e2:
                     logger.error(
                         "Error executing get_samples_summary Cypher query (both list and string failed for anatomical_sites)",
@@ -7056,6 +7245,8 @@ RETURN count(*) AS total_count
         WITH sa, sf, st1_list, collect(DISTINCT st2.study_id) AS st2_list
         WITH sa, sf, (st2_list + st1_list) AS combined
         UNWIND combined AS sid
+        WITH sa, sf, sid
+        WHERE sid IS NOT NULL
         WITH DISTINCT sa.sample_id AS sample_id, sid AS study_id
         RETURN count(*) as total_count
         """.strip()

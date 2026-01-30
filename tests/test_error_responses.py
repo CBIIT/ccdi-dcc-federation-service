@@ -152,6 +152,15 @@ class TestInvalidQueryParameters:
         body = r.json()
         issues = validate_error_response(body, 400)
         assert not issues, f"Error response validation failed: {issues}"
+    
+    def test_return_total_param_on_sample(self, client: TestClient):
+        """Test return_total parameter on /sample endpoint should be rejected."""
+        r = client.get("/api/v1/sample?depositions=phs002790&return_total=true")
+        assert r.status_code == 400
+        body = r.json()
+        issues = validate_error_response(body, 400)
+        assert not issues, f"Error response validation failed: {issues}"
+        assert body["errors"][0]["kind"] == "InvalidParameters"
 
 
 class TestUnsupportedFields:

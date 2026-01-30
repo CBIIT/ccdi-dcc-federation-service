@@ -232,14 +232,14 @@ class SampleSpecializedQueries(SampleValidators):
         return_total: bool = False
     ) -> Union[List[Sample], Tuple[List[Sample], int]]:
         """
-        Optimized query for pathology_file-only filters.
+        Query for pathology_file-only filters.
         
-        Uses REVERSE query approach:
-        1. Match pathology_files with the filter (uses index - FAST)
-        2. Find samples related to those files
-        3. Do other relationship traversals
-        
-        This is 10-100x faster than the standard approach of collecting all files first.
+        Uses standard query approach starting from sample nodes:
+        1. Match samples
+        2. OPTIONAL MATCH pathology_file with filter
+        3. Filter to only samples that have matching pathology_file
+        4. Resolve studies and paginate
+        5. Collect other relationships
         """
         params = {"offset": offset, "limit": limit}
         where_conditions = []
@@ -254,17 +254,18 @@ class SampleSpecializedQueries(SampleValidators):
                 params[param_name] = value
                 where_conditions.append(f"pf.fixation_embedding_method = ${param_name}")
         
-        # Build WHERE clause
-        where_clause = " AND ".join(where_conditions) if where_conditions else "TRUE"
+        # Build WHERE clause for pathology_file filter
+        pf_where_clause = " AND ".join(where_conditions) if where_conditions else "TRUE"
         
         # When return_total: run lightweight count first, then list query
         total_count_pf = None
         if return_total:
             cypher_count = f"""
-        MATCH (pf:pathology_file)
-        WHERE {where_clause}
-        MATCH (pf)-[:of_pathology_file]->(sa:sample)
+        MATCH (sa:sample)
         WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+        OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)
+        WITH sa, pf
+        WHERE pf IS NOT NULL AND ({pf_where_clause})
         OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
         WITH sa, collect(DISTINCT st1.study_id) AS st1_list
         OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
@@ -284,20 +285,16 @@ class SampleSpecializedQueries(SampleValidators):
                 await result_count.consume()
                 total_count_pf = recs[0].get("total_count", 0) if recs else 0
             except Exception as e_count:
-                logger.error("Error in pathology_file reverse count query", error=str(e_count), exc_info=True)
+                logger.error("Error in pathology_file count query", error=str(e_count), exc_info=True)
                 # Fall through to list query without total_count
         
-        # Build optimized reverse query
-        # Key optimization: Start from pathology_file (uses index), then find samples
-        # PERFORMANCE: use the precomputed IN_STUDY relationship for sample->study lookup.
-        # This avoids the expensive traversal through cell_line/participant/consent_group.
-        # IMPORTANT: We also deduplicate matching pathology_files per (sample, study) before pagination
-        # to prevent row explosion when multiple pf match the filter for the same sample.
+        # Build query starting from sample nodes
         cypher = f"""
-        MATCH (pf:pathology_file)
-        WHERE {where_clause}
-        MATCH (pf)-[:of_pathology_file]->(sa:sample)
+        MATCH (sa:sample)
         WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+        OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)
+        WITH sa, pf
+        WHERE pf IS NOT NULL AND ({pf_where_clause})
         OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
         WITH sa, pf, collect(DISTINCT st1.study_id) AS st1_list
         OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
@@ -306,24 +303,24 @@ class SampleSpecializedQueries(SampleValidators):
         UNWIND combined AS sid
         MATCH (st:study)
         WHERE st.study_id = sid
-        WITH sa, st, collect(DISTINCT pf) AS matching_pfs
-        WITH sa, st, head(matching_pfs) AS pf
-        ORDER BY toString(sa.sample_id)
+        WITH sa, st, pf, toString(sa.sample_id) AS sample_id, toString(st.study_id) AS study_id
+        OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+        WITH sa, p, st, pf, sample_id, study_id
+        ORDER BY sample_id, study_id
         SKIP $offset
         LIMIT $limit
-        OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
         OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
         WITH sa, p, st,
              head(collect(DISTINCT d)) AS diagnoses,
-             head(collect(DISTINCT sf)) AS sf,
-             pf
+             head(collect(DISTINCT pf)) AS pf,
+             head(collect(DISTINCT sf)) AS sf
         RETURN sa, p, st, sf, pf, diagnoses
         """.strip()
         
         logger.info(
-            "Executing optimized reverse query for pathology_file filters",
-            cypher=cypher[:300],
+            "Executing query for pathology_file filters",
+            cypher=cypher,
             params=params
         )
         
@@ -410,7 +407,8 @@ class SampleSpecializedQueries(SampleValidators):
                     logger.info("Invalid library_source_material value - returning empty results", value=value)
                     return [] if not return_total else ([], 0)
                 reverse_mapped = reverse_map_field_value("library_source_material", value)
-                params[param_name] = reverse_mapped
+                # If reverse_mapped is None, use the original value (no mapping needed)
+                params[param_name] = reverse_mapped if reverse_mapped else value
                 sf_where_conditions.append(f"sf.library_source_material = ${param_name}")
             elif field == "library_strategy":
                 if is_database_only_value("library_strategy", value):
@@ -442,7 +440,8 @@ class SampleSpecializedQueries(SampleValidators):
                     db_values_str = ", ".join([f"'{v}'" for v in reverse_mapped])
                     sf_where_conditions.append(f"sf.library_source_molecule IN [{db_values_str}]")
                 else:
-                    params[param_name] = reverse_mapped
+                    # If reverse_mapped is None, use the original value (no mapping needed)
+                    params[param_name] = reverse_mapped if reverse_mapped else value
                     sf_where_conditions.append(f"sf.library_source_molecule = ${param_name}")
         
         # Build WHERE conditions for pathology_file properties
@@ -617,7 +616,8 @@ class SampleSpecializedQueries(SampleValidators):
                 if is_null_mapped_value("library_source_material", value):
                     return {"counts": {"total": 0}}
                 reverse_mapped = reverse_map_field_value("library_source_material", value)
-                params[param_name] = reverse_mapped
+                # If reverse_mapped is None, use the original value (no mapping needed)
+                params[param_name] = reverse_mapped if reverse_mapped else value
                 where_conditions.append(f"sf.library_source_material = ${param_name}")
                 
             elif field == "library_strategy":

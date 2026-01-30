@@ -141,9 +141,11 @@ class TestEarlyPagination:
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
         
-        # Call with library_strategy filter (triggers early pagination)
+        # Call with library_strategy filter (triggers reverse query with early pagination)
         filters = {"library_strategy": "WXS"}
-        await repository.get_samples(filters=filters, offset=0, limit=20)
+        with patch('app.repositories.sample.is_database_only_value', return_value=False):
+            with patch('app.repositories.sample.reverse_map_field_value', return_value="WXS"):
+                await repository.get_samples(filters=filters, offset=0, limit=20)
         
         # Verify query was executed
         assert mock_session.run.called
@@ -156,8 +158,25 @@ class TestEarlyPagination:
         assert 'SKIP $offset' in query
         assert 'LIMIT $limit' in query
         
-        # Verify rematch pattern exists
-        assert 'MATCH (sa:sample), (st:study)' in query or 'MATCH (sf:sequencing_file)' in query
+        # Verify reverse query pattern (starts from sequencing_file)
+        assert 'MATCH (sf:sequencing_file)' in query
+        
+        # Verify early pagination: SKIP/LIMIT should come BEFORE study collection
+        # This is the key optimization - paginate samples before collecting study relationships
+        skip_pos = query.find("SKIP")
+        limit_pos = query.find("LIMIT")
+        study_collection_pos = query.find("collect(DISTINCT st1.study_id)")
+        
+        assert skip_pos != -1, "SKIP should be present"
+        assert limit_pos != -1, "LIMIT should be present"
+        if study_collection_pos != -1:  # Study collection might not be present if no studies
+            assert skip_pos < study_collection_pos, "SKIP should come BEFORE study collection (early pagination)"
+            assert limit_pos < study_collection_pos, "LIMIT should come BEFORE study collection (early pagination)"
+        
+        # Verify DISTINCT sa before pagination
+        distinct_pos = query.find("WITH DISTINCT sa")
+        assert distinct_pos != -1, "DISTINCT sa should be present for early pagination"
+        assert distinct_pos < skip_pos, "DISTINCT should come before SKIP"
     
     async def test_no_variable_used_before_match(self, repository, mock_session):
         """Test that variables are not used before being matched."""

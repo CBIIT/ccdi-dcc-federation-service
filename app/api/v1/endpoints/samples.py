@@ -441,7 +441,8 @@ async def count_samples_by_field(
     
     try:
         # Validate that no query parameters are provided
-        if request.query_params:
+        # Check if there are any query parameters (request.query_params is always truthy, need to check length)
+        if len(request.query_params) > 0:
             raise InvalidParametersError(
                 parameters=[],  # Empty array - don't expose parameter names
                 message="Invalid query parameter(s) provided.",
@@ -731,7 +732,8 @@ async def get_samples_summary(
     
     try:
         # Validate that no query parameters are provided
-        if request.query_params:
+        # Check if there are any query parameters (request.query_params is always truthy, need to check length)
+        if len(request.query_params) > 0:
             raise InvalidParametersError(
                 parameters=[],  # Empty array - don't expose parameter names
                 message="Invalid query parameter(s) provided.",

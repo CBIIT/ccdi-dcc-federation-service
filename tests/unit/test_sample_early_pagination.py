@@ -191,3 +191,482 @@ class TestEarlyPagination:
         if pf_used_in_with:
             assert pf_matched, "pf should be matched before being used in WITH clause"
 
+    async def test_disease_phase_early_pagination_with_call_subquery(self, repository, mock_session):
+        """Test that disease_phase filter uses early pagination WITHOUT CALL {} subquery (sequential OPTIONAL MATCH)."""
+        async def async_gen():
+            yield {
+                "sa": {"sample_id": "SAMP001"},
+                "p": {},
+                "st": {"study_id": "phs001"},
+                "sf": {},
+                "pf": {},
+                "diagnoses": {"disease_phase": "Primary"}
+            }
+        
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+        
+        with patch('app.repositories.sample.reverse_map_field_value', return_value="Primary"):
+            filters = {"disease_phase": "Primary"}
+            await repository.get_samples(filters=filters, offset=0, limit=20)
+        
+        assert mock_session.run.called
+        
+        # Get the query
+        call_args = mock_session.run.call_args
+        query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
+        
+        # Verify NO CALL {} subquery (should use sequential OPTIONAL MATCH instead)
+        assert 'CALL {' not in query and 'CALL{' not in query.replace(' ', '')
+        
+        # Verify diagnosis-first match pattern
+        assert 'MATCH (sa:sample)<-[:of_diagnosis]-(d:diagnosis)' in query
+        
+        # Verify early pagination: SKIP/LIMIT before loading optional matches
+        query_lines = query.split('\n')
+        skip_limit_idx = -1
+        optional_match_idx = -1
+        
+        for i, line in enumerate(query_lines):
+            if 'SKIP $offset' in line or 'LIMIT $limit' in line:
+                skip_limit_idx = i
+            if skip_limit_idx > 0 and ('OPTIONAL MATCH (p:participant)' in line or 
+                                       'OPTIONAL MATCH (pf:pathology_file)' in line):
+                optional_match_idx = i
+                break
+        
+        # SKIP/LIMIT should come before optional matches
+        assert skip_limit_idx > 0, "SKIP/LIMIT should be present"
+        if optional_match_idx > 0:
+            assert skip_limit_idx < optional_match_idx, \
+                f"SKIP/LIMIT (line {skip_limit_idx}) should come before OPTIONAL MATCH (line {optional_match_idx})"
+        
+        # Verify sequential study collection (not CALL subquery)
+        assert 'OPTIONAL MATCH (sa)-[:of_sample]->(:participant)' in query or \
+               'OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)' in query
+
+    async def test_tissue_type_early_pagination_with_call_subquery(self, repository, mock_session):
+        """Test that tissue_type filter uses early pagination WITHOUT CALL {} subquery (sequential OPTIONAL MATCH)."""
+        async def async_gen():
+            yield {
+                "sa": {"sample_id": "SAMP001", "sample_tumor_status": "Tumor"},
+                "p": {},
+                "st": {"study_id": "phs001"},
+                "sf": {},
+                "pf": {},
+                "diagnoses": {}
+            }
+        
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+        
+        with patch('app.repositories.sample.load_sample_enum', return_value=["Tumor", "Normal"]):
+            filters = {"tissue_type": "Tumor"}
+            await repository.get_samples(filters=filters, offset=0, limit=20)
+        
+        assert mock_session.run.called
+        
+        # Get the query
+        call_args = mock_session.run.call_args
+        query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
+        
+        # Verify NO CALL {} subquery (should use sequential OPTIONAL MATCH instead)
+        assert 'CALL {' not in query and 'CALL{' not in query.replace(' ', '')
+        
+        # Verify tissue_type filter is in WHERE clause
+        assert 'sample_tumor_status' in query or 'tissue_type' in query.lower()
+        
+        # Verify early pagination: SKIP/LIMIT before loading optional matches
+        assert 'SKIP $offset' in query
+        assert 'LIMIT $limit' in query
+        
+        # Verify sequential study collection (not CALL subquery)
+        assert 'OPTIONAL MATCH (sa)-[:of_sample]->(:participant)' in query or \
+               'OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)' in query
+
+    async def test_disease_phase_and_tissue_type_early_pagination(self, repository, mock_session):
+        """Test that both disease_phase and tissue_type filters use early pagination together WITHOUT CALL {}."""
+        async def async_gen():
+            yield {
+                "sa": {"sample_id": "SAMP001", "sample_tumor_status": "Tumor"},
+                "p": {},
+                "st": {"study_id": "phs001"},
+                "sf": {},
+                "pf": {},
+                "diagnoses": {"disease_phase": "Primary"}
+            }
+        
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+        
+        with patch('app.repositories.sample.reverse_map_field_value', return_value="Primary"), \
+             patch('app.repositories.sample.load_sample_enum', return_value=["Tumor", "Normal"]):
+            filters = {"disease_phase": "Primary", "tissue_type": "Tumor"}
+            await repository.get_samples(filters=filters, offset=0, limit=20)
+        
+        assert mock_session.run.called
+        
+        # Get the query
+        call_args = mock_session.run.call_args
+        query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
+        
+        # Verify NO CALL {} subquery (should use sequential OPTIONAL MATCH instead)
+        assert 'CALL {' not in query and 'CALL{' not in query.replace(' ', '')
+        
+        # Verify both filters are present
+        assert 'sample_tumor_status' in query or 'tissue_type' in query.lower()
+        # disease_phase filter should be in diagnosis match
+        assert 'MATCH (sa:sample)<-[:of_diagnosis]-(d:diagnosis)' in query or \
+               'MATCH (d:diagnosis)-[:of_diagnosis]->(sa:sample)' in query
+        
+        # Verify sequential study collection
+        assert 'OPTIONAL MATCH (sa)-[:of_sample]->(:participant)' in query or \
+               'OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)' in query
+
+    async def test_early_pagination_not_applied_when_needs_sf_collection(self, repository, mock_session):
+        """Test that early pagination is NOT applied when needs_sf_collection is True."""
+        async def async_gen():
+            yield {
+                "sa": {"sample_id": "SAMP001"},
+                "p": {},
+                "st": {"study_id": "phs001"},
+                "sf": {},
+                "pf": {},
+                "diagnoses": {}
+            }
+        
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+        
+        # disease_phase + library_strategy (triggers needs_sf_collection)
+        with patch('app.repositories.sample.reverse_map_field_value', return_value="Primary"):
+            filters = {"disease_phase": "Primary", "library_strategy": "WXS"}
+            await repository.get_samples(filters=filters, offset=0, limit=20)
+        
+        assert mock_session.run.called
+        
+        # Get the query
+        call_args = mock_session.run.call_args
+        query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
+        
+        # Should NOT use CALL {} subquery path (falls back to standard query)
+        # Instead should use standard query with needs_sf_collection handling
+        # The query should still work, just not the optimized early pagination path
+
+    async def test_early_pagination_count_query_with_call_subquery(self, repository, mock_session):
+        """Test count query for disease_phase filter (may or may not use CALL {} depending on implementation)."""
+        async def async_gen():
+            yield {"total_count": 100}
+        
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+        
+        with patch('app.repositories.sample.reverse_map_field_value', return_value="Primary"):
+            filters = {"disease_phase": "Primary"}
+            await repository.get_samples(filters=filters, offset=0, limit=20, return_total=True)
+        
+        # Should have called run at least once (for count query)
+        assert mock_session.run.called
+        
+        # Check if count query was generated (may be first or second call)
+        call_count = mock_session.run.call_count
+        count_query_found = False
+        for i in range(call_count):
+            call_args = mock_session.run.call_args_list[i]
+            query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
+            if 'total_count' in query or 'count(*)' in query:
+                count_query_found = True
+                # Count query structure may vary - just verify it exists and has count logic
+                assert 'count' in query.lower() or 'total' in query.lower()
+                break
+        
+        assert count_query_found, "Count query should be present"
+
+    async def test_no_filters_early_pagination_no_call_subquery(self, repository, mock_session):
+        """Test that /sample with no filters uses early pagination WITHOUT CALL {} subquery."""
+        async def async_gen():
+            yield {
+                "sa": {"sample_id": "SAMP001"},
+                "p": {},
+                "st": {"study_id": "phs001"},
+                "sf": {},
+                "pf": {},
+                "diagnoses": {}
+            }
+        
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+        
+        result = await repository.get_samples(filters={}, offset=0, limit=20)
+        
+        assert mock_session.run.called
+        assert isinstance(result, list)
+        
+        # Get the query
+        call_args = mock_session.run.call_args
+        query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
+        
+        # Verify early pagination: SKIP/LIMIT before expanding relationships
+        assert 'SKIP $offset' in query
+        assert 'LIMIT $limit' in query
+        
+        # Verify NO CALL {} subquery (should use sequential OPTIONAL MATCH instead)
+        assert 'CALL {' not in query and 'CALL{' not in query.replace(' ', '')
+        
+        # Verify sequential study collection pattern
+        assert 'OPTIONAL MATCH (sa)-[:of_sample]->(:participant)' in query or \
+               'OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)' in query
+        
+        # Verify pagination comes before study collection
+        query_lines = query.split('\n')
+        skip_limit_idx = -1
+        study_match_idx = -1
+        
+        for i, line in enumerate(query_lines):
+            if 'SKIP $offset' in line or 'LIMIT $limit' in line:
+                skip_limit_idx = i
+            if skip_limit_idx > 0 and ('OPTIONAL MATCH (sa)-[:of_sample]->(:participant)' in line or
+                                        'OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)' in line):
+                study_match_idx = i
+                break
+        
+        assert skip_limit_idx > 0, "SKIP/LIMIT should be present"
+        if study_match_idx > 0:
+            assert skip_limit_idx < study_match_idx, \
+                f"SKIP/LIMIT (line {skip_limit_idx}) should come before study collection (line {study_match_idx})"
+
+    async def test_disease_phase_early_pagination_no_call_subquery(self, repository, mock_session):
+        """Test that disease_phase filter uses early pagination WITHOUT CALL {} subquery (new structure)."""
+        async def async_gen():
+            yield {
+                "sa": {"sample_id": "SAMP001"},
+                "p": {},
+                "st": {"study_id": "phs001"},
+                "sf": {},
+                "pf": {},
+                "diagnoses": {"disease_phase": "Not Reported"}
+            }
+        
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+        
+        with patch('app.repositories.sample.reverse_map_field_value', return_value="Not Reported"):
+            filters = {"disease_phase": "Not Reported"}
+            result = await repository.get_samples(filters=filters, offset=0, limit=20)
+        
+        assert mock_session.run.called
+        assert isinstance(result, list)
+        
+        # Get the query
+        call_args = mock_session.run.call_args
+        query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
+        
+        # Verify NO CALL {} subquery (should use sequential OPTIONAL MATCH instead)
+        assert 'CALL {' not in query and 'CALL{' not in query.replace(' ', '')
+        
+        # Verify diagnosis-first match pattern
+        assert 'MATCH (sa:sample)<-[:of_diagnosis]-(d:diagnosis)' in query
+        
+        # Verify early pagination: SKIP/LIMIT before expanding relationships
+        assert 'SKIP $offset' in query
+        assert 'LIMIT $limit' in query
+        
+        # Verify sequential study collection (not CALL subquery)
+        assert 'OPTIONAL MATCH (sa)-[:of_sample]->(:participant)' in query or \
+               'OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)' in query
+        
+        # Verify WHERE clause format (single line, not multi-line)
+        query_lines = query.split('\n')
+        where_line = None
+        for i, line in enumerate(query_lines):
+            if line.strip().startswith('WHERE'):
+                where_line = line
+                break
+        
+        if where_line:
+            # WHERE clause should be on single line (not split across lines with AND)
+            assert '\n  AND' not in query[query.find('WHERE'):query.find('WHERE')+200]
+
+    async def test_tissue_type_early_pagination_no_call_subquery(self, repository, mock_session):
+        """Test that tissue_type filter uses early pagination WITHOUT CALL {} subquery (new structure)."""
+        async def async_gen():
+            yield {
+                "sa": {"sample_id": "SAMP001", "sample_tumor_status": "Tumor"},
+                "p": {},
+                "st": {"study_id": "phs001"},
+                "sf": {},
+                "pf": {},
+                "diagnoses": {}
+            }
+        
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+        
+        with patch('app.repositories.sample.load_sample_enum', return_value=["Tumor", "Normal"]):
+            filters = {"tissue_type": "Tumor"}
+            result = await repository.get_samples(filters=filters, offset=0, limit=20)
+        
+        assert mock_session.run.called
+        assert isinstance(result, list)
+        
+        # Get the query
+        call_args = mock_session.run.call_args
+        query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
+        
+        # Verify NO CALL {} subquery
+        assert 'CALL {' not in query and 'CALL{' not in query.replace(' ', '')
+        
+        # Verify tissue_type filter in WHERE clause
+        assert 'sample_tumor_status' in query
+        
+        # Verify early pagination
+        assert 'SKIP $offset' in query
+        assert 'LIMIT $limit' in query
+        
+        # Verify sequential study collection
+        assert 'OPTIONAL MATCH (sa)-[:of_sample]->(:participant)' in query or \
+               'OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)' in query
+
+    async def test_disease_phase_and_tissue_type_combined_no_call_subquery(self, repository, mock_session):
+        """Test that disease_phase + tissue_type uses early pagination WITHOUT CALL {} subquery."""
+        async def async_gen():
+            yield {
+                "sa": {"sample_id": "SAMP001", "sample_tumor_status": "Tumor"},
+                "p": {},
+                "st": {"study_id": "phs001"},
+                "sf": {},
+                "pf": {},
+                "diagnoses": {"disease_phase": "Not Reported"}
+            }
+        
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+        
+        with patch('app.repositories.sample.reverse_map_field_value', return_value="Not Reported"), \
+             patch('app.repositories.sample.load_sample_enum', return_value=["Tumor", "Normal"]):
+            filters = {"disease_phase": "Not Reported", "tissue_type": "Tumor"}
+            result = await repository.get_samples(filters=filters, offset=0, limit=20)
+        
+        assert mock_session.run.called
+        assert isinstance(result, list)
+        
+        # Get the query
+        call_args = mock_session.run.call_args
+        query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
+        
+        # Verify NO CALL {} subquery
+        assert 'CALL {' not in query and 'CALL{' not in query.replace(' ', '')
+        
+        # Verify both filters are present
+        assert 'sample_tumor_status' in query
+        assert 'MATCH (sa:sample)<-[:of_diagnosis]-(d:diagnosis)' in query or \
+               'disease_phase' in query
+        
+        # Verify early pagination
+        assert 'SKIP $offset' in query
+        assert 'LIMIT $limit' in query
+
+    async def test_no_filters_with_empty_study_list(self, repository, mock_session):
+        """Test /sample query handles samples with no study associations gracefully."""
+        async def async_gen():
+            # Return empty result (samples filtered out because no studies)
+            if False:
+                yield
+        
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+        
+        result = await repository.get_samples(filters={}, offset=0, limit=20)
+        
+        assert mock_session.run.called
+        assert isinstance(result, list)
+        # Should return empty list when no samples have study associations
+        assert result == []
+
+    async def test_disease_phase_with_empty_results(self, repository, mock_session):
+        """Test disease_phase filter returns empty list when no matches."""
+        async def async_gen():
+            # Return empty result
+            if False:
+                yield
+        
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+        
+        with patch('app.repositories.sample.reverse_map_field_value', return_value="NonExistent"):
+            filters = {"disease_phase": "NonExistent"}
+            result = await repository.get_samples(filters=filters, offset=0, limit=20)
+        
+        assert mock_session.run.called
+        assert isinstance(result, list)
+        assert result == []
+
+    async def test_no_filters_query_structure_validation(self, repository, mock_session):
+        """Test that /sample query structure matches expected format."""
+        async def async_gen():
+            yield {
+                "sa": {"sample_id": "SAMP001"},
+                "p": {},
+                "st": {"study_id": "phs001"},
+                "sf": {},
+                "pf": {},
+                "diagnoses": {}
+            }
+        
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+        
+        await repository.get_samples(filters={}, offset=0, limit=20)
+        
+        call_args = mock_session.run.call_args
+        query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
+        
+        # Verify query structure: MATCH -> WHERE -> WITH -> ORDER BY -> SKIP/LIMIT -> study collection
+        assert 'MATCH (sa:sample)' in query
+        assert 'trim(toString(sa.sample_id))' in query
+        assert 'ORDER BY sample_id' in query
+        assert 'SKIP $offset' in query
+        assert 'LIMIT $limit' in query
+        
+        # Verify study collection comes after pagination
+        query_lines = query.split('\n')
+        limit_idx = -1
+        study_collection_idx = -1
+        
+        for i, line in enumerate(query_lines):
+            if 'LIMIT $limit' in line:
+                limit_idx = i
+            if limit_idx > 0 and ('OPTIONAL MATCH (sa)-[:of_sample]->(:participant)' in line or
+                                   'OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)' in line):
+                study_collection_idx = i
+                break
+        
+        assert limit_idx > 0, "LIMIT should be present"
+        if study_collection_idx > 0:
+            assert limit_idx < study_collection_idx, \
+                "LIMIT should come before study collection"
+

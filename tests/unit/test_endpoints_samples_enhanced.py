@@ -429,11 +429,18 @@ class TestSampleEndpointsEnhanced:
 
     async def test_get_samples_summary_rejects_parameters(self, mock_request, mock_session, mock_settings, mock_allowlist):
         """Test get_samples_summary rejects any query parameters."""
-        # Mock request with query parameters
-        mock_query_params = Mock()
-        mock_query_params.keys = Mock(return_value=["library_strategy"])
-        mock_query_params.__bool__ = Mock(return_value=True)  # Make it truthy
-        mock_request.query_params = mock_query_params
+        # Mock request with query parameters - need to support len() check
+        class QueryParamsWithLibraryStrategy(dict):
+            def __init__(self):
+                super().__init__({"library_strategy": "WXS"})
+            
+            def keys(self):
+                return ["library_strategy"]
+            
+            def __len__(self):
+                return 1
+        
+        mock_request.query_params = QueryParamsWithLibraryStrategy()
         
         # The endpoint should reject any parameters and raise InvalidParametersError
         with pytest.raises(HTTPException) as exc_info:
@@ -455,11 +462,18 @@ class TestSampleEndpointsEnhanced:
         """Test get_samples_summary works correctly with no parameters."""
         from app.models.dto import SummaryResponse, SummaryCounts
         
-        # Mock request with no query parameters
-        mock_query_params = Mock()
-        mock_query_params.keys = Mock(return_value=[])
-        mock_query_params.__bool__ = Mock(return_value=False)
-        mock_request.query_params = mock_query_params
+        # Mock request with no query parameters - need to support len() check
+        class EmptyQueryParams(dict):
+            def __init__(self):
+                super().__init__()
+            
+            def keys(self):
+                return []
+            
+            def __len__(self):
+                return 0
+        
+        mock_request.query_params = EmptyQueryParams()
         
         mock_summary = SummaryResponse(counts=SummaryCounts(total=500))
         

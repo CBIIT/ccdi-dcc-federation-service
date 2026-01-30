@@ -266,11 +266,18 @@ class TestSampleEndpoints:
         """Test get_samples_summary returns summary successfully."""
         from app.models.dto import SummaryResponse, SummaryCounts
         
-        # Mock request with no query parameters
-        mock_query_params = Mock()
-        mock_query_params.keys = Mock(return_value=[])
-        mock_query_params.__bool__ = Mock(return_value=False)
-        mock_request.query_params = mock_query_params
+        # Mock request with no query parameters - need to support len() check
+        class EmptyQueryParams(dict):
+            def __init__(self):
+                super().__init__()
+            
+            def keys(self):
+                return []
+            
+            def __len__(self):
+                return 0
+        
+        mock_request.query_params = EmptyQueryParams()
         
         mock_summary = SummaryResponse(counts=SummaryCounts(total=500))
         

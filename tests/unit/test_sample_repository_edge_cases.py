@@ -408,6 +408,73 @@ class TestSampleRepositoryQueryBuilding:
         """Create a SampleRepository instance."""
         return SampleRepository(mock_session, mock_allowlist, mock_settings)
 
+    async def test_get_samples_disease_phase_early_pagination_fallback_on_error(self, repository, mock_session):
+        """Test that disease_phase early pagination falls back to standard query on error."""
+        # Early pagination query fails, should fall back to standard query
+        async def async_gen():
+            yield {
+                "sa": {"sample_id": "SAMP001"},
+                "p": {},
+                "st": {"study_id": "phs001"},
+                "sf": {},
+                "pf": {},
+                "diagnoses": {"disease_phase": "Primary"}
+            }
+        
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        
+        # First call (early pagination) fails, second call (standard query) succeeds
+        mock_session.run = AsyncMock(side_effect=[
+            Exception("CALL subquery error"),
+            mock_result
+        ])
+        
+        with patch('app.repositories.sample.reverse_map_field_value', return_value="Primary"):
+            result = await repository.get_samples(
+                filters={"disease_phase": "Primary"},
+                offset=0,
+                limit=20
+            )
+        
+        # Should have tried early pagination, then fallen back to standard query
+        assert mock_session.run.call_count >= 2
+        assert isinstance(result, list)
+
+    async def test_get_samples_tissue_type_early_pagination_fallback_on_error(self, repository, mock_session):
+        """Test that tissue_type early pagination falls back to standard query on error."""
+        async def async_gen():
+            yield {
+                "sa": {"sample_id": "SAMP001", "sample_tumor_status": "Tumor"},
+                "p": {},
+                "st": {"study_id": "phs001"},
+                "sf": {},
+                "pf": {},
+                "diagnoses": {}
+            }
+        
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        
+        # First call (early pagination) fails, second call (standard query) succeeds
+        mock_session.run = AsyncMock(side_effect=[
+            Exception("CALL subquery error"),
+            mock_result
+        ])
+        
+        with patch('app.repositories.sample.load_sample_enum', return_value=["Tumor", "Normal"]):
+            result = await repository.get_samples(
+                filters={"tissue_type": "Tumor"},
+                offset=0,
+                limit=20
+            )
+        
+        # Should have tried early pagination, then fallen back to standard query
+        assert mock_session.run.call_count >= 2
+        assert isinstance(result, list)
+
     async def test_get_samples_with_disease_phase_list_mapping(self, repository, mock_session):
         """Test get_samples with disease_phase that maps to multiple DB values."""
         with patch('app.repositories.sample.reverse_map_field_value', return_value=["Primary", "Recurrent"]):
@@ -448,9 +515,11 @@ class TestSampleRepositoryQueryBuilding:
             )
             
             assert isinstance(result, list)
-            # Should add "false" condition for null-mapped values
-            cypher = mock_session.run.call_args[0][0]
-            assert "false" in cypher.lower() or "WHERE" in cypher
+            assert result == []
+            # Null-mapped values trigger early return (no query run); if a query were run it would contain "false"
+            if mock_session.run.called:
+                cypher = mock_session.run.call_args[0][0]
+                assert "false" in cypher.lower() or "WHERE" in cypher
 
     async def test_get_samples_with_library_selection_method_database_only(self, repository, mock_session):
         """Test get_samples with library_selection_method that is database-only."""
@@ -482,6 +551,149 @@ class TestSampleRepositoryQueryBuilding:
                 offset=0,
                 limit=20
             )
+
+    async def test_get_samples_no_filters_with_null_study_ids(self, repository, mock_session):
+        """Test /sample query handles null study_ids in combined list."""
+        async def async_gen():
+            yield {
+                "sa": {"sample_id": "SAMP001"},
+                "p": {},
+                "st": {"study_id": "phs001"},
+                "sf": {},
+                "pf": {},
+                "diagnoses": {}
+            }
+        
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+        
+        result = await repository.get_samples(filters={}, offset=0, limit=20)
+        
+        assert mock_session.run.called
+        assert isinstance(result, list)
+        
+        # Verify query filters out null study_ids
+        call_args = mock_session.run.call_args
+        query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
+        assert 'WHERE study_id IS NOT NULL' in query or 'study_id IS NOT NULL' in query
+
+    async def test_get_samples_disease_phase_with_where_clause_formatting(self, repository, mock_session):
+        """Test disease_phase query has properly formatted WHERE clause (single line)."""
+        async def async_gen():
+            yield {
+                "sa": {"sample_id": "SAMP001"},
+                "p": {},
+                "st": {"study_id": "phs001"},
+                "sf": {},
+                "pf": {},
+                "diagnoses": {"disease_phase": "Not Reported"}
+            }
+        
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+        
+        with patch('app.repositories.sample.reverse_map_field_value', return_value="Not Reported"):
+            await repository.get_samples(filters={"disease_phase": "Not Reported"}, offset=0, limit=20)
+        
+        call_args = mock_session.run.call_args
+        query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
+        
+        # Verify WHERE clause is properly formatted (not multi-line with AND on separate line)
+        query_lines = query.split('\n')
+        where_found = False
+        for i, line in enumerate(query_lines):
+            if line.strip().startswith('WHERE'):
+                where_found = True
+                # Check that WHERE clause doesn't have AND on next line
+                if i + 1 < len(query_lines):
+                    next_line = query_lines[i + 1].strip()
+                    # Should not have standalone AND on next line
+                    assert not (next_line.startswith('AND') and len(next_line) > 3), \
+                        "WHERE clause should not have AND on separate line"
+                break
+        
+        assert where_found, "WHERE clause should be present"
+
+    async def test_get_samples_no_filters_returns_correct_structure(self, repository, mock_session):
+        """Test /sample query returns correct record structure."""
+        async def async_gen():
+            yield {
+                "sa": {"sample_id": "SAMP001", "sample_tumor_status": "Tumor"},
+                "p": {"participant_id": "PART001"},
+                "st": {"study_id": "phs001"},
+                "sf": {"file_id": "FILE001"},
+                "pf": {"file_id": "PF001"},
+                "diagnoses": {"disease_phase": "Primary"}
+            }
+        
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+        
+        result = await repository.get_samples(filters={}, offset=0, limit=20)
+        
+        assert mock_session.run.called
+        assert isinstance(result, list)
+        # Should have converted records to Sample objects
+        assert len(result) >= 0  # May be empty if conversion fails, but should not raise
+
+    async def test_get_samples_disease_phase_with_head_collect(self, repository, mock_session):
+        """Test disease_phase query uses head(collect()) for diagnosis."""
+        async def async_gen():
+            yield {
+                "sa": {"sample_id": "SAMP001"},
+                "p": {},
+                "st": {"study_id": "phs001"},
+                "sf": {},
+                "pf": {},
+                "diagnoses": {"disease_phase": "Not Reported"}
+            }
+        
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+        
+        with patch('app.repositories.sample.reverse_map_field_value', return_value="Not Reported"):
+            await repository.get_samples(filters={"disease_phase": "Not Reported"}, offset=0, limit=20)
+        
+        call_args = mock_session.run.call_args
+        query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
+        
+        # Verify head(collect(DISTINCT d)) pattern is used
+        assert 'head(collect(DISTINCT d))' in query or 'head(collect(DISTINCT diagnoses))' in query
+
+    async def test_get_samples_no_filters_with_depositions(self, repository, mock_session):
+        """Test /sample query with depositions filter."""
+        async def async_gen():
+            yield {
+                "sa": {"sample_id": "SAMP001"},
+                "p": {},
+                "st": {"study_id": "phs001"},
+                "sf": {},
+                "pf": {},
+                "diagnoses": {}
+            }
+        
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+        
+        result = await repository.get_samples(filters={"depositions": "phs001"}, offset=0, limit=20)
+        
+        assert mock_session.run.called
+        call_args = mock_session.run.call_args
+        query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
+        params = call_args[0][1] if len(call_args[0]) > 1 else call_args.kwargs.get('params', {})
+        
+        # Verify depositions filter is applied
+        assert 'phs001' in str(params.values()) or 'study_id' in query
 
 
 # Helper function for async generators

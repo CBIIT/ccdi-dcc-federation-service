@@ -1155,6 +1155,46 @@ class TestSampleRepositoryInternal:
         assert result["values"] == []
         assert mock_session.run.call_count >= 1
 
+    async def test_count_samples_by_field_library_selection_method_combined(self, repository, mock_session):
+        """Test combined query path for library_selection_method (one query returns value, count, total, missing)."""
+        # Combined query returns records with value, count, total, missing per row
+        async def async_gen():
+            yield {"value": "PCR", "count": 2, "total": 3, "missing": 1}
+            yield {"value": "Poly(A)", "count": 1, "total": 3, "missing": 1}
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        with patch("app.repositories.sample.map_field_value", side_effect=lambda field, value: value), \
+            patch("app.repositories.sample.is_null_mapped_value", return_value=False):
+            result = await repository.count_samples_by_field("library_selection_method", {})
+
+        assert result["total"] == 3
+        assert result["missing"] == 1
+        assert len(result["values"]) == 2
+        assert result["values"][0]["value"] == "PCR"
+        assert result["values"][0]["count"] == 2
+        assert result["values"][1]["value"] == "Poly(A)"
+        assert result["values"][1]["count"] == 1
+
+    async def test_count_samples_by_field_library_selection_method_combined_empty(self, repository, mock_session):
+        """Test combined query path when no values returned (empty records trigger fallback query)."""
+        empty_result = AsyncMock()
+        empty_result.__aiter__ = Mock(return_value=async_gen_from_list([]))
+        # When combined query returns empty, repo runs fallback query for total/missing
+        fallback_result = AsyncMock()
+        fallback_result.__aiter__ = Mock(return_value=async_gen_from_list([{"total": 10, "missing": 3}]))
+        mock_session.run = AsyncMock(side_effect=[empty_result, fallback_result])
+
+        with patch("app.repositories.sample.map_field_value", side_effect=lambda field, value: value), \
+            patch("app.repositories.sample.is_null_mapped_value", return_value=False):
+            result = await repository.count_samples_by_field("library_selection_method", {})
+
+        assert result["total"] == 10
+        assert result["missing"] == 3
+        assert result["values"] == []
+        assert mock_session.run.call_count >= 1
+
     async def test_count_samples_by_field_anatomical_sites_list(self, repository, mock_session):
         """Test count_samples_by_field handles anatomical_sites list values."""
         total_result = AsyncMock()

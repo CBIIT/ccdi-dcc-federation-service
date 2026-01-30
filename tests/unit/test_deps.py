@@ -5,7 +5,7 @@ Tests filter validation, pagination, and dependency injection functions.
 """
 
 import pytest
-from unittest.mock import Mock, MagicMock, AsyncMock
+from unittest.mock import Mock, MagicMock, AsyncMock, patch
 from fastapi import Request, HTTPException
 from app.api.v1.deps import (
     get_pagination_params,
@@ -503,6 +503,11 @@ class TestGetSampleFilters:
         result = get_sample_filters(identifiers="sample123", request=mock_request)
         assert result["identifiers"] == "sample123"
 
+    def test_identifiers_single_value_with_whitespace(self, mock_request):
+        """Test identifiers filter with whitespace is stripped."""
+        result = get_sample_filters(identifiers="  sample123  ", request=mock_request)
+        assert result["identifiers"] == "sample123"
+
     def test_identifiers_multiple_values(self, mock_request):
         """Test identifiers filter with multiple values."""
         result = get_sample_filters(
@@ -513,10 +518,30 @@ class TestGetSampleFilters:
         assert "sample1" in result["identifiers"]
         assert "sample2" in result["identifiers"]
 
+    def test_identifiers_multiple_values_with_whitespace(self, mock_request):
+        """Test identifiers filter with multiple values and whitespace is stripped."""
+        result = get_sample_filters(
+            identifiers="  sample1  ||  sample2  ", 
+            request=mock_request
+        )
+        assert isinstance(result["identifiers"], list)
+        assert "sample1" in result["identifiers"]
+        assert "sample2" in result["identifiers"]
+        # Values should be stripped
+        assert result["identifiers"] == ["sample1", "sample2"]
+
     def test_anatomical_sites_single_value(self, mock_request):
         """Test anatomical_sites filter with single value."""
         result = get_sample_filters(
             anatomical_sites="Lung", 
+            request=mock_request
+        )
+        assert result["anatomical_sites"] == "Lung"
+
+    def test_anatomical_sites_single_value_with_whitespace(self, mock_request):
+        """Test anatomical_sites filter with whitespace is stripped."""
+        result = get_sample_filters(
+            anatomical_sites="  Lung  ", 
             request=mock_request
         )
         assert result["anatomical_sites"] == "Lung"
@@ -530,6 +555,19 @@ class TestGetSampleFilters:
         assert isinstance(result["anatomical_sites"], list)
         assert "Lung" in result["anatomical_sites"]
 
+    def test_anatomical_sites_multiple_values_with_whitespace(self, mock_request):
+        """Test anatomical_sites filter with multiple values and whitespace is stripped."""
+        result = get_sample_filters(
+            anatomical_sites="  Lung  ||  Liver  ||  Brain  ", 
+            request=mock_request
+        )
+        assert isinstance(result["anatomical_sites"], list)
+        assert "Lung" in result["anatomical_sites"]
+        assert "Liver" in result["anatomical_sites"]
+        assert "Brain" in result["anatomical_sites"]
+        # Values should be stripped
+        assert result["anatomical_sites"] == ["Lung", "Liver", "Brain"]
+
     def test_anatomical_sites_url_encoded(self, mock_request):
         """Test anatomical_sites with URL-encoded delimiter."""
         result = get_sample_filters(
@@ -538,10 +576,98 @@ class TestGetSampleFilters:
         )
         assert isinstance(result["anatomical_sites"], list)
 
+    def test_anatomical_sites_empty_string_ignored(self, mock_request):
+        """Test that empty anatomical_sites filter is ignored."""
+        result = get_sample_filters(anatomical_sites="", request=mock_request)
+        assert "anatomical_sites" not in result or result.get("anatomical_sites") is None
+
     def test_disease_phase_filter(self, mock_request):
         """Test disease_phase filter."""
         result = get_sample_filters(disease_phase="Primary", request=mock_request)
         assert result["disease_phase"] == "Primary"
+
+    def test_disease_phase_filter_with_whitespace(self, mock_request):
+        """Test disease_phase filter with whitespace is stripped."""
+        result = get_sample_filters(disease_phase="  Primary  ", request=mock_request)
+        assert result["disease_phase"] == "Primary"
+
+    def test_disease_phase_filter_empty_string_ignored(self, mock_request):
+        """Test that empty disease_phase filter is ignored."""
+        result = get_sample_filters(disease_phase="", request=mock_request)
+        assert "disease_phase" not in result or result.get("disease_phase") is None
+
+    def test_tissue_type_filter_with_whitespace(self, mock_request):
+        """Test tissue_type filter with whitespace is stripped."""
+        # tissue_type is stripped in get_sample_filters, no need to patch load_sample_enum
+        result = get_sample_filters(tissue_type="  Tumor  ", request=mock_request)
+        assert result["tissue_type"] == "Tumor"
+
+    def test_preservation_method_filter_with_whitespace(self, mock_request):
+        """Test preservation_method filter with whitespace is stripped."""
+        result = get_sample_filters(preservation_method="  OCT  ", request=mock_request)
+        assert result["preservation_method"] == "OCT"
+
+    def test_library_strategy_filter_with_whitespace(self, mock_request):
+        """Test library_strategy filter with whitespace is stripped."""
+        result = get_sample_filters(library_strategy="  WXS  ", request=mock_request)
+        assert result["library_strategy"] == "WXS"
+
+    def test_empty_string_filters_ignored(self, mock_request):
+        """Test that empty string filters are ignored (not added to filters dict)."""
+        result = get_sample_filters(
+            disease_phase="",
+            preservation_method="",
+            library_strategy="",
+            tissue_type="",
+            request=mock_request
+        )
+        # Empty strings should be ignored
+        assert "disease_phase" not in result or result.get("disease_phase") is None
+        assert "preservation_method" not in result or result.get("preservation_method") is None
+        assert "library_strategy" not in result or result.get("library_strategy") is None
+        assert "tissue_type" not in result or result.get("tissue_type") is None
+
+    def test_all_string_filters_strip_whitespace(self, mock_request):
+        """Test that all string filters strip whitespace correctly."""
+        # All filters are stripped in get_sample_filters, no need to patch load_sample_enum
+        result = get_sample_filters(
+            disease_phase="  Primary  ",
+            preservation_method="  OCT  ",
+            library_strategy="  WXS  ",
+            library_source_material="  DNA  ",
+            tumor_grade="  G1  ",
+            specimen_molecular_analyte_type="  DNA  ",
+            tissue_type="  Tumor  ",
+            tumor_classification="  Primary  ",
+            tumor_tissue_morphology="  Carcinoma  ",
+            depositions="  phs001  ",
+            diagnosis="  Cancer  ",
+            request=mock_request
+        )
+        # All values should be stripped
+        assert result.get("disease_phase") == "Primary"
+        assert result.get("preservation_method") == "OCT"
+        assert result.get("library_strategy") == "WXS"
+        assert result.get("library_source_material") == "DNA"
+        assert result.get("tumor_grade") == "G1"
+        assert result.get("specimen_molecular_analyte_type") == "DNA"
+        assert result.get("tissue_type") == "Tumor"
+        assert result.get("tumor_classification") == "Primary"
+        assert result.get("tumor_tissue_morphology") == "Carcinoma"
+        assert result.get("depositions") == "phs001"
+        assert result.get("diagnosis") == "Cancer"
+
+    def test_get_sample_diagnosis_filters_with_whitespace(self, mock_request):
+        """Test get_sample_diagnosis_filters strips whitespace from search parameter."""
+        result = get_sample_diagnosis_filters(
+            search="  Neuroblastoma  ",
+            disease_phase="  Primary  ",
+            request=mock_request
+        )
+        # Values should be stripped
+        assert result.get("_diagnosis_search") == "Neuroblastoma"
+        if "disease_phase" in result:
+            assert result.get("disease_phase") == "Primary"
 
     def test_depositions_filter(self, mock_request):
         """Test depositions filter."""
@@ -690,6 +816,107 @@ class TestGetSampleDiagnosisFilters:
         )
         assert "_diagnosis_search" in result
         assert result["disease_phase"] == "Primary"
+    
+    def test_diagnosis_search_without_search_parameter(self, mock_request):
+        """Test that when search is not provided, endpoint behaves like regular /sample endpoint."""
+        # Mock request.query_params to include diagnosis when search is None
+        class QueryParamsWithDiagnosis:
+            def __init__(self, params):
+                self._params = params
+            
+            def keys(self):
+                return self._params.keys()
+            
+            def items(self):
+                return self._params.items()
+            
+            def __iter__(self):
+                return iter(self._params.items())
+            
+            def get(self, key, default=None):
+                return self._params.get(key, default)
+        
+        mock_request.query_params = QueryParamsWithDiagnosis({
+            "diagnosis": "Neuroblastoma",
+            "disease_phase": "Primary"
+        })
+        
+        # When search is None, should extract diagnosis from query_params
+        result = get_sample_diagnosis_filters(
+            search=None,
+            disease_phase="Primary",
+            request=mock_request
+        )
+        assert "_diagnosis_search" not in result
+        assert result["disease_phase"] == "Primary"
+        # Should pass diagnosis to get_sample_filters
+        assert result.get("diagnosis") == "Neuroblastoma"
+    
+    def test_diagnosis_search_without_search_no_diagnosis_param(self, mock_request):
+        """Test that when search is not provided and no diagnosis param, behaves normally."""
+        class QueryParamsNoDiagnosis:
+            def __init__(self, params):
+                self._params = params
+            
+            def keys(self):
+                return self._params.keys()
+            
+            def items(self):
+                return self._params.items()
+            
+            def __iter__(self):
+                return iter(self._params.items())
+            
+            def get(self, key, default=None):
+                return self._params.get(key, default)
+        
+        mock_request.query_params = QueryParamsNoDiagnosis({
+            "disease_phase": "Primary"
+        })
+        
+        result = get_sample_diagnosis_filters(
+            search=None,
+            disease_phase="Primary",
+            request=mock_request
+        )
+        assert "_diagnosis_search" not in result
+        assert result["disease_phase"] == "Primary"
+        # No diagnosis should be passed
+        assert "diagnosis" not in result or result.get("diagnosis") is None
+    
+    def test_diagnosis_search_empty_string(self, mock_request):
+        """Test that empty search string is treated as None."""
+        class QueryParamsEmptySearch:
+            def __init__(self, params):
+                self._params = params
+            
+            def keys(self):
+                return self._params.keys()
+            
+            def items(self):
+                return self._params.items()
+            
+            def __iter__(self):
+                return iter(self._params.items())
+            
+            def get(self, key, default=None):
+                return self._params.get(key, default)
+        
+        mock_request.query_params = QueryParamsEmptySearch({
+            "diagnosis": "Neuroblastoma",
+            "disease_phase": "Primary"
+        })
+        
+        result = get_sample_diagnosis_filters(
+            search="   ",  # Whitespace only
+            disease_phase="Primary",
+            request=mock_request
+        )
+        # Empty/whitespace search should not add _diagnosis_search
+        # But should still extract diagnosis from query_params
+        assert "_diagnosis_search" not in result
+        assert result["disease_phase"] == "Primary"
+        assert result.get("diagnosis") == "Neuroblastoma"
 
 
 @pytest.mark.unit

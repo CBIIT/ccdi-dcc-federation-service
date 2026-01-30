@@ -70,26 +70,45 @@ class TestSampleRepositoryCountByField:
 
     async def test_count_samples_by_field_tissue_type_no_filters(self, repository, mock_session):
         """Test count_samples_by_field for tissue_type field with no filters."""
-        # Mock query results: order is values, total, missing (3 calls)
-        async def async_gen():
-            yield {"value": "Tumor", "count": 50}
-            yield {"value": "Normal", "count": 30}
-        mock_values = AsyncMock()
-        mock_values.__aiter__ = Mock(return_value=async_gen())
+        async def async_gen_values():
+            yield {"value": "Tumor", "count": 200}
+            yield {"value": "Normal", "count": 50}
         
+        async def async_gen_total():
+            yield {"total": 250}
+        
+        async def async_gen_missing():
+            yield {"missing": 5}
+        
+        mock_result_values = AsyncMock()
+        mock_result_values.__aiter__ = Mock(return_value=async_gen_values())
+        mock_result_values.consume = AsyncMock()
+        
+        mock_result_total = AsyncMock()
+        mock_result_total.__aiter__ = Mock(return_value=async_gen_total())
+        mock_result_total.consume = AsyncMock()
+        
+        mock_result_missing = AsyncMock()
+        mock_result_missing.__aiter__ = Mock(return_value=async_gen_missing())
+        mock_result_missing.consume = AsyncMock()
+        
+        # Order: values query, total query, missing query
         mock_session.run = AsyncMock(side_effect=[
-            mock_values,  # values query (first call)
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"total": 4}]))),  # total query
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 0}])))  # missing query
+            mock_result_values,
+            mock_result_total,
+            mock_result_missing
         ])
         
         result = await repository.count_samples_by_field("tissue_type", {})
         
+        assert isinstance(result, dict)
         assert "total" in result
         assert "missing" in result
         assert "values" in result
-        assert result["total"] == 4
-        assert mock_session.run.call_count >= 1
+        assert result["total"] == 250
+        assert result["missing"] == 5
+        assert len(result["values"]) == 2
+        assert mock_session.run.call_count == 3
 
     async def test_count_samples_by_field_age_at_collection_no_filters(self, repository, mock_session):
         """Test count_samples_by_field for age_at_collection (sample node field) with no filters."""
@@ -275,23 +294,76 @@ class TestSampleRepositoryCountByField:
         assert result["total"] == 40
         assert result["missing"] == 5
 
+    async def test_count_samples_by_field_library_selection_method(self, repository, mock_session):
+        """Test count_samples_by_field for library_selection_method (uses combined query when no filters)."""
+        async def async_gen():
+            yield {"value": "PCR", "count": 25, "total": 50, "missing": 8}
+            yield {"value": "Poly(A)", "count": 17, "total": 50, "missing": 8}
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_session.run = AsyncMock(return_value=mock_result)
+        
+        with patch("app.repositories.sample.map_field_value", side_effect=lambda field, value: value), \
+             patch("app.repositories.sample.is_null_mapped_value", return_value=False):
+            result = await repository.count_samples_by_field("library_selection_method", {})
+        
+        assert "total" in result
+        assert "missing" in result
+        assert "values" in result
+        assert result["total"] == 50
+        assert result["missing"] == 8
+        assert len(result["values"]) == 2
+        assert result["values"][0]["value"] == "PCR"
+        assert result["values"][0]["count"] == 25
+
     async def test_count_samples_by_field_disease_phase(self, repository, mock_session):
         """Test count_samples_by_field for disease_phase (diagnosis field)."""
-        async def async_gen():
-            yield {"value": "Primary", "count": 10}
-        mock_values = AsyncMock()
-        mock_values.__aiter__ = Mock(return_value=async_gen())
+        async def async_gen_values():
+            yield {"value": "Primary", "count": 100}
+            yield {"value": "Recurrent", "count": 50}
         
+        async def async_gen_total():
+            yield {"total": 150}
+        
+        async def async_gen_missing():
+            yield {"missing": 10}
+        
+        mock_result_values = AsyncMock()
+        mock_result_values.__aiter__ = Mock(return_value=async_gen_values())
+        mock_result_values.consume = AsyncMock()
+        
+        mock_result_total = AsyncMock()
+        mock_result_total.__aiter__ = Mock(return_value=async_gen_total())
+        mock_result_total.consume = AsyncMock()
+        
+        mock_result_missing = AsyncMock()
+        mock_result_missing.__aiter__ = Mock(return_value=async_gen_missing())
+        mock_result_missing.consume = AsyncMock()
+        
+        # Order: values query, total query, missing query
         mock_session.run = AsyncMock(side_effect=[
-            mock_values,  # values query
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"total": 3}]))),  # total query
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 0}])))  # missing query
+            mock_result_values,
+            mock_result_total,
+            mock_result_missing
         ])
         
         result = await repository.count_samples_by_field("disease_phase", {})
         
+        assert isinstance(result, dict)
         assert "total" in result
-        assert result["total"] == 3
+        assert "missing" in result
+        assert "values" in result
+        assert result["total"] == 150
+        assert result["missing"] == 10
+        assert len(result["values"]) == 2
+        assert mock_session.run.call_count == 3
+        
+        # Verify queries use CALL {} subquery pattern (check first query)
+        if mock_session.run.call_count > 0:
+            call_args = mock_session.run.call_args_list[0]
+            query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
+            # Should use CALL {} subquery for study resolution
+            assert 'CALL {' in query or 'MATCH (d:diagnosis)-[:of_diagnosis]->(sa:sample)' in query
 
 
 @pytest.mark.unit
@@ -1244,6 +1316,95 @@ class TestSampleRepositoryAdditionalFilters:
             )
             
             assert isinstance(result, list)
+            
+            # Verify query uses CALL {} subquery for early pagination
+            if mock_session.run.called:
+                call_args = mock_session.run.call_args
+                query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
+                # Should use CALL {} subquery or diagnosis-first path
+                assert 'CALL {' in query or 'MATCH (sa:sample)<-[:of_diagnosis]-(d:diagnosis)' in query
+
+    async def test_get_samples_with_disease_phase_and_tissue_type_combined(self, repository, mock_session):
+        """Test get_samples with both disease_phase and tissue_type filters."""
+        async def async_gen():
+            yield {
+                "sa": {"sample_id": "SAMP001", "sample_tumor_status": "Tumor"},
+                "p": {},
+                "st": {"study_id": "phs001"},
+                "sf": {},
+                "pf": {},
+                "diagnoses": {"disease_phase": "Primary"}
+            }
+        
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+        
+        with patch('app.repositories.sample.reverse_map_field_value', return_value="Primary"), \
+             patch('app.repositories.sample.load_sample_enum', return_value=["Tumor", "Normal"]):
+            result = await repository.get_samples(
+                filters={"disease_phase": "Primary", "tissue_type": "Tumor"},
+                offset=0,
+                limit=20
+            )
+        
+        assert isinstance(result, list)
+        assert mock_session.run.called
+        
+        # Verify query does NOT use CALL {} subquery (uses sequential OPTIONAL MATCH instead)
+        call_args = mock_session.run.call_args
+        query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
+        assert 'CALL {' not in query and 'CALL{' not in query.replace(' ', '')
+        
+        # Verify both filters are present
+        assert 'sample_tumor_status' in query
+        assert 'MATCH (sa:sample)<-[:of_diagnosis]-(d:diagnosis)' in query
+        
+        # Verify sequential study collection
+        assert 'OPTIONAL MATCH (sa)-[:of_sample]->(:participant)' in query or \
+               'OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)' in query
+
+    async def test_get_samples_disease_phase_with_return_total(self, repository, mock_session):
+        """Test get_samples with disease_phase filter and return_total=True."""
+        async def async_gen_list():
+            yield {
+                "sa": {"sample_id": "SAMP001"},
+                "p": {},
+                "st": {"study_id": "phs001"},
+                "sf": {},
+                "pf": {},
+                "diagnoses": {"disease_phase": "Primary"}
+            }
+        
+        async def async_gen_count():
+            yield {"total_count": 100}
+        
+        mock_result_list = AsyncMock()
+        mock_result_list.__aiter__ = Mock(return_value=async_gen_list())
+        mock_result_list.consume = AsyncMock()
+        
+        mock_result_count = AsyncMock()
+        mock_result_count.__aiter__ = Mock(return_value=async_gen_count())
+        mock_result_count.consume = AsyncMock()
+        
+        # First call is count query, second is list query
+        mock_session.run = AsyncMock(side_effect=[mock_result_count, mock_result_list])
+        
+        with patch('app.repositories.sample.reverse_map_field_value', return_value="Primary"):
+            result = await repository.get_samples(
+                filters={"disease_phase": "Primary"},
+                offset=0,
+                limit=20,
+                return_total=True
+            )
+        
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        assert isinstance(result[0], list)
+        assert isinstance(result[1], int)
+        assert result[1] == 100
+        assert mock_session.run.call_count >= 2
 
     async def test_get_samples_with_diagnosis_filter(self, repository, mock_session):
         """Test get_samples with diagnosis filter."""

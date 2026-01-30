@@ -489,9 +489,9 @@ def get_sample_filters(
                 # No '||' delimiter found - treat as single identifier value
                 filters["identifiers"] = identifiers_str
     
-    # Add non-null filters
-    if disease_phase is not None:
-        filters["disease_phase"] = disease_phase
+    # Add non-null, non-empty filters (empty string causes slow/broad query e.g. d.disease_phase = '')
+    if disease_phase is not None and str(disease_phase).strip():
+        filters["disease_phase"] = str(disease_phase).strip()
     if anatomical_sites is not None:
         # Handle anatomical_sites as string input with || delimiter (similar to race and identifiers)
         anatomical_sites_str = str(anatomical_sites).strip() if anatomical_sites else None
@@ -510,32 +510,32 @@ def get_sample_filters(
             else:
                 # No || delimiter found - treat entire value as single anatomical_sites value
                 filters["anatomical_sites"] = anatomical_sites_str
-    if library_selection_method is not None:
-        filters["library_selection_method"] = library_selection_method
-    if library_strategy is not None:
-        filters["library_strategy"] = library_strategy
-    if library_source_material is not None:
-        filters["library_source_material"] = library_source_material
-    if preservation_method is not None:
-        filters["preservation_method"] = preservation_method
-    if tumor_grade is not None:
-        filters["tumor_grade"] = tumor_grade
-    if specimen_molecular_analyte_type is not None:
-        filters["specimen_molecular_analyte_type"] = specimen_molecular_analyte_type
-    if tissue_type is not None:
-        filters["tissue_type"] = tissue_type
-    if tumor_classification is not None:
-        filters["tumor_classification"] = tumor_classification
-    if age_at_diagnosis is not None:
-        filters["age_at_diagnosis"] = age_at_diagnosis
-    if age_at_collection is not None:
-        filters["age_at_collection"] = age_at_collection
-    if tumor_tissue_morphology is not None:
-        filters["tumor_tissue_morphology"] = tumor_tissue_morphology
-    if depositions is not None:
-        filters["depositions"] = depositions
-    if diagnosis is not None:
-        filters["diagnosis"] = diagnosis
+    if library_selection_method is not None and str(library_selection_method).strip():
+        filters["library_selection_method"] = str(library_selection_method).strip()
+    if library_strategy is not None and str(library_strategy).strip():
+        filters["library_strategy"] = str(library_strategy).strip()
+    if library_source_material is not None and str(library_source_material).strip():
+        filters["library_source_material"] = str(library_source_material).strip()
+    if preservation_method is not None and str(preservation_method).strip():
+        filters["preservation_method"] = str(preservation_method).strip()
+    if tumor_grade is not None and str(tumor_grade).strip():
+        filters["tumor_grade"] = str(tumor_grade).strip()
+    if specimen_molecular_analyte_type is not None and str(specimen_molecular_analyte_type).strip():
+        filters["specimen_molecular_analyte_type"] = str(specimen_molecular_analyte_type).strip()
+    if tissue_type is not None and str(tissue_type).strip():
+        filters["tissue_type"] = str(tissue_type).strip()
+    if tumor_classification is not None and str(tumor_classification).strip():
+        filters["tumor_classification"] = str(tumor_classification).strip()
+    if age_at_diagnosis is not None and str(age_at_diagnosis).strip():
+        filters["age_at_diagnosis"] = str(age_at_diagnosis).strip()
+    if age_at_collection is not None and str(age_at_collection).strip():
+        filters["age_at_collection"] = str(age_at_collection).strip()
+    if tumor_tissue_morphology is not None and str(tumor_tissue_morphology).strip():
+        filters["tumor_tissue_morphology"] = str(tumor_tissue_morphology).strip()
+    if depositions is not None and str(depositions).strip():
+        filters["depositions"] = str(depositions).strip()
+    if diagnosis is not None and str(diagnosis).strip():
+        filters["diagnosis"] = str(diagnosis).strip()
     
     # Handle unharmonized fields from query parameters
     if request:
@@ -818,7 +818,7 @@ def get_subject_diagnosis_filters(
 def get_sample_diagnosis_filters(
     search: Optional[str] = Query(
         None,
-        description="Matches any sample where the `diagnosis` field contains the string provided, ignoring case."
+        description="Matches any sample where the `diagnosis` field contains the string provided, ignoring case. When provided, this enables experimental case-insensitive partial matching. When not provided, the endpoint behaves exactly like `/sample` endpoint."
     ),
     disease_phase: Optional[str] = Query(
         None,
@@ -882,7 +882,30 @@ def get_sample_diagnosis_filters(
     ),
     request: Request = None
 ) -> Dict[str, Any]:
-    """Get sample diagnosis search filters."""
+    """Get sample diagnosis search filters.
+    
+    When `search` is provided: Uses experimental case-insensitive partial matching.
+    When `search` is NOT provided: Behaves exactly like `/sample` endpoint (for all parameters including diagnosis).
+    Note: When search is not provided, diagnosis parameter from query_params is extracted and passed to get_sample_filters.
+    """
+    # Strip whitespace from search parameter
+    search_stripped = None
+    if search is not None:
+        search_stripped = str(search).strip() if str(search).strip() else None
+    
+    # Strip whitespace from disease_phase parameter
+    if disease_phase is not None:
+        disease_phase = str(disease_phase).strip() if str(disease_phase).strip() else None
+    
+    # When search is not provided, extract diagnosis from query_params if present
+    diagnosis_param = None
+    if not search_stripped and request:
+        diagnosis_param = request.query_params.get("diagnosis")
+        if diagnosis_param:
+            diagnosis_param = str(diagnosis_param).strip() if str(diagnosis_param).strip() else None
+    
+    # When search is not provided, endpoint behaves like /sample (including diagnosis filtering)
+    # When search is provided, experimental endpoint does NOT accept diagnosis parameter
     filters = get_sample_filters(
         disease_phase=disease_phase,
         anatomical_sites=anatomical_sites,
@@ -898,13 +921,14 @@ def get_sample_diagnosis_filters(
         age_at_collection=age_at_collection,
         tumor_tissue_morphology=tumor_tissue_morphology,
         depositions=depositions,
-        diagnosis=None,  # Always None for sample-diagnosis endpoint (use 'search' instead)
+        diagnosis=diagnosis_param if not search_stripped else None,  # Only pass diagnosis when search is not provided
         identifiers=identifiers,
         request=request
     )
     
-    if search:
-        filters["_diagnosis_search"] = search
+    # Only add _diagnosis_search when search parameter is provided and not empty
+    if search_stripped:
+        filters["_diagnosis_search"] = search_stripped
     
     return filters
 

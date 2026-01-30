@@ -212,63 +212,71 @@ async def list_samples(
         service = SampleService(session, allowlist, settings, cache_service)
         
         # Make a copy of filters for get_samples (it will modify the dict by popping identifiers)
-        # so that get_samples_summary gets the original filters dict
+        # so that get_samples_summary gets the original filters dict if needed
         filters_copy = filters.copy()
         
-        # Get samples
-        samples = await service.get_samples(
+        # Get samples with total count (optimized: uses same filter state when possible)
+        # This avoids a separate get_samples_summary call for most cases
+        result = await service.get_samples(
             filters=filters_copy,
             offset=pagination.offset,
-            limit=pagination.per_page
+            limit=pagination.per_page,
+            return_total=True
         )
         
-        # Get total count for summary (use original filters dict)
-        # If summary fails, use 0 as total (empty results)
-        try:
-            summary_result = await service.get_samples_summary(filters)
-            total_count = summary_result.counts.total
-        except DatabaseConnectionError as summary_error:
-            # Database connection error - log clearly for AWS cloud monitoring
-            logger.error(
-                "Database connection error while getting samples summary - using 0 as total",
-                error=str(summary_error),
-                error_type=type(summary_error).__name__,
-                filters=filters,
-                is_database_connection_error=True,
-                will_use_zero_total=True,
-                aws_cloudwatch_alert=True
-            )
-            total_count = 0
-        except Exception as summary_error:
-            # Check if this is a connection-related error
-            error_str = str(summary_error).lower()
-            is_connection_error = any(keyword in error_str for keyword in [
-                'connection', 'database', 'unavailable', 'timeout', 'network',
-                'service unavailable', 'broken pipe', 'connection reset', 'connection closed'
-            ])
-            
-            if is_connection_error:
-                # Connection-related error - log clearly for AWS cloud monitoring
+        # Handle tuple return (samples, total_count) or list return (samples only)
+        if isinstance(result, tuple):
+            samples, total_count = result
+            logger.debug("Using total count from get_samples (optimized path)", total_count=total_count)
+        else:
+            # Repository didn't return total (e.g. sequencing_file-only reverse query path)
+            # Fall back to get_samples_summary
+            samples = result
+            try:
+                summary_result = await service.get_samples_summary(filters)
+                total_count = summary_result.counts.total
+            except (DatabaseConnectionError, NotFoundError) as summary_error:
+                # DB / no-data error - re-raise so outer handler returns 404
                 logger.error(
-                    "Database connection issue while getting samples summary - using 0 as total",
+                    "Error getting samples summary (backend/DB) - returning 404",
                     error=str(summary_error),
                     error_type=type(summary_error).__name__,
                     filters=filters,
-                    is_connection_related=True,
-                    will_use_zero_total=True,
-                    aws_cloudwatch_alert=True,
                     exc_info=True
                 )
-            else:
-                logger.warning(
-                    "Error getting samples summary, using 0 as total",
+                if isinstance(summary_error, NotFoundError):
+                    raise summary_error
+                error_detail = ErrorDetail(
+                    kind=ErrorKind.NOT_FOUND,
+                    entity="Samples",
+                    message="Unable to find data for your request.",
+                    reason="No data found."
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+                )
+            except Exception as summary_error:
+                # Other errors (e.g. connection-related) - re-raise so outer handler returns 404
+                logger.error(
+                    "Error getting samples summary - returning 404",
                     error=str(summary_error),
                     error_type=type(summary_error).__name__,
                     filters=filters,
-                    sample_count=len(samples),  # Log how many samples were actually returned
                     exc_info=True
                 )
-            total_count = 0
+                if hasattr(summary_error, 'to_http_exception'):
+                    raise summary_error.to_http_exception()
+                error_detail = ErrorDetail(
+                    kind=ErrorKind.NOT_FOUND,
+                    entity="Samples",
+                    message="Unable to find data for your request.",
+                    reason="No data found."
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+                )
         
         # Build pagination info
         pagination_info = PaginationInfo(
@@ -315,14 +323,19 @@ async def list_samples(
         return result
         
     except Exception as e:
+        # Re-raise HTTPException (e.g. 404 from summary failure) as-is
+        if isinstance(e, HTTPException):
+            raise e
         # Check if this is a parameter validation error or query error
         if isinstance(e, (InvalidParametersError, UnsupportedFieldError)):
             # This is a parameter validation error - raise it directly
             logger.error("Invalid parameters in request", error=str(e), exc_info=True)
             raise e.to_http_exception()
+        if isinstance(e, NotFoundError):
+            # No data found (e.g. DB error) - return 404
+            raise e.to_http_exception()
         
         # Check if this is a query error (like UnboundVariable, syntax error) that indicates a real problem
-        # vs a scenario where we should return empty results
         error_str = str(e).lower()
         is_query_error = any(keyword in error_str for keyword in [
             "unbound variable", "syntax error", "type error", "mismatched input",
@@ -344,24 +357,22 @@ async def list_samples(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
             )
-        else:
-            # For other errors, log but return 200 with empty results (don't expose internal errors)
-            logger.warning(
-                "Error listing samples, returning empty results",
-                error=str(e),
-                exc_info=True
-            )
-            # Return 200 with empty data instead of 404
-            result = SamplesResponse(
-                summary={
-                    "counts": {
-                        "all": 0,
-                        "current": 0
-                    }
-                },
-                data=[]
-            )
-            return result
+        # For other errors (e.g. DB/backend error), return 404 NotFound, not empty data
+        logger.error(
+            "Error listing samples (backend/DB error), returning 404",
+            error=str(e),
+            exc_info=True
+        )
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Samples",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
 
 
 # ============================================================================

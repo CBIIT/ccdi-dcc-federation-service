@@ -123,8 +123,7 @@ class TestSampleEndpoints:
     async def test_list_samples_database_error(
         self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
     ):
-        """Test list_samples handles database connection errors."""
-        # The endpoint catches DatabaseConnectionError and returns empty results, not 404
+        """Test list_samples returns 404 (No data found) on database connection errors."""
         with patch('app.api.v1.endpoints.samples.SampleService') as mock_service_class:
             mock_service = Mock()
             mock_service.get_samples = AsyncMock(side_effect=DatabaseConnectionError("Connection failed"))
@@ -132,21 +131,20 @@ class TestSampleEndpoints:
             
             with patch('app.api.v1.endpoints.samples.get_cache_service', return_value=None):
                 with patch('app.api.v1.endpoints.samples.check_rate_limit', return_value=None):
-                    result = await list_samples(
-                        request=mock_request,
-                        response=mock_response,
-                        filters={},
-                        pagination=mock_pagination,
-                        session=mock_session,
-                        settings=mock_settings,
-                        allowlist=mock_allowlist,
-                        _rate_limit=None
-                    )
-        
-        # Should return empty SamplesResponse
-        assert isinstance(result, SamplesResponse)
-        assert len(result.data) == 0
-        assert result.summary["counts"]["all"] == 0
+                    with pytest.raises(HTTPException) as exc_info:
+                        await list_samples(
+                            request=mock_request,
+                            response=mock_response,
+                            filters={},
+                            pagination=mock_pagination,
+                            session=mock_session,
+                            settings=mock_settings,
+                            allowlist=mock_allowlist,
+                            _rate_limit=None
+                        )
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+        assert exc_info.value.detail["errors"][0]["kind"] == "NotFound"
+        assert exc_info.value.detail["errors"][0]["entity"] == "Samples"
 
     async def test_get_sample_success(
         self, mock_session, mock_settings, mock_allowlist, mock_request

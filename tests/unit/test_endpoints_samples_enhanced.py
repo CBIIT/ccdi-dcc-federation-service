@@ -96,7 +96,7 @@ class TestSampleEndpointsEnhanced:
         assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
 
     async def test_list_samples_summary_database_error(self, mock_request, mock_response, mock_session, mock_settings, mock_allowlist, mock_pagination):
-        """Test list_samples handles database connection error in summary."""
+        """Test list_samples returns 404 when summary raises database connection error."""
         from app.services.sample import SampleService
         
         mock_query_params = Mock()
@@ -121,23 +121,23 @@ class TestSampleEndpointsEnhanced:
             mock_service_class.return_value = mock_service
             
             with patch('app.api.v1.endpoints.samples.get_cache_service', return_value=None):
-                result = await list_samples(
-                    request=mock_request,
-                    response=mock_response,
-                    filters={},
-                    pagination=mock_pagination,
-                    session=mock_session,
-                    settings=mock_settings,
-                    allowlist=mock_allowlist,
-                    _rate_limit=None
-                )
-                
-                # Should still return samples but with total_count = 0
-                assert isinstance(result, SamplesResponse)
-                assert result.summary["counts"]["all"] == 0
+                with pytest.raises(HTTPException) as exc_info:
+                    await list_samples(
+                        request=mock_request,
+                        response=mock_response,
+                        filters={},
+                        pagination=mock_pagination,
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None
+                    )
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+        assert exc_info.value.detail["errors"][0]["kind"] == "NotFound"
+        assert exc_info.value.detail["errors"][0]["entity"] == "Samples"
 
     async def test_list_samples_summary_connection_error(self, mock_request, mock_response, mock_session, mock_settings, mock_allowlist, mock_pagination):
-        """Test list_samples handles connection-related error in summary."""
+        """Test list_samples returns 404 when summary raises connection-related error."""
         from app.services.sample import SampleService
         
         mock_query_params = Mock()
@@ -163,23 +163,23 @@ class TestSampleEndpointsEnhanced:
             mock_service_class.return_value = mock_service
             
             with patch('app.api.v1.endpoints.samples.get_cache_service', return_value=None):
-                result = await list_samples(
-                    request=mock_request,
-                    response=mock_response,
-                    filters={},
-                    pagination=mock_pagination,
-                    session=mock_session,
-                    settings=mock_settings,
-                    allowlist=mock_allowlist,
-                    _rate_limit=None
-                )
-                
-                # Should still return samples but with total_count = 0
-                assert isinstance(result, SamplesResponse)
-                assert result.summary["counts"]["all"] == 0
+                with pytest.raises(HTTPException) as exc_info:
+                    await list_samples(
+                        request=mock_request,
+                        response=mock_response,
+                        filters={},
+                        pagination=mock_pagination,
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None
+                    )
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+        assert exc_info.value.detail["errors"][0]["kind"] == "NotFound"
+        assert exc_info.value.detail["errors"][0]["entity"] == "Samples"
 
     async def test_list_samples_summary_other_error(self, mock_request, mock_response, mock_session, mock_settings, mock_allowlist, mock_pagination):
-        """Test list_samples handles other errors in summary."""
+        """Test list_samples returns 404 when summary raises other error."""
         from app.services.sample import SampleService
         
         mock_query_params = Mock()
@@ -205,20 +205,20 @@ class TestSampleEndpointsEnhanced:
             mock_service_class.return_value = mock_service
             
             with patch('app.api.v1.endpoints.samples.get_cache_service', return_value=None):
-                result = await list_samples(
-                    request=mock_request,
-                    response=mock_response,
-                    filters={},
-                    pagination=mock_pagination,
-                    session=mock_session,
-                    settings=mock_settings,
-                    allowlist=mock_allowlist,
-                    _rate_limit=None
-                )
-                
-                # Should still return samples but with total_count = 0
-                assert isinstance(result, SamplesResponse)
-                assert result.summary["counts"]["all"] == 0
+                with pytest.raises(HTTPException) as exc_info:
+                    await list_samples(
+                        request=mock_request,
+                        response=mock_response,
+                        filters={},
+                        pagination=mock_pagination,
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None
+                    )
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+        assert exc_info.value.detail["errors"][0]["kind"] == "NotFound"
+        assert exc_info.value.detail["errors"][0]["entity"] == "Samples"
 
     async def test_count_samples_by_field_unsupported_field_error(self, mock_request, mock_session, mock_settings, mock_allowlist):
         """Test count_samples_by_field handles UnsupportedFieldError."""

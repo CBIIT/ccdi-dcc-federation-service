@@ -6,7 +6,7 @@ using Cypher queries to Memgraph.
 """
 
 import asyncio
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union
 from neo4j import AsyncSession
 
 from app.core.logging import get_logger
@@ -206,14 +206,121 @@ class SampleRepository:
         case_parts.append(f"ELSE '{default_value}'")
         
         return f"CASE {' '.join(case_parts)} END"
+    
+    async def _get_samples_early_pagination_with_filters(
+        self,
+        filters: Dict[str, Any],
+        offset: int,
+        limit: int,
+        base_url: Optional[str] = None
+    ) -> Optional[List[Sample]]:
+        """
+        Get samples using early-pagination flow when only identifiers and/or depositions are present.
+        Flow: (1) MATCH sa + identifiers (2) study resolution + depositions (3) OPTIONAL MATCH p
+              (4) ORDER BY SKIP LIMIT [early pagination] (5) OPTIONAL MATCH d, pf, sf (6) RETURN.
+        Returns list of Sample objects, or None if filters cannot be handled by this path.
+        """
+        params: Dict[str, Any] = {"offset": offset, "limit": limit}
+        early_where_parts = [
+            "sa.sample_id IS NOT NULL",
+            "sa.sample_id <> ''",
+        ]
+        depositions_filter = ""
+        
+        # Parse identifiers (read only; do not mutate filters)
+        identifiers_value = filters.get("identifiers")
+        if identifiers_value is not None and (not isinstance(identifiers_value, str) or identifiers_value.strip()):
+            if isinstance(identifiers_value, str) and "||" in identifiers_value:
+                identifiers_list = [i.strip() for i in identifiers_value.split("||") if i.strip()]
+                identifiers_value = identifiers_list if identifiers_list else None
+            if identifiers_value:
+                params["_id_param"] = identifiers_value
+                if isinstance(identifiers_value, list):
+                    early_where_parts.append("sa.sample_id IN $_id_param")
+                else:
+                    early_where_parts.append("sa.sample_id = $_id_param")
+        
+        # Parse depositions (read only)
+        dep_value = filters.get("depositions")
+        if dep_value is not None and str(dep_value).strip():
+            if isinstance(dep_value, str) and "||" in dep_value:
+                dep_list = [d.strip() for d in dep_value.split("||") if d.strip()]
+                if dep_list:
+                    params["_dep_param"] = dep_list if len(dep_list) > 1 else dep_list[0]
+                    depositions_filter = " AND st.study_id IN $_dep_param" if len(dep_list) > 1 else " AND st.study_id = $_dep_param"
+            else:
+                params["_dep_param"] = dep_value
+                depositions_filter = " AND st.study_id = $_dep_param"
+        
+        # This path only handles identifiers and/or depositions; no other keys
+        allowed = {"identifiers", "depositions"}
+        if set(filters.keys()) - allowed:
+            return None
+        
+        early_where_clause = " AND ".join(early_where_parts)
+        
+        cypher = f"""
+        MATCH (sa:sample)
+        WHERE {early_where_clause}
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+        WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+        WITH sa, (st2_list + st1_list) AS combined
+        UNWIND combined AS sid
+        MATCH (st:study)
+        WHERE st.study_id = sid{depositions_filter}
+        OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+        WITH sa, p, st
+        ORDER BY toString(sa.sample_id)
+        SKIP $offset
+        LIMIT $limit
+        OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
+        OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)
+        OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
+        WITH sa, p, st, head(collect(DISTINCT d)) AS diagnoses, head(collect(DISTINCT pf)) AS pf, head(collect(DISTINCT sf)) AS sf
+        RETURN sa, p, st, sf, pf, diagnoses
+        """.strip()
+        
+        logger.info(
+            "Executing early pagination with filters (identifiers/depositions only)",
+            pattern="early_pagination_with_filters",
+            offset=offset,
+            limit=limit,
+        )
+        
+        result = await self.session.run(cypher, params)
+        records = []
+        async for record in result:
+            records.append(dict(record))
+        await result.consume()
+        
+        samples = []
+        for record in records:
+            try:
+                sa = dict(record["sa"]) if record.get("sa") else None
+                p = dict(record["p"]) if record.get("p") else None
+                st = dict(record["st"]) if record.get("st") else None
+                sf = dict(record["sf"]) if record.get("sf") else None
+                pf = dict(record["pf"]) if record.get("pf") else None
+                diagnoses = dict(record["diagnoses"]) if record.get("diagnoses") else None
+                if sa:
+                    sample_obj = self._record_to_sample(sa, p, st, sf, pf, diagnoses, base_url)
+                    if sample_obj:
+                        samples.append(sample_obj)
+            except Exception as e:
+                logger.warning("Error converting sample record in early-pagination path: %s", e, exc_info=True)
+                continue
+        return samples
         
     async def get_samples(
         self,
         filters: Dict[str, Any],
         offset: int = 0,
         limit: int = 20,
-        base_url: Optional[str] = None
-    ) -> List[Sample]:
+        base_url: Optional[str] = None,
+        return_total: bool = False
+    ) -> Union[List[Sample], Tuple[List[Sample], int]]:
         """
         Get paginated list of samples with filtering.
         
@@ -221,9 +328,12 @@ class SampleRepository:
             filters: Dictionary of field filters
             offset: Number of records to skip
             limit: Maximum number of records to return
-            
+            base_url: Optional base URL for sample links
+            return_total: If True, also run a count query and return (samples, total_count).
+                          Uses same filter state as list query to avoid duplicate get_samples_summary call.
+        
         Returns:
-            List of Sample objects
+            List of Sample objects, or (List of Sample objects, total_count) when return_total=True
             
         Raises:
             UnsupportedFieldError: If filter field is not allowed
@@ -232,38 +342,69 @@ class SampleRepository:
             "Fetching samples",
             filters=filters,
             offset=offset,
-            limit=limit
+            limit=limit,
+            return_total=return_total
         )
         
-        # PERFORMANCE OPTIMIZATION: Reverse query for sequencing_file-only filters
-        # When ONLY sequencing_file filters are present, use a reverse query that matches
-        # sequencing_files FIRST (using index), then finds samples
-        # This is 10-100x faster than collecting all sequencing_files first
+        # PERFORMANCE OPTIMIZATION: Reverse query for diagnosis search-only filters
+        # When ONLY _diagnosis_search is present (or with identifiers/depositions), use a reverse query that
+        # starts from diagnosis nodes with search filter, then finds samples
+        # This is 10-100x faster than matching all samples first
+        has_diagnosis_search = "_diagnosis_search" in filters
+        allowed_with_diagnosis_search = {"identifiers", "depositions", "_diagnosis_search"}
+        diagnosis_search_only = (
+            has_diagnosis_search and 
+            all(k in allowed_with_diagnosis_search for k in filters.keys())
+        )
+        
+        if diagnosis_search_only:
+            logger.info(
+                "Using optimized reverse query for diagnosis search-only filters",
+                filters=filters
+            )
+            return await self._get_samples_by_diagnosis_search(filters, offset, limit, base_url, return_total)
+        
+        # PERFORMANCE OPTIMIZATION: Combined reverse query for sequencing_file + pathology_file filters
+        # When BOTH sequencing_file AND pathology_file filters are present, use a reverse query that
+        # starts from BOTH filtered nodes and finds samples that have BOTH
+        # Sample node filters (like tissue_type) can be applied after finding samples
+        # This is 10-100x faster than matching all samples first
         sequencing_file_filter_keys = {"library_selection_method", "library_strategy", "library_source_material", "specimen_molecular_analyte_type"}
+        pathology_file_filter_keys = {"preservation_method"}
+        sample_node_filter_keys = {"tissue_type", "anatomical_sites", "age_at_collection"}  # Can be applied after reverse query
         has_sf_filters = any(k in filters for k in sequencing_file_filter_keys)
+        has_pf_filters = any(k in filters for k in pathology_file_filter_keys)
+        has_sample_filters = any(k in filters for k in sample_node_filter_keys)
+        has_other_filters = any(k not in sequencing_file_filter_keys and k not in pathology_file_filter_keys and k not in sample_node_filter_keys and k != "_diagnosis_search" for k in filters.keys())
+        
+        if has_sf_filters and has_pf_filters and not has_other_filters:
+            logger.info(
+                "Using optimized combined reverse query for sequencing_file + pathology_file filters",
+                filters=filters
+            )
+            return await self._get_samples_by_combined_filters(filters, offset, limit, base_url, return_total)
         
         # PERFORMANCE OPTIMIZATION: Reverse query for pathology_file-only filters
         # When ONLY preservation_method filter is present, use a reverse query that matches
         # pathology_files FIRST (using index), then finds samples
         # This is 10-100x faster than collecting all pathology_files first
-        pathology_file_filter_keys = {"preservation_method"}
-        has_pf_filters = any(k in filters for k in pathology_file_filter_keys)
-        
-        has_other_filters = any(k not in sequencing_file_filter_keys and k not in pathology_file_filter_keys for k in filters.keys())
-        
-        if has_sf_filters and not has_other_filters and not has_pf_filters:
-            logger.info(
-                "Using optimized reverse query for sequencing_file-only filters",
-                filters=filters
-            )
-            return await self._get_samples_by_sequencing_file_filters(filters, offset, limit, base_url)
-        
-        if has_pf_filters and not has_other_filters and not has_sf_filters:
+        if has_pf_filters and not has_sf_filters and not has_other_filters:
             logger.info(
                 "Using optimized reverse query for pathology_file-only filters",
                 filters=filters
             )
-            return await self._get_samples_by_pathology_file_filters(filters, offset, limit, base_url)
+            return await self._get_samples_by_pathology_file_filters(filters, offset, limit, base_url, return_total)
+        
+        # PERFORMANCE OPTIMIZATION: Reverse query for sequencing_file-only filters
+        # When ONLY sequencing_file filters are present, use a reverse query that matches
+        # sequencing_files FIRST (using index), then finds samples
+        # This is 10-100x faster than collecting all sequencing_files first
+        if has_sf_filters and not has_pf_filters and not has_other_filters:
+            logger.info(
+                "Using optimized reverse query for sequencing_file-only filters",
+                filters=filters
+            )
+            return await self._get_samples_by_sequencing_file_filters(filters, offset, limit, base_url, return_total)
         
         # PERFORMANCE OPTIMIZATION: Early Pagination for No-Filter Queries
         # Problem: Current query processes ALL 50,211 samples before pagination (SLOW)
@@ -274,16 +415,44 @@ class SampleRepository:
             
             params_optimized = {"offset": offset, "limit": limit}
             
+            # When return_total: run lightweight count first (same shape as summary), then list query
+            total_count = None
+            if return_total:
+                cypher_count = """
+            MATCH (sa:sample)
+            WHERE sa.sample_id IS NOT NULL
+              AND sa.sample_id <> ''
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+            WITH sa, (st2_list + st1_list) AS combined
+            UNWIND combined AS sid
+            WITH DISTINCT sa.sample_id AS sample_id, sid AS study_id
+            RETURN count(*) as total_count
+            """.strip()
+                result_count = await self.session.run(cypher_count, {})
+                recs = []
+                async for r in result_count:
+                    recs.append(dict(r))
+                await result_count.consume()
+                total_count = recs[0].get("total_count", 0) if recs else 0
+
             # Optimized query: Verify study + paginate + collect metadata
             # Key: Pagination happens BEFORE expensive metadata collection
             cypher_optimized = """
             MATCH (sa:sample)
             WHERE sa.sample_id IS NOT NULL
-              AND toString(sa.sample_id) <> ''
+              AND sa.sample_id <> ''
             OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-            OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-            WITH sa, p, coalesce(st1, st2) AS st
-            WHERE st IS NOT NULL
+            WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+            WITH sa, (st2_list + st1_list) AS combined
+            UNWIND combined AS sid
+            MATCH (st:study)
+            WHERE st.study_id = sid
+            OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
             WITH sa, p, st
             ORDER BY toString(sa.sample_id)
             SKIP $offset
@@ -335,13 +504,15 @@ class SampleRepository:
                         continue
                 
                 logger.info(f"Successfully converted {len(samples)} samples")
+                if return_total and total_count is not None:
+                    return (samples, total_count)
                 return samples
                 
             except Exception as e:
                 logger.error("Error in early pagination query", error=str(e), exc_info=True)
                 raise
         
-        # For queries WITH filters, use standard implementation
+        # For queries WITH filters, use standard implementation (early-pagination-with-all-filters tried later using same state)
         logger.info("Using standard query pattern (has filters)", filter_count=len(filters))
         
         # Build WHERE conditions and parameters
@@ -416,6 +587,7 @@ class SampleRepository:
             # We'll check if ANY diagnosis contains the search term before taking head()
         
         # Add regular filters - map to correct nodes based on field
+        preservation_method_param = None  # set when processing with_conditions
         for field, value in filters.items():
             param_counter += 1
             param_name = f"param_{param_counter}"
@@ -516,10 +688,9 @@ class SampleRepository:
                     # "Relapse" can map to both "Recurrent Disease" and "Relapse" in DB
                     reverse_mapped = reverse_map_field_value("disease_phase", value)
                     if isinstance(reverse_mapped, list):
-                        # Multiple DB values map to this API value - use OR condition
-                        db_values_list = [f"'{v}'" for v in reverse_mapped]
-                        db_values_str = ", ".join(db_values_list)
-                        with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase IN [{db_values_str}]")
+                        # Multiple DB values map to this API value - use IN clause with parameter for better query planning
+                        params[param_name] = reverse_mapped
+                        with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase IN ${param_name}")
                     else:
                         params[param_name] = reverse_mapped
                         with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase = ${param_name}")
@@ -530,7 +701,8 @@ class SampleRepository:
                 # which is processed later in the query building logic
                 self._validate_library_source_material_filter(value, param_name, params, with_conditions)
             elif field == "preservation_method":
-                with_conditions.append(f"pf IS NOT NULL AND pf.fixation_embedding_method = ${param_name}")
+                params[param_name] = value
+                with_conditions.append(("preservation_method", param_name))
             elif field == "tissue_type":
                 # Use helper function to validate tissue_type filter
                 if self._validate_tissue_type_filter(value, param_name, params, with_conditions) is None:
@@ -548,6 +720,8 @@ class SampleRepository:
                     with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_classification = ${param_name}")
             elif field == "tumor_grade":
                 with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_grade = ${param_name}")
+            elif field == "tumor_tissue_morphology":
+                with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_tissue_morphology = ${param_name}")
             elif field == "age_at_diagnosis":
                 with_conditions.append(f"diagnoses IS NOT NULL AND toInteger(diagnoses.age_at_diagnosis) = ${param_name}")
                 # Convert value to number for numeric comparison
@@ -599,7 +773,7 @@ class SampleRepository:
                 else:
                     with_conditions.append(f"sa.{field} = ${param_name}")
             
-            if field not in ["disease_phase", "tumor_grade", "age_at_diagnosis", "age_at_collection", "diagnosis", "anatomical_sites", "tissue_type"]:
+            if field not in ["disease_phase", "tumor_grade", "tumor_tissue_morphology", "tumor_classification", "age_at_diagnosis", "age_at_collection", "diagnosis", "anatomical_sites", "tissue_type"]:
                 # For non-diagnosis fields, handle list values
                 # Skip anatomical_sites as it's handled specially with tuples
                 # Skip tissue_type as it's already handled with proper validation and IN clause if needed
@@ -692,6 +866,9 @@ class SampleRepository:
             elif isinstance(condition, tuple) and condition[0] == "library_source_material_invalid":
                 # Invalid value (in null_mappings) - set impossible condition to return empty results
                 library_source_material_param = "invalid"
+            elif isinstance(condition, tuple) and condition[0] == "preservation_method":
+                preservation_method_param = condition[1]
+                # Don't add to regular_conditions - will be applied in OPTIONAL MATCH WHERE clause (early filter optimization)
             else:
                 regular_conditions.append(condition)
         
@@ -738,6 +915,65 @@ class SampleRepository:
                     all_conditions.remove(condition)
                     break
         
+        # OPTIMIZATION: Extract age_at_diagnosis, tumor_grade, and tumor_classification filters
+        # Apply them EARLY in OPTIONAL MATCH WHERE clause (similar to sequencing_file filters)
+        # This avoids collecting all diagnoses then filtering (10-20x faster)
+        diagnosis_optional_match_where = None
+        use_diagnosis_early_filter = False
+        diagnosis_early_filter_conditions = []
+        
+        # Look for diagnosis field conditions in regular_conditions
+        for condition in regular_conditions[:]:  # Use slice to iterate over copy
+            if isinstance(condition, str):
+                # Check for age_at_diagnosis filter
+                if "diagnoses.age_at_diagnosis" in condition or "toInteger(diagnoses.age_at_diagnosis)" in condition:
+                    # Extract the age_at_diagnosis part (remove "diagnoses IS NOT NULL AND ")
+                    age_part = condition.replace("diagnoses IS NOT NULL AND ", "")
+                    # Convert to use 'd' instead of 'diagnoses' for OPTIONAL MATCH filter
+                    diagnosis_early_filter_conditions.append(age_part.replace("diagnoses.", "d."))
+                    # Remove from regular_conditions since we'll filter during OPTIONAL MATCH
+                    all_conditions.remove(condition)
+                    regular_conditions.remove(condition)
+                # Check for tumor_grade filter
+                elif "diagnoses.tumor_grade" in condition:
+                    tumor_grade_part = condition.replace("diagnoses IS NOT NULL AND ", "")
+                    diagnosis_early_filter_conditions.append(tumor_grade_part.replace("diagnoses.", "d."))
+                    all_conditions.remove(condition)
+                    regular_conditions.remove(condition)
+                # Check for tumor_classification filter
+                elif "diagnoses.tumor_classification" in condition:
+                    tumor_class_part = condition.replace("diagnoses IS NOT NULL AND ", "")
+                    diagnosis_early_filter_conditions.append(tumor_class_part.replace("diagnoses.", "d."))
+                    all_conditions.remove(condition)
+                    regular_conditions.remove(condition)
+                # Check for disease_phase filter
+                elif "diagnoses.disease_phase" in condition:
+                    disease_phase_part = condition.replace("diagnoses IS NOT NULL AND ", "")
+                    # Handle IN clause (multiple values) or = clause (single value)
+                    disease_phase_part = disease_phase_part.replace("diagnoses.", "d.")
+                    diagnosis_early_filter_conditions.append(disease_phase_part)
+                    # Remove from regular_conditions since we'll filter during OPTIONAL MATCH
+                    all_conditions.remove(condition)
+                    regular_conditions.remove(condition)
+                # Check for tumor_tissue_morphology filter
+                elif "diagnoses.tumor_tissue_morphology" in condition:
+                    tumor_tissue_morphology_part = condition.replace("diagnoses IS NOT NULL AND ", "")
+                    tumor_tissue_morphology_part = tumor_tissue_morphology_part.replace("diagnoses.", "d.")
+                    diagnosis_early_filter_conditions.append(tumor_tissue_morphology_part)
+                    # Remove from regular_conditions since we'll filter during OPTIONAL MATCH
+                    all_conditions.remove(condition)
+                    regular_conditions.remove(condition)
+        
+        # Build diagnosis early filter WHERE clause if we have conditions
+        if diagnosis_early_filter_conditions:
+            # Combine conditions with AND (all must match) or OR (any can match)?
+            # For age_at_diagnosis, we want ANY diagnosis to match (OR logic)
+            # But if multiple diagnosis filters exist, they should all match the same diagnosis (AND logic)
+            # For now, use AND - if user wants OR logic, they can use multiple queries
+            combined_diagnosis_condition = " AND ".join([f"({cond})" for cond in diagnosis_early_filter_conditions])
+            diagnosis_optional_match_where = f"WHERE d IS NOT NULL AND ({combined_diagnosis_condition})"
+            use_diagnosis_early_filter = True
+        
         # When skip_second_with_for_sf is true, we'll check sf IS NOT NULL directly in WHERE clause
         # so don't add has_matching_sf condition here
         # NOTE: skip_second_with_for_sf is set later (line 781), so we check it after it's set
@@ -757,6 +993,11 @@ class SampleRepository:
         if needs_diag_collection:
             all_conditions.append("has_matching_diagnosis = true")
         
+        # When preservation_method filter is present, add pf IS NOT NULL to WHERE clause
+        # (the filter value is applied in OPTIONAL MATCH WHERE clause via early filter optimization)
+        if preservation_method_param:
+            all_conditions.append("pf IS NOT NULL")
+        
         # Separate cheap filters (can be applied before OPTIONAL MATCHes) from expensive ones
         # Cheap filters: sample_id, anatomic_site, identifiers, depositions (can filter early)
         # Expensive filters: participant/diagnosis filters (need OPTIONAL MATCH first)
@@ -771,8 +1012,9 @@ class SampleRepository:
         if identifiers_early_filter:
             early_where_conditions.append(identifiers_early_filter)
         
-        # OPTIMIZATION: Add depositions filter early (before OPTIONAL MATCHes)
-        # Filter by study_id in the MATCH clause to reduce dataset early
+        # Depositions filter: must be applied AFTER we have st (study node).
+        # Cannot go in early_where_conditions because st does not exist until after UNWIND combined AS sid; MATCH (st:study).
+        depositions_study_filter = ""
         if hasattr(self, '_depositions_early_params') and self._depositions_early_params:
             # Collect all depositions values (in case multiple depositions filters were provided)
             all_dep_values = []
@@ -785,17 +1027,178 @@ class SampleRepository:
                         all_dep_values.append(dep_value)
             
             if all_dep_values:
-                # Use a dedicated parameter name for depositions early filter to avoid conflicts
+                # Use a dedicated parameter name for depositions filter (applied when st is in scope)
                 dep_early_param_name = SampleRepository._get_next_param_name(params, param_counter)
                 if len(all_dep_values) > 1:
-                    # Multiple values - use IN clause
                     params[dep_early_param_name] = all_dep_values
-                    depositions_early_filter = f"st.study_id IN ${dep_early_param_name}"
+                    depositions_study_filter = f" AND st.study_id IN ${dep_early_param_name}"
                 else:
-                    # Single value - use = for better performance
                     params[dep_early_param_name] = all_dep_values[0]
-                    depositions_early_filter = f"st.study_id = ${dep_early_param_name}"
-                early_where_conditions.append(depositions_early_filter)
+                    depositions_study_filter = f" AND st.study_id = ${dep_early_param_name}"
+        # PERFORMANCE: Diagnosis-first path for age_at_diagnosis / tumor_grade / tumor_classification / disease_phase.
+        # Filter samples by diagnosis FIRST, then expand to studies (avoids DB crash from UNWIND all samples × studies).
+        use_diagnosis_early_filter_only = (
+            use_diagnosis_early_filter
+            and not needs_sf_collection
+            and not needs_diag_collection
+            and not anatomical_sites_list_condition
+        )
+        if use_diagnosis_early_filter_only and diagnosis_early_filter_conditions:
+            diagnosis_first_d_where = " AND ".join([f"({c})" for c in diagnosis_early_filter_conditions])
+            first_where_parts = [
+                "sa.sample_id IS NOT NULL",
+                "sa.sample_id <> ''",
+                "d IS NOT NULL",
+                f"({diagnosis_first_d_where})",
+            ]
+            if identifiers_early_filter:
+                first_where_parts.append(identifiers_early_filter)
+            diagnosis_first_where = " AND ".join(first_where_parts)
+            cypher_diagnosis_first = f"""
+            MATCH (sa:sample)<-[:of_diagnosis]-(d:diagnosis)
+            WHERE {diagnosis_first_where}
+            WITH sa, head(collect(DISTINCT d)) AS diagnoses
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            WITH sa, diagnoses, collect(DISTINCT st1.study_id) AS st1_ids
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH sa, diagnoses, st1_ids, collect(DISTINCT st2.study_id) AS st2_ids
+            WITH sa, diagnoses, st1_ids + st2_ids AS combined
+            UNWIND combined AS sid
+            WITH sa, diagnoses, sid
+            WHERE sid IS NOT NULL
+            MATCH (st:study)
+            WHERE st.study_id = sid{depositions_study_filter}
+            WITH sa, diagnoses, collect(DISTINCT st.study_id) AS filtered_study_ids
+            WHERE size(filtered_study_ids) > 0
+            OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+            OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)
+            OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
+            WITH sa, diagnoses, filtered_study_ids, head(collect(DISTINCT p)) AS p, head(collect(DISTINCT pf)) AS pf, head(collect(DISTINCT sf)) AS sf
+            UNWIND filtered_study_ids AS sid
+            WITH sa, p, pf, sf, diagnoses, sid
+            MATCH (st:study)
+            WHERE st.study_id = sid
+            WITH DISTINCT sa.sample_id AS sample_id, sa, p, head(collect(DISTINCT st)) AS st, sf, pf, diagnoses
+            ORDER BY toString(sample_id)
+            SKIP $offset
+            LIMIT $limit
+            RETURN sa, p, st, sf, pf, diagnoses
+            """.strip()
+            logger.info(
+                "Using diagnosis-first query (filter early, then expand to studies)",
+                pattern="diagnosis_first",
+                filters=list(filters.keys()),
+                has_depositions=bool(depositions_study_filter),
+                diagnosis_filters=diagnosis_early_filter_conditions,
+            )
+            try:
+                result = await self.session.run(cypher_diagnosis_first, params)
+                records = []
+                async for record in result:
+                    records.append(dict(record))
+                await result.consume()
+                samples = []
+                for record in records:
+                    try:
+                        sa = dict(record["sa"]) if record.get("sa") else None
+                        p = dict(record["p"]) if record.get("p") else None
+                        st = dict(record["st"]) if record.get("st") else None
+                        sf = dict(record["sf"]) if record.get("sf") else None
+                        pf = dict(record["pf"]) if record.get("pf") else None
+                        diagnoses = dict(record["diagnoses"]) if record.get("diagnoses") else None
+                        if sa:
+                            sample_obj = self._record_to_sample(sa, p, st, sf, pf, diagnoses, base_url)
+                            if sample_obj:
+                                samples.append(sample_obj)
+                    except Exception as e:
+                        logger.warning("Error converting diagnosis-first sample record", error=str(e), exc_info=True)
+                        continue
+                return samples
+            except Exception as e:
+                logger.warning(
+                    "Diagnosis-first query failed, falling back to standard query",
+                    error=str(e),
+                    exc_info=True,
+                )
+                # Fall through to standard query
+        # Preservation-method-first path disabled: it caused 6+ min vs ~15s for the standard query.
+        # Use the standard query (OPTIONAL MATCH pf then WHERE pf.fixation_embedding_method = $param).
+        use_preservation_method_only = False  # was: preservation_method_param and not needs_sf_collection and ...
+        if use_preservation_method_only and preservation_method_param:
+            # Start from pathology_file with filter first (avoids full scan of all (sa,pf) pairs)
+            pf_filter = f"pf.fixation_embedding_method = ${preservation_method_param}"
+            first_where_parts = [
+                "sa.sample_id IS NOT NULL",
+                "sa.sample_id <> ''",
+            ]
+            if identifiers_early_filter:
+                first_where_parts.append(identifiers_early_filter)
+            preservation_first_where = " AND ".join(first_where_parts)
+            cypher_preservation_first = f"""
+            MATCH (pf:pathology_file)
+            WHERE {pf_filter}
+            MATCH (sa:sample)<-[:of_pathology_file]-(pf)
+            WHERE {preservation_first_where}
+            WITH sa, head(collect(DISTINCT pf)) AS pf
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            WITH sa, pf, collect(DISTINCT st1.study_id) AS st1_ids
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH sa, pf, st1_ids, collect(DISTINCT st2.study_id) AS st2_ids
+            WITH sa, pf, st1_ids + st2_ids AS combined
+            UNWIND combined AS sid
+            WITH sa, pf, sid
+            WHERE sid IS NOT NULL
+            WITH sa, pf, collect(DISTINCT sid) AS study_ids
+            WHERE size(study_ids) > 0
+            OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+            OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
+            OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
+            WITH sa, pf, study_ids, head(collect(DISTINCT p)) AS p, head(collect(DISTINCT d)) AS diagnoses, head(collect(DISTINCT sf)) AS sf
+            UNWIND study_ids AS sid
+            WITH sa, p, pf, sf, diagnoses, sid
+            MATCH (st:study)
+            WHERE st.study_id = sid{depositions_study_filter}
+            WITH DISTINCT sa.sample_id AS sample_id, sa, p, head(collect(DISTINCT st)) AS st, sf, pf, diagnoses
+            ORDER BY toString(sample_id)
+            SKIP $offset
+            LIMIT $limit
+            RETURN sa, p, st, sf, pf, diagnoses
+            """.strip()
+            logger.info(
+                "Using preservation-method-first query (filter early, then expand to studies)",
+                pattern="preservation_method_first",
+                filters=list(filters.keys()),
+            )
+            try:
+                result = await self.session.run(cypher_preservation_first, params)
+                records = []
+                async for record in result:
+                    records.append(dict(record))
+                await result.consume()
+                samples = []
+                for record in records:
+                    try:
+                        sa = dict(record["sa"]) if record.get("sa") else None
+                        p = dict(record["p"]) if record.get("p") else None
+                        st = dict(record["st"]) if record.get("st") else None
+                        sf = dict(record["sf"]) if record.get("sf") else None
+                        pf = dict(record["pf"]) if record.get("pf") else None
+                        diagnoses = dict(record["diagnoses"]) if record.get("diagnoses") else None
+                        if sa:
+                            sample_obj = self._record_to_sample(sa, p, st, sf, pf, diagnoses, base_url)
+                            if sample_obj:
+                                samples.append(sample_obj)
+                    except Exception as e:
+                        logger.warning("Error converting preservation-first sample record", error=str(e), exc_info=True)
+                        continue
+                return samples
+            except Exception as e:
+                logger.warning(
+                    "Preservation-method-first query failed, falling back to standard query",
+                    error=str(e),
+                    exc_info=True,
+                )
+                # Fall through to standard query
         late_where_conditions = [
             # st IS NOT NULL check removed - IN_STUDY MATCH ensures study path exists
         ]
@@ -828,6 +1231,11 @@ class SampleRepository:
         
         # Build late WHERE clause (applied after OPTIONAL MATCHes and WITH)
         # NOTE: This will be modified later if skip_second_with_for_sf is True
+        # When diagnosis early filter is active, we need to ensure at least one matching diagnosis was found
+        if use_diagnosis_early_filter:
+            # Add check that diagnoses IS NOT NULL (at least one matching diagnosis was found)
+            if "diagnoses IS NOT NULL" not in " ".join(where_conditions):
+                where_conditions.append("diagnoses IS NOT NULL")
         where_clause = "\n        WHERE " + " AND ".join(where_conditions) if where_conditions else ""
         
         # Determine which OPTIONAL MATCH clauses are needed based on filters
@@ -841,7 +1249,7 @@ class SampleRepository:
         # These are needed for disease_phase, tumor_grade, tumor_classification, age_at_diagnosis,
         # preservation_method, library_selection_method, library_strategy, library_source_material
         needs_diagnosis = any(
-            field in filters for field in ["disease_phase", "tumor_grade", "age_at_diagnosis", "diagnosis"]
+            field in filters for field in ["disease_phase", "tumor_grade", "tumor_tissue_morphology", "tumor_classification", "age_at_diagnosis", "diagnosis"]
         ) or any("d." in str(cond) or "diagnoses" in str(cond) for cond in all_conditions if isinstance(cond, str))
         # Always include diagnosis for metadata fields
         needs_diagnosis = True
@@ -932,13 +1340,29 @@ class SampleRepository:
                     sf_optional_match_where = "WHERE false"
                     use_sf_early_filter = True
         
+        # OPTIMIZATION: Apply preservation_method filter EARLY in OPTIONAL MATCH WHERE clause
+        # This avoids collecting all pathology_files then filtering (10-20x faster)
+        pf_optional_match_where = None
+        use_pf_early_filter = False
+        if preservation_method_param:
+            pf_optional_match_where = f"WHERE pf.fixation_embedding_method = ${preservation_method_param}"
+            use_pf_early_filter = True
+        
         # Build OPTIONAL MATCH clauses
         optional_matches = []
         # Always include participant for identifiers
         optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
         # Always include diagnosis, pathology_file, and sequencing_file for metadata
-        optional_matches.append("OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)")
-        optional_matches.append("OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)")
+        # Apply early filter to diagnosis OPTIONAL MATCH if optimization applies (10-20x faster)
+        if use_diagnosis_early_filter and diagnosis_optional_match_where:
+            optional_matches.append(f"OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)\n        {diagnosis_optional_match_where}")
+        else:
+            optional_matches.append("OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)")
+        # Apply early filter to pathology_file OPTIONAL MATCH if optimization applies
+        if use_pf_early_filter and pf_optional_match_where:
+            optional_matches.append(f"OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)\n        {pf_optional_match_where}")
+        else:
+            optional_matches.append("OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)")
         # Apply early filter to sequencing_file OPTIONAL MATCH if optimization applies
         if use_sf_early_filter and sf_optional_match_where:
             optional_matches.append(f"OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)\n        {sf_optional_match_where}")
@@ -1059,6 +1483,9 @@ class SampleRepository:
                     "head(collect(DISTINCT sf)) AS sf"
                 ]
             else:
+                # When diagnosis early filter is active, we've already filtered to matching diagnoses
+                # So we just need to check if any were found (diagnoses IS NOT NULL)
+                # The WHERE clause will handle the IS NOT NULL check
                 with_collects = [
                     "head(collect(DISTINCT d)) AS diagnoses",
                     "head(collect(DISTINCT pf)) AS pf",
@@ -1312,9 +1739,123 @@ class SampleRepository:
                 with_clause=with_clause[:200] if len(with_clause) > 200 else with_clause
             )
         
+        # Early-pagination path: same filters (any params), simpler shape, pagination after OPTIONAL MATCH + WHERE + aggregate
+        # Flow: (1) MATCH sa + identifiers + sample (2) study resolution + depositions (3) OPTIONAL MATCH p,d,pf,sf (4) WHERE (5) WITH aggregate (6) ORDER BY SKIP LIMIT (7) RETURN
+        # Skip when diagnosis search is active: that filter is applied during collection (all_diagnoses), not as a simple WHERE on d.
+        if not needs_diag_collection:
+            early_where_str = " AND ".join(early_where_conditions) if early_where_conditions else "sa.sample_id IS NOT NULL AND sa.sample_id <> ''"
+            early_pagination_where_parts = []
+            for c in (where_conditions or []):
+                if not isinstance(c, str):
+                    continue
+                if "all_sfs" in c or "all_diagnoses" in c:
+                    continue
+                s = c.replace("diagnoses.", "d.").replace("diagnoses IS NOT NULL", "d IS NOT NULL")
+                if "has_matching_sf = true" in s:
+                    s = "sf IS NOT NULL"
+                elif "has_matching_diagnosis = true" in s:
+                    s = "d IS NOT NULL"
+                early_pagination_where_parts.append(s)
+            early_pagination_where = " AND ".join(early_pagination_where_parts) if early_pagination_where_parts else "true"
+            # When return_total: run lightweight count (same filters, no collect) then list query
+            total_count_early = None
+            if return_total:
+                cypher_early_count = f"""
+        MATCH (sa:sample)
+        WHERE {early_where_str}
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+        WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+        WITH sa, (st2_list + st1_list) AS combined
+        UNWIND combined AS sid
+        MATCH (st:study)
+        WHERE st.study_id = sid{depositions_study_filter}
+        {optional_matches_str}
+        WHERE {early_pagination_where}
+        WITH DISTINCT sa.sample_id AS sample_id, st.study_id AS study_id
+        RETURN count(*) as total_count
+        """.strip()
+                try:
+                    result_count = await self.session.run(cypher_early_count, params)
+                    recs = []
+                    async for r in result_count:
+                        recs.append(dict(r))
+                    await result_count.consume()
+                    total_count_early = recs[0].get("total_count", 0) if recs else 0
+                except Exception as e_count:
+                    logger.warning("Early-pagination count query failed, total will come from summary if requested", error=str(e_count))
+            cypher_early = f"""
+        MATCH (sa:sample)
+        WHERE {early_where_str}
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+        WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+        WITH sa, (st2_list + st1_list) AS combined
+        UNWIND combined AS sid
+        MATCH (st:study)
+        WHERE st.study_id = sid{depositions_study_filter}
+        {optional_matches_str}
+        WHERE {early_pagination_where}
+        WITH sa, p, st, head(collect(DISTINCT d)) AS diagnoses, head(collect(DISTINCT pf)) AS pf, head(collect(DISTINCT sf)) AS sf
+        ORDER BY toString(sa.sample_id)
+        SKIP $offset
+        LIMIT $limit
+        RETURN sa, p, st, sf, pf, diagnoses
+        """.strip()
+            try:
+                result_early = await self.session.run(cypher_early, params)
+                records_early = []
+                async for rec in result_early:
+                    records_early.append(dict(rec))
+                await result_early.consume()
+                samples_early = []
+                for record in records_early:
+                    try:
+                        sa = dict(record["sa"]) if record.get("sa") else None
+                        p = dict(record["p"]) if record.get("p") else None
+                        st = dict(record["st"]) if record.get("st") else None
+                        sf = dict(record["sf"]) if record.get("sf") else None
+                        pf = dict(record["pf"]) if record.get("pf") else None
+                        diagnoses = dict(record["diagnoses"]) if record.get("diagnoses") else None
+                        if sa:
+                            sample_obj = self._record_to_sample(sa, p, st, sf, pf, diagnoses, base_url)
+                            if sample_obj:
+                                samples_early.append(sample_obj)
+                    except Exception as e:
+                        logger.warning("Error converting sample record in early-pagination path: %s", e, exc_info=True)
+                        continue
+                logger.info(
+                    "Using early-pagination-with-filters query",
+                    filter_count=len(filters),
+                    returned=len(samples_early),
+                    has_depositions=bool(depositions_study_filter),
+                    filters=list(filters.keys()),
+                )
+                if return_total and total_count_early is not None:
+                    return (samples_early, total_count_early)
+                return samples_early
+            except Exception as e_early:
+                logger.warning(
+                    "Early-pagination-with-filters path failed, using standard query",
+                    error=str(e_early),
+                    filters=dict(filters),
+                )
+
         cypher = f"""
-        MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-        {early_where_clause}
+        MATCH (sa:sample)
+        WHERE sa.sample_id IS NOT NULL
+          AND sa.sample_id <> ''
+        {early_where_clause.replace('WHERE ', 'AND ') if early_where_clause else ''}
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+        WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+        WITH sa, (st2_list + st1_list) AS combined
+        UNWIND combined AS sid
+        MATCH (st:study)
+        WHERE st.study_id = sid{depositions_study_filter}
         {optional_matches_str}
         WITH {with_clause}
         {second_with_str}{where_clause}WITH DISTINCT {distinct_vars}
@@ -1326,6 +1867,23 @@ class SampleRepository:
         LIMIT $limit
         RETURN sa, p, st, sf, pf, diagnoses
         """.strip()
+
+        # When return_total: run count variant of standard query (same filters, count distinct sample_id+study_id)
+        total_count_std = None
+        if return_total:
+            _tail = "        ORDER BY toString(sample_id)\n        SKIP $offset\n        LIMIT $limit\n        RETURN sa, p, st, sf, pf, diagnoses"
+            _count_tail = "        WITH DISTINCT sample_id, st.study_id AS study_id\n        RETURN count(*) as total_count"
+            cypher_count_std = cypher.replace(_tail, _count_tail) if _tail in cypher else None
+            if cypher_count_std:
+                try:
+                    result_count_std = await self.session.run(cypher_count_std, params)
+                    recs_std = []
+                    async for r in result_count_std:
+                        recs_std.append(dict(r))
+                    await result_count_std.consume()
+                    total_count_std = recs_std[0].get("total_count", 0) if recs_std else 0
+                except Exception as e_count_std:
+                    logger.warning("Standard path count query failed, total will come from summary if requested", error=str(e_count_std))
         
         # DEBUG: Log the exact query section that might cause "trueWHERE" error
         if skip_second_with_for_sf:
@@ -1428,26 +1986,32 @@ class SampleRepository:
                 # Determine which OPTIONAL MATCH clauses are needed
                 needs_participant = any("p." in str(cond) for cond in all_conditions if isinstance(cond, str))
                 # Always include diagnosis, pathology_file, and sequencing_file for metadata fields
+                # Build study path first using multi-hop traversal
                 optional_matches = []
+                optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)")
+                optional_matches.append("WITH sa, collect(DISTINCT st1.study_id) AS st1_list")
+                optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)")
+                optional_matches.append("WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list")
+                optional_matches.append("WITH sa, (st2_list + st1_list) AS combined")
+                optional_matches.append("UNWIND combined AS sid")
+                optional_matches.append("MATCH (st:study)")
+                optional_matches.append("WHERE st.study_id = sid")
                 # Always include participant for identifiers
                 optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
                 # Always include diagnosis, pathology_file, and sequencing_file for metadata
                 optional_matches.append("OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)")
                 optional_matches.append("OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)")
                 optional_matches.append("OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)")
-                optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)")
-                optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)")
                 
                 optional_matches_str = "\n                ".join(optional_matches) if optional_matches else ""
                 
                 # Always include diagnosis, pathology_file, and sequencing_file for metadata
-                with_vars = ["sa", "p"]  # Always include participant for identifiers
+                with_vars = ["sa", "p", "st"]  # Always include participant and study
                 with_collects = [
                     "head(collect(DISTINCT d)) AS diagnoses",
                     "head(collect(DISTINCT pf)) AS pf",
                     "head(collect(DISTINCT sf)) AS sf"
                 ]
-                with_vars.append("coalesce(st1, st2) AS st")
                 
                 with_clause = ", ".join(with_vars)
                 if with_collects:
@@ -1463,9 +2027,11 @@ class SampleRepository:
                 
                 cypher = f"""
                 MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL
+                  AND sa.sample_id <> ''
                 {optional_matches_str}
                 WITH {with_clause}
-                {where_clause}
+                {where_clause.replace('WHERE ', 'AND ') if where_clause else ''}
                 WITH DISTINCT {return_clause}
                 RETURN {return_clause}
                 ORDER BY toString(sa.sample_id)
@@ -1596,6 +2162,8 @@ class SampleRepository:
         if not samples:
             logger.info("No samples found matching criteria", filters=filters)
         
+        if return_total and total_count_std is not None:
+            return (samples, total_count_std)
         return samples
     
     async def _get_samples_by_sequencing_file_filters(
@@ -1603,8 +2171,9 @@ class SampleRepository:
         filters: Dict[str, Any],
         offset: int = 0,
         limit: int = 20,
-        base_url: Optional[str] = None
-    ) -> List[Sample]:
+        base_url: Optional[str] = None,
+        return_total: bool = False
+    ) -> Union[List[Sample], Tuple[List[Sample], int]]:
         """
         Optimized query for sequencing_file-only filters.
         
@@ -1677,26 +2246,57 @@ class SampleRepository:
         # Build WHERE clause
         where_clause = " AND ".join(where_conditions) if where_conditions else "TRUE"
         
+        # When return_total: run lightweight count first, then list query
+        total_count_sf = None
+        if return_total:
+            cypher_count = f"""
+        MATCH (sf:sequencing_file)
+        WHERE {where_clause}
+        MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+        WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+        WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+        WITH sa, (st2_list + st1_list) AS combined
+        UNWIND combined AS sid
+        MATCH (st:study)
+        WHERE st.study_id = sid
+        WITH DISTINCT sa.sample_id AS sample_id, st.study_id AS study_id
+        RETURN count(*) as total_count
+        """.strip()
+            try:
+                result_count = await self.session.run(cypher_count, params)
+                recs = []
+                async for r in result_count:
+                    recs.append(dict(r))
+                await result_count.consume()
+                total_count_sf = recs[0].get("total_count", 0) if recs else 0
+            except Exception as e_count:
+                logger.error("Error in sequencing_file reverse count query", error=str(e_count), exc_info=True)
+                # Fall through to list query without total_count
+        
         # Build optimized reverse query
         # Key optimization: Start from sequencing_file (uses index), then find samples
-        # Use multi-hop traversal for study path (via cell_line or participant->consent_group->study)
+        # Note: For large result sets (10k+ samples), study path traversal is inherently expensive
+        # Further optimization would require database-level changes (e.g., indexed has_study property)
+        # PERFORMANCE: use the precomputed IN_STUDY relationship for sample->study lookup.
+        # This avoids the expensive traversal through cell_line/participant/consent_group.
         # IMPORTANT: We also deduplicate matching sequencing_files per (sample, study) before pagination
         # to prevent row explosion when multiple sf match the filter for the same sample.
         cypher = f"""
         MATCH (sf:sequencing_file)
         WHERE {where_clause}
         MATCH (sf)-[:of_sequencing_file]->(sa:sample)
-        WHERE sa.sample_id IS NOT NULL AND toString(sa.sample_id) <> ''
-        // study path 1 — via cell_line
+        WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
         OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-        WITH sa, sf, collect(DISTINCT st1) AS st1_list
-        // study path 2 — via participant → consent → study
-        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)
-                   -[:of_participant]->(:consent_group)
-                   -[:of_consent_group]->(st2:study)
-        WITH sa, sf, st1_list, collect(DISTINCT st2) AS st2_list
-        WITH sa, sf, coalesce(st2_list[0], st1_list[0]) AS st
-        WHERE st IS NOT NULL  // Filter out samples without studies
+        WITH sa, sf, collect(DISTINCT st1.study_id) AS st1_list
+        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+        WITH sa, sf, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+        WITH sa, sf, (st2_list + st1_list) AS combined
+        UNWIND combined AS sid
+        MATCH (st:study)
+        WHERE st.study_id = sid
         WITH sa, st, collect(DISTINCT sf) AS matching_sfs
         WITH sa, st, head(matching_sfs) AS sf
         ORDER BY toString(sa.sample_id)
@@ -1756,6 +2356,8 @@ class SampleRepository:
                     logger.error("Error converting record to sample", error=str(e), record=str(record)[:200])
                     continue
             
+            if return_total and total_count_sf is not None:
+                return (samples, total_count_sf)
             return samples
             
         except Exception as e:
@@ -1767,8 +2369,9 @@ class SampleRepository:
         filters: Dict[str, Any],
         offset: int = 0,
         limit: int = 20,
-        base_url: Optional[str] = None
-    ) -> List[Sample]:
+        base_url: Optional[str] = None,
+        return_total: bool = False
+    ) -> Union[List[Sample], Tuple[List[Sample], int]]:
         """
         Optimized query for pathology_file-only filters.
         
@@ -1795,26 +2398,55 @@ class SampleRepository:
         # Build WHERE clause
         where_clause = " AND ".join(where_conditions) if where_conditions else "TRUE"
         
+        # When return_total: run lightweight count first, then list query
+        total_count_pf = None
+        if return_total:
+            cypher_count = f"""
+        MATCH (pf:pathology_file)
+        WHERE {where_clause}
+        MATCH (pf)-[:of_pathology_file]->(sa:sample)
+        WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+        WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+        WITH sa, (st2_list + st1_list) AS combined
+        UNWIND combined AS sid
+        MATCH (st:study)
+        WHERE st.study_id = sid
+        WITH DISTINCT sa.sample_id AS sample_id, st.study_id AS study_id
+        RETURN count(*) as total_count
+        """.strip()
+            try:
+                result_count = await self.session.run(cypher_count, params)
+                recs = []
+                async for r in result_count:
+                    recs.append(dict(r))
+                await result_count.consume()
+                total_count_pf = recs[0].get("total_count", 0) if recs else 0
+            except Exception as e_count:
+                logger.error("Error in pathology_file reverse count query", error=str(e_count), exc_info=True)
+                # Fall through to list query without total_count
+        
         # Build optimized reverse query
         # Key optimization: Start from pathology_file (uses index), then find samples
-        # Use multi-hop traversal for study path (via cell_line or participant->consent_group->study)
+        # PERFORMANCE: use the precomputed IN_STUDY relationship for sample->study lookup.
+        # This avoids the expensive traversal through cell_line/participant/consent_group.
         # IMPORTANT: We also deduplicate matching pathology_files per (sample, study) before pagination
         # to prevent row explosion when multiple pf match the filter for the same sample.
         cypher = f"""
         MATCH (pf:pathology_file)
         WHERE {where_clause}
         MATCH (pf)-[:of_pathology_file]->(sa:sample)
-        WHERE sa.sample_id IS NOT NULL AND toString(sa.sample_id) <> ''
-        // study path 1 — via cell_line
+        WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
         OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-        WITH sa, pf, collect(DISTINCT st1) AS st1_list
-        // study path 2 — via participant → consent → study
-        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)
-                   -[:of_participant]->(:consent_group)
-                   -[:of_consent_group]->(st2:study)
-        WITH sa, pf, st1_list, collect(DISTINCT st2) AS st2_list
-        WITH sa, pf, coalesce(st2_list[0], st1_list[0]) AS st
-        WHERE st IS NOT NULL  // Filter out samples without studies
+        WITH sa, pf, collect(DISTINCT st1.study_id) AS st1_list
+        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+        WITH sa, pf, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+        WITH sa, pf, (st2_list + st1_list) AS combined
+        UNWIND combined AS sid
+        MATCH (st:study)
+        WHERE st.study_id = sid
         WITH sa, st, collect(DISTINCT pf) AS matching_pfs
         WITH sa, st, head(matching_pfs) AS pf
         ORDER BY toString(sa.sample_id)
@@ -1825,8 +2457,8 @@ class SampleRepository:
         OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
         WITH sa, p, st,
              head(collect(DISTINCT d)) AS diagnoses,
-             pf,
-             head(collect(DISTINCT sf)) AS sf
+             head(collect(DISTINCT sf)) AS sf,
+             pf
         RETURN sa, p, st, sf, pf, diagnoses
         """.strip()
         
@@ -1845,7 +2477,7 @@ class SampleRepository:
             await result.consume()
             
             logger.info(
-                "Reverse query executed successfully",
+                "Pathology_file reverse query executed successfully",
                 records_count=len(records)
             )
             
@@ -1874,10 +2506,444 @@ class SampleRepository:
                     logger.error("Error converting record to sample", error=str(e), record=str(record)[:200])
                     continue
             
+            if return_total and total_count_pf is not None:
+                return (samples, total_count_pf)
             return samples
             
         except Exception as e:
-            logger.error("Error executing reverse query", error=str(e), exc_info=True)
+            logger.error("Error executing pathology_file reverse query", error=str(e), exc_info=True)
+            raise
+    
+    async def _get_samples_by_combined_filters(
+        self,
+        filters: Dict[str, Any],
+        offset: int = 0,
+        limit: int = 20,
+        base_url: Optional[str] = None,
+        return_total: bool = False
+    ) -> Union[List[Sample], Tuple[List[Sample], int]]:
+        """
+        Optimized query for combined sequencing_file + pathology_file filters.
+        
+        Uses REVERSE query approach:
+        1. Match sequencing_files with filter (uses index - FAST)
+        2. Match pathology_files with filter (uses index - FAST)
+        3. Find samples that have BOTH (via join on sample)
+        4. Do other relationship traversals
+        
+        This is 10-100x faster than matching all samples first.
+        """
+        params = {"offset": offset, "limit": limit}
+        sf_where_conditions = []
+        pf_where_conditions = []
+        param_counter = 0
+        
+        # Build WHERE conditions for sequencing_file properties
+        sequencing_file_filter_keys = {"library_selection_method", "library_strategy", "library_source_material", "specimen_molecular_analyte_type"}
+        for field, value in filters.items():
+            if field not in sequencing_file_filter_keys:
+                continue
+            param_counter += 1
+            param_name = f"param_{param_counter}"
+            
+            if field == "library_source_material":
+                if is_null_mapped_value("library_source_material", value):
+                    logger.info("Invalid library_source_material value - returning empty results", value=value)
+                    return [] if not return_total else ([], 0)
+                reverse_mapped = reverse_map_field_value("library_source_material", value)
+                params[param_name] = reverse_mapped
+                sf_where_conditions.append(f"sf.library_source_material = ${param_name}")
+            elif field == "library_strategy":
+                if is_database_only_value("library_strategy", value):
+                    logger.info("Invalid library_strategy value - returning empty results", value=value)
+                    return [] if not return_total else ([], 0)
+                reverse_mapped = reverse_map_field_value("library_strategy", value)
+                if reverse_mapped and reverse_mapped != value:
+                    param_counter += 1
+                    param_name2 = f"param_{param_counter}"
+                    params[param_name] = reverse_mapped if isinstance(reverse_mapped, str) else reverse_mapped[0]
+                    params[param_name2] = value
+                    sf_where_conditions.append(f"(sf.library_strategy = ${param_name} OR sf.library_strategy = ${param_name2})")
+                else:
+                    params[param_name] = value
+                    sf_where_conditions.append(f"sf.library_strategy = ${param_name}")
+            elif field == "library_selection_method":
+                if is_database_only_value("library_selection_method", value):
+                    logger.info("Invalid library_selection_method value - returning empty results", value=value)
+                    return [] if not return_total else ([], 0)
+                db_value = SampleRepository._reverse_map_library_selection_method_static(value)
+                params[param_name] = db_value
+                sf_where_conditions.append(f"sf.library_selection = ${param_name}")
+            elif field == "specimen_molecular_analyte_type":
+                if is_database_only_value("specimen_molecular_analyte_type", value) or is_null_mapped_value("specimen_molecular_analyte_type", value):
+                    logger.info("Invalid specimen_molecular_analyte_type value - returning empty results", value=value)
+                    return [] if not return_total else ([], 0)
+                reverse_mapped = reverse_map_field_value("specimen_molecular_analyte_type", value)
+                if isinstance(reverse_mapped, list):
+                    db_values_str = ", ".join([f"'{v}'" for v in reverse_mapped])
+                    sf_where_conditions.append(f"sf.library_source_molecule IN [{db_values_str}]")
+                else:
+                    params[param_name] = reverse_mapped
+                    sf_where_conditions.append(f"sf.library_source_molecule = ${param_name}")
+        
+        # Build WHERE conditions for pathology_file properties
+        if "preservation_method" in filters:
+            param_counter += 1
+            param_name = f"param_{param_counter}"
+            params[param_name] = filters["preservation_method"]
+            pf_where_conditions.append(f"pf.fixation_embedding_method = ${param_name}")
+        
+        # Build WHERE conditions for sample node properties (can be applied after reverse query)
+        sa_where_conditions = []
+        if "tissue_type" in filters:
+            param_counter += 1
+            param_name = f"param_{param_counter}"
+            tissue_value = filters["tissue_type"]
+            valid_values = load_sample_enum("sample_tumor_status")
+            if valid_values:
+                if isinstance(tissue_value, list):
+                    invalid_values = [v for v in tissue_value if v not in valid_values]
+                    if invalid_values:
+                        return [] if not return_total else ([], 0)
+                    params[param_name] = tissue_value
+                    sa_where_conditions.append(f"sa.sample_tumor_status IN ${param_name}")
+                else:
+                    if tissue_value not in valid_values:
+                        return [] if not return_total else ([], 0)
+                    params[param_name] = [tissue_value]
+                    sa_where_conditions.append(f"sa.sample_tumor_status IN ${param_name}")
+        
+        # Build WHERE clauses
+        sf_where_clause = " AND ".join(sf_where_conditions) if sf_where_conditions else "TRUE"
+        pf_where_clause = " AND ".join(pf_where_conditions) if pf_where_conditions else "TRUE"
+        sa_where_clause = " AND ".join(sa_where_conditions) if sa_where_conditions else ""
+        
+        # When return_total: run lightweight count first, then list query
+        total_count_combined = None
+        if return_total:
+            cypher_count = f"""
+        MATCH (sf:sequencing_file)
+        WHERE {sf_where_clause}
+        MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+        WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+        MATCH (pf:pathology_file)
+        WHERE {pf_where_clause}
+        MATCH (pf)-[:of_pathology_file]->(sa)
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+        WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+        WITH sa, (st2_list + st1_list) AS combined
+        UNWIND combined AS sid
+        MATCH (st:study)
+        WHERE st.study_id = sid
+        WITH DISTINCT sa.sample_id AS sample_id, st.study_id AS study_id
+        RETURN count(*) as total_count
+        """.strip()
+            try:
+                result_count = await self.session.run(cypher_count, params)
+                recs = []
+                async for r in result_count:
+                    recs.append(dict(r))
+                await result_count.consume()
+                total_count_combined = recs[0].get("total_count", 0) if recs else 0
+            except Exception as e_count:
+                logger.error("Error in combined reverse count query", error=str(e_count), exc_info=True)
+                # Fall through to list query without total_count
+        
+        # Build optimized combined reverse query
+        # Key optimization: Start from BOTH sequencing_file AND pathology_file with filters, then find samples
+        # This ensures we only process samples that have BOTH matching files
+        # Sample node filters (like tissue_type) are applied on the sample node after reverse matching
+        cypher = f"""
+        MATCH (sf:sequencing_file)
+        WHERE {sf_where_clause}
+        MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+        WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''{f" AND {sa_where_clause}" if sa_where_clause else ""}
+        MATCH (pf:pathology_file)
+        WHERE {pf_where_clause}
+        MATCH (pf)-[:of_pathology_file]->(sa)
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        WITH sa, sf, pf, collect(DISTINCT st1.study_id) AS st1_list
+        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+        WITH sa, sf, pf, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+        WITH sa, sf, pf, (st2_list + st1_list) AS combined
+        UNWIND combined AS sid
+        MATCH (st:study)
+        WHERE st.study_id = sid
+        WITH sa, st, collect(DISTINCT sf) AS matching_sfs, collect(DISTINCT pf) AS matching_pfs
+        WITH sa, st, head(matching_sfs) AS sf, head(matching_pfs) AS pf
+        ORDER BY toString(sa.sample_id)
+        SKIP $offset
+        LIMIT $limit
+        OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+        OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
+        WITH sa, p, st,
+             head(collect(DISTINCT d)) AS diagnoses,
+             sf,
+             pf
+        RETURN sa, p, st, sf, pf, diagnoses
+        """.strip()
+        
+        logger.info(
+            "Executing optimized combined reverse query",
+            cypher=cypher[:300],
+            params=params
+        )
+        
+        # Execute query
+        try:
+            result = await self.session.run(cypher, params)
+            records = []
+            async for record in result:
+                records.append(dict(record))
+            await result.consume()
+            
+            logger.info(
+                "Combined reverse query executed successfully",
+                records_count=len(records)
+            )
+            
+            # Convert records to Sample objects
+            samples = []
+            for record in records:
+                try:
+                    sa_node = record.get("sa")
+                    p_node = record.get("p")
+                    st_node = record.get("st")
+                    sf_node = record.get("sf")
+                    pf_node = record.get("pf")
+                    diagnoses_node = record.get("diagnoses")
+                    
+                    # Convert nodes to dictionaries
+                    sa = dict(sa_node) if sa_node else {}
+                    p = dict(p_node) if p_node else {}
+                    st = dict(st_node) if st_node else {}
+                    sf = dict(sf_node) if sf_node else {}
+                    pf = dict(pf_node) if pf_node else {}
+                    diagnoses = dict(diagnoses_node) if diagnoses_node else {}
+                    
+                    sample = self._record_to_sample(sa, p, st, sf, pf, diagnoses, base_url=base_url)
+                    samples.append(sample)
+                except Exception as e:
+                    logger.error("Error converting record to sample", error=str(e), record=str(record)[:200])
+                    continue
+            
+            if return_total and total_count_combined is not None:
+                return (samples, total_count_combined)
+            return samples
+            
+        except Exception as e:
+            logger.error("Error executing combined reverse query", error=str(e), exc_info=True)
+            raise
+    
+    async def _get_samples_by_diagnosis_search(
+        self,
+        filters: Dict[str, Any],
+        offset: int = 0,
+        limit: int = 20,
+        base_url: Optional[str] = None,
+        return_total: bool = False
+    ) -> Union[List[Sample], Tuple[List[Sample], int]]:
+        """
+        Optimized query for diagnosis search-only filters.
+        
+        Uses REVERSE query approach:
+        1. Match diagnosis nodes with search filter (uses index - FAST)
+        2. Find samples related to those diagnoses
+        3. Do other relationship traversals
+        
+        This is 10-100x faster than matching all samples first.
+        """
+        params = {"offset": offset, "limit": limit}
+        param_counter = 0
+        
+        # Extract diagnosis search term
+        diagnosis_search_term = filters.get("_diagnosis_search")
+        if not diagnosis_search_term:
+            return [] if not return_total else ([], 0)
+        
+        # Pre-process search term to lowercase (done once in Python)
+        diagnosis_search_term_lower = diagnosis_search_term.lower().strip()
+        params["diagnosis_search_term"] = diagnosis_search_term
+        params["diagnosis_search_term_lower"] = diagnosis_search_term_lower
+        params["diagnosis_search_term_see_comment"] = "see diagnosis_comment"
+        
+        # Build diagnosis search filter
+        diagnosis_search_filter = """(toLower(trim(toString(d.diagnosis))) <> $diagnosis_search_term_see_comment AND 
+                 CASE 
+                   WHEN valueType(d.diagnosis) = 'LIST' THEN 
+                     ANY(diag IN d.diagnosis WHERE toLower(toString(diag)) CONTAINS $diagnosis_search_term_lower)
+                   ELSE 
+                     toLower(toString(d.diagnosis)) CONTAINS $diagnosis_search_term_lower
+                 END)
+                OR
+                (toLower(trim(toString(d.diagnosis))) = $diagnosis_search_term_see_comment AND 
+                 d.diagnosis_comment IS NOT NULL AND 
+                 toLower(toString(d.diagnosis_comment)) CONTAINS $diagnosis_search_term_lower)"""
+        
+        # Handle identifiers filter if present
+        identifiers_early_filter = None
+        if "identifiers" in filters:
+            identifiers_value = filters["identifiers"]
+            if identifiers_value:
+                if isinstance(identifiers_value, str) and "||" in identifiers_value:
+                    identifiers_list = [i.strip() for i in identifiers_value.split("||")]
+                    identifiers_list = [i for i in identifiers_list if i]
+                    identifiers_value = identifiers_list if identifiers_list else None
+                
+                if identifiers_value:
+                    param_counter += 1
+                    id_param = f"param_{param_counter}"
+                    params[id_param] = identifiers_value
+                    if isinstance(identifiers_value, list):
+                        identifiers_early_filter = f"sa.sample_id IN ${id_param}"
+                    else:
+                        identifiers_early_filter = f"sa.sample_id = ${id_param}"
+        
+        # Handle depositions filter
+        depositions_study_filter = ""
+        if "depositions" in filters:
+            dep_value = filters["depositions"]
+            if isinstance(dep_value, str) and "||" in dep_value:
+                dep_list = [d.strip() for d in dep_value.split("||") if d.strip()]
+                dep_list = [d for d in dep_list if d]
+                if len(dep_list) > 1:
+                    param_counter += 1
+                    dep_param = f"param_{param_counter}"
+                    params[dep_param] = dep_list
+                    depositions_study_filter = f" AND st.study_id IN ${dep_param}"
+                elif len(dep_list) == 1:
+                    param_counter += 1
+                    dep_param = f"param_{param_counter}"
+                    params[dep_param] = dep_list[0]
+                    depositions_study_filter = f" AND st.study_id = ${dep_param}"
+            else:
+                param_counter += 1
+                dep_param = f"param_{param_counter}"
+                params[dep_param] = dep_value
+                depositions_study_filter = f" AND st.study_id = ${dep_param}"
+        
+        # When return_total: run lightweight count first, then list query
+        total_count_diag = None
+        if return_total:
+            sa_where_parts = ["sa.sample_id IS NOT NULL", "sa.sample_id <> ''"]
+            if identifiers_early_filter:
+                sa_where_parts.append(identifiers_early_filter)
+            sa_where_clause = " AND ".join(sa_where_parts)
+            
+            cypher_count = f"""
+        MATCH (d:diagnosis)
+        WHERE {diagnosis_search_filter}
+        MATCH (d)-[:of_diagnosis]->(sa:sample)
+        WHERE {sa_where_clause}
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+        WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+        WITH sa, (st2_list + st1_list) AS combined
+        UNWIND combined AS sid
+        MATCH (st:study)
+        WHERE st.study_id = sid{depositions_study_filter}
+        WITH DISTINCT sa.sample_id AS sample_id, st.study_id AS study_id
+        RETURN count(*) as total_count
+        """.strip()
+            try:
+                result_count = await self.session.run(cypher_count, params)
+                recs = []
+                async for r in result_count:
+                    recs.append(dict(r))
+                await result_count.consume()
+                total_count_diag = recs[0].get("total_count", 0) if recs else 0
+            except Exception as e_count:
+                logger.error("Error in diagnosis search reverse count query", error=str(e_count), exc_info=True)
+                # Fall through to list query without total_count
+        
+        # Build optimized reverse query
+        # Key optimization: Start from diagnosis nodes with search filter, then find samples
+        sa_where_parts = ["sa.sample_id IS NOT NULL", "sa.sample_id <> ''"]
+        if identifiers_early_filter:
+            sa_where_parts.append(identifiers_early_filter)
+        sa_where_clause = " AND ".join(sa_where_parts)
+        
+        cypher = f"""
+        MATCH (d:diagnosis)
+        WHERE {diagnosis_search_filter}
+        MATCH (d)-[:of_diagnosis]->(sa:sample)
+        WHERE {sa_where_clause}
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        WITH sa, d, collect(DISTINCT st1.study_id) AS st1_list
+        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+        WITH sa, d, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+        WITH sa, d, (st2_list + st1_list) AS combined
+        UNWIND combined AS sid
+        MATCH (st:study)
+        WHERE st.study_id = sid{depositions_study_filter}
+        WITH sa, st, collect(DISTINCT d) AS matching_diagnoses
+        WITH sa, st, head(matching_diagnoses) AS diagnoses
+        ORDER BY toString(sa.sample_id)
+        SKIP $offset
+        LIMIT $limit
+        OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+        OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)
+        OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
+        WITH sa, p, st,
+             diagnoses,
+             head(collect(DISTINCT pf)) AS pf,
+             head(collect(DISTINCT sf)) AS sf
+        RETURN sa, p, st, sf, pf, diagnoses
+        """.strip()
+        
+        logger.info(
+            "Executing optimized reverse query for diagnosis search",
+            cypher=cypher[:300],
+            params={k: v for k, v in params.items() if k != "diagnosis_search_term_lower"}
+        )
+        
+        # Execute query
+        try:
+            result = await self.session.run(cypher, params)
+            records = []
+            async for record in result:
+                records.append(dict(record))
+            await result.consume()
+            
+            logger.info(
+                "Diagnosis search reverse query executed successfully",
+                records_count=len(records)
+            )
+            
+            # Convert records to Sample objects
+            samples = []
+            for record in records:
+                try:
+                    sa_node = record.get("sa")
+                    p_node = record.get("p")
+                    st_node = record.get("st")
+                    sf_node = record.get("sf")
+                    pf_node = record.get("pf")
+                    diagnoses_node = record.get("diagnoses")
+                    
+                    # Convert nodes to dictionaries
+                    sa = dict(sa_node) if sa_node else {}
+                    p = dict(p_node) if p_node else {}
+                    st = dict(st_node) if st_node else {}
+                    sf = dict(sf_node) if sf_node else {}
+                    pf = dict(pf_node) if pf_node else {}
+                    diagnoses = dict(diagnoses_node) if diagnoses_node else {}
+                    
+                    sample = self._record_to_sample(sa, p, st, sf, pf, diagnoses, base_url=base_url)
+                    samples.append(sample)
+                except Exception as e:
+                    logger.error("Error converting record to sample", error=str(e), record=str(record)[:200])
+                    continue
+            
+            if return_total and total_count_diag is not None:
+                return (samples, total_count_diag)
+            return samples
+            
+        except Exception as e:
+            logger.error("Error executing diagnosis search reverse query", error=str(e), exc_info=True)
             raise
     
     async def get_sample_by_identifier(
@@ -1912,11 +2978,17 @@ class SampleRepository:
         cypher = """
         MATCH (sa:sample)
         WHERE sa.sample_id = $sample_name
+          AND sa.sample_id IS NOT NULL
+          AND sa.sample_id <> ''
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+        WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+        WITH sa, (st2_list + st1_list) AS combined
+        UNWIND combined AS sid
+        MATCH (st:study)
+        WHERE st.study_id = sid AND st.study_id = $namespace
         OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-        OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st1:study)
-        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st2:study)
-        WITH sa, p, coalesce(st1, st2) AS st
-        WHERE st IS NOT NULL AND st.study_id = $namespace
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
         OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)
         OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
@@ -2197,6 +3269,53 @@ class SampleRepository:
                     condition=anatomical_sites_condition
                 )
         
+        # Handle diagnosis field filters (disease_phase, tumor_grade, tumor_classification, age_at_diagnosis, tumor_tissue_morphology)
+        # These need to reference diagnoses node, not participant node
+        diagnosis_filter_fields = ["disease_phase", "tumor_grade", "tumor_classification", "age_at_diagnosis", "tumor_tissue_morphology", "diagnosis"]
+        for filter_field in list(filters.keys()):
+            if filter_field in diagnosis_filter_fields:
+                value = filters.pop(filter_field)
+                param_counter += 1
+                param_name = f"param_{param_counter}"
+                
+                if filter_field == "disease_phase":
+                    if is_database_only_value("disease_phase", value) or is_null_mapped_value("disease_phase", value):
+                        base_where_conditions.append("false")
+                    else:
+                        reverse_mapped = reverse_map_field_value("disease_phase", value)
+                        if isinstance(reverse_mapped, list):
+                            params[param_name] = reverse_mapped
+                            base_where_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase IN ${param_name}")
+                        else:
+                            params[param_name] = reverse_mapped
+                            base_where_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase = ${param_name}")
+                elif filter_field == "tumor_classification":
+                    if is_null_mapped_value("tumor_classification", value):
+                        base_where_conditions.append("false")
+                    else:
+                        reverse_mapped = reverse_map_field_value("tumor_classification", value)
+                        params[param_name] = reverse_mapped
+                        base_where_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_classification = ${param_name}")
+                elif filter_field == "tumor_grade":
+                    params[param_name] = value
+                    base_where_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_grade = ${param_name}")
+                elif filter_field == "tumor_tissue_morphology":
+                    params[param_name] = value
+                    base_where_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_tissue_morphology = ${param_name}")
+                elif filter_field == "age_at_diagnosis":
+                    try:
+                        params[param_name] = int(value) if value is not None else None
+                    except (ValueError, TypeError):
+                        params[param_name] = value
+                    base_where_conditions.append(f"diagnoses IS NOT NULL AND toInteger(diagnoses.age_at_diagnosis) = ${param_name}")
+                elif filter_field == "diagnosis":
+                    params[param_name] = value
+                    base_where_conditions.append(f"""(diagnoses IS NOT NULL AND 
+                        (diagnoses.diagnosis = ${param_name} OR 
+                        (toLower(trim(toString(diagnoses.diagnosis))) = 'see diagnosis_comment' AND 
+                        diagnoses.diagnosis_comment IS NOT NULL AND 
+                        trim(toString(diagnoses.diagnosis_comment)) = ${param_name})))""")
+        
         # Add regular filters (participant fields)
         for filter_field, value in filters.items():
             param_counter += 1
@@ -2474,9 +3593,17 @@ class SampleRepository:
                             params["mapped_db_values"] = mapped_db_values
                             invalid_list_filter = build_invalid_value_list_filter(field)
                             cypher = f"""
-                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-                WHERE sa.sample_id IS NOT NULL 
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL
                   AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+                WITH sa, (st2_list + st1_list) AS combined
+                UNWIND combined AS sid
+                MATCH (st:study)
+                WHERE st.study_id = sid
                 OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
                 WITH toString(sa.sample_id) AS sample_id,
                      toString(st.study_id) AS study_id,
@@ -2547,8 +3674,17 @@ class SampleRepository:
                             # - valid_values: Filter for enum values AND exclude null_mappings (for counting values)
                             # - is_missing: Only check if no valid values exist (NULL/empty/-999/null_mappings), WITHOUT enum check
                             cypher = f"""
-                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL
+                  AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+                WITH sa, (st2_list + st1_list) AS combined
+                UNWIND combined AS sid
+                MATCH (st:study)
+                WHERE st.study_id = sid
                 OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
                 WITH toString(sa.sample_id) AS sample_id,
                      toString(st.study_id) AS study_id,
@@ -2594,8 +3730,17 @@ class SampleRepository:
                         else:
                             # Fallback to original approach if enum not available
                             cypher = f"""
-                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL
+                  AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+                WITH sa, (st2_list + st1_list) AS combined
+                UNWIND combined AS sid
+                MATCH (st:study)
+                WHERE st.study_id = sid
                 OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
                 WITH toString(sa.sample_id) AS sample_id,
                      toString(st.study_id) AS study_id,
@@ -2641,8 +3786,17 @@ class SampleRepository:
                             # - Values: samples with valid values, grouped by strategy
                             invalid_list_filter = build_invalid_value_list_filter(field)
                             cypher = f"""
-                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL
+                  AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+                WITH sa, (st2_list + st1_list) AS combined
+                UNWIND combined AS sid
+                MATCH (st:study)
+                WHERE st.study_id = sid
                 OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
                 WITH toString(sa.sample_id) AS sample_id,
                      toString(st.study_id) AS study_id,
@@ -2698,9 +3852,17 @@ class SampleRepository:
                             # - Performance: 6.09s vs 6.89s (13% faster)
                             invalid_filter = build_invalid_value_filter(node_field, field)
                             cypher = f"""
-                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-                WHERE sa.sample_id IS NOT NULL 
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL
                   AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+                WITH sa, (st2_list + st1_list) AS combined
+                UNWIND combined AS sid
+                MATCH (st:study)
+                WHERE st.study_id = sid
                 MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
                 WHERE {invalid_filter}
                 WITH toString(sa.sample_id) AS sample_id,
@@ -2725,8 +3887,17 @@ class SampleRepository:
                     # - Values: samples with valid values, grouped by method
                     invalid_list_filter = build_invalid_value_list_filter(field)
                     cypher = f"""
-                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL
+                  AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+                WITH sa, (st2_list + st1_list) AS combined
+                UNWIND combined AS sid
+                MATCH (st:study)
+                WHERE st.study_id = sid
                 OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)
                 WITH toString(sa.sample_id) AS sample_id,
                      toString(st.study_id) AS study_id,
@@ -2775,10 +3946,18 @@ class SampleRepository:
                     # - Simplify redundant WHERE conditions (assume string fields)
                     invalid_filter = build_invalid_value_filter(node_field, field)
                     cypher = f"""
-                MATCH (d:diagnosis)-[:of_diagnosis]->(sa:sample)-[:IN_STUDY]->(st:study)
-                WHERE sa.sample_id IS NOT NULL 
+                MATCH (d:diagnosis)-[:of_diagnosis]->(sa:sample)
+                WHERE sa.sample_id IS NOT NULL
                   AND sa.sample_id <> ''
                   AND {invalid_filter}
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                WITH sa, d, collect(DISTINCT st1.study_id) AS st1_list
+                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, d, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+                WITH sa, d, (st2_list + st1_list) AS combined
+                UNWIND combined AS sid
+                MATCH (st:study)
+                WHERE st.study_id = sid
                 WITH toString(sa.sample_id) AS sample_id,
                      toString(st.study_id) AS study_id,
                      head(collect(DISTINCT {node_field})) as value
@@ -2787,7 +3966,7 @@ class SampleRepository:
                 ORDER BY count DESC, value ASC
                 """.strip()
                 elif node_alias == "sa" and not base_where_clause:
-                    # Optimized query for sample node fields (tissue_type, age_at_collection, tumor_tissue_morphology):
+                    # Optimized query for sample node fields (tissue_type, age_at_collection):
                     # 1. Use IN_STUDY shortcut for consistency with total/missing queries (much faster and avoids null issues)
                     # 2. Filter invalid values early
                     # 3. Group by field value and count distinct samples
@@ -2795,14 +3974,22 @@ class SampleRepository:
                     # - Use IN_STUDY shortcut instead of optional matches (much faster)
                     # - Consistent query structure with total and missing queries
                     cypher = f"""
-                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-                WHERE sa.sample_id IS NOT NULL 
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL
                   AND sa.sample_id <> ''
                   AND {node_field} IS NOT NULL
                   AND toString({node_field}) <> ''
                   AND trim(toString({node_field})) <> ''
                   AND toString({node_field}) <> '-999'
                   AND trim(toString({node_field})) <> '-999'
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+                WITH sa, (st2_list + st1_list) AS combined
+                UNWIND combined AS sid
+                MATCH (st:study)
+                WHERE st.study_id = sid
                 WITH sa.sample_id as sample_id, st.study_id as study_id, {node_field} as value
                 RETURN toString(value) as value, count(*) AS count
                 ORDER BY count DESC, value ASC
@@ -3031,8 +4218,17 @@ class SampleRepository:
                     node_field = f"{node_alias}.{sample_metadata_field_mapping.get(field, ('', field))[1]}"
                 
                 fallback_cypher = f"""
-                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL
+                  AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+                WITH sa, (st2_list + st1_list) AS combined
+                UNWIND combined AS sid
+                MATCH (st:study)
+                WHERE st.study_id = sid
                 OPTIONAL MATCH ({node_alias}:{node_type}){relationship}(sa)
                 WITH toString(sa.sample_id) AS sample_id,
                      toString(st.study_id) AS study_id,
@@ -3130,9 +4326,16 @@ class SampleRepository:
                 # No filters - count all samples with a path to a study (matches /sample/summary)
                 # Use the same query structure as get_samples_summary - always include participant
                 total_cypher = """
-                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                WITH sa.sample_id as sample_id, st.study_id as study_id
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL
+                  AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+                WITH sa, (st2_list + st1_list) AS combined
+                UNWIND combined AS sid
+                WITH DISTINCT sa.sample_id as sample_id, sid as study_id
                 RETURN count(*) as total
                 """.strip()
             else:
@@ -3156,9 +4359,16 @@ class SampleRepository:
                 # No base filters - build queries for both list and string cases
                 # IMPORTANT: Must match values query structure - only count samples WITH studies
                 missing_cypher_list = """
-                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                WITH sa.sample_id as sample_id, st.study_id as study_id, sa.anatomic_site as sites
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL
+                  AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+                WITH sa, (st2_list + st1_list) AS combined
+                UNWIND combined AS sid
+                WITH DISTINCT sa.sample_id as sample_id, sid as study_id, sa.anatomic_site as sites
                 WHERE sites IS NULL 
                    OR size(sites) = 0
                    OR ALL(site IN sites WHERE site IS NULL OR toString(site) = '' OR toLower(trim(toString(site))) = 'invalid value')
@@ -3166,9 +4376,16 @@ class SampleRepository:
                 """.strip()
                 
                 missing_cypher_string = """
-                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                WITH sa.sample_id as sample_id, st.study_id as study_id, sa.anatomic_site as sites
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL
+                  AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+                WITH sa, (st2_list + st1_list) AS combined
+                UNWIND combined AS sid
+                WITH DISTINCT sa.sample_id as sample_id, sid as study_id, sa.anatomic_site as sites
                 WHERE sites IS NULL 
                    OR toString(sites) = ''
                    OR toLower(trim(toString(sites))) = 'invalid value'
@@ -3177,10 +4394,17 @@ class SampleRepository:
             else:
                 # Has base filters - build queries for both list and string cases
                 missing_cypher_list = f"""
-                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL
+                  AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+                WITH sa, (st2_list + st1_list) AS combined
+                UNWIND combined AS sid
                 OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                WITH sa.sample_id as sample_id, st.study_id as study_id, p, sa.anatomic_site as sites
+                WITH DISTINCT sa.sample_id as sample_id, sid as study_id, p, sa.anatomic_site as sites
                 {base_where_clause.replace('WHERE ', 'WHERE ') if base_where_clause else ''}
                 WHERE sites IS NULL 
                    OR size(sites) = 0
@@ -3189,10 +4413,17 @@ class SampleRepository:
                 """.strip()
                 
                 missing_cypher_string = f"""
-                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL
+                  AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+                WITH sa, (st2_list + st1_list) AS combined
+                UNWIND combined AS sid
                 OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                WITH sa.sample_id as sample_id, st.study_id as study_id, p, sa.anatomic_site as sites
+                WITH DISTINCT sa.sample_id as sample_id, sid as study_id, p, sa.anatomic_site as sites
                 {base_where_clause.replace('WHERE ', 'WHERE ') if base_where_clause else ''}
                 WHERE sites IS NULL 
                    OR toString(sites) = ''
@@ -3271,9 +4502,16 @@ class SampleRepository:
                 # Use the same query structure as other fields to ensure consistency
                 # Use toString() for consistency with other queries
                 total_cypher = """
-                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                WITH toString(sa.sample_id) AS sample_id, toString(st.study_id) AS study_id
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL
+                  AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+                WITH sa, (st2_list + st1_list) AS combined
+                UNWIND combined AS sid
+                WITH DISTINCT toString(sa.sample_id) AS sample_id, toString(sid) AS study_id
                 RETURN count(*) as total
                 """.strip()
             elif not base_where_clause:
@@ -3281,9 +4519,16 @@ class SampleRepository:
                 # Use the same query structure as get_samples_summary - always include participant
                 # Use toString() for consistency with other queries
                 total_cypher = """
-                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                WITH toString(sa.sample_id) AS sample_id, toString(st.study_id) AS study_id
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL
+                  AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+                WITH sa, (st2_list + st1_list) AS combined
+                UNWIND combined AS sid
+                WITH DISTINCT toString(sa.sample_id) AS sample_id, toString(sid) AS study_id
                 RETURN count(*) as total
                 """.strip()
             else:
@@ -3299,9 +4544,16 @@ class SampleRepository:
                         # This is the total - all samples with a study path (matching /sample/summary - 50211 when no filters)
                         # Use toString() for consistency with other queries
                         total_cypher = f"""
-                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                WITH toString(sa.sample_id) AS sample_id, toString(st.study_id) AS study_id
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL
+                  AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+                WITH sa, (st2_list + st1_list) AS combined
+                UNWIND combined AS sid
+                WITH DISTINCT toString(sa.sample_id) AS sample_id, toString(sid) AS study_id
                 RETURN count(*) as total
                 """.strip()
                     else:
@@ -3344,8 +4596,17 @@ class SampleRepository:
                                 filter_optional_matches_str = "\n                ".join(filter_optional_matches) if filter_optional_matches else ""
                                 
                                 total_cypher = f"""
-                MATCH (sa:sample)-[:IN_STUDY]->(:study)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL
+                  AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+                WITH sa, (st2_list + st1_list) AS combined
+                UNWIND combined AS sid
+                MATCH (st:study)
+                WHERE st.study_id = sid
                 {filter_optional_matches_str}
                 WITH sa, p, d
                 {base_where_clause.replace('WHERE ', 'AND ') if base_where_clause else ''}
@@ -3355,9 +4616,16 @@ class SampleRepository:
                                 # No filters - count ALL samples with study paths (matches values query structure)
                                 # Use toString() for consistency with other queries
                                 total_cypher = """
-                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                WITH toString(sa.sample_id) AS sample_id, toString(st.study_id) AS study_id
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL
+                  AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+                WITH sa, (st2_list + st1_list) AS combined
+                UNWIND combined AS sid
+                WITH DISTINCT toString(sa.sample_id) AS sample_id, toString(sid) AS study_id
                 RETURN count(*) as total
                 """.strip()
                         elif node_alias in ["sf", "pf"]:
@@ -3385,8 +4653,17 @@ class SampleRepository:
                                 filter_optional_matches_str = "\n                ".join(filter_optional_matches) if filter_optional_matches else ""
                                 
                                 total_cypher = f"""
-                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL
+                  AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+                WITH sa, (st2_list + st1_list) AS combined
+                UNWIND combined AS sid
+                MATCH (st:study)
+                WHERE st.study_id = sid
                 {filter_optional_matches_str}
                 WITH sa, p, {node_alias}, sa.sample_id as sample_id, st.study_id as study_id
                 {base_where_clause.replace('WHERE ', 'AND ') if base_where_clause else ''}
@@ -3397,9 +4674,16 @@ class SampleRepository:
                                 # No filters - count ALL samples with study paths (matches values/missing query structure)
                                 # Count by unique (sample_id + study_id) pairs
                                 total_cypher = """
-                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                WITH DISTINCT sa.sample_id as sample_id, st.study_id as study_id
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL
+                  AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+                WITH sa, (st2_list + st1_list) AS combined
+                UNWIND combined AS sid
+                WITH DISTINCT sa.sample_id as sample_id, sid as study_id
                 RETURN count(*) as total
                 """.strip()
                         else:
@@ -3414,19 +4698,35 @@ class SampleRepository:
                                 filter_optional_matches_str = "\n                ".join(filter_optional_matches) if filter_optional_matches else ""
                                 
                                 total_cypher = f"""
-                MATCH (sa:sample)-[:IN_STUDY]->(:study)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL
+                  AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+                WITH sa, (st2_list + st1_list) AS combined
+                UNWIND combined AS sid
+                MATCH (st:study)
+                WHERE st.study_id = sid
                 {filter_optional_matches_str}
                 WITH sa, p
                 {base_where_clause.replace('WHERE ', 'AND ') if base_where_clause else ''}
                 RETURN count(DISTINCT sa.sample_id) as total
                 """.strip()
                             else:
-                                # No filters - use IN_STUDY shortcut (consistent with values query and much faster)
+                                # No filters - use multi-hop traversal (consistent with values query)
                                 total_cypher = """
-                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                WITH sa.sample_id as sample_id, st.study_id as study_id
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL
+                  AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+                WITH sa, (st2_list + st1_list) AS combined
+                UNWIND combined AS sid
+                WITH DISTINCT sa.sample_id as sample_id, sid as study_id
                 RETURN count(*) as total
                 """.strip()
                 else:
@@ -3559,8 +4859,17 @@ class SampleRepository:
                             # Performance: Use IN_STUDY shortcut instead of pattern comprehension (much faster)
                             invalid_list_filter = build_invalid_value_list_filter("specimen_molecular_analyte_type")
                             missing_cypher = f"""
-                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL
+                  AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+                WITH sa, (st2_list + st1_list) AS combined
+                UNWIND combined AS sid
+                MATCH (st:study)
+                WHERE st.study_id = sid
                 OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
                 WITH toString(sa.sample_id) AS sample_id,
                      toString(st.study_id) AS study_id,
@@ -3584,8 +4893,17 @@ class SampleRepository:
                                 # Then filter invalid values in WHERE clause - avoids scanning all sequencing_file records
                                 invalid_list_filter = build_invalid_value_list_filter(field)
                                 missing_cypher = f"""
-                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL
+                  AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+                WITH sa, (st2_list + st1_list) AS combined
+                UNWIND combined AS sid
+                MATCH (st:study)
+                WHERE st.study_id = sid
                 OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
                 WITH toString(sa.sample_id) AS sample_id,
                      toString(st.study_id) AS study_id,
@@ -3611,8 +4929,17 @@ class SampleRepository:
                                 # Counts unique (sample_id + study_id) pairs (consistent with values query)
                                 invalid_list_filter = build_invalid_value_list_filter(field)
                                 missing_cypher = f"""
-                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL
+                  AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+                WITH sa, (st2_list + st1_list) AS combined
+                UNWIND combined AS sid
+                MATCH (st:study)
+                WHERE st.study_id = sid
                 OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)
                 WITH toString(sa.sample_id) AS sample_id,
                      toString(st.study_id) AS study_id,
@@ -3632,8 +4959,17 @@ class SampleRepository:
                             # Use IN_STUDY shortcut instead of pattern comprehension (consistent with values/total queries and avoids null issues)
                             invalid_list_filter = build_invalid_value_list_filter(field)
                             missing_cypher = f"""
-                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL
+                  AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+                WITH sa, (st2_list + st1_list) AS combined
+                UNWIND combined AS sid
+                MATCH (st:study)
+                WHERE st.study_id = sid
                 OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
                 WITH toString(sa.sample_id) AS sample_id,
                      toString(st.study_id) AS study_id,
@@ -3654,10 +4990,17 @@ class SampleRepository:
                             # Use IN_STUDY shortcut for consistency with values and total queries (much faster and avoids null issues)
                             if node_alias == "sa":
                                 missing_cypher = f"""
-                MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL
+                  AND sa.sample_id <> ''
                   AND ({node_field} IS NULL OR toString({node_field}) = '' OR trim(toString({node_field})) = '' OR toString({node_field}) = '-999' OR trim(toString({node_field})) = '-999')
-                WITH sa.sample_id as sample_id, st.study_id as study_id
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+                WITH sa, (st2_list + st1_list) AS combined
+                UNWIND combined AS sid
+                WITH DISTINCT sa.sample_id as sample_id, sid as study_id
                 RETURN count(*) as missing
                 """.strip()
                             else:
@@ -3877,6 +5220,9 @@ class SampleRepository:
             values_sum=sum(item["count"] for item in counts)
         )
         
+        # Per SAMPLE_ENDPOINT_RULES rule 2: counts are by (sample_id, study_id) per value.
+        # One (sample_id, study_id) can contribute to multiple value buckets, so
+        # sum(value counts) + missing may be greater than total. This is expected.
         return {
             "total": total,
             "missing": missing,
@@ -3944,18 +5290,34 @@ class SampleRepository:
         where_clause = "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
         
         # Query 1: Get total count of all unique samples matching filters
-        # Use IN_STUDY shortcut for better performance (7-10x faster than pattern comprehensions)
+        # Use multi-hop traversal for study paths
         if not where_clause:
             total_cypher = """
-            MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-            WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-            WITH toString(sa.sample_id) AS sample_id, toString(st.study_id) AS study_id
+            MATCH (sa:sample)
+            WHERE sa.sample_id IS NOT NULL
+              AND sa.sample_id <> ''
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+            WITH sa, (st2_list + st1_list) AS combined
+            UNWIND combined AS sid
+            WITH DISTINCT toString(sa.sample_id) AS sample_id, toString(sid) AS study_id
             RETURN count(*) as total
             """.strip()
         else:
             total_cypher = f"""
-            MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-            WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+            MATCH (sa:sample)
+            WHERE sa.sample_id IS NOT NULL
+              AND sa.sample_id <> ''
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+            WITH sa, (st2_list + st1_list) AS combined
+            UNWIND combined AS sid
+            MATCH (st:study)
+            WHERE st.study_id = sid
             OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
             OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
             WITH sa, p, d, st
@@ -3968,11 +5330,20 @@ class SampleRepository:
         # Only count samples with a study path (matching summary endpoint)
         # Missing = samples with no diagnoses OR ALL diagnoses are invalid
         # IMPORTANT: Check ALL diagnoses, not just the first one
-        # Use IN_STUDY shortcut for better performance
+        # Use multi-hop traversal for study paths
         if not where_clause:
             missing_cypher = """
-            MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-            WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+            MATCH (sa:sample)
+            WHERE sa.sample_id IS NOT NULL
+              AND sa.sample_id <> ''
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+            WITH sa, (st2_list + st1_list) AS combined
+            UNWIND combined AS sid
+            MATCH (st:study)
+            WHERE st.study_id = sid
             OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
             WITH toString(sa.sample_id) AS sample_id,
                  toString(st.study_id) AS study_id,
@@ -3998,8 +5369,17 @@ class SampleRepository:
             """.strip()
         else:
             missing_cypher = f"""
-            MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-            WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+            MATCH (sa:sample)
+            WHERE sa.sample_id IS NOT NULL
+              AND sa.sample_id <> ''
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+            WITH sa, (st2_list + st1_list) AS combined
+            UNWIND combined AS sid
+            MATCH (st:study)
+            WHERE st.study_id = sid
             OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
             OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
             WITH sa, p, d, st
@@ -4034,11 +5414,20 @@ class SampleRepository:
         # Relationship direction: (d:diagnosis)-[:of_diagnosis]->(sa:sample)
         # If diagnosis is "see diagnosis_comment", use diagnosis_comment as the value
         # Filter out "see diagnosis_comment" if diagnosis_comment is NULL or empty
-        # Use IN_STUDY shortcut for better performance
+        # Use multi-hop traversal for study paths
         if not where_clause:
             values_cypher = """
-            MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-            WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+            MATCH (sa:sample)
+            WHERE sa.sample_id IS NOT NULL
+              AND sa.sample_id <> ''
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+            WITH sa, (st2_list + st1_list) AS combined
+            UNWIND combined AS sid
+            MATCH (st:study)
+            WHERE st.study_id = sid
             OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
             WITH toString(sa.sample_id) AS sample_id,
                  toString(st.study_id) AS study_id,
@@ -4066,8 +5455,17 @@ class SampleRepository:
             """.strip()
         else:
             values_cypher = f"""
-            MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-            WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+            MATCH (sa:sample)
+            WHERE sa.sample_id IS NOT NULL
+              AND sa.sample_id <> ''
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+            WITH sa, (st2_list + st1_list) AS combined
+            UNWIND combined AS sid
+            MATCH (st:study)
+            WHERE st.study_id = sid
             OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
             OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
             WITH sa, p, d, st
@@ -4212,12 +5610,19 @@ class SampleRepository:
         has_real_filters = any(v is not None and v != "" for v in filters.values()) if filters else False
         
         if not has_real_filters:
-            # Use IN_STUDY relationship for consistency with main query
+            # Use multi-hop traversal for consistency with main query
             # Use sample_id + study_id as unique identifier (same sample_id can be in different studies)
             cypher = """
-        MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-        WHERE sa.sample_id IS NOT NULL AND toString(sa.sample_id) <> ''
-        WITH sa.sample_id AS sample_id, st.study_id AS study_id
+        MATCH (sa:sample)
+        WHERE sa.sample_id IS NOT NULL
+          AND sa.sample_id <> ''
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+        WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+        WITH sa, (st2_list + st1_list) AS combined
+        UNWIND combined AS sid
+        WITH DISTINCT sa.sample_id AS sample_id, sid AS study_id
         RETURN count(*) as total_count
         """.strip()
             
@@ -4374,10 +5779,9 @@ class SampleRepository:
                     # "Relapse" can map to both "Recurrent Disease" and "Relapse" in DB
                     reverse_mapped = reverse_map_field_value("disease_phase", value)
                     if isinstance(reverse_mapped, list):
-                        # Multiple DB values map to this API value - use OR condition
-                        db_values_list = [f"'{v}'" for v in reverse_mapped]
-                        db_values_str = ", ".join(db_values_list)
-                        with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase IN [{db_values_str}]")
+                        # Multiple DB values map to this API value - use IN clause with parameter for better query planning
+                        params[param_name] = reverse_mapped
+                        with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase IN ${param_name}")
                     else:
                         params[param_name] = reverse_mapped
                         with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase = ${param_name}")
@@ -4388,7 +5792,8 @@ class SampleRepository:
                 # which is processed later in the query building logic
                 self._validate_library_source_material_filter(value, param_name, params, with_conditions)
             elif field == "preservation_method":
-                with_conditions.append(f"pf IS NOT NULL AND pf.fixation_embedding_method = ${param_name}")
+                params[param_name] = value
+                with_conditions.append(("preservation_method", param_name))
             elif field == "tissue_type":
                 # Use helper function to validate tissue_type filter
                 if self._validate_tissue_type_filter(value, param_name, params, with_conditions) is None:
@@ -4406,6 +5811,8 @@ class SampleRepository:
                     with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_classification = ${param_name}")
             elif field == "tumor_grade":
                 with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_grade = ${param_name}")
+            elif field == "tumor_tissue_morphology":
+                with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_tissue_morphology = ${param_name}")
             elif field == "age_at_diagnosis":
                 with_conditions.append(f"diagnoses IS NOT NULL AND toInteger(diagnoses.age_at_diagnosis) = ${param_name}")
                 # Convert value to number for numeric comparison
@@ -4457,7 +5864,7 @@ class SampleRepository:
                 else:
                     with_conditions.append(f"sa.{field} = ${param_name}")
             
-            if field not in ["disease_phase", "tumor_grade", "age_at_diagnosis", "age_at_collection", "diagnosis", "anatomical_sites", "tissue_type"]:
+            if field not in ["disease_phase", "tumor_grade", "tumor_tissue_morphology", "tumor_classification", "age_at_diagnosis", "age_at_collection", "diagnosis", "anatomical_sites", "tissue_type"]:
                 # For non-diagnosis fields, handle list values
                 # Skip anatomical_sites as it's handled specially with tuples
                 # Skip tissue_type as it's already handled with proper validation and IN clause if needed
@@ -4479,6 +5886,7 @@ class SampleRepository:
         library_selection_method_param = None
         library_strategy_param = None
         library_source_material_param = None
+        preservation_method_param = None
         regular_conditions = []
         
         for condition in with_conditions:
@@ -4548,6 +5956,9 @@ class SampleRepository:
             elif isinstance(condition, tuple) and condition[0] == "library_source_material_invalid":
                 # Invalid value (in null_mappings) - set impossible condition to return empty results
                 library_source_material_param = "invalid"
+            elif isinstance(condition, tuple) and condition[0] == "preservation_method":
+                preservation_method_param = condition[1]
+                # Don't add to regular_conditions - will be applied in OPTIONAL MATCH WHERE clause (early filter optimization)
             else:
                 regular_conditions.append(condition)
         
@@ -4580,10 +5991,9 @@ class SampleRepository:
         if identifiers_early_filter:
             early_where_conditions.append(identifiers_early_filter)
         
-        # OPTIMIZATION: Add depositions filter early (before OPTIONAL MATCHes)
-        # Filter by study_id in the MATCH clause to reduce dataset early
+        # Depositions filter: must be applied AFTER we have st (study node). See get_samples() for same logic.
+        depositions_study_filter_summary = ""
         if hasattr(self, '_depositions_early_params') and self._depositions_early_params:
-            # Collect all depositions values (in case multiple depositions filters were provided)
             all_dep_values = []
             for dep_param_name in self._depositions_early_params:
                 dep_value = params.get(dep_param_name)
@@ -4592,19 +6002,14 @@ class SampleRepository:
                         all_dep_values.extend(dep_value)
                     else:
                         all_dep_values.append(dep_value)
-            
             if all_dep_values:
-                # Use a dedicated parameter name for depositions early filter to avoid conflicts
                 dep_early_param_name = SampleRepository._get_next_param_name(params, param_counter)
                 if len(all_dep_values) > 1:
-                    # Multiple values - use IN clause
                     params[dep_early_param_name] = all_dep_values
-                    depositions_early_filter = f"st.study_id IN ${dep_early_param_name}"
+                    depositions_study_filter_summary = f" AND st.study_id IN ${dep_early_param_name}"
                 else:
-                    # Single value - use = for better performance
                     params[dep_early_param_name] = all_dep_values[0]
-                    depositions_early_filter = f"st.study_id = ${dep_early_param_name}"
-                early_where_conditions.append(depositions_early_filter)
+                    depositions_study_filter_summary = f" AND st.study_id = ${dep_early_param_name}"
         
         # Build early WHERE clause
         early_where_clause = "\n        WHERE " + " AND ".join(early_where_conditions) if early_where_conditions else ""
@@ -4613,6 +6018,11 @@ class SampleRepository:
         all_conditions = regular_conditions.copy()
         
         # Don't add identifier filter conditions to where_conditions - they're now applied early
+        
+        # When preservation_method filter is present, add pf IS NOT NULL to WHERE clause
+        # (the filter value is applied in OPTIONAL MATCH WHERE clause via early filter optimization)
+        if preservation_method_param:
+            all_conditions.append("pf IS NOT NULL")
         
         if anatomical_sites_list_condition:
             # Use list version first (will try string version if it fails)
@@ -4639,7 +6049,7 @@ class SampleRepository:
         ) or any("p." in str(cond) for cond in all_conditions if isinstance(cond, str))
         
         needs_diagnosis = any(
-            field in filters for field in ["disease_phase", "tumor_grade", "age_at_diagnosis", "diagnosis"]
+            field in filters for field in ["disease_phase", "tumor_grade", "tumor_tissue_morphology", "tumor_classification", "age_at_diagnosis", "diagnosis"]
         ) or any("d." in str(cond) or "diagnoses" in str(cond) or "has_matching_diagnosis" in str(cond) for cond in all_conditions if isinstance(cond, str)) or diagnosis_search_term is not None
         
         needs_pathology_file = any(
@@ -4654,6 +6064,12 @@ class SampleRepository:
             field in filters for field in ["depositions"]
         ) or any("st." in str(cond) for cond in all_conditions if isinstance(cond, str))
         
+        # OPTIMIZATION: Apply preservation_method filter EARLY in OPTIONAL MATCH WHERE clause
+        # This avoids collecting all pathology_files then filtering (10-20x faster)
+        pf_optional_match_where_summary = None
+        if preservation_method_param:
+            pf_optional_match_where_summary = f"WHERE pf.fixation_embedding_method = ${preservation_method_param}"
+        
         # Build OPTIONAL MATCH clauses
         optional_matches = []
         # Need participant if filtering by participant fields OR if we need study paths
@@ -4661,8 +6077,12 @@ class SampleRepository:
             optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
         if needs_diagnosis:
             optional_matches.append("OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)")
+        # Apply early filter to pathology_file OPTIONAL MATCH if optimization applies
         if needs_pathology_file:
-            optional_matches.append("OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)")
+            if pf_optional_match_where_summary:
+                optional_matches.append(f"OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)\n        {pf_optional_match_where_summary}")
+            else:
+                optional_matches.append("OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)")
         if needs_sequencing_file:
             optional_matches.append("OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)")
         
@@ -4907,15 +6327,25 @@ class SampleRepository:
         else:
             final_where_clause = ""
         
-        # Build the query - use IN_STUDY relationship for early filtering (same as get_samples)
+        # Build the query - use multi-hop traversal for early filtering (same as get_samples)
         optional_matches_str = "\n        ".join(optional_matches) if optional_matches else ""
         
         if second_with_str:
             # second_with_str already includes the WITH and WHERE clauses
             # Use sample_id + study_id as unique identifier (same sample_id can be in different studies)
             cypher = f"""
-        MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-        {early_where_clause}
+        MATCH (sa:sample)
+        WHERE sa.sample_id IS NOT NULL
+          AND sa.sample_id <> ''
+        {early_where_clause.replace('WHERE ', 'AND ') if early_where_clause else ''}
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+        WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+        WITH sa, (st2_list + st1_list) AS combined
+        UNWIND combined AS sid
+        MATCH (st:study)
+        WHERE st.study_id = sid{depositions_study_filter_summary}
         {optional_matches_str}
         WITH {with_clause}
         {second_with_str}WITH DISTINCT sa.sample_id AS sample_id, st.study_id AS study_id
@@ -4925,8 +6355,18 @@ class SampleRepository:
             # No second WITH, use final_where_clause after first WITH
             # Deduplicate by sample_id to ensure one row per sample (handles multiple study relationships)
             cypher = f"""
-        MATCH (sa:sample)-[:IN_STUDY]->(st:study)
-        {early_where_clause}
+        MATCH (sa:sample)
+        WHERE sa.sample_id IS NOT NULL
+          AND sa.sample_id <> ''
+        {early_where_clause.replace('WHERE ', 'AND ') if early_where_clause else ''}
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+        WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+        WITH sa, (st2_list + st1_list) AS combined
+        UNWIND combined AS sid
+        MATCH (st:study)
+        WHERE st.study_id = sid{depositions_study_filter_summary}
         {optional_matches_str}
         WITH {with_clause}
         {final_where_clause}WITH DISTINCT sa.sample_id AS sample_id, st.study_id AS study_id
@@ -5150,16 +6590,19 @@ class SampleRepository:
         where_clause = " AND ".join(where_conditions) if where_conditions else "TRUE"
         
         # Optimized count query
-        # PERFORMANCE: use IN_STUDY for sample->study lookup and count unique (sample_id, study_id).
-        # This avoids the expensive traversal through cell_line/participant/consent_group.
+        # PERFORMANCE: use multi-hop traversal for sample->study lookup and count unique (sample_id, study_id).
         cypher = f"""
         MATCH (sf:sequencing_file)
         WHERE {where_clause}
         MATCH (sf)-[:of_sequencing_file]->(sa:sample)
-        WHERE sa.sample_id IS NOT NULL AND toString(sa.sample_id) <> ''
-        MATCH (sa)-[:IN_STUDY]->(st:study)
-        WITH sa.sample_id AS sample_id, st.study_id AS study_id
-        WITH DISTINCT sample_id, study_id
+        WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        WITH sa, sf, collect(DISTINCT st1.study_id) AS st1_list
+        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+        WITH sa, sf, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+        WITH sa, sf, (st2_list + st1_list) AS combined
+        UNWIND combined AS sid
+        WITH DISTINCT sa.sample_id AS sample_id, sid AS study_id
         RETURN count(*) as total_count
         """.strip()
         

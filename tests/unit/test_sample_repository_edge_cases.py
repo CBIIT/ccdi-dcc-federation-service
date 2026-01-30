@@ -81,50 +81,28 @@ class TestSampleRepositoryErrorHandling:
         """Test count_samples_by_field falls back to string query when list query fails for anatomical_sites missing."""
         async def async_gen():
             yield {"value": "Brain", "count": 5}
-        
-        async def async_gen_missing():
-            yield {"missing": 5}
-        
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         
-        # Mock TWO_QUERY_APPROACH for total count (anatomical_sites uses TWO_QUERY_APPROACH when no filters)
-        mock_result_path2 = AsyncMock()
-        mock_result_path2.data = AsyncMock(return_value=[
-            {"sample_id": "S1", "study_id": "ST1"}
-        ])
-        mock_result_path2.consume = AsyncMock()
-        
-        mock_result_path1 = AsyncMock()
-        mock_result_path1.data = AsyncMock(return_value=[
-            {"sample_id": "S2", "study_id": "ST1"}
-        ])
-        mock_result_path1.consume = AsyncMock()
-        
-        # First missing query fails with "all list string" error, second (string) succeeds
-        mock_missing_string = AsyncMock()
-        mock_missing_string.__aiter__ = Mock(return_value=async_gen_missing())
-        
-        # Create a result that raises exception on async iteration (the code uses async for record in missing_result)
+        # Order: values, total (single record), missing list (fails), missing string (succeeds)
         class FailingResult:
             def __aiter__(self):
                 return self
             async def __anext__(self):
                 raise Exception("all list string error")
         
-        # values query, total query (TWO_QUERY_APPROACH - 2 calls), missing list query fails, missing string query succeeds
         mock_session.run = AsyncMock(side_effect=[
             mock_result,  # values query
-            mock_result_path2,  # total query - path 2
-            mock_result_path1,  # total query - path 1
+            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"total": 5}]))),  # total query
             FailingResult(),  # missing list query fails
-            mock_missing_string  # missing string query succeeds
+            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 5}])))  # missing string succeeds
         ])
         
         result = await repository.count_samples_by_field("anatomical_sites", {})
         
         assert "missing" in result
         assert result["missing"] == 5
+        assert result["total"] == 5
 
     async def test_count_samples_by_field_anatomical_sites_missing_both_fail(self, repository, mock_session):
         """Test count_samples_by_field handles case when both list and string queries fail for anatomical_sites missing."""

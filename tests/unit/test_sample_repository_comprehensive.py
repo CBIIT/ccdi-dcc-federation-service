@@ -70,36 +70,16 @@ class TestSampleRepositoryCountByField:
 
     async def test_count_samples_by_field_tissue_type_no_filters(self, repository, mock_session):
         """Test count_samples_by_field for tissue_type field with no filters."""
-        # Mock query results
+        # Mock query results: order is values, total, missing (3 calls)
         async def async_gen():
             yield {"value": "Tumor", "count": 50}
             yield {"value": "Normal", "count": 30}
+        mock_values = AsyncMock()
+        mock_values.__aiter__ = Mock(return_value=async_gen())
         
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        
-        # Mock TWO_QUERY_APPROACH for total count (tissue_type uses TWO_QUERY_APPROACH when no filters)
-        # Query 1: participant path
-        mock_result_path2 = AsyncMock()
-        mock_result_path2.data = AsyncMock(return_value=[
-            {"sample_id": "S1", "study_id": "ST1"},
-            {"sample_id": "S2", "study_id": "ST1"}
-        ])
-        mock_result_path2.consume = AsyncMock()
-        
-        # Query 2: cell_line path
-        mock_result_path1 = AsyncMock()
-        mock_result_path1.data = AsyncMock(return_value=[
-            {"sample_id": "S1", "study_id": "ST2"},
-            {"sample_id": "S3", "study_id": "ST1"}
-        ])
-        mock_result_path1.consume = AsyncMock()
-        
-        # Mock queries: values, total (TWO_QUERY_APPROACH - 2 calls), missing
         mock_session.run = AsyncMock(side_effect=[
-            mock_result,  # values query
-            mock_result_path2,  # total query - path 2
-            mock_result_path1,  # total query - path 1
+            mock_values,  # values query (first call)
+            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"total": 4}]))),  # total query
             AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 0}])))  # missing query
         ])
         
@@ -108,7 +88,7 @@ class TestSampleRepositoryCountByField:
         assert "total" in result
         assert "missing" in result
         assert "values" in result
-        assert result["total"] == 4  # 4 unique (sample_id, study_id) pairs
+        assert result["total"] == 4
         assert mock_session.run.call_count >= 1
 
     async def test_count_samples_by_field_age_at_collection_no_filters(self, repository, mock_session):
@@ -116,28 +96,12 @@ class TestSampleRepositoryCountByField:
         async def async_gen():
             yield {"value": 10, "count": 5}
             yield {"value": 20, "count": 3}
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        
-        # Mock TWO_QUERY_APPROACH for total count
-        mock_result_path2 = AsyncMock()
-        mock_result_path2.data = AsyncMock(return_value=[
-            {"sample_id": "S1", "study_id": "ST1"},
-            {"sample_id": "S2", "study_id": "ST1"}
-        ])
-        mock_result_path2.consume = AsyncMock()
-        
-        mock_result_path1 = AsyncMock()
-        mock_result_path1.data = AsyncMock(return_value=[
-            {"sample_id": "S1", "study_id": "ST2"}
-        ])
-        mock_result_path1.consume = AsyncMock()
+        mock_values = AsyncMock()
+        mock_values.__aiter__ = Mock(return_value=async_gen())
         
         mock_session.run = AsyncMock(side_effect=[
-            mock_result,  # values query
-            mock_result_path2,  # total query - path 2
-            mock_result_path1,  # total query - path 1
+            mock_values,  # values query
+            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"total": 3}]))),  # total query
             AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 2}])))  # missing query
         ])
         
@@ -146,7 +110,7 @@ class TestSampleRepositoryCountByField:
         assert "total" in result
         assert "missing" in result
         assert "values" in result
-        assert result["total"] == 3  # 3 unique (sample_id, study_id) pairs
+        assert result["total"] == 3
 
     async def test_count_samples_by_field_with_race_filter(self, repository, mock_session):
         """Test count_samples_by_field with race filter."""
@@ -295,71 +259,39 @@ class TestSampleRepositoryCountByField:
         assert "total" in result
 
     async def test_count_samples_by_field_library_strategy(self, repository, mock_session):
-        """Test count_samples_by_field for library_strategy (sequencing_file field)."""
+        """Test count_samples_by_field for library_strategy (uses combined query when no filters)."""
         async def async_gen():
-            yield {"value": "WXS", "count": 20}
-            yield {"value": "RNA-Seq", "count": 15}
-        
+            yield {"value": "WXS", "count": 20, "total": 40, "missing": 5}
+            yield {"value": "RNA-Seq", "count": 15, "total": 40, "missing": 5}
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
-        
-        # Mock TWO_QUERY_APPROACH for total count (2 queries) + missing query
-        mock_result_path2 = AsyncMock()
-        mock_result_path2.data = AsyncMock(return_value=[
-            {"sample_id": "S1", "study_id": "ST1"},
-            {"sample_id": "S2", "study_id": "ST1"}
-        ])
-        mock_result_path1 = AsyncMock()
-        mock_result_path1.data = AsyncMock(return_value=[
-            {"sample_id": "S1", "study_id": "ST2"}
-        ])
-        
-        mock_session.run = AsyncMock(side_effect=[
-            mock_result,  # values query
-            mock_result_path2,  # total query path2
-            mock_result_path1,  # total query path1
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 5}])))  # missing query
-        ])
+        mock_session.run = AsyncMock(return_value=mock_result)
         
         result = await repository.count_samples_by_field("library_strategy", {})
         
         assert "total" in result
         assert "missing" in result
         assert "values" in result
+        assert result["total"] == 40
+        assert result["missing"] == 5
 
     async def test_count_samples_by_field_disease_phase(self, repository, mock_session):
         """Test count_samples_by_field for disease_phase (diagnosis field)."""
         async def async_gen():
             yield {"value": "Primary", "count": 10}
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        
-        # Mock TWO_QUERY_APPROACH for total count (diagnosis fields use TWO_QUERY_APPROACH when no filters)
-        mock_result_path2 = AsyncMock()
-        mock_result_path2.data = AsyncMock(return_value=[
-            {"sample_id": "S1", "study_id": "ST1"},
-            {"sample_id": "S2", "study_id": "ST1"}
-        ])
-        mock_result_path2.consume = AsyncMock()
-        
-        mock_result_path1 = AsyncMock()
-        mock_result_path1.data = AsyncMock(return_value=[
-            {"sample_id": "S1", "study_id": "ST2"}
-        ])
-        mock_result_path1.consume = AsyncMock()
+        mock_values = AsyncMock()
+        mock_values.__aiter__ = Mock(return_value=async_gen())
         
         mock_session.run = AsyncMock(side_effect=[
-            mock_result,  # values query
-            mock_result_path2,  # total query - path 2
-            mock_result_path1,  # total query - path 1
+            mock_values,  # values query
+            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"total": 3}]))),  # total query
             AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 0}])))  # missing query
         ])
         
         result = await repository.count_samples_by_field("disease_phase", {})
         
         assert "total" in result
-        assert result["total"] == 3  # 3 unique (sample_id, study_id) pairs
+        assert result["total"] == 3
 
 
 @pytest.mark.unit
@@ -621,29 +553,20 @@ class TestSampleRepositoryGetSamplesSummary:
         return SampleRepository(mock_session, mock_allowlist, mock_settings)
 
     async def test_get_samples_summary_no_filters(self, repository, mock_session):
-        """Test get_samples_summary with no filters uses TWO_QUERY_APPROACH."""
-        # Mock TWO_QUERY_APPROACH: get_samples_summary calls session.run() twice
-        mock_result_path2 = AsyncMock()
-        mock_result_path2.data = AsyncMock(return_value=[
-            {"sample_id": "S1", "study_id": "ST1"},
-            {"sample_id": "S2", "study_id": "ST1"}
-        ])
-        mock_result_path2.consume = AsyncMock()
-        
-        mock_result_path1 = AsyncMock()
-        mock_result_path1.data = AsyncMock(return_value=[
-            {"sample_id": "S1", "study_id": "ST2"},
-            {"sample_id": "S3", "study_id": "ST1"}
-        ])
-        mock_result_path1.consume = AsyncMock()
-        
-        mock_session.run = AsyncMock(side_effect=[mock_result_path2, mock_result_path1])
+        """Test get_samples_summary with no filters uses single total_count query."""
+        # No filters: get_samples_summary calls session.run() once, returns total_count
+        async def async_gen():
+            yield {"total_count": 4}
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
         
         result = await repository.get_samples_summary(filters={})
         
         assert "counts" in result
         assert "total" in result["counts"]
-        assert result["counts"]["total"] == 4  # 4 unique (sample_id, study_id) pairs
+        assert result["counts"]["total"] == 4
 
     async def test_get_samples_summary_sequencing_file_only_filters(self, repository):
         """Test get_samples_summary with only sequencing_file filters uses reverse query."""
@@ -1155,134 +1078,61 @@ class TestSampleRepositoryAdditionalFilters:
         """Test count_samples_by_field for tumor_grade (diagnosis field)."""
         async def async_gen():
             yield {"value": "G1", "count": 5}
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        
-        # Mock TWO_QUERY_APPROACH for total count
-        mock_result_path2 = AsyncMock()
-        mock_result_path2.data = AsyncMock(return_value=[
-            {"sample_id": "S1", "study_id": "ST1"}
-        ])
-        mock_result_path2.consume = AsyncMock()
-        
-        mock_result_path1 = AsyncMock()
-        mock_result_path1.data = AsyncMock(return_value=[
-            {"sample_id": "S2", "study_id": "ST1"}
-        ])
-        mock_result_path1.consume = AsyncMock()
-        
+        mock_values = AsyncMock()
+        mock_values.__aiter__ = Mock(return_value=async_gen())
         mock_session.run = AsyncMock(side_effect=[
-            mock_result,  # values query
-            mock_result_path2,  # total query - path 2
-            mock_result_path1,  # total query - path 1
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 0}])))  # missing query
+            mock_values,
+            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"total": 2}]))),
+            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 0}])))
         ])
-        
         result = await repository.count_samples_by_field("tumor_grade", {})
-        
         assert "total" in result
-        assert result["total"] == 2  # 2 unique (sample_id, study_id) pairs
+        assert result["total"] == 2
 
     async def test_count_samples_by_field_tumor_classification(self, repository, mock_session):
         """Test count_samples_by_field for tumor_classification (diagnosis field)."""
         async def async_gen():
             yield {"value": "Malignant", "count": 8}
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        
-        # Mock TWO_QUERY_APPROACH for total count
-        mock_result_path2 = AsyncMock()
-        mock_result_path2.data = AsyncMock(return_value=[
-            {"sample_id": "S1", "study_id": "ST1"},
-            {"sample_id": "S2", "study_id": "ST1"}
-        ])
-        mock_result_path2.consume = AsyncMock()
-        
-        mock_result_path1 = AsyncMock()
-        mock_result_path1.data = AsyncMock(return_value=[
-            {"sample_id": "S3", "study_id": "ST1"}
-        ])
-        mock_result_path1.consume = AsyncMock()
-        
+        mock_values = AsyncMock()
+        mock_values.__aiter__ = Mock(return_value=async_gen())
         mock_session.run = AsyncMock(side_effect=[
-            mock_result,  # values query
-            mock_result_path2,  # total query - path 2
-            mock_result_path1,  # total query - path 1
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 0}])))  # missing query
+            mock_values,
+            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"total": 3}]))),
+            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 0}])))
         ])
-        
         result = await repository.count_samples_by_field("tumor_classification", {})
-        
         assert "total" in result
-        assert result["total"] == 3  # 3 unique (sample_id, study_id) pairs
+        assert result["total"] == 3
 
     async def test_count_samples_by_field_tumor_tissue_morphology(self, repository, mock_session):
         """Test count_samples_by_field for tumor_tissue_morphology (diagnosis field)."""
         async def async_gen():
             yield {"value": "Adenocarcinoma", "count": 3}
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        
-        # Mock TWO_QUERY_APPROACH for total count
-        mock_result_path2 = AsyncMock()
-        mock_result_path2.data = AsyncMock(return_value=[
-            {"sample_id": "S1", "study_id": "ST1"}
-        ])
-        mock_result_path2.consume = AsyncMock()
-        
-        mock_result_path1 = AsyncMock()
-        mock_result_path1.data = AsyncMock(return_value=[
-            {"sample_id": "S2", "study_id": "ST1"}
-        ])
-        mock_result_path1.consume = AsyncMock()
-        
+        mock_values = AsyncMock()
+        mock_values.__aiter__ = Mock(return_value=async_gen())
         mock_session.run = AsyncMock(side_effect=[
-            mock_result,  # values query
-            mock_result_path2,  # total query - path 2
-            mock_result_path1,  # total query - path 1
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 0}])))  # missing query
+            mock_values,
+            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"total": 2}]))),
+            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 0}])))
         ])
-        
         result = await repository.count_samples_by_field("tumor_tissue_morphology", {})
-        
         assert "total" in result
-        assert result["total"] == 2  # 2 unique (sample_id, study_id) pairs
+        assert result["total"] == 2
 
     async def test_count_samples_by_field_age_at_diagnosis(self, repository, mock_session):
         """Test count_samples_by_field for age_at_diagnosis (diagnosis field)."""
         async def async_gen():
             yield {"value": 10, "count": 2}
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        
-        # Mock TWO_QUERY_APPROACH for total count (diagnosis fields use TWO_QUERY_APPROACH when no filters)
-        mock_result_path2 = AsyncMock()
-        mock_result_path2.data = AsyncMock(return_value=[
-            {"sample_id": "S1", "study_id": "ST1"}
-        ])
-        mock_result_path2.consume = AsyncMock()
-        
-        mock_result_path1 = AsyncMock()
-        mock_result_path1.data = AsyncMock(return_value=[
-            {"sample_id": "S2", "study_id": "ST1"}
-        ])
-        mock_result_path1.consume = AsyncMock()
-        
+        mock_values = AsyncMock()
+        mock_values.__aiter__ = Mock(return_value=async_gen())
         mock_session.run = AsyncMock(side_effect=[
-            mock_result,  # values query
-            mock_result_path2,  # total query - path 2
-            mock_result_path1,  # total query - path 1
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 0}])))  # missing query
+            mock_values,
+            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"total": 2}]))),
+            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 0}])))
         ])
-        
         result = await repository.count_samples_by_field("age_at_diagnosis", {})
-        
         assert "total" in result
-        assert result["total"] == 2  # 2 unique (sample_id, study_id) pairs
+        assert result["total"] == 2
 
     async def test_get_samples_with_tumor_classification_filter(self, repository, mock_session):
         """Test get_samples with tumor_classification filter."""

@@ -510,15 +510,15 @@ class TestSampleService:
         assert call_args[0][2] == 100  # limit parameter
 
     async def test_get_samples_database_connection_error(self, service):
-        """Test get_samples handles database connection errors gracefully."""
+        """Test get_samples raises NotFoundError on database connection errors."""
+        from app.models.errors import NotFoundError
         service.repository.get_samples = AsyncMock(
             side_effect=DatabaseConnectionError("Connection failed")
         )
         
-        result = await service.get_samples(filters={}, offset=0, limit=20)
-        
-        assert result == []
-        assert isinstance(result, list)
+        with pytest.raises(NotFoundError) as exc_info:
+            await service.get_samples(filters={}, offset=0, limit=20)
+        assert exc_info.value.entity == "Samples"
 
     async def test_get_sample_by_identifier_success(self, service):
         """Test get_sample_by_identifier with successful lookup."""

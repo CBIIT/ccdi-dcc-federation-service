@@ -537,28 +537,17 @@ class TestSampleRepositoryEnhanced:
 
     async def test_get_samples_summary(self, repository, mock_session):
         """Test get_samples_summary."""
-        # Mock TWO_QUERY_APPROACH: get_samples_summary calls session.run() twice
-        # First call: participant path query
-        mock_result_path2 = AsyncMock()
-        mock_result_path2.data = AsyncMock(return_value=[
-            {"sample_id": "S1", "study_id": "ST1"},
-            {"sample_id": "S2", "study_id": "ST1"}
-        ])
-        mock_result_path2.consume = AsyncMock()
-        
-        # Second call: cell_line path query
-        mock_result_path1 = AsyncMock()
-        mock_result_path1.data = AsyncMock(return_value=[
-            {"sample_id": "S1", "study_id": "ST2"},
-            {"sample_id": "S3", "study_id": "ST1"}
-        ])
-        mock_result_path1.consume = AsyncMock()
-        
-        mock_session.run = AsyncMock(side_effect=[mock_result_path2, mock_result_path1])
+        # No filters: get_samples_summary calls session.run() once, returns total_count
+        async def async_gen():
+            yield {"total_count": 4}
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
         
         result = await repository.get_samples_summary(filters={})
         
         assert isinstance(result, dict)
         assert "counts" in result
-        assert result["counts"]["total"] == 4  # 4 unique (sample_id, study_id) pairs
+        assert result["counts"]["total"] == 4
 

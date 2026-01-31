@@ -359,7 +359,8 @@ class TestSampleRepositoryComplexQueries:
             "anatomical_sites": ["Brain", "Liver"]
         })
         
-        assert "total_count" in result
+        assert "counts" in result
+        assert "total" in result["counts"]
 
     async def test_get_samples_with_complex_anatomical_sites_filter(self, repository, mock_session):
         """Test get_samples with complex anatomical_sites filter (list with multiple values)."""

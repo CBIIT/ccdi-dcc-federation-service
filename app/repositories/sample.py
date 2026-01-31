@@ -1105,7 +1105,6 @@ RETURN sa, p, st, sf, pf, diagnoses
         # Separate cheap filters (can be applied before OPTIONAL MATCHes) from expensive ones
         # Cheap filters: sample_id, anatomic_site, identifiers, depositions (can filter early)
         # Expensive filters: participant/diagnosis filters (need OPTIONAL MATCH first)
-        # Note: st IS NOT NULL is no longer needed since IN_STUDY MATCH ensures study path exists
         early_where_conditions = [
             "sa.sample_id IS NOT NULL",
             "toString(sa.sample_id) <> ''"
@@ -1769,9 +1768,7 @@ RETURN count(*) AS total_count
                     exc_info=True,
                 )
                 # Fall through to standard query
-        late_where_conditions = [
-            # st IS NOT NULL check removed - IN_STUDY MATCH ensures study path exists
-        ]
+        late_where_conditions = []
         
         # Extract anatomical_sites condition if present (can be applied early)
         # Note: anatomical_sites_list_condition is already added to early_where_conditions above if early pagination is enabled
@@ -1945,8 +1942,6 @@ RETURN count(*) AS total_count
             optional_matches.append(f"OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)\n        {sf_optional_match_where}")
         else:
             optional_matches.append("OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)")
-        # Use IN_STUDY shortcut for study path (much faster than pattern matching)
-        # Note: This requires the IN_STUDY relationship to exist (created via migration script)
         
         optional_matches_str = "\n        ".join(optional_matches) if optional_matches else ""
         
@@ -2068,7 +2063,6 @@ RETURN count(*) AS total_count
                     "head(collect(DISTINCT pf)) AS pf",
                     "head(collect(DISTINCT sf)) AS sf"
                 ]
-        # st is already available from IN_STUDY MATCH, no need for coalesce
         with_vars.append("st")
         
         with_clause = ", ".join(with_vars)
@@ -2268,8 +2262,7 @@ RETURN count(*) AS total_count
         return_clause = ", ".join(return_vars)
         
         # Build unified query
-        # Only include samples that have a path to a study (using IN_STUDY shortcut)
-        # This is much faster than pattern matching (sample -> cell_line -> study or sample -> participant -> consent_group -> study)
+        # Only include samples that have a path to a study
         # Build the DISTINCT clause with all return variables
         distinct_vars = ", ".join(return_vars)
         
@@ -3989,13 +3982,12 @@ RETURN count(*) AS total_count
                 if field == "specimen_molecular_analyte_type":
                     # Optimized query for specimen_molecular_analyte_type:
                     # 1. Start from sequencing_file (more selective) and filter invalid values early
-                    # 2. Match to sample and check study path using IN_STUDY shortcut (much faster)
+                    # 2. Match to sample and check study path
                     # 3. Map DB values to API values in Cypher using CASE statement
                     # 4. Group by API value and count distinct samples directly in Cypher
                     # Performance improvements:
                     # - Start from sequencing_file instead of sample (fewer nodes to process)
                     # - Filter invalid values early before study path check
-                    # - Use IN_STUDY shortcut instead of pattern comprehension (10x faster)
                     # - Do mapping and counting in Cypher (eliminates Python-side processing overhead)
                     # - Returns aggregated results directly (much fewer rows)
                     # Optimized: Start from sample (like other sequencing_file fields), collect distinct values per sample first
@@ -4383,12 +4375,11 @@ RETURN count(*) AS total_count
                 elif node_alias == "d" and not base_where_clause:
                     # Optimized query for diagnosis fields (disease_phase, tumor_grade, etc.):
                     # 1. Start from diagnosis (more selective) and filter invalid values early
-                    # 2. Match to sample and check study path using IN_STUDY shortcut (avoids pattern comprehension null issue)
+                    # 2. Match to sample and check study path
                     # 3. Use head() to get one diagnosis per sample, then group by field value
                     # Performance improvements:
                     # - Start from diagnosis instead of sample (fewer nodes to process)
                     # - Filter invalid values early before study path check
-                    # - Use IN_STUDY shortcut instead of pattern comprehension (faster and avoids null issues)
                     # - Simplify redundant WHERE conditions (assume string fields)
                     invalid_filter = build_invalid_value_filter(node_field, field)
                     cypher = f"""
@@ -4413,11 +4404,9 @@ RETURN count(*) AS total_count
                 """.strip()
                 elif node_alias == "sa" and not base_where_clause:
                     # Optimized query for sample node fields (tissue_type, age_at_collection):
-                    # 1. Use IN_STUDY shortcut for consistency with total/missing queries (much faster and avoids null issues)
-                    # 2. Filter invalid values early
-                    # 3. Group by field value and count distinct samples
+                    # 1. Filter invalid values early
+                    # 2. Group by field value and count distinct samples
                     # Performance improvements:
-                    # - Use IN_STUDY shortcut instead of optional matches (much faster)
                     # - Consistent query structure with total and missing queries
                     cypher = f"""
                 MATCH (sa:sample)
@@ -5030,9 +5019,8 @@ RETURN count(*) AS total_count
                         # For diagnosis fields (d), total should count ALL samples with study paths, not just samples with diagnoses
                         if node_alias == "d":
                             # Diagnosis fields: count ALL samples with study paths (including those without diagnoses)
-                            # Use IN_STUDY shortcut instead of pattern comprehension (consistent with values query and avoids null issues)
                             if base_where_clause:
-                                # Has filters - need to apply them, but use IN_STUDY for study path
+                                # Has filters - need to apply them
                                 # Build optional matches for filters that need them
                                 filter_optional_matches = []
                                 if any("p." in cond for cond in base_where_conditions):
@@ -5080,7 +5068,6 @@ RETURN count(*) AS total_count
                             # Requirements:
                             # - Count ALL samples with path to a study
                             # - Use (sample_id + study_id) as unique identifier
-                            # - Use IN_STUDY shortcut for consistency with values/missing queries
                             # Skip total query for combined query fields (handled by combined query)
                             if field in ["preservation_method", "library_source_material", "library_strategy", "library_selection_method"] and not base_where_clause:
                                 # Total count is already included in combined query
@@ -5134,7 +5121,6 @@ RETURN count(*) AS total_count
                 """.strip()
                         else:
                             # For fields on sample node or study node, just require study path
-                            # Use IN_STUDY shortcut for consistency with values query (much faster and avoids null issues)
                             if base_where_clause:
                                 # Has filters - need to apply them
                                 # Build optional matches for filters that need them
@@ -5302,7 +5288,6 @@ RETURN count(*) AS total_count
                             # Missing: samples with study path that either:
                             # 1. Don't have any sequencing_file, OR
                             # 2. Have sequencing_file(s) but all have null/invalid/Not Reported values
-                            # Performance: Use IN_STUDY shortcut instead of pattern comprehension (much faster)
                             invalid_list_filter = build_invalid_value_list_filter("specimen_molecular_analyte_type")
                             missing_cypher = f"""
                 MATCH (sa:sample)
@@ -5368,7 +5353,6 @@ RETURN count(*) AS total_count
                                 # Missing: samples with study path that either:
                                 # 1. Don't have any pathology_file, OR
                                 # 2. Have pathology_file(s) but all have null/invalid values (based on null_mappings)
-                                # Use IN_STUDY shortcut for consistency with values/total queries (much faster and avoids null issues)
                                 # IMPORTANT: When OPTIONAL MATCH doesn't find a pathology_file, pf is NULL
                                 # collect(DISTINCT pf.fixation_embedding_method) on NULL returns [null]
                                 # So samples without pathology_file will have field_values = [null] and size([val IN [null] WHERE val IS NOT NULL ...]) = 0, counted as missing ✅
@@ -5402,7 +5386,6 @@ RETURN count(*) AS total_count
                             # Note: When OPTIONAL MATCH doesn't find a diagnosis, d is NULL
                             # collect(DISTINCT d.disease_phase) on NULL returns empty list []
                             # So samples without diagnoses will have field_values = [] and size([]) = 0, counted as missing ✅
-                            # Use IN_STUDY shortcut instead of pattern comprehension (consistent with values/total queries and avoids null issues)
                             invalid_list_filter = build_invalid_value_list_filter(field)
                             missing_cypher = f"""
                 MATCH (sa:sample)
@@ -5433,7 +5416,6 @@ RETURN count(*) AS total_count
                             missing_where = "(field_value IS NULL OR toString(field_value) = '' OR trim(toString(field_value)) = '' OR toString(field_value) = '-999' OR trim(toString(field_value)) = '-999')"
                             
                             # For fields on sample node (sa), ensure the query structure matches the total query
-                            # Use IN_STUDY shortcut for consistency with values and total queries (much faster and avoids null issues)
                             if node_alias == "sa":
                                 missing_cypher = f"""
                 MATCH (sa:sample)
@@ -6706,8 +6688,7 @@ RETURN count(*) AS total_count
         if needs_sequencing_file:
             optional_matches.append("OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)")
         
-        # OPTIMIZATION: Use IN_STUDY relationship for early filtering (same as get_samples)
-        # This is much faster than pattern matching (sample -> cell_line -> study or sample -> participant -> consent_group -> study)
+        # OPTIMIZATION: Early filtering (same as get_samples)
         optional_matches_str = "\n        ".join(optional_matches) if optional_matches else ""
         
         # Build WITH clause - only include variables that were matched
@@ -6735,7 +6716,7 @@ RETURN count(*) AS total_count
             else:
                 with_collects.append("head(collect(DISTINCT sf)) AS sf")
         
-        # Always include study (from IN_STUDY relationship)
+        # Always include study
         with_vars.append("st")
         
         with_clause = ", ".join(with_vars)
@@ -6869,7 +6850,6 @@ RETURN count(*) AS total_count
         
         # Build WHERE clause - include filter conditions
         # Separate conditions that need to be in first WITH (for identifiers) from those that need to be after second WITH (for has_matching_sf/has_matching_diagnosis)
-        # Note: st IS NOT NULL is no longer needed since IN_STUDY MATCH ensures study path exists
         first_where_conditions = []
         second_where_conditions = []
         

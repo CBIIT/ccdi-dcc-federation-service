@@ -479,6 +479,354 @@ class TestGetSubjectFilters:
 
 
 @pytest.mark.unit
+class TestGetSubjectSummaryFilters:
+    """Test cases for get_subject_summary_filters."""
+
+    @pytest.fixture
+    def mock_request(self):
+        """Create a mock Request object."""
+        request = Mock(spec=Request)
+        request.query_params = Mock()
+        request.query_params.keys = Mock(return_value=[])
+        request.query_params.items = Mock(return_value=[])
+        request.query_params.get = Mock(return_value=None)
+        return request
+
+    def test_no_filters(self, mock_request):
+        """Test with no filters provided."""
+        result = get_subject_summary_filters(
+            sex=None,
+            race=None,
+            ethnicity=None,
+            identifiers=None,
+            vital_status=None,
+            age_at_vital_status=None,
+            depositions=None,
+            request=mock_request
+        )
+        assert isinstance(result, dict)
+        assert "_invalid_ethnicity" not in result
+        assert "_invalid_sex" not in result
+
+    def test_valid_sex_filter(self, mock_request):
+        """Test valid sex filter values."""
+        result = get_subject_summary_filters(
+            sex="M",
+            race=None,
+            ethnicity=None,
+            identifiers=None,
+            vital_status=None,
+            age_at_vital_status=None,
+            depositions=None,
+            request=mock_request
+        )
+        assert result["sex"] == "M"
+
+    def test_invalid_sex_filter(self, mock_request):
+        """Test invalid sex filter values."""
+        result = get_subject_summary_filters(
+            sex="Invalid",
+            race=None,
+            ethnicity=None,
+            identifiers=None,
+            vital_status=None,
+            age_at_vital_status=None,
+            depositions=None,
+            request=mock_request
+        )
+        assert "_invalid_sex" in result
+
+    def test_valid_ethnicity_filter(self, mock_request):
+        """Test valid ethnicity filter."""
+        result = get_subject_summary_filters(
+            sex=None,
+            race=None,
+            ethnicity="Not reported",
+            identifiers=None,
+            vital_status=None,
+            age_at_vital_status=None,
+            depositions=None,
+            request=mock_request
+        )
+        assert result["ethnicity"] == "Not reported"
+
+    def test_invalid_ethnicity_filter(self, mock_request):
+        """Test invalid ethnicity filter."""
+        result = get_subject_summary_filters(
+            sex=None,
+            race=None,
+            ethnicity="Invalid Ethnicity",
+            identifiers=None,
+            vital_status=None,
+            age_at_vital_status=None,
+            depositions=None,
+            request=mock_request
+        )
+        assert "_invalid_ethnicity" in result
+
+    def test_valid_race_filter(self, mock_request):
+        """Test valid race filter."""
+        result = get_subject_summary_filters(
+            sex=None,
+            race="White",
+            ethnicity=None,
+            identifiers=None,
+            vital_status=None,
+            age_at_vital_status=None,
+            depositions=None,
+            request=mock_request
+        )
+        assert result["race"] == "White"
+
+    def test_race_with_multiple_values(self, mock_request):
+        """Test race filter with multiple values using || delimiter."""
+        result = get_subject_summary_filters(
+            sex=None,
+            race="White||Asian",
+            ethnicity=None,
+            identifiers=None,
+            vital_status=None,
+            age_at_vital_status=None,
+            depositions=None,
+            request=mock_request
+        )
+        assert isinstance(result["race"], list)
+        assert "White" in result["race"]
+        assert "Asian" in result["race"]
+
+    def test_valid_vital_status_filter(self, mock_request):
+        """Test valid vital status filter."""
+        result = get_subject_summary_filters(
+            sex=None,
+            race=None,
+            ethnicity=None,
+            identifiers=None,
+            vital_status="Alive",
+            age_at_vital_status=None,
+            depositions=None,
+            request=mock_request
+        )
+        assert result["vital_status"] == "Alive"
+
+    def test_invalid_vital_status_filter(self, mock_request):
+        """Test invalid vital status filter."""
+        result = get_subject_summary_filters(
+            sex=None,
+            race=None,
+            ethnicity=None,
+            identifiers=None,
+            vital_status="Invalid Status",
+            age_at_vital_status=None,
+            depositions=None,
+            request=mock_request
+        )
+        assert "_invalid_vital_status" in result
+
+    def test_valid_age_at_vital_status(self, mock_request):
+        """Test valid age_at_vital_status filter."""
+        result = get_subject_summary_filters(
+            sex=None,
+            race=None,
+            ethnicity=None,
+            identifiers=None,
+            vital_status=None,
+            age_at_vital_status="3650",
+            depositions=None,
+            request=mock_request
+        )
+        assert result["age_at_vital_status"] == 3650
+
+    def test_invalid_age_at_vital_status_non_integer(self, mock_request):
+        """Test invalid age_at_vital_status with non-integer."""
+        result = get_subject_summary_filters(
+            sex=None,
+            race=None,
+            ethnicity=None,
+            identifiers=None,
+            vital_status=None,
+            age_at_vital_status="not_a_number",
+            depositions=None,
+            request=mock_request
+        )
+        assert "_invalid_age_at_vital_status" in result
+        assert "_age_at_vital_status_reason" in result
+
+    def test_invalid_age_at_vital_status_out_of_range(self, mock_request):
+        """Test invalid age_at_vital_status out of valid range."""
+        result = get_subject_summary_filters(
+            sex=None,
+            race=None,
+            ethnicity=None,
+            identifiers=None,
+            vital_status=None,
+            age_at_vital_status="100000",
+            depositions=None,
+            request=mock_request
+        )
+        assert "_invalid_age_at_vital_status" in result
+
+    def test_negative_age_at_vital_status(self, mock_request):
+        """Test negative age_at_vital_status."""
+        result = get_subject_summary_filters(
+            sex=None,
+            race=None,
+            ethnicity=None,
+            identifiers=None,
+            vital_status=None,
+            age_at_vital_status="-100",
+            depositions=None,
+            request=mock_request
+        )
+        assert "_invalid_age_at_vital_status" in result
+
+    def test_identifiers_single_value(self, mock_request):
+        """Test identifiers filter with single value."""
+        result = get_subject_summary_filters(
+            sex=None,
+            race=None,
+            ethnicity=None,
+            identifiers="id123",
+            vital_status=None,
+            age_at_vital_status=None,
+            depositions=None,
+            request=mock_request
+        )
+        assert result["identifiers"] == "id123"
+
+    def test_identifiers_multiple_values(self, mock_request):
+        """Test identifiers filter with multiple values using || delimiter."""
+        result = get_subject_summary_filters(
+            sex=None,
+            race=None,
+            ethnicity=None,
+            identifiers="id1||id2||id3",
+            vital_status=None,
+            age_at_vital_status=None,
+            depositions=None,
+            request=mock_request
+        )
+        assert isinstance(result["identifiers"], list)
+        assert "id1" in result["identifiers"]
+        assert "id2" in result["identifiers"]
+        assert "id3" in result["identifiers"]
+
+    def test_depositions_filter(self, mock_request):
+        """Test depositions filter."""
+        result = get_subject_summary_filters(
+            sex=None,
+            race=None,
+            ethnicity=None,
+            identifiers=None,
+            vital_status=None,
+            age_at_vital_status=None,
+            depositions="phs002431",
+            request=mock_request
+        )
+        assert "depositions" in result
+        assert result["depositions"] == "phs002431"
+
+    def test_unharmonized_fields(self, mock_request):
+        """Test unharmonized fields from query parameters."""
+        mock_request.query_params.keys = Mock(return_value=[
+            "metadata.unharmonized.custom_field",
+            "metadata.unharmonized.another_field"
+        ])
+        mock_request.query_params.items = Mock(return_value=[
+            ("metadata.unharmonized.custom_field", "value1"),
+            ("metadata.unharmonized.another_field", "value2")
+        ])
+        result = get_subject_summary_filters(
+            sex=None,
+            race=None,
+            ethnicity=None,
+            identifiers=None,
+            vital_status=None,
+            age_at_vital_status=None,
+            depositions=None,
+            request=mock_request
+        )
+        assert "metadata.unharmonized.custom_field" in result
+        assert result["metadata.unharmonized.custom_field"] == "value1"
+        assert "metadata.unharmonized.another_field" in result
+
+    def test_unknown_parameters(self, mock_request):
+        """Test detection of unknown query parameters (summary endpoint rejects pagination/search)."""
+        mock_request.query_params.keys = Mock(return_value=["unknown_param", "sex", "page"])
+        result = get_subject_summary_filters(
+            sex="M",
+            race=None,
+            ethnicity=None,
+            identifiers=None,
+            vital_status=None,
+            age_at_vital_status=None,
+            depositions=None,
+            request=mock_request
+        )
+        assert "_unknown_parameters" in result
+        assert "unknown_param" in result["_unknown_parameters"]
+        assert "page" in result["_unknown_parameters"]  # Pagination not allowed in summary
+
+    def test_unknown_parameters_ignores_unharmonized(self, mock_request):
+        """Test that unharmonized fields don't trigger unknown parameter error."""
+        mock_request.query_params.keys = Mock(return_value=[
+            "metadata.unharmonized.custom_field",
+            "sex"
+        ])
+        mock_request.query_params.items = Mock(return_value=[
+            ("metadata.unharmonized.custom_field", "value"),
+            ("sex", "M")
+        ])
+        result = get_subject_summary_filters(
+            sex="M",
+            race=None,
+            ethnicity=None,
+            identifiers=None,
+            vital_status=None,
+            age_at_vital_status=None,
+            depositions=None,
+            request=mock_request
+        )
+        assert "_unknown_parameters" not in result
+        assert "metadata.unharmonized.custom_field" in result
+
+    def test_multiple_filters_combined(self, mock_request):
+        """Test multiple filters combined."""
+        result = get_subject_summary_filters(
+            sex="M",
+            race="White",
+            ethnicity="Not reported",
+            vital_status="Alive",
+            depositions="phs002431",
+            request=mock_request
+        )
+        assert "_invalid_sex" not in result
+        assert "_invalid_ethnicity" not in result
+        assert "_invalid_race" not in result
+        assert "_invalid_vital_status" not in result
+        assert result["sex"] == "M"
+        assert result["race"] == "White"
+        assert result["ethnicity"] == "Not reported"
+        assert result["vital_status"] == "Alive"
+        assert result["depositions"] == "phs002431"
+
+    def test_empty_string_filters(self, mock_request):
+        """Test that empty string filters are handled correctly."""
+        result = get_subject_summary_filters(
+            sex="",
+            race="",
+            ethnicity="",
+            identifiers="",
+            vital_status="",
+            age_at_vital_status="",
+            depositions="",
+            request=mock_request
+        )
+        # Empty strings should be stripped and not added to filters
+        assert "sex" not in result or result.get("sex") == ""
+        assert "_invalid_sex" not in result  # Empty string should not trigger validation
+
+
+@pytest.mark.unit
 class TestGetSampleFilters:
     """Test cases for get_sample_filters."""
 

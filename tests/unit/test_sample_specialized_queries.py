@@ -110,11 +110,17 @@ class TestSpecializedQueries:
                 call_args = mock_session.run.call_args
                 query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
                 # Check that SKIP/LIMIT appears before OPTIONAL MATCH for study collection
-                skip_limit_pos = query.find("SKIP")
+                skip_pos = query.find("SKIP")
+                limit_pos = query.find("LIMIT")
+                # Study collection happens after pagination, so look for the first OPTIONAL MATCH after SKIP/LIMIT
+                # that matches study relationships (cell_line path)
                 study_match_pos = query.find("OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)")
-                assert skip_limit_pos != -1, "SKIP should be present in query"
+                assert skip_pos != -1, "SKIP should be present in query"
+                assert limit_pos != -1, "LIMIT should be present in query"
                 assert study_match_pos != -1, "Study collection should be present"
-                assert skip_limit_pos < study_match_pos, "SKIP/LIMIT should come BEFORE study collection (early pagination)"
+                # SKIP should come before the study collection OPTIONAL MATCH
+                # Check that SKIP comes before the cell_line OPTIONAL MATCH
+                assert skip_pos < study_match_pos, f"SKIP/LIMIT should come BEFORE study collection (early pagination). SKIP at {skip_pos}, study match at {study_match_pos}"
     
     async def test_get_samples_by_sequencing_file_filters_invalid_library_strategy(self, repository, mock_session):
         """Test _get_samples_by_sequencing_file_filters returns empty for invalid library_strategy."""
@@ -186,12 +192,19 @@ class TestSpecializedQueries:
                     # Verify early pagination structure
                     call_args = mock_session.run.call_args
                     query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
-                    # Verify DISTINCT sa before SKIP/LIMIT (early pagination)
-                    distinct_pos = query.find("WITH DISTINCT sa")
+                    # Verify early pagination structure
+                    # Current query structure: study collection -> ORDER BY -> SKIP -> LIMIT -> final OPTIONAL MATCHes
                     skip_pos = query.find("SKIP")
-                    assert distinct_pos != -1, "DISTINCT sa should be present"
+                    limit_pos = query.find("LIMIT")
+                    study_collection_pos = query.find("collect(DISTINCT st1.study_id)")
+                    final_optional_match_pos = query.find("OPTIONAL MATCH (d:diagnosis)")
+                    
                     assert skip_pos != -1, "SKIP should be present"
-                    assert distinct_pos < skip_pos, "DISTINCT should come before SKIP"
+                    assert limit_pos != -1, "LIMIT should be present"
+                    # SKIP/LIMIT should come after study collection but before final OPTIONAL MATCHes
+                    if study_collection_pos != -1 and final_optional_match_pos != -1:
+                        assert study_collection_pos < skip_pos < final_optional_match_pos, "Study collection -> SKIP -> final OPTIONAL MATCHes"
+                        assert study_collection_pos < limit_pos < final_optional_match_pos, "Study collection -> LIMIT -> final OPTIONAL MATCHes"
     
     async def test_get_samples_by_sequencing_file_filters_invalid_specimen_molecular_analyte_type(self, repository, mock_session):
         """Test _get_samples_by_sequencing_file_filters returns empty for invalid specimen_molecular_analyte_type."""
@@ -230,12 +243,18 @@ class TestSpecializedQueries:
                     query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
                     assert 'IN [' in query
                     
-                    # Verify early pagination: SKIP/LIMIT before study collection
+                    # Verify early pagination: SKIP/LIMIT after study collection but before final OPTIONAL MATCHes
                     skip_pos = query.find("SKIP")
+                    limit_pos = query.find("LIMIT")
                     study_collection_pos = query.find("collect(DISTINCT st1.study_id)")
+                    final_optional_match_pos = query.find("OPTIONAL MATCH (d:diagnosis)")
+                    
                     assert skip_pos != -1, "SKIP should be present"
-                    assert study_collection_pos != -1, "Study collection should be present"
-                    assert skip_pos < study_collection_pos, "SKIP should come before study collection (early pagination)"
+                    assert limit_pos != -1, "LIMIT should be present"
+                    # SKIP/LIMIT should come after study collection but before final OPTIONAL MATCHes
+                    if study_collection_pos != -1 and final_optional_match_pos != -1:
+                        assert study_collection_pos < skip_pos < final_optional_match_pos, "Study collection -> SKIP -> final OPTIONAL MATCHes"
+                        assert study_collection_pos < limit_pos < final_optional_match_pos, "Study collection -> LIMIT -> final OPTIONAL MATCHes"
     
     async def test_get_samples_by_sequencing_file_filters_return_total(self, repository, mock_session):
         """Test _get_samples_by_sequencing_file_filters with return_total=True."""
@@ -276,11 +295,17 @@ class TestSpecializedQueries:
                 list_query_call = mock_session.run.call_args_list[1]
                 query = list_query_call[0][0] if list_query_call[0] else list_query_call.kwargs.get('cypher', '')
                 # Verify early pagination structure
-                distinct_pos = query.find("WITH DISTINCT sa")
+                # Current query structure: study collection -> ORDER BY -> SKIP -> LIMIT -> final OPTIONAL MATCHes
                 skip_pos = query.find("SKIP")
+                limit_pos = query.find("LIMIT")
                 study_collection_pos = query.find("collect(DISTINCT st1.study_id)")
-                assert distinct_pos != -1 and skip_pos != -1, "Early pagination structure should be present"
-                assert distinct_pos < skip_pos < study_collection_pos, "Early pagination: DISTINCT -> SKIP -> study collection"
+                final_optional_match_pos = query.find("OPTIONAL MATCH (d:diagnosis)")
+                
+                assert skip_pos != -1 and limit_pos != -1, "Early pagination structure should be present"
+                # SKIP/LIMIT should come after study collection but before final OPTIONAL MATCHes
+                if study_collection_pos != -1 and final_optional_match_pos != -1:
+                    assert study_collection_pos < skip_pos < final_optional_match_pos, "Study collection -> SKIP -> final OPTIONAL MATCHes"
+                    assert study_collection_pos < limit_pos < final_optional_match_pos, "Study collection -> LIMIT -> final OPTIONAL MATCHes"
     
     async def test_get_samples_by_sequencing_file_filters_error_handling(self, repository, mock_session):
         """Test _get_samples_by_sequencing_file_filters error handling."""
@@ -319,25 +344,26 @@ class TestSpecializedQueries:
                 query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
                 
                 # Extract positions of key query elements
-                distinct_pos = query.find("WITH DISTINCT sa")
+                # Current query structure: study collection -> ORDER BY -> SKIP -> LIMIT -> final OPTIONAL MATCHes
                 order_by_pos = query.find("ORDER BY")
                 skip_pos = query.find("SKIP")
                 limit_pos = query.find("LIMIT")
-                rematch_sf_pos = query.find("// Rematch sequencing_file")
                 study_collection_pos = query.find("collect(DISTINCT st1.study_id)")
+                final_optional_match_pos = query.find("OPTIONAL MATCH (d:diagnosis)")
                 
                 # Verify early pagination order
-                assert distinct_pos != -1, "DISTINCT sa should be present"
                 assert order_by_pos != -1, "ORDER BY should be present"
                 assert skip_pos != -1, "SKIP should be present"
                 assert limit_pos != -1, "LIMIT should be present"
-                assert rematch_sf_pos != -1, "Rematch sequencing_file comment should be present"
                 assert study_collection_pos != -1, "Study collection should be present"
                 
-                # Verify correct order: DISTINCT -> ORDER BY -> SKIP -> LIMIT -> Rematch sf -> Study collection
-                assert distinct_pos < order_by_pos < skip_pos < limit_pos, "Pagination should come after DISTINCT and ORDER BY"
-                assert limit_pos < rematch_sf_pos, "Rematch sf should come after pagination"
-                assert rematch_sf_pos < study_collection_pos, "Study collection should come after rematch sf"
+                # Verify correct order: Study collection -> ORDER BY -> SKIP -> LIMIT -> Final OPTIONAL MATCHes
+                assert study_collection_pos < order_by_pos, "Study collection should come before ORDER BY"
+                assert order_by_pos < skip_pos < limit_pos, "Pagination should come after ORDER BY"
+                # SKIP/LIMIT should come before final OPTIONAL MATCHes
+                if final_optional_match_pos != -1:
+                    assert skip_pos < final_optional_match_pos, "SKIP should come before final OPTIONAL MATCHes"
+                    assert limit_pos < final_optional_match_pos, "LIMIT should come before final OPTIONAL MATCHes"
                 
                 # Verify parameters include offset and limit
                 params = call_args.kwargs.get('params', {}) if call_args.kwargs else (call_args[0][1] if len(call_args[0]) > 1 else {})

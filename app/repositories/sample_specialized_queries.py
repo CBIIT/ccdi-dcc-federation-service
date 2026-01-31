@@ -139,7 +139,6 @@ class SampleSpecializedQueries(SampleValidators):
         # Key optimization: Start from sequencing_file (uses index), then find samples
         # Note: For large result sets (10k+ samples), study path traversal is inherently expensive
         # Further optimization would require database-level changes (e.g., indexed has_study property)
-        # PERFORMANCE: use the precomputed IN_STUDY relationship for sample->study lookup.
         # This avoids the expensive traversal through cell_line/participant/consent_group.
         # IMPORTANT: We also deduplicate matching sequencing_files per (sample, study) before pagination
         # to prevent row explosion when multiple sf match the filter for the same sample.

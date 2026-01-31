@@ -1032,7 +1032,19 @@ class TestSampleRepositoryInternal:
         await repository.get_samples({"identifiers": "S1 || S2"}, offset=0, limit=20)
 
         params = mock_session.run.call_args[0][1]
-        assert params["param_1"] == ["S1", "S2"]
+        # The early pagination path uses _id_param, standard path uses param_X
+        # Check for both possibilities
+        identifiers_param = None
+        if "_id_param" in params and isinstance(params["_id_param"], list) and params["_id_param"] == ["S1", "S2"]:
+            identifiers_param = "_id_param"
+        else:
+            # Check for param_X pattern (used in standard query path)
+            for key, value in params.items():
+                if key.startswith("param_") and isinstance(value, list) and value == ["S1", "S2"]:
+                    identifiers_param = key
+                    break
+        assert identifiers_param is not None, f"Identifiers parameter not found in {params}"
+        assert params[identifiers_param] == ["S1", "S2"]
 
     async def test_get_samples_invalid_library_source_material_early_return(self, repository, mock_session):
         """Test invalid library_source_material returns empty without DB call."""

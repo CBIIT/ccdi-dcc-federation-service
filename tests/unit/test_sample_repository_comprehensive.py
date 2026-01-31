@@ -662,9 +662,10 @@ class TestSampleRepositoryGetSamplesSummary:
         
         result = await repository.get_samples_summary(filters={"identifiers": "SAMP001"})
         
-        # When filters are present, returns {"total_count": X} format
-        assert "total_count" in result
-        assert result["total_count"] == 5
+        # When filters are present, returns {"counts": {"total": X}} format
+        assert "counts" in result
+        assert "total" in result["counts"]
+        assert result["counts"]["total"] == 5
 
     async def test_get_samples_summary_with_depositions_filter(self, repository, mock_session):
         """Test get_samples_summary with depositions filter."""
@@ -678,9 +679,10 @@ class TestSampleRepositoryGetSamplesSummary:
         
         result = await repository.get_samples_summary(filters={"depositions": "phs002431"})
         
-        # When filters are present, returns {"total_count": X} format
-        assert "total_count" in result
-        assert result["total_count"] == 20
+        # When filters are present, returns {"counts": {"total": X}} format
+        assert "counts" in result
+        assert "total" in result["counts"]
+        assert result["counts"]["total"] == 20
 
 
 @pytest.mark.unit

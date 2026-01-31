@@ -4,6 +4,7 @@ Summary methods for SampleRepository.
 This module contains methods for getting sample summary statistics.
 """
 
+import asyncio
 from typing import Dict, Any, Optional
 from app.core.logging import get_logger
 from app.core.field_mappings import (
@@ -12,6 +13,7 @@ from app.core.field_mappings import (
     is_database_only_value,
     map_field_value
 )
+from app.models.errors import UnsupportedFieldError
 
 logger = get_logger(__name__)
 
@@ -481,7 +483,7 @@ class SampleSummary:
                     else:
                         all_dep_values.append(dep_value)
             if all_dep_values:
-                dep_early_param_name = SampleRepository._get_next_param_name(params, param_counter)
+                dep_early_param_name = self._get_next_param_name(params, param_counter)
                 if len(all_dep_values) > 1:
                     params[dep_early_param_name] = all_dep_values
                     depositions_study_filter_summary = f" AND st.study_id IN ${dep_early_param_name}"

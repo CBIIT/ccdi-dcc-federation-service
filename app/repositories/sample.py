@@ -39,13 +39,14 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         filters: Dict[str, Any],
         offset: int,
         limit: int,
-        base_url: Optional[str] = None
-    ) -> Optional[List[Sample]]:
+        base_url: Optional[str] = None,
+        return_total: bool = False
+    ) -> Optional[Union[List[Sample], Tuple[List[Sample], int]]]:
         """
-        Get samples using early-pagination flow when only identifiers and/or depositions are present.
-        Flow: (1) MATCH sa + identifiers (2) study resolution + depositions (3) OPTIONAL MATCH p
+        Get samples using early-pagination flow when only identifiers, depositions, anatomical_sites, and/or tissue_type are present.
+        Flow: (1) MATCH sa + identifiers/anatomical_sites/tissue_type (2) study resolution + depositions (3) OPTIONAL MATCH p
               (4) ORDER BY SKIP LIMIT [early pagination] (5) OPTIONAL MATCH d, pf, sf (6) RETURN.
-        Returns list of Sample objects, or None if filters cannot be handled by this path.
+        Returns list of Sample objects, or (list, total_count) if return_total=True, or None if filters cannot be handled by this path.
         """
         params: Dict[str, Any] = {"offset": offset, "limit": limit}
         early_where_parts = [
@@ -79,12 +80,85 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
                 params["_dep_param"] = dep_value
                 depositions_filter = " AND st.study_id = $_dep_param"
         
-        # This path only handles identifiers and/or depositions; no other keys
-        allowed = {"identifiers", "depositions"}
+        # Parse anatomical_sites (sample property, can be filtered early)
+        anatomical_sites_value = filters.get("anatomical_sites")
+        if anatomical_sites_value is not None:
+            if isinstance(anatomical_sites_value, list):
+                # Multiple values - build OR conditions
+                or_conditions = []
+                for idx, val in enumerate(anatomical_sites_value):
+                    val_param = f"_anatomical_sites_{idx}"
+                    params[val_param] = val.strip() if isinstance(val, str) else val
+                    or_conditions.append(f"""(
+                        ${val_param} = sa.anatomic_site OR
+                        reduce(found = false, tok IN SPLIT(toString(sa.anatomic_site), ';') | 
+                          CASE WHEN trim(tok) = trim(toString(${val_param})) THEN true ELSE found END
+                        ) = true
+                    )""")
+                anatomical_sites_condition = f"""sa.anatomic_site IS NOT NULL AND ({' OR '.join(or_conditions)})"""
+            else:
+                # Single value - handle exact match and semicolon-separated string
+                params["_anatomical_sites_param"] = anatomical_sites_value.strip() if isinstance(anatomical_sites_value, str) else anatomical_sites_value
+                anatomical_sites_condition = f"""sa.anatomic_site IS NOT NULL AND (
+                    $_anatomical_sites_param = sa.anatomic_site OR
+                    reduce(found = false, tok IN SPLIT(toString(sa.anatomic_site), ';') | 
+                      CASE WHEN trim(tok) = trim(toString($_anatomical_sites_param)) THEN true ELSE found END
+                    ) = true
+                )"""
+            early_where_parts.append(anatomical_sites_condition)
+        
+        # Parse tissue_type (sample property, can be filtered early)
+        tissue_type_value = filters.get("tissue_type")
+        if tissue_type_value is not None:
+            # Use helper function to validate and build condition
+            with_conditions_temp = []
+            tissue_param = "_tissue_type_param"
+            if self._validate_tissue_type_filter(tissue_type_value, tissue_param, params, with_conditions_temp) is None:
+                # Invalid tissue_type - return empty results
+                logger.info("Early pagination: Invalid tissue_type filter, returning empty results", tissue_type=tissue_type_value)
+                if return_total:
+                    return ([], 0)
+                return []
+            # Add the condition from with_conditions_temp to early_where_parts
+            if with_conditions_temp:
+                early_where_parts.append(with_conditions_temp[0])
+        
+        # This path handles identifiers, depositions, anatomical_sites, and tissue_type (sample properties)
+        # No other keys allowed (would need to fall through to standard query)
+        allowed = {"identifiers", "depositions", "anatomical_sites", "tissue_type"}
         if set(filters.keys()) - allowed:
             return None
         
         early_where_clause = " AND ".join(early_where_parts)
+        
+        # Build count query if return_total
+        total_count = None
+        if return_total:
+            cypher_count = f"""
+            MATCH (sa:sample)
+            WHERE {early_where_clause}
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+            WITH sa, (st2_list + st1_list) AS combined
+            UNWIND combined AS sid
+            MATCH (st:study)
+            WHERE st.study_id = sid{depositions_filter}
+            WITH DISTINCT sa.sample_id AS sample_id, st.study_id AS study_id
+            RETURN count(*) as total_count
+            """.strip()
+            
+            try:
+                result_count = await self.session.run(cypher_count, params)
+                recs = []
+                async for r in result_count:
+                    recs.append(dict(r))
+                await result_count.consume()
+                total_count = recs[0].get("total_count", 0) if recs else 0
+            except Exception as e:
+                logger.warning("Early pagination count query failed", error=str(e), exc_info=True)
+                total_count = 0
         
         cypher = f"""
         MATCH (sa:sample)
@@ -111,10 +185,12 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         """.strip()
         
         logger.info(
-            "Executing early pagination with filters (identifiers/depositions only)",
+            "Executing early pagination with filters (identifiers/depositions/anatomical_sites/tissue_type)",
             pattern="early_pagination_with_filters",
             offset=offset,
             limit=limit,
+            filters=list(filters.keys()),
+            return_total=return_total,
         )
         
         result = await self.session.run(cypher, params)
@@ -139,6 +215,9 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
             except Exception as e:
                 logger.warning("Error converting sample record in early-pagination path: %s", e, exc_info=True)
                 continue
+        
+        if return_total:
+            return (samples, total_count if total_count is not None else len(samples))
         return samples
 
     async def get_samples(
@@ -209,11 +288,12 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         # Case 3: Has diagnosis/sequencing_file/pathology_file filters
         # Apply filters before pagination, then paginate at sample-study pair level
         logger.info("Using Case 3: Has other node filters query path", filters=filters)
-        # For now, Case 3 uses existing standard query logic
-        # TODO: Refactor standard query to follow new Case 3 structure
-        # Restore original filters dict for existing standard query logic
-        # (The existing standard query expects the original filters structure)
-        # Fall through to standard query below
+        result_case3 = await self._get_samples_case3_with_node_filters(
+            filters, categorized, offset, limit, base_url, return_total
+        )
+        if result_case3 is not None:
+            return result_case3
+        # If Case 3 returns None, fall through to standard query below
         
         # PERFORMANCE OPTIMIZATION: Early Pagination for No-Filter Queries
         # Problem: Current query processes ALL 50,211 samples before pagination (SLOW)
@@ -1185,8 +1265,8 @@ LIMIT $limit
             WHERE study_id IS NOT NULL{depositions_study_id_filter_count_diag}
             WITH DISTINCT sa, study_id
             MATCH (st:study {{study_id: study_id}})
-            WITH DISTINCT sa.sample_id AS sample_id, st.study_id AS study_id
-            RETURN count(*) AS total_count
+            WITH DISTINCT sa.sample_id AS sample_id
+            RETURN count(DISTINCT sample_id) AS total_count
             """.strip()
                     else:
                         # Only tissue_type filter - match directly from sample
@@ -1208,8 +1288,8 @@ LIMIT $limit
             WHERE study_id IS NOT NULL{depositions_study_id_filter_count}
             WITH DISTINCT sa, study_id
             MATCH (st:study {{study_id: study_id}})
-            WITH DISTINCT sa.sample_id AS sample_id, st.study_id AS study_id
-            RETURN count(*) AS total_count
+            WITH DISTINCT sa.sample_id AS sample_id
+            RETURN count(DISTINCT sample_id) AS total_count
             """.strip()
                     if cypher_diag_first_count:
                         try:
@@ -1583,7 +1663,13 @@ RETURN count(*) AS total_count
             early_where_conditions.append(anatomical_sites_early_condition)
         
         # Build early WHERE clause (applied before OPTIONAL MATCHes)
-        early_where_clause = "\n        WHERE " + " AND ".join(early_where_conditions) if early_where_conditions else ""
+        # Filter out base conditions that are already hardcoded in the standard query
+        # Keep only additional filters like identifiers
+        additional_conditions = [
+            cond for cond in early_where_conditions 
+            if cond not in ["sa.sample_id IS NOT NULL", "toString(sa.sample_id) <> ''"]
+        ]
+        early_where_clause = "\n        WHERE " + " AND ".join(additional_conditions) if additional_conditions else ""
         
         # Preserve identifiers condition if it exists (it was added earlier)
         where_conditions = where_conditions if where_conditions else []
@@ -2264,11 +2350,23 @@ RETURN count(*) AS total_count
                     filters=dict(filters),
                 )
 
+        # Build WHERE clause with identifiers filter if present
+        # Filter out base conditions from early_where_conditions to get additional filters
+        additional_filters = [
+            cond for cond in early_where_conditions 
+            if cond not in ["sa.sample_id IS NOT NULL", "toString(sa.sample_id) <> ''"]
+        ]
+        where_parts = [
+            "sa.sample_id IS NOT NULL",
+            "sa.sample_id <> ''"
+        ]
+        if additional_filters:
+            where_parts.extend(additional_filters)
+        where_clause_str = " AND ".join(where_parts)
+        
         cypher = f"""
         MATCH (sa:sample)
-        WHERE sa.sample_id IS NOT NULL
-          AND sa.sample_id <> ''
-        {early_where_clause.replace('WHERE ', 'AND ') if early_where_clause else ''}
+        WHERE {where_clause_str}
         OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
         WITH sa, collect(DISTINCT st1.study_id) AS st1_list
         OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
@@ -2280,12 +2378,11 @@ RETURN count(*) AS total_count
         {optional_matches_str}
         WITH {with_clause}
         {second_with_str}{where_clause}WITH DISTINCT {distinct_vars}
-        // Deduplicate by sample_id to ensure one row per sample (handles multiple study relationships)
-        // Use head() to pick one study per sample (consistent with count query which groups by sample_id)
-        // IMPORTANT: When grouping by sample, preserve the diagnosis that matches all filters
-        // Collect diagnosis per sample (not per sample-study pair) to ensure consistency
-        WITH DISTINCT sa.sample_id as sample_id, sa, head(collect(DISTINCT st)) as st, sf, pf, head(collect(DISTINCT diagnoses)) as diagnoses
-        ORDER BY toString(sample_id)
+        // Return all sample-study pairs (don't deduplicate by sample_id)
+        // This matches the count query which counts sample-study pairs
+        // IMPORTANT: When a sample appears in multiple studies, return separate Sample objects for each study
+        WITH DISTINCT sa.sample_id as sample_id, sa, st, sf, pf, head(collect(DISTINCT diagnoses)) as diagnoses
+        ORDER BY toString(sample_id), toString(st.study_id)
         SKIP $offset
         LIMIT $limit
         // After pagination: OPTIONAL MATCH participant (only for paginated samples - much faster)
@@ -2311,23 +2408,23 @@ RETURN count(*) AS total_count
             params=params,
         )
         
-        # When return_total: run count variant of standard query (same filters, count distinct sample_id+study_id)
-        # IMPORTANT: Count query must count ALL sample-study pairs BEFORE head() aggregation
-        # The list query uses head(collect(DISTINCT st)) to pick one study per sample for display,
-        # but the count should include ALL matching sample-study pairs
+        # When return_total: run count variant of standard query (same filters, count distinct sample_id)
+        # IMPORTANT: Count query must count distinct sample_ids to match list query behavior
+        # The list query uses head(collect(DISTINCT st)) to pick one study per sample,
+        # so we count distinct sample_ids (not sample-study pairs) to match
         total_count_std = None
         if return_total:
-            # Build count query by counting BEFORE the head() aggregation
+            # Build count query by counting distinct sample_ids (matching list query deduplication)
             # The count should happen right after WHERE clause filters are applied, before head() picks one study
             _head_pattern = "        WITH DISTINCT sa.sample_id as sample_id, sa, head(collect(DISTINCT st)) as st, sf, pf, diagnoses"
             if _head_pattern in cypher:
-                # Split at the head() aggregation - count all pairs before head()
+                # Split at the head() aggregation - count distinct sample_ids before head()
                 # At this point, we have "WITH DISTINCT {distinct_vars}" which includes sa and st
-                # Count all distinct sample-study pairs directly
+                # Count distinct sample_ids to match list query behavior (one Sample per sample_id)
                 _before_head = cypher.split(_head_pattern)[0]
-                # Count all sample-study pairs (st is available from distinct_vars)
+                # Count all sample-study pairs (matching list query which returns all pairs)
                 cypher_count_std = _before_head + """
-        // Count all sample-study pairs (before head() aggregation)
+        // Count all sample-study pairs (matching list query which returns all pairs)
         WITH DISTINCT sa.sample_id AS sample_id, st.study_id AS study_id
         RETURN count(*) AS total_count
                 """.strip()

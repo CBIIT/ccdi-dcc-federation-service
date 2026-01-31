@@ -310,11 +310,22 @@ async def list_samples(
         
         # Build response with summary first, then data
         # Always return 200 with empty data if query succeeded but no results found
+        # Calculate summary counts:
+        # - If no filters: all = total, current = per_page (limit)
+        # - If filters: all = total (calculated at pagination point), current = actual items returned
+        has_filters = bool(filters)
+        if not has_filters:
+            # No filters: current = per_page (limit)
+            current_count = pagination.per_page
+        else:
+            # Has filters: current = actual items returned
+            current_count = len(samples)
+        
         result = SamplesResponse(
             summary={
                 "counts": {
-                    "all": total_count,  # Total number of unique samples
-                    "current": len(samples)
+                    "all": total_count,  # Total number of unique samples (calculated at pagination point)
+                    "current": current_count  # Items in current page
                 }
             },
             data=samples_dicts

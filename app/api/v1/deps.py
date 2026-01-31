@@ -479,6 +479,28 @@ def get_sample_filters(
     """Get sample filter parameters."""
     filters = {}
     
+    # Check for duplicate parameters (invalid - reject them)
+    if request:
+        from app.models.errors import InvalidParametersError
+        # Parameters that should not appear multiple times
+        check_params = ["identifiers", "depositions", "anatomical_sites", "disease_phase", 
+                       "library_selection_method", "library_strategy", "library_source_material",
+                       "preservation_method", "tumor_grade", "specimen_molecular_analyte_type",
+                       "tissue_type", "tumor_classification", "age_at_diagnosis", 
+                       "age_at_collection", "tumor_tissue_morphology", "diagnosis"]
+        duplicate_params = []
+        for param in check_params:
+            param_values = request.query_params.getlist(param)
+            if len(param_values) > 1:
+                duplicate_params.append(param)
+        
+        if duplicate_params:
+            raise InvalidParametersError(
+                parameters=[],
+                message="Invalid query parameter(s) provided.",
+                reason=f"Duplicate parameters found: {', '.join(duplicate_params)}"
+            )
+    
     # Handle identifiers parameter (similar to subject endpoints)
     if identifiers is not None:
         identifiers_str = str(identifiers).strip() if identifiers else None

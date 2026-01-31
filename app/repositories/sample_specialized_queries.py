@@ -140,13 +140,18 @@ class SampleSpecializedQueries(SampleValidators):
         # Note: For large result sets (10k+ samples), study path traversal is inherently expensive
         # Further optimization would require database-level changes (e.g., indexed has_study property)
         # This avoids the expensive traversal through cell_line/participant/consent_group.
-        # IMPORTANT: We also deduplicate matching sequencing_files per (sample, study) before pagination
-        # to prevent row explosion when multiple sf match the filter for the same sample.
+        # IMPORTANT: Early pagination - apply SKIP/LIMIT BEFORE collecting study relationships
+        # to avoid expensive operations on large datasets. We deduplicate matching sequencing_files
+        # per sample before pagination to prevent row explosion when multiple sf match the filter.
         cypher = f"""
         MATCH (sf:sequencing_file)
         WHERE {where_clause}
         MATCH (sf)-[:of_sequencing_file]->(sa:sample)
         WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+        WITH DISTINCT sa, sf
+        ORDER BY toString(sa.sample_id)
+        SKIP $offset
+        LIMIT $limit
         OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
         WITH sa, sf, collect(DISTINCT st1.study_id) AS st1_list
         OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
@@ -157,9 +162,6 @@ class SampleSpecializedQueries(SampleValidators):
         WHERE st.study_id = sid
         WITH sa, st, collect(DISTINCT sf) AS matching_sfs
         WITH sa, st, head(matching_sfs) AS sf
-        ORDER BY toString(sa.sample_id)
-        SKIP $offset
-        LIMIT $limit
         OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
         OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)

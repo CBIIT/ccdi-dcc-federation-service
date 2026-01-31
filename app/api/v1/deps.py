@@ -319,11 +319,13 @@ def get_subject_summary_filters(
     
     # Validate sex if provided
     if sex is not None:
-        valid_sex_values = ["M", "F", "U"]
-        if sex not in valid_sex_values:
-            filters["_invalid_sex"] = sex
-            return filters
-        filters["sex"] = sex
+        sex_str = str(sex).strip() if sex else None
+        if sex_str:
+            valid_sex_values = ["M", "F", "U"]
+            if sex_str not in valid_sex_values:
+                filters["_invalid_sex"] = sex_str
+                return filters
+            filters["sex"] = sex_str
     
     # Validate race if provided
     if race is not None:
@@ -394,7 +396,9 @@ def get_subject_summary_filters(
                 return filters
     
     if depositions is not None:
-        filters["depositions"] = depositions
+        depositions_str = str(depositions).strip() if depositions else None
+        if depositions_str:
+            filters["depositions"] = depositions_str
     
     # Handle unharmonized fields from query parameters
     if request:

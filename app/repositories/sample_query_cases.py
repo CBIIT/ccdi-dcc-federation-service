@@ -391,10 +391,28 @@ class SampleQueryCases:
         diagnosis_search_term = categorized["diagnosis"].get("_diagnosis_search")
         needs_diagnosis_search = diagnosis_search_term is not None
         
-        # If diagnosis search is present, fall through to standard query (it has specialized handling)
+        # Handle diagnosis search - needs special collection filter
+        diagnosis_search_filter = None
+        disease_phase_collection_filter = None
         if needs_diagnosis_search:
-            logger.info("Case 3: Diagnosis search present, falling through to standard query")
-            return None
+            # Pre-process search term to lowercase (done once in Python)
+            diagnosis_search_term_lower = diagnosis_search_term.lower().strip()
+            params["diagnosis_search_term"] = diagnosis_search_term
+            params["diagnosis_search_term_lower"] = diagnosis_search_term_lower
+            params["diagnosis_search_term_see_comment"] = "see diagnosis_comment"
+            
+            # Build diagnosis search filter condition
+            diagnosis_search_filter = """(toLower(trim(toString(d.diagnosis))) <> $diagnosis_search_term_see_comment AND 
+                     CASE 
+                       WHEN valueType(d.diagnosis) = 'LIST' THEN 
+                         ANY(diag IN d.diagnosis WHERE toLower(toString(diag)) CONTAINS $diagnosis_search_term_lower)
+                       ELSE 
+                         toLower(toString(d.diagnosis)) CONTAINS $diagnosis_search_term_lower
+                     END)
+                    OR
+                    (toLower(trim(toString(d.diagnosis))) = $diagnosis_search_term_see_comment AND 
+                     d.diagnosis_comment IS NOT NULL AND 
+                     toLower(toString(d.diagnosis_comment)) CONTAINS $diagnosis_search_term_lower)"""
         
         if has_diagnosis_filters:
             diagnosis_conditions = []
@@ -410,15 +428,27 @@ class SampleQueryCases:
                 if field == "disease_phase":
                     if is_null_mapped_value("disease_phase", value):
                         params[param_name] = value
-                        diagnosis_conditions.append(f"d.disease_phase = ${param_name}")
+                        if needs_diagnosis_search:
+                            # For diagnosis search, combine with collection filter
+                            disease_phase_collection_filter = f"d.disease_phase = ${param_name}"
+                        else:
+                            diagnosis_conditions.append(f"d.disease_phase = ${param_name}")
                     else:
                         reverse_mapped = reverse_map_field_value("disease_phase", value)
                         if isinstance(reverse_mapped, list):
                             params[param_name] = reverse_mapped
-                            diagnosis_conditions.append(f"d.disease_phase IN ${param_name}")
+                            if needs_diagnosis_search:
+                                # For diagnosis search, combine with collection filter
+                                disease_phase_collection_filter = f"d.disease_phase IN ${param_name}"
+                            else:
+                                diagnosis_conditions.append(f"d.disease_phase IN ${param_name}")
                         else:
                             params[param_name] = reverse_mapped
-                            diagnosis_conditions.append(f"d.disease_phase = ${param_name}")
+                            if needs_diagnosis_search:
+                                # For diagnosis search, combine with collection filter
+                                disease_phase_collection_filter = f"d.disease_phase = ${param_name}"
+                            else:
+                                diagnosis_conditions.append(f"d.disease_phase = ${param_name}")
                 elif field == "tumor_classification":
                     if is_null_mapped_value("tumor_classification", value):
                         diagnosis_conditions.append("false")
@@ -460,6 +490,12 @@ class SampleQueryCases:
                 param_name = f"param_{param_counter}"
                 
                 if field == "library_selection_method":
+                    # Check if value is a database-only value
+                    if is_database_only_value("library_selection_method", value):
+                        logger.info("Case 3: Invalid library_selection_method value (database-only), returning empty results", library_selection_method=value)
+                        if return_total:
+                            return ([], 0)
+                        return []
                     # Use reverse mapping helper if available
                     reverse_mapped = self._reverse_map_library_selection_method_static(value)
                     if reverse_mapped:
@@ -469,8 +505,25 @@ class SampleQueryCases:
                         params[param_name] = value
                         sf_conditions.append(f"sf.library_selection = ${param_name}")
                 elif field == "library_strategy":
-                    params[param_name] = value
-                    sf_conditions.append(f"sf.library_strategy = ${param_name}")
+                    # Check if value is a database-only value (e.g., "Archer Fusion")
+                    if is_database_only_value("library_strategy", value):
+                        logger.info("Case 3: Invalid library_strategy value (database-only), returning empty results", library_strategy=value)
+                        if return_total:
+                            return ([], 0)
+                        return []
+                    # Handle reverse mapping (e.g., "Other" -> "Archer Fusion")
+                    reverse_mapped = reverse_map_field_value("library_strategy", value)
+                    if reverse_mapped and reverse_mapped != value:
+                        # Has mapping - need to match both the mapped value and the original value
+                        param_counter += 1
+                        param_name2 = f"param_{param_counter}"
+                        params[param_name] = reverse_mapped if isinstance(reverse_mapped, str) else reverse_mapped[0]
+                        params[param_name2] = value
+                        sf_conditions.append(f"(sf.library_strategy = ${param_name} OR sf.library_strategy = ${param_name2})")
+                    else:
+                        # No mapping or mapping is same as value - use value directly
+                        params[param_name] = value
+                        sf_conditions.append(f"sf.library_strategy = ${param_name}")
                 elif field == "library_source_material":
                     # Check if value is in null_mappings (e.g., "Other")
                     if is_null_mapped_value("library_source_material", value):
@@ -515,7 +568,11 @@ class SampleQueryCases:
         optional_matches = []
         
         # Diagnosis OPTIONAL MATCH
-        if diagnosis_optional_match_where:
+        # For diagnosis search, don't filter in OPTIONAL MATCH - filter during collection instead
+        if needs_diagnosis_search:
+            # Collect all diagnoses, filter during collection
+            optional_matches.append("OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)")
+        elif diagnosis_optional_match_where:
             optional_matches.append(f"OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)\n        {diagnosis_optional_match_where}")
         else:
             optional_matches.append("OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)")
@@ -537,9 +594,20 @@ class SampleQueryCases:
         # Build WITH clause - collect all matching nodes per sample-study pair
         # Need to include st (study) for proper pagination at sample-study pair level
         with_collects = ["st"]
-        if has_diagnosis_filters:
+        if has_diagnosis_filters or needs_diagnosis_search:
             # Collect all diagnoses to filter for matches
-            with_collects.append("collect(DISTINCT d) AS all_diagnoses")
+            if needs_diagnosis_search:
+                # Apply diagnosis search filter during collection
+                if disease_phase_collection_filter:
+                    # Combine diagnosis search with disease_phase filter
+                    combined_filter = f"d IS NOT NULL AND ({diagnosis_search_filter}) AND ({disease_phase_collection_filter})"
+                else:
+                    # Only diagnosis search filter
+                    combined_filter = f"d IS NOT NULL AND ({diagnosis_search_filter})"
+                with_collects.append(f"[d IN collect(DISTINCT d) WHERE {combined_filter}] AS all_diagnoses")
+            else:
+                # Regular diagnosis filters - collect all, filter later
+                with_collects.append("collect(DISTINCT d) AS all_diagnoses")
         else:
             with_collects.append("head(collect(DISTINCT d)) AS diagnoses")
         
@@ -559,7 +627,7 @@ class SampleQueryCases:
         
         # Build WHERE clause to filter for required matches
         where_conditions = []
-        if has_diagnosis_filters:
+        if has_diagnosis_filters or needs_diagnosis_search:
             where_conditions.append("size([d IN all_diagnoses WHERE d IS NOT NULL]) > 0")
         if has_pf_filters:
             where_conditions.append("size([pf IN all_pfs WHERE pf IS NOT NULL]) > 0")
@@ -602,7 +670,7 @@ class SampleQueryCases:
         # Build main query
         # After collecting and filtering, pick 1 node per type and paginate
         pick_clause_parts = []
-        if has_diagnosis_filters:
+        if has_diagnosis_filters or needs_diagnosis_search:
             pick_clause_parts.append("head([d IN all_diagnoses WHERE d IS NOT NULL | d]) AS diagnoses")
         else:
             pick_clause_parts.append("diagnoses")

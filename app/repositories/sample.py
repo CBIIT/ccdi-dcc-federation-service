@@ -131,20 +131,56 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         
         early_where_clause = " AND ".join(early_where_parts)
         
+        # OPTIMIZATION: For depositions-only queries, start from study to enable early pagination
+        # Check if only depositions filter (early_where_parts only has base conditions)
+        has_only_depositions = depositions_filter and len(early_where_parts) == 2  # Only base conditions
+        
         # Build count query if return_total
         total_count = None
         if return_total:
-            cypher_count = f"""
+            if has_only_depositions:
+                # Depositions-only: start from study for better performance
+                study_filter_clause = depositions_filter.replace(" AND ", "")
+                cypher_count = f"""
+            MATCH (st:study)
+            WHERE {study_filter_clause}
+            // Path 1: via cell_line - collect samples
+            OPTIONAL MATCH (st)<-[:of_cell_line]-(:cell_line)<-[:of_sample]-(sa1:sample)
+            WHERE sa1.sample_id IS NOT NULL AND sa1.sample_id <> ''
+            WITH st, collect(DISTINCT sa1) AS sa1_list
+            // Path 2: via participant -> consent_group - collect samples
+            OPTIONAL MATCH (st)<-[:of_consent_group]-(:consent_group)<-[:of_participant]-(:participant)<-[:of_sample]-(sa2:sample)
+            WHERE sa2.sample_id IS NOT NULL AND sa2.sample_id <> ''
+            WITH st, sa1_list, collect(DISTINCT sa2) AS sa2_list
+            // Combine both paths and unwind
+            WITH st, [sa IN (sa1_list + sa2_list) WHERE sa IS NOT NULL] AS sa_list
+            UNWIND sa_list AS sa
+            WITH DISTINCT sa.sample_id AS sample_id, st.study_id AS study_id
+            RETURN count(*) as total_count
+            """.strip()
+            else:
+                # Has other filters - use standard query structure
+                study_filter_clause_st1 = ""
+                study_filter_clause_st2 = ""
+                if depositions_filter:
+                    # Replace "st.study_id" with "st1.study_id" and "st2.study_id" for the OPTIONAL MATCH clauses
+                    base_filter = depositions_filter.replace(" AND ", "")
+                    study_filter_clause_st1 = base_filter.replace("st.study_id", "st1.study_id")
+                    study_filter_clause_st2 = base_filter.replace("st.study_id", "st2.study_id")
+                
+                cypher_count = f"""
             MATCH (sa:sample)
             WHERE {early_where_clause}
             OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            {f"WHERE {study_filter_clause_st1}" if study_filter_clause_st1 else ""}
             WITH sa, collect(DISTINCT st1.study_id) AS st1_list
             OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            {f"WHERE {study_filter_clause_st2}" if study_filter_clause_st2 else ""}
             WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
-            WITH sa, (st2_list + st1_list) AS combined
+            WITH sa, [sid IN (st2_list + st1_list) WHERE sid IS NOT NULL] AS combined
             UNWIND combined AS sid
             MATCH (st:study)
-            WHERE st.study_id = sid{depositions_filter}
+            WHERE st.study_id = sid
             WITH DISTINCT sa.sample_id AS sample_id, st.study_id AS study_id
             RETURN count(*) as total_count
             """.strip()
@@ -160,19 +196,60 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
                 logger.warning("Early pagination count query failed", error=str(e), exc_info=True)
                 total_count = 0
         
-        cypher = f"""
+        if has_only_depositions:
+            # Depositions-only: start from study for better performance
+            study_filter_clause = depositions_filter.replace(" AND ", "")
+            cypher = f"""
+        MATCH (st:study)
+        WHERE {study_filter_clause}
+        // Path 1: via cell_line - collect samples
+        OPTIONAL MATCH (st)<-[:of_cell_line]-(:cell_line)<-[:of_sample]-(sa1:sample)
+        WHERE sa1.sample_id IS NOT NULL AND sa1.sample_id <> ''
+        WITH st, collect(DISTINCT sa1) AS sa1_list
+        // Path 2: via participant -> consent_group - collect samples
+        OPTIONAL MATCH (st)<-[:of_consent_group]-(:consent_group)<-[:of_participant]-(:participant)<-[:of_sample]-(sa2:sample)
+        WHERE sa2.sample_id IS NOT NULL AND sa2.sample_id <> ''
+        WITH st, sa1_list, collect(DISTINCT sa2) AS sa2_list
+        // Combine both paths and unwind
+        WITH st, [sa IN (sa1_list + sa2_list) WHERE sa IS NOT NULL] AS sa_list
+        UNWIND sa_list AS sa
+        WITH DISTINCT sa, st
+        ORDER BY toString(sa.sample_id), toString(st.study_id)
+        SKIP $offset
+        LIMIT $limit
+        // After pagination: OPTIONAL MATCH participant (only for paginated samples - much faster)
+        OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
+        OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
+        OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)
+        OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
+        WITH sa, p, st, head(collect(DISTINCT d)) AS diagnoses, head(collect(DISTINCT pf)) AS pf, head(collect(DISTINCT sf)) AS sf
+        RETURN sa, p, st, sf, pf, diagnoses
+        """.strip()
+        else:
+            # Has other filters (identifiers, anatomical_sites, tissue_type) - use standard query structure
+            study_filter_clause_st1 = ""
+            study_filter_clause_st2 = ""
+            if depositions_filter:
+                # Replace "st.study_id" with "st1.study_id" and "st2.study_id" for the OPTIONAL MATCH clauses
+                base_filter = depositions_filter.replace(" AND ", "")
+                study_filter_clause_st1 = base_filter.replace("st.study_id", "st1.study_id")
+                study_filter_clause_st2 = base_filter.replace("st.study_id", "st2.study_id")
+            
+            cypher = f"""
         MATCH (sa:sample)
         WHERE {early_where_clause}
         OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        {f"WHERE {study_filter_clause_st1}" if study_filter_clause_st1 else ""}
         WITH sa, collect(DISTINCT st1.study_id) AS st1_list
         OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+        {f"WHERE {study_filter_clause_st2}" if study_filter_clause_st2 else ""}
         WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
-        WITH sa, (st2_list + st1_list) AS combined
+        WITH sa, [sid IN (st2_list + st1_list) WHERE sid IS NOT NULL] AS combined
         UNWIND combined AS sid
         MATCH (st:study)
-        WHERE st.study_id = sid{depositions_filter}
+        WHERE st.study_id = sid
         WITH sa, st
-        ORDER BY toString(sa.sample_id)
+        ORDER BY toString(sa.sample_id), toString(st.study_id)
         SKIP $offset
         LIMIT $limit
         // After pagination: OPTIONAL MATCH participant (only for paginated samples - much faster)

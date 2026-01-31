@@ -9,9 +9,15 @@ from typing import Dict, Any
 from app.core.logging import get_logger
 from app.models.errors import UnsupportedFieldError
 from app.core.field_mappings import (
+    map_field_value,
     reverse_map_field_value,
     is_null_mapped_value,
     is_database_only_value,
+    build_invalid_value_filter,
+    build_invalid_value_list_filter,
+    build_invalid_value_all_clause,
+    build_case_mapping_statement,
+    get_mapped_db_values,
     load_sample_enum,
     load_sequencing_file_enum
 )
@@ -949,10 +955,16 @@ class SampleCount:
                 UNWIND combined AS sid
                 MATCH (st:study)
                 WHERE st.study_id = sid
-                WITH toString(sa.sample_id) AS sample_id,
-                     toString(st.study_id) AS study_id,
+                WITH sa, d, toString(sa.sample_id) AS sample_id,
+                     toString(st.study_id) AS study_id
+                WITH sample_id, study_id,
                      head(collect(DISTINCT {node_field})) as value
                 WITH DISTINCT sample_id, study_id, value
+                WHERE value IS NOT NULL
+                  AND toString(value) <> ''
+                  AND trim(toString(value)) <> ''
+                  AND toString(value) <> '-999'
+                  AND trim(toString(value)) <> '-999'
                 RETURN toString(value) as value, count(*) AS count
                 ORDER BY count DESC, value ASC
                 """.strip()

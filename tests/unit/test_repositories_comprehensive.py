@@ -673,7 +673,7 @@ class TestSampleRepositoryInternal:
 
     def test_reverse_map_library_selection_method_static_list(self):
         """Test _reverse_map_library_selection_method_static handles list return."""
-        with patch("app.repositories.sample.reverse_map_field_value", return_value=["Mapped", "Other"]):
+        with patch("app.repositories.sample_helpers.reverse_map_field_value", return_value=["Mapped", "Other"]):
             result = SampleRepository._reverse_map_library_selection_method_static("PCR")
 
         assert result == "Mapped"
@@ -801,9 +801,9 @@ class TestSampleRepositoryInternal:
         params = {}
         with_conditions = []
 
-        with patch("app.repositories.sample.is_null_mapped_value", return_value=False), \
-            patch("app.repositories.sample.load_sequencing_file_enum", return_value=None), \
-            patch("app.repositories.sample.reverse_map_field_value", return_value="DNA"):
+        with patch("app.repositories.sample_helpers.is_null_mapped_value", return_value=False), \
+            patch("app.repositories.sample_helpers.load_sequencing_file_enum", return_value=None), \
+            patch("app.core.field_mappings.reverse_map_field_value", return_value="DNA"):
             result = repository._validate_library_source_material_filter(
                 "DNA", "source_param", params, with_conditions
             )
@@ -817,14 +817,15 @@ class TestSampleRepositoryInternal:
         params = {}
         with_conditions = []
 
-        with patch("app.repositories.sample.is_null_mapped_value", return_value=False), \
-            patch("app.repositories.sample.load_sequencing_file_enum", return_value=["DNA"]), \
-            patch("app.repositories.sample.reverse_map_field_value", return_value="DNA_DB"):
+        with patch("app.repositories.sample_helpers.is_null_mapped_value", return_value=False), \
+            patch("app.repositories.sample_helpers.load_sequencing_file_enum", return_value=["DNA"]), \
+            patch("app.repositories.sample_helpers.reverse_map_field_value", return_value="DNA_DB"):
             result = repository._validate_library_source_material_filter(
                 "DNA", "source_param", params, with_conditions
             )
 
         assert result is True
+        # When enum is present and reverse_mapped is a string, it wraps in a list
         assert params["source_param"] == ["DNA_DB"]
         assert ("library_source_material", "source_param") in with_conditions
 
@@ -997,13 +998,23 @@ class TestSampleRepositoryInternal:
         assert len(result) == 1
         assert mock_session.run.called
 
-    async def test_get_samples_sequencing_file_only_optimization(self, repository):
-        """Test sequencing_file-only filters use reverse query optimization."""
-        with patch.object(repository, "_get_samples_by_sequencing_file_filters", new=AsyncMock(return_value=[])) as mock_reverse:
+    async def test_get_samples_sequencing_file_only_optimization(self, repository, mock_session):
+        """Test sequencing_file-only filters use Case 3 query path."""
+        async def async_gen():
+            if False:
+                yield  # Makes this an async generator, but never executes
+        
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())  # Properly set up async iterator
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+        
+        with patch('app.repositories.sample.is_database_only_value', return_value=False):
             result = await repository.get_samples({"library_strategy": "RNA-Seq"}, offset=0, limit=10)
 
-        assert result == []
-        mock_reverse.assert_called_once()
+        assert isinstance(result, list)
+        # Should use Case 3 query path (not _get_samples_by_sequencing_file_filters directly)
+        assert mock_session.run.called
 
     async def test_get_samples_no_filters_early_pagination(self, repository, mock_session):
         """Test early pagination path when no filters."""

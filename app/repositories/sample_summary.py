@@ -471,6 +471,17 @@ class SampleSummary:
         # Build early WHERE clause from early_where_conditions
         early_where_clause = "\n        WHERE " + " AND ".join(early_where_conditions) if early_where_conditions else ""
         
+        # Determine if we need to collect sequencing_files or diagnoses (needed for diagnosis_only_summary check)
+        needs_sf_collection = (specimen_molecular_analyte_type_list or specimen_molecular_analyte_type_single_param or
+                              library_selection_method_param is not None or
+                              library_strategy_param is not None or
+                              library_source_material_param is not None)
+        # Also need to collect all diagnoses if disease_phase or other diagnosis filters are present
+        has_diagnosis_filters = any(
+            field in filters for field in ["disease_phase", "tumor_grade", "tumor_tissue_morphology", "tumor_classification", "age_at_diagnosis"]
+        )
+        needs_diag_collection = diagnosis_search_term is not None or has_diagnosis_filters
+        
         # Depositions filter: must be applied AFTER we have st (study node). See get_samples() for same logic.
         depositions_study_filter_summary = ""
         if hasattr(self, '_depositions_early_params') and self._depositions_early_params:
@@ -617,19 +628,11 @@ RETURN count(*) AS total_count
             # Use list version first (will try string version if it fails)
             all_conditions.append(anatomical_sites_list_condition)
         # Add sequencing_file field conditions if present (will be checked after collecting all sequencing_files)
-        needs_sf_collection = (specimen_molecular_analyte_type_list or specimen_molecular_analyte_type_single_param or
-                              library_selection_method_param is not None or
-                              library_strategy_param is not None or
-                              library_source_material_param is not None)
+        # needs_sf_collection is already defined earlier
         if needs_sf_collection:
             all_conditions.append("has_matching_sf = true")
         # Add diagnosis search condition if present (will be checked after collecting all diagnoses)
-        # Also need to collect all diagnoses if disease_phase or other diagnosis filters are present
-        # (to check if ANY diagnosis matches, not just the first one)
-        has_diagnosis_filters = any(
-            field in filters for field in ["disease_phase", "tumor_grade", "tumor_tissue_morphology", "tumor_classification", "age_at_diagnosis"]
-        )
-        needs_diag_collection = diagnosis_search_term is not None or has_diagnosis_filters
+        # needs_diag_collection is already defined earlier
         if needs_diag_collection:
             if diagnosis_search_term is not None:
                 all_conditions.append("has_matching_diagnosis = true")
@@ -718,10 +721,7 @@ RETURN count(*) AS total_count
         if needs_pathology_file:
             with_collects.append("head(collect(DISTINCT pf)) AS pf")
         # For sequencing_file fields, collect ALL sequencing_files first to check if ANY match
-        needs_sf_collection = (specimen_molecular_analyte_type_list or specimen_molecular_analyte_type_single_param or
-                              library_selection_method_param is not None or
-                              library_strategy_param is not None or
-                              library_source_material_param is not None)
+        # needs_sf_collection is already defined earlier
         if needs_sequencing_file:
             if needs_sf_collection:
                 with_collects.append("collect(DISTINCT sf) AS all_sfs")  # Collect all sequencing_files

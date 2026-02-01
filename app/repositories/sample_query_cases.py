@@ -160,38 +160,39 @@ class SampleQueryCases:
                 logger.warning("Case 1 count query failed", error=str(e), exc_info=True)
                 total_count = 0
         
-        # Build query: paginate at sample level first
+        # Build query: paginate at (sample_id, study_id) pair level to match count query
         cypher = f"""
         MATCH (sa:sample)
         WHERE {sample_where_str}
-        WITH sa, toString(sa.sample_id) AS sample_id
-        ORDER BY sample_id
-        SKIP $offset
-        LIMIT $limit
-        
         // Collect study ids from both paths
         OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-        WITH sa, sample_id, collect(DISTINCT st2.study_id) AS s2
+        WITH sa, collect(DISTINCT st2.study_id) AS st2_list_raw
         OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-        WITH sa, sample_id, s2 + collect(DISTINCT st1.study_id) AS combined
-        
-        // Expand studies
-        UNWIND combined AS study_id
-        WITH sa, sample_id, study_id
-        WHERE study_id IS NOT NULL
-        MATCH (st:study {{study_id: study_id}})
+        WITH sa, st2_list_raw, collect(DISTINCT st1.study_id) AS st1_list_raw
+        WITH sa,
+             [x IN st1_list_raw WHERE x IS NOT NULL] AS st1_list,
+             [x IN st2_list_raw WHERE x IS NOT NULL] AS st2_list
+        WITH sa, (st2_list + st1_list) AS combined
+        WHERE size(combined) > 0
+        UNWIND combined AS sid
+        WITH sa, sid
+        WHERE sid IS NOT NULL
+        MATCH (st:study)
+        WHERE st.study_id = sid
+        WITH DISTINCT sa, st
+        ORDER BY toString(sa.sample_id), toString(st.study_id)
+        SKIP $offset
+        LIMIT $limit
         
         // OPTIONAL MATCH other nodes - pick 1 random each
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
         OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)
         OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
         
-        WITH sa, st, sample_id, study_id,
+        WITH sa, st,
              head(collect(DISTINCT d)) AS diagnoses,
              head(collect(DISTINCT pf)) AS pf,
              head(collect(DISTINCT sf)) AS sf
-        
-        ORDER BY sample_id, study_id
         
         // After pagination: OPTIONAL MATCH participant
         OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
@@ -656,6 +657,17 @@ class SampleQueryCases:
             RETURN count(*) AS total_count
             """.strip()
             
+            logger.info(
+                "Case 3 count query",
+                cypher=cypher_count[:1000] if len(cypher_count) > 1000 else cypher_count,
+                params=params,
+                sample_where_str=sample_where_str,
+                has_pf_filters=has_pf_filters,
+                has_diagnosis_filters=has_diagnosis_filters,
+                has_sf_filters=has_sf_filters,
+                where_clause=where_clause
+            )
+            
             try:
                 result_count = await self.session.run(cypher_count, params)
                 recs = []
@@ -663,6 +675,11 @@ class SampleQueryCases:
                     recs.append(dict(r))
                 await result_count.consume()
                 total_count = recs[0].get("total_count", 0) if recs else 0
+                logger.info(
+                    "Case 3 count query result",
+                    total_count=total_count,
+                    filters=filters
+                )
             except Exception as e:
                 logger.warning("Case 3 count query failed", error=str(e), exc_info=True)
                 total_count = 0

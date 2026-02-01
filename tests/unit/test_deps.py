@@ -68,6 +68,7 @@ class TestGetSubjectFilters:
         request.query_params.keys = Mock(return_value=[])
         request.query_params.items = Mock(return_value=[])
         request.query_params.get = Mock(return_value=None)
+        request.query_params.getlist = Mock(return_value=[])  # Add getlist method
         return request
 
     def test_no_filters(self, mock_request):
@@ -490,6 +491,7 @@ class TestGetSubjectSummaryFilters:
         request.query_params.keys = Mock(return_value=[])
         request.query_params.items = Mock(return_value=[])
         request.query_params.get = Mock(return_value=None)
+        request.query_params.getlist = Mock(return_value=[])  # Add getlist method
         return request
 
     def test_no_filters(self, mock_request):
@@ -791,22 +793,46 @@ class TestGetSubjectSummaryFilters:
 
     def test_multiple_filters_combined(self, mock_request):
         """Test multiple filters combined."""
+        # Mock getlist to return empty lists (no duplicates)
+        mock_request.query_params.getlist = Mock(return_value=[])
+        # Ensure keys() returns only allowed parameters
+        mock_request.query_params.keys = Mock(return_value=["sex", "race", "ethnicity", "vital_status", "depositions"])
+        # Mock items() to return only the expected parameters (no age_at_vital_status)
+        mock_request.query_params.items = Mock(return_value=[
+            ("sex", "M"),
+            ("race", "White"),
+            ("ethnicity", "Not reported"),
+            ("vital_status", "Alive"),
+            ("depositions", "phs002431")
+        ])
+        # Ensure get() returns None for age_at_vital_status (not passed)
+        # Also ensure get() doesn't return any value that could be interpreted as age_at_vital_status
+        def mock_get(key, default=None):
+            if key == "age_at_vital_status":
+                return None
+            # Return None for any other key to avoid processing unexpected values
+            return None
+        
+        mock_request.query_params.get = Mock(side_effect=mock_get)
         result = get_subject_summary_filters(
             sex="M",
             race="White",
             ethnicity="Not reported",
             vital_status="Alive",
             depositions="phs002431",
+            age_at_vital_status=None,  # Explicitly pass None
             request=mock_request
         )
         assert "_invalid_sex" not in result
         assert "_invalid_ethnicity" not in result
         assert "_invalid_race" not in result
         assert "_invalid_vital_status" not in result
+        assert "_invalid_age_at_vital_status" not in result
         assert result["sex"] == "M"
         assert result["race"] == "White"
         assert result["ethnicity"] == "Not reported"
         assert result["vital_status"] == "Alive"
+        assert "depositions" in result, f"depositions not in result. Result keys: {list(result.keys())}"
         assert result["depositions"] == "phs002431"
 
     def test_empty_string_filters(self, mock_request):
@@ -838,6 +864,7 @@ class TestGetSampleFilters:
         request.query_params.keys = Mock(return_value=[])
         request.query_params.items = Mock(return_value=[])
         request.query_params.get = Mock(return_value=None)
+        request.query_params.getlist = Mock(return_value=[])  # Add getlist method
         return request
 
     def test_no_filters(self, mock_request):
@@ -1049,6 +1076,7 @@ class TestGetFileFilters:
         request.query_params.keys = Mock(return_value=[])
         request.query_params.items = Mock(return_value=[])
         request.query_params.get = Mock(return_value=None)
+        request.query_params.getlist = Mock(return_value=[])  # Add getlist method
         return request
 
     def test_no_filters(self, mock_request):
@@ -1105,6 +1133,7 @@ class TestGetSubjectDiagnosisFilters:
         request.query_params.keys = Mock(return_value=[])
         request.query_params.items = Mock(return_value=[])
         request.query_params.get = Mock(return_value=None)
+        request.query_params.getlist = Mock(return_value=[])  # Add getlist method
         return request
 
     def test_diagnosis_search_parameter(self, mock_request):
@@ -1144,6 +1173,7 @@ class TestGetSampleDiagnosisFilters:
         request.query_params.keys = Mock(return_value=[])
         request.query_params.items = Mock(return_value=[])
         request.query_params.get = Mock(return_value=None)
+        request.query_params.getlist = Mock(return_value=[])  # Add getlist method
         return request
 
     def test_diagnosis_search_parameter(self, mock_request):
@@ -1183,6 +1213,13 @@ class TestGetSampleDiagnosisFilters:
             
             def get(self, key, default=None):
                 return self._params.get(key, default)
+            
+            def getlist(self, key, default=None):
+                """Return list of values for key, or default if not found."""
+                value = self._params.get(key, default)
+                if value is None:
+                    return default if default is not None else []
+                return [value] if not isinstance(value, list) else value
         
         mock_request.query_params = QueryParamsWithDiagnosis({
             "diagnosis": "Neuroblastoma",
@@ -1217,6 +1254,13 @@ class TestGetSampleDiagnosisFilters:
             
             def get(self, key, default=None):
                 return self._params.get(key, default)
+            
+            def getlist(self, key, default=None):
+                """Return list of values for key, or default if not found."""
+                value = self._params.get(key, default)
+                if value is None:
+                    return default if default is not None else []
+                return [value] if not isinstance(value, list) else value
         
         mock_request.query_params = QueryParamsNoDiagnosis({
             "disease_phase": "Primary"
@@ -1249,6 +1293,13 @@ class TestGetSampleDiagnosisFilters:
             
             def get(self, key, default=None):
                 return self._params.get(key, default)
+            
+            def getlist(self, key, default=None):
+                """Return list of values for key, or default if not found."""
+                value = self._params.get(key, default)
+                if value is None:
+                    return default if default is not None else []
+                return [value] if not isinstance(value, list) else value
         
         mock_request.query_params = QueryParamsEmptySearch({
             "diagnosis": "Neuroblastoma",

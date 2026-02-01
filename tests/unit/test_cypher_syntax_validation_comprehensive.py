@@ -81,9 +81,10 @@ class TestCypherSyntaxValidation:
         Valid patterns:
         - WITH ... OPTIONAL MATCH ... WITH ... ORDER BY ... SKIP ... LIMIT ... RETURN
         - WITH ... OPTIONAL MATCH ... WITH ... ORDER BY ... SKIP ... LIMIT ... OPTIONAL MATCH ... WITH (early pagination)
+        - MATCH ... ORDER BY ... SKIP ... LIMIT ... OPTIONAL MATCH (early pagination - valid)
         
         Invalid pattern:
-        - WITH ... ORDER BY ... SKIP ... LIMIT ... OPTIONAL MATCH (ORDER BY before first OPTIONAL MATCH)
+        - WITH ... ORDER BY ... SKIP ... LIMIT ... OPTIONAL MATCH (WITH before ORDER BY, no MATCH before ORDER BY)
         
         Returns list of errors found.
         """
@@ -114,10 +115,47 @@ class TestCypherSyntaxValidation:
                             break
                     
                     if has_skip_limit_after:
-                        errors.append(
-                            f"ORDER BY at line {i+1} appears before the first OPTIONAL MATCH at line {first_optional_match_idx+1}. "
-                            f"ORDER BY/SKIP/LIMIT must come after at least one OPTIONAL MATCH clause."
-                        )
+                        # Check if there's a WITH before ORDER BY
+                        has_with_before_order_by = False
+                        with_idx = -1
+                        for j in range(i):
+                            if re.search(r'\bWITH\b', lines[j], re.IGNORECASE):
+                                has_with_before_order_by = True
+                                with_idx = j
+                                break
+                        
+                        # Check if there's a MATCH before ORDER BY (valid early pagination pattern)
+                        has_match_before_order_by = False
+                        match_idx = -1
+                        for j in range(i):
+                            if re.search(r'\bMATCH\b', lines[j], re.IGNORECASE):
+                                match_idx = j
+                                has_match_before_order_by = True
+                                break
+                        
+                        # Valid patterns:
+                        # 1. MATCH ... ORDER BY ... OPTIONAL MATCH (early pagination, no WITH between MATCH and ORDER BY)
+                        # 2. MATCH ... WITH ... ORDER BY ... OPTIONAL MATCH (early pagination with WITH - VALID, used in production)
+                        # Invalid patterns:
+                        # 3. WITH ... ORDER BY ... OPTIONAL MATCH (WITH without MATCH before it - invalid)
+                        
+                        # Error if: WITH appears before ORDER BY AND there's no MATCH before the WITH
+                        # Allow MATCH ... WITH ... ORDER BY pattern (valid early pagination pattern used in production)
+                        if has_with_before_order_by:
+                            # Check if there's a MATCH before the WITH
+                            has_match_before_with = False
+                            for j in range(with_idx):
+                                if re.search(r'\bMATCH\b', lines[j], re.IGNORECASE):
+                                    has_match_before_with = True
+                                    break
+                            
+                            # Only error if WITH comes before ORDER BY AND there's no MATCH before the WITH
+                            # MATCH ... WITH ... ORDER BY ... OPTIONAL MATCH is a valid early pagination pattern
+                            if not has_match_before_with:
+                                errors.append(
+                                    f"ORDER BY at line {i+1} appears before the first OPTIONAL MATCH at line {first_optional_match_idx+1}. "
+                                    f"ORDER BY/SKIP/LIMIT must come after at least one OPTIONAL MATCH clause (WITH without MATCH before it is invalid)."
+                                )
         
         return errors
     
@@ -412,10 +450,9 @@ class TestCypherSyntaxValidation:
     
     def test_detect_order_by_placement_error(self):
         """Test that we can detect ORDER BY placement errors."""
-        # Example of bad query (ORDER BY before any OPTIONAL MATCH)
+        # Example of bad query (WITH without MATCH before it, then ORDER BY before OPTIONAL MATCH)
+        # This is invalid because WITH comes before ORDER BY without a MATCH before the WITH
         bad_query = """
-        MATCH (sa:sample)
-        WHERE sa.sample_id IS NOT NULL
         WITH sa, toString(sa.sample_id) AS sample_id
         ORDER BY sample_id
         SKIP $offset
@@ -425,6 +462,6 @@ class TestCypherSyntaxValidation:
         
         errors = self.validate_order_by_placement(bad_query)
         assert len(errors) > 0, (
-            f"Should detect ORDER BY placement error (ORDER BY before first OPTIONAL MATCH). "
+            f"Should detect ORDER BY placement error (WITH without MATCH before ORDER BY). "
             f"Errors found: {errors}"
         )

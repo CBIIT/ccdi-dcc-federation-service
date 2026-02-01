@@ -318,8 +318,8 @@ class TestSpecializedQueries:
                 with pytest.raises(Exception):
                     await repository._get_samples_by_sequencing_file_filters(filters, offset=0, limit=20)
     
-    async def test_get_samples_by_sequencing_file_filters_early_pagination_structure(self, repository, mock_session):
-        """Test that early pagination is correctly implemented - SKIP/LIMIT before study collection."""
+    async def test_get_samples_by_sequencing_file_filters_pagination_structure(self, repository, mock_session):
+        """Test that pagination is correctly implemented at (sample_id, study_id) pair level."""
         async def async_gen():
             yield {
                 "sa": {"sample_id": "SAMP001"},
@@ -340,32 +340,38 @@ class TestSpecializedQueries:
                 filters = {"library_strategy": "WXS"}
                 await repository._get_samples_by_sequencing_file_filters(filters, offset=10, limit=5)
                 
-                # Verify query structure for early pagination
+                # Verify query structure for pagination at (sample_id, study_id) pair level
                 call_args = mock_session.run.call_args
                 query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
                 
                 # Extract positions of key query elements
-                # Current query structure: study collection -> ORDER BY -> SKIP -> LIMIT -> final OPTIONAL MATCHes
+                # Query structure: study collection -> UNWIND -> WITH DISTINCT sa, st -> ORDER BY -> SKIP -> LIMIT -> rematch sf -> OPTIONAL MATCHes
                 order_by_pos = query.find("ORDER BY")
                 skip_pos = query.find("SKIP")
                 limit_pos = query.find("LIMIT")
+                distinct_pos = query.find("WITH DISTINCT sa, st")
+                unwind_pos = query.find("UNWIND combined")
                 study_collection_pos = query.find("collect(DISTINCT st1.study_id)")
+                rematch_sf_pos = query.find("sf_rematched:sequencing_file")
                 final_optional_match_pos = query.find("OPTIONAL MATCH (d:diagnosis)")
                 
-                # Verify early pagination order
+                # Verify pagination at pair level
                 assert order_by_pos != -1, "ORDER BY should be present"
                 assert skip_pos != -1, "SKIP should be present"
                 assert limit_pos != -1, "LIMIT should be present"
-                assert study_collection_pos != -1, "Study collection should be present"
+                assert distinct_pos != -1, "WITH DISTINCT sa, st should be present"
+                assert unwind_pos != -1, "UNWIND should be present"
                 
-                # Verify pagination and study collection are present (order may vary depending on query structure)
-                assert skip_pos != -1 and limit_pos != -1, "SKIP/LIMIT should be present"
-                assert (study_collection_pos != -1 or 
-                        'collect(DISTINCT st1.study_id)' in query or
-                        'collect(DISTINCT st2.study_id)' in query), "Study collection should be present"
-                # SKIP/LIMIT should come before final OPTIONAL MATCHes (if present)
+                # Verify order: UNWIND -> WITH DISTINCT -> ORDER BY -> SKIP/LIMIT -> rematch sf -> OPTIONAL MATCHes
+                assert unwind_pos < distinct_pos, "UNWIND should come before WITH DISTINCT"
+                assert distinct_pos < order_by_pos, "WITH DISTINCT should come before ORDER BY"
+                assert order_by_pos < skip_pos, "ORDER BY should come before SKIP"
+                assert skip_pos < limit_pos, "SKIP should come before LIMIT"
+                
+                # SKIP/LIMIT should come before rematching sf and final OPTIONAL MATCHes
+                if rematch_sf_pos != -1:
+                    assert limit_pos < rematch_sf_pos, "LIMIT should come before rematching sf"
                 if final_optional_match_pos != -1:
-                    assert skip_pos < final_optional_match_pos, "SKIP should come before final OPTIONAL MATCHes"
                     assert limit_pos < final_optional_match_pos, "LIMIT should come before final OPTIONAL MATCHes"
                 
                 # Verify parameters include offset and limit

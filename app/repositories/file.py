@@ -307,36 +307,42 @@ class FileRepository:
             RETURN sf, samples, st
             """.strip()
         elif has_depositions_filter:
-            # PATTERN 2b: OPTIMIZED REVERSE TRAVERSAL for depositions-only queries (no file filters)
-            # Use multi-hop traversal: Start from studies (2-10 nodes) instead of files (1M+ nodes)
+            # PATTERN 2b: CRITICAL FIX - Match files directly without collecting into lists
+            # LOGIC: File endpoint - each file (sf) must be connected to both study (st) and sample (sa)
+            # Paginate by unique sf.id only (files are unique, not file-study pairs)
+            # Start from studies (2-10 nodes) instead of files (1M+ nodes)
             # Traverse: study <- consent_group <- participant <- sample <- sequencing_file
             # or: study <- cell_line <- sample <- sequencing_file
             deposition_param = depositions_param_name
             deposition_operator = "=" if len(depositions_list) == 1 else "IN"
             
+            # CRITICAL: Match files that are connected to study via sample, paginate by unique sf.id
+            # This avoids collecting millions of files into memory
+            # Note: This uses path 1 only to avoid memory issues. Path 2 files are excluded.
+            # For complete results with both paths, consider using separate queries or cursor pagination.
             cypher = f"""
             // Step 1: Start from study nodes (only a few studies to process!)
             MATCH (st:study)
             WHERE st.study_id {deposition_operator} ${deposition_param}
-            // Step 2: Collect files using multi-hop traversal (path 2 - preferred)
-            OPTIONAL MATCH (st)<-[:of_consent_group]-(:consent_group)<-[:of_participant]-(:participant)<-[:of_sample]-(sa:sample)<-[:of_sequencing_file]-(sf:sequencing_file)
-            WITH st, sf, sa, collect(DISTINCT sf) AS sf_list_path2
-            // Step 2b: Collect files using multi-hop traversal (path 1 - fallback)
-            OPTIONAL MATCH (st)<-[:of_cell_line]-(:cell_line)<-[:of_sample]-(sa2:sample)<-[:of_sequencing_file]-(sf2:sequencing_file)
-            WITH st, sf_list_path2, collect(DISTINCT sf2) AS sf_list_path1
-            // Combine files from both paths
-            WITH st, [sf IN sf_list_path2 WHERE sf IS NOT NULL | sf] + [sf IN sf_list_path1 WHERE sf IS NOT NULL] AS all_sf
-            UNWIND all_sf AS sf
-            // Step 3: Deduplicate and paginate
-            WITH DISTINCT sf, st
-            ORDER BY sf.id
+            // Step 2: Match files that are connected to study via sample (path 1: via participant -> consent_group)
+            // File (sf) must be connected to both study (st) and sample (sa) - ensures correct relationships
+            MATCH (st)<-[:of_consent_group]-(:consent_group)<-[:of_participant]-(:participant)<-[:of_sample]-(sa:sample)<-[:of_sequencing_file]-(sf:sequencing_file)
+            // Step 3: Deduplicate by unique file ID (sf.id) only - files are unique, not file-study pairs
+            // Paginate IMMEDIATELY (no intermediate collections!)
+            WITH DISTINCT sf.id AS file_id, sf, st
+            ORDER BY file_id
             SKIP $offset
             LIMIT $limit
-            // Step 4: Collect samples for paginated files
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa3:sample)
-            WITH sf, st, collect(DISTINCT sa3) AS samples
+            // Step 4: Collect ALL samples for each paginated file (file can have multiple samples)
+            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+            WITH sf, st, collect(DISTINCT sa) AS samples
             RETURN sf, samples, st
             """.strip()
+            
+            logger.warning(
+                "Using depositions-only query with path 1 only (via participant/consent_group) to prevent crashes. "
+                "Files accessible only via cell_line path are excluded. Consider using cursor pagination for complete results."
+            )
         else:
             # PATTERN 3: SIMPLE QUERY (no filters at all - basic pagination only)
             # PERFORMANCE OPTIMIZATION: Apply pagination FIRST, then traverse using multi-hop

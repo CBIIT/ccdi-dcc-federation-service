@@ -2754,7 +2754,7 @@ WITH p, d, c, st,
                  WHEN race_raw IS NOT NULL THEN [trim(toString(race_raw))]
                  ELSE []
              END as race_parts
-        WITH participant_id, study_id, race, race_parts,
+        WITH participant_id, study_id, race_raw, race_parts,
              // Check if original race contained "Hispanic or Latino"
              any(r IN race_parts WHERE r = 'Hispanic or Latino') as had_hispanic,
              // Filter out "Hispanic or Latino" - it's not a valid race value
@@ -2834,7 +2834,7 @@ WITH p, d, c, st,
                  WHEN race_raw IS NOT NULL THEN [trim(toString(race_raw))]
                  ELSE []
              END as race_parts
-        WITH participant_id, study_id, race, race_parts,
+        WITH participant_id, study_id, race_raw, race_parts,
              // Check if original race contained "Hispanic or Latino"
              any(r IN race_parts WHERE r = 'Hispanic or Latino') as had_hispanic,
              // Filter out "Hispanic or Latino" - it's not a valid race value

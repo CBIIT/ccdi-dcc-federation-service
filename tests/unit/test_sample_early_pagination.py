@@ -134,14 +134,14 @@ class TestEarlyPagination:
             f"Query preview: {query[:500]}"
     
     async def test_sequencing_file_early_pagination(self, repository, mock_session):
-        """Test that sequencing_file filters use early pagination correctly."""
+        """Test that sequencing_file filters use pagination at (sample_id, study_id) pair level."""
         # Mock query execution
         mock_result = AsyncMock()
         mock_result.__aiter__.return_value = []
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
         
-        # Call with library_strategy filter (triggers reverse query with early pagination)
+        # Call with library_strategy filter (routes to Case 3 with pagination at pair level)
         filters = {"library_strategy": "WXS"}
         with patch('app.repositories.sample.is_database_only_value', return_value=False):
             with patch('app.repositories.sample.reverse_map_field_value', return_value="WXS"):
@@ -154,19 +154,32 @@ class TestEarlyPagination:
         call_args = mock_session.run.call_args
         query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
         
-        # Verify early pagination pattern is used
+        # Verify pagination pattern is used at (sample_id, study_id) pair level
         assert 'SKIP $offset' in query
         assert 'LIMIT $limit' in query
         
-        # Verify reverse query pattern (starts from sequencing_file)
-        assert 'MATCH (sf:sequencing_file)' in query
+        # Case 3 query structure: WITH sa, st, {pick_clause} -> ORDER BY -> SKIP/LIMIT
+        # OR specialized method: WITH DISTINCT sa, st -> ORDER BY -> SKIP/LIMIT
+        assert ('WITH sa, st,' in query or 'WITH DISTINCT sa, st' in query or 
+                'WITH DISTINCT sa.sample_id' in query), "Query should paginate at (sample_id, study_id) pair level"
         
-        # Verify early pagination: SKIP/LIMIT should be present
-        # The query structure may vary, but SKIP/LIMIT should be present for pagination
+        # Verify Case 3 structure (starts from sample, has OPTIONAL MATCH for sequencing_file)
+        assert 'MATCH (sa:sample)' in query
+        assert 'OPTIONAL MATCH' in query and ('sf:sequencing_file' in query or 'sequencing_file' in query)
+        
+        # Verify pagination at pair level: SKIP/LIMIT should come after study collection and UNWIND
+        # The query structure: study collection -> UNWIND -> WITH sa, st -> ORDER BY -> SKIP/LIMIT
         skip_pos = query.find("SKIP")
         limit_pos = query.find("LIMIT")
+        order_by_pos = query.find("ORDER BY")
         
         assert skip_pos != -1, "SKIP should be present"
+        assert limit_pos != -1, "LIMIT should be present"
+        assert order_by_pos != -1, "ORDER BY should be present"
+        
+        # Verify ORDER BY comes before SKIP/LIMIT
+        assert order_by_pos < skip_pos, "ORDER BY should come before SKIP"
+        assert order_by_pos < limit_pos, "ORDER BY should come before LIMIT"
         assert limit_pos != -1, "LIMIT should be present"
         
         # Verify study collection pattern exists (may be before or after pagination depending on query structure)

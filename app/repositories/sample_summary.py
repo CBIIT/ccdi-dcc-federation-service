@@ -36,10 +36,16 @@ class SampleSummary:
         """
         logger.debug("Getting samples summary", filters=filters)
         
+        # IMPORTANT: Check routing BEFORE popping identifiers (identifiers is popped later for early filtering)
+        # This ensures routing decisions include identifiers filter
+        original_filters_keys = set(filters.keys())
+        
         # PERFORMANCE OPTIMIZATION: Use reverse query for sequencing_file-only filters
         sequencing_file_filter_keys = {"library_selection_method", "library_strategy", "library_source_material", "specimen_molecular_analyte_type"}
-        has_sf_filters = any(k in filters for k in sequencing_file_filter_keys)
-        has_other_filters = any(k not in sequencing_file_filter_keys for k in filters.keys())
+        has_sf_filters = any(k in original_filters_keys for k in sequencing_file_filter_keys)
+        # Check for other filters BEFORE identifiers is popped
+        # identifiers, depositions, and anatomical_sites are sample-level filters that can be combined with sequencing_file filters
+        has_other_filters = any(k not in sequencing_file_filter_keys for k in original_filters_keys)
         
         if has_sf_filters and not has_other_filters:
             logger.info("Using optimized reverse query for summary with sequencing_file-only filters")
@@ -50,7 +56,7 @@ class SampleSummary:
         allowed_with_diagnosis_search = {"identifiers", "depositions", "_diagnosis_search"}
         diagnosis_search_only_summary = (
             has_diagnosis_search and
-            all(k in allowed_with_diagnosis_search for k in filters.keys())
+            all(k in allowed_with_diagnosis_search for k in original_filters_keys)
         )
         
         if diagnosis_search_only_summary:
@@ -467,6 +473,16 @@ class SampleSummary:
             # Remove from regular_conditions since it's now in early_where_conditions
             if anatomical_sites_string_condition in regular_conditions:
                 regular_conditions.remove(anatomical_sites_string_condition)
+        
+        # OPTIMIZATION: Add tissue_type filter early (sample property, can be filtered early)
+        # Extract tissue_type condition from regular_conditions and move to early_where_conditions
+        tissue_type_condition = None
+        for condition in regular_conditions[:]:  # Use slice to avoid modification during iteration
+            if isinstance(condition, str) and "sa.sample_tumor_status" in condition:
+                tissue_type_condition = condition
+                early_where_conditions.append(condition)
+                regular_conditions.remove(condition)
+                break
         
         # Build early WHERE clause from early_where_conditions
         early_where_clause = "\n        WHERE " + " AND ".join(early_where_conditions) if early_where_conditions else ""

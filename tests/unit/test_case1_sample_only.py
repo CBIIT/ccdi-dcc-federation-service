@@ -1,9 +1,10 @@
 """
 Unit tests for Case 1: Sample-only filters query path.
 
-Tests the new restructured query path for sample-only filters:
-- Early pagination at sample level
-- Then expand studies
+Tests the restructured query path for sample-only filters:
+- Collect study IDs from both paths
+- UNWIND to create (sample, study) pairs
+- Pagination at (sample_id, study_id) pair level
 - Then OPTIONAL MATCH other nodes
 - Participant matched after pagination
 """
@@ -86,22 +87,25 @@ class TestCase1SampleOnly:
         call_args = mock_session.run.call_args
         cypher_query = call_args[0][0] if call_args[0] else ""
         
-        # Verify query structure: MATCH -> WHERE -> WITH -> ORDER BY -> SKIP/LIMIT -> OPTIONAL MATCH studies
+        # Verify query structure: MATCH -> WHERE -> Collect studies -> UNWIND -> WITH DISTINCT sa, st -> ORDER BY -> SKIP/LIMIT
         assert "MATCH (sa:sample)" in cypher_query
         assert "SKIP $offset" in cypher_query
         assert "LIMIT $limit" in cypher_query
+        assert "WITH DISTINCT sa, st" in cypher_query
         
-        # Verify SKIP/LIMIT comes before study expansion
+        # Verify pagination happens at (sample_id, study_id) pair level
+        # SKIP/LIMIT should come AFTER study collection and UNWIND, but BEFORE OPTIONAL MATCH other nodes
         skip_pos = cypher_query.find("SKIP $offset")
         limit_pos = cypher_query.find("LIMIT $limit")
-        study_match_pos = cypher_query.find("OPTIONAL MATCH (sa)-[:of_sample]->(:participant)")
-        
-        assert skip_pos < study_match_pos, "SKIP should come before study expansion"
-        assert limit_pos < study_match_pos, "LIMIT should come before study expansion"
-        
-        # Verify participant is matched after pagination
+        distinct_pos = cypher_query.find("WITH DISTINCT sa, st")
+        unwind_pos = cypher_query.find("UNWIND combined")
         participant_match_pos = cypher_query.find("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
-        assert participant_match_pos > limit_pos, "Participant should be matched after pagination"
+        
+        # Verify order: UNWIND -> WITH DISTINCT -> ORDER BY -> SKIP/LIMIT -> OPTIONAL MATCH participant
+        assert unwind_pos < distinct_pos, "UNWIND should come before WITH DISTINCT"
+        assert distinct_pos < skip_pos, "WITH DISTINCT should come before SKIP"
+        assert skip_pos < participant_match_pos, "SKIP should come before participant match"
+        assert limit_pos < participant_match_pos, "LIMIT should come before participant match"
         
         assert isinstance(result, list)
     

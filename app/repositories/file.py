@@ -1404,22 +1404,8 @@ class FileRepository:
         Returns:
             File object with id, samples, and metadata structure
         """
-        # Convert node objects to dictionaries
-        def node_to_dict(node):
-            """Convert a Node object to a dictionary."""
-            if node is None:
-                return {}
-            if isinstance(node, dict):
-                return node
-            try:
-                return dict(node)
-            except (TypeError, ValueError):
-                if hasattr(node, 'properties'):
-                    return node.properties
-                elif hasattr(node, 'items'):
-                    return dict(node.items())
-                else:
-                    return {k: getattr(node, k) for k in dir(node) if not k.startswith('_')}
+        # Convert node objects to dictionaries using centralized utility
+        from app.repositories.sample_converters import node_to_dict
         
         sf = node_to_dict(record)
         study_dict = node_to_dict(study) if study else {}

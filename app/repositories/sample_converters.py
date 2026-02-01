@@ -9,6 +9,7 @@ from typing import Dict, Any, Optional
 from app.core.logging import get_logger
 from app.models.dto import Sample
 from app.core.field_mappings import map_field_value, reverse_map_field_value
+from app.core.serialization import convert_date_time_to_string
 
 logger = get_logger(__name__)
 
@@ -19,25 +20,37 @@ def node_to_dict(node):
     Utility function to convert Neo4j/Memgraph Node objects to dictionaries.
     Used throughout the repository for consistent node conversion.
     
+    Handles date/time objects (ZONED_DATE_TIME, LocalDateTime, etc.) by converting
+    them to ISO format strings to prevent serialization errors.
+    
     Args:
         node: Node object from Neo4j/Memgraph, dict, or None
         
     Returns:
         Dictionary representation of the node, or empty dict if None
+        Date/time properties are converted to ISO format strings
     """
     if node is None:
         return {}
     if isinstance(node, dict):
-        return node
+        # Still need to convert date/time values in dict
+        return {k: convert_date_time_to_string(v) for k, v in node.items()}
+    
     # Try dict() conversion first (works for Neo4j/Memgraph Node objects)
     try:
-        return dict(node)
+        node_dict = dict(node)
+        # Convert date/time values in the dictionary
+        return {k: convert_date_time_to_string(v) for k, v in node_dict.items()}
     except (TypeError, ValueError):
         # Fall back to accessing properties
         if hasattr(node, 'properties'):
-            return node.properties
+            props = node.properties
+            if isinstance(props, dict):
+                return {k: convert_date_time_to_string(v) for k, v in props.items()}
+            return props
         elif hasattr(node, 'items'):
-            return dict(node.items())
+            node_dict = dict(node.items())
+            return {k: convert_date_time_to_string(v) for k, v in node_dict.items()}
         else:
             # Last resort: return empty dict to avoid expensive dir() call
             # If node conversion fails, return empty dict rather than scanning all attributes

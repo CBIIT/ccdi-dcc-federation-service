@@ -13,9 +13,12 @@ from fastapi.exceptions import HTTPException, RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.encoders import jsonable_encoder
 from starlette.exceptions import HTTPException as StarletteHTTPException
 import re
+import json
 from pathlib import Path
+from typing import Any
 
 from app.core.config import get_settings, Settings
 from app.core.logging import configure_logging, get_logger
@@ -32,10 +35,32 @@ from app.api.v1.endpoints.root import router as root_router
 from app.api.v1.endpoints.info import router as info_router
 from app.api.v1.endpoints.organizations import router as organizations_router
 from app.models.errors import ErrorsResponse, ErrorDetail, ErrorKind, CCDIException
+from app.core.serialization import sanitize_for_json
 
 # Configure logging before creating the logger
 configure_logging()
 logger = get_logger(__name__)
+
+
+# Override FastAPI's default jsonable_encoder to handle date/time objects globally
+def custom_jsonable_encoder(obj: Any, **kwargs) -> Any:
+    """
+    Custom JSON encoder that handles date/time objects from Memgraph/Neo4j.
+    
+    This is a global fallback that ensures any date/time objects that slip through
+    the conversion functions are properly serialized before JSON encoding.
+    """
+    # First, sanitize the object to convert date/time objects
+    sanitized = sanitize_for_json(obj)
+    
+    # Then use FastAPI's default encoder for the rest
+    return jsonable_encoder(sanitized, **kwargs)
+
+
+# Monkey-patch FastAPI's jsonable_encoder to use our custom version
+# This ensures all FastAPI responses use our date/time handling
+import fastapi.encoders
+fastapi.encoders.jsonable_encoder = custom_jsonable_encoder
 
 
 @asynccontextmanager

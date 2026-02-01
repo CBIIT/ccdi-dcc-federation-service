@@ -1443,27 +1443,8 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
                 pf_node = record.get("pf")
                 diagnoses_node = record.get("diagnoses")
                 
-                # Convert Memgraph/Neo4j Node objects to dictionaries
-                # Node objects can be converted using dict() or by accessing .items()
-                def node_to_dict(node):
-                    """Convert a Node object to a dictionary."""
-                    if node is None:
-                        return {}
-                    if isinstance(node, dict):
-                        return node
-                    # Try dict() conversion first (works for Neo4j/Memgraph Node objects)
-                    try:
-                        return dict(node)
-                    except (TypeError, ValueError):
-                        # Fall back to accessing properties
-                        if hasattr(node, 'properties'):
-                            return node.properties
-                        elif hasattr(node, 'items'):
-                            return dict(node.items())
-                        else:
-                            # Last resort: return empty dict to avoid expensive dir() call
-                            # If node conversion fails, return empty dict rather than scanning all attributes
-                            return {}
+                # Convert Memgraph/Neo4j Node objects to dictionaries using centralized utility
+                from app.repositories.sample_converters import node_to_dict
                 
                 sa = node_to_dict(sa_node)
                 p = node_to_dict(p_node)

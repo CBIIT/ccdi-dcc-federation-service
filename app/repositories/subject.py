@@ -726,19 +726,17 @@ class SubjectRepository:
              all_diagnoses_list AS d
         WITH participant_id, study_id, p, d, final_vital_status, final_age_at_vital_status,
              ethnicity_value,
-             // Use first study_id for namespace (for backward compatibility)
-             head(study_ids) AS namespace,
              // All study_ids for depositions (filter out null values and apply depositions filter if present)
              [sid IN study_ids WHERE sid IS NOT NULL{f" AND sid {deposition_operator} ${dep_param}" if dep_param else ""}] AS study_ids_temp
         UNWIND study_ids_temp AS sid
         WITH participant_id, study_id, p, d, final_vital_status, final_age_at_vital_status,
              ethnicity_value,
-             namespace,
              sid
         WHERE toString(sid) <> ''
         WITH participant_id, study_id, p, d, final_vital_status, final_age_at_vital_status,
              ethnicity_value,
-             namespace,
+             // Use filtered study_id (sid) for namespace to ensure it matches depositions filter
+             sid AS namespace,
              collect(sid) AS study_ids_filtered
         RETURN
           toString(participant_id) AS name,
@@ -4657,23 +4655,38 @@ WITH p, d, st,
         diagnosis_nodes_raw = record.get("diagnosis_nodes")
 
         def _get_prop(obj: Any, key: str) -> Any:
-            """Best-effort property access for neo4j Node-like objects / dicts."""
+            """Best-effort property access for neo4j Node-like objects / dicts.
+            
+            Handles date/time objects (ZONED_DATE_TIME, etc.) by converting them
+            to ISO format strings to prevent serialization errors.
+            """
+            from app.core.serialization import convert_date_time_to_string
+            
             if obj is None:
                 return None
+            
+            value = None
             try:
                 if hasattr(obj, "get"):
-                    return obj.get(key)
+                    value = obj.get(key)
             except Exception:
                 pass
-            try:
-                if isinstance(obj, dict):
-                    return obj.get(key)
-            except Exception:
-                pass
-            try:
-                return obj[key]  # type: ignore[index]
-            except Exception:
-                return None
+            
+            if value is None:
+                try:
+                    if isinstance(obj, dict):
+                        value = obj.get(key)
+                except Exception:
+                    pass
+            
+            if value is None:
+                try:
+                    value = obj[key]  # type: ignore[index]
+                except Exception:
+                    return None
+            
+            # Convert date/time objects to strings
+            return convert_date_time_to_string(value)
 
         # If the Cypher returned raw survival records, compute derived survival fields in Python.
         # This avoids complex Cypher reductions that have caused Memgraph instability/crashes.

@@ -18,11 +18,12 @@ class TestLoggingConfiguration:
 
     @patch("app.core.logging.get_settings")
     @patch("app.core.logging.logging.basicConfig")
+    @patch("app.core.logging.logging.FileHandler")
     @patch("app.core.logging.structlog.configure")
     @patch("app.core.logging.structlog.get_logger")
-    @patch("app.core.logging.Path")
+    @patch("pathlib.Path")
     @patch("app.core.logging.structlog.stdlib.ProcessorFormatter")
-    def test_configure_logging_json(self, mock_processor_formatter, mock_path, mock_get_logger, mock_configure, mock_basic_config, mock_get_settings):
+    def test_configure_logging_json(self, mock_processor_formatter, mock_path, mock_get_logger, mock_configure, mock_file_handler, mock_basic_config, mock_get_settings):
         """Test configure_logging with JSON format."""
         mock_settings = Mock()
         mock_settings.log_level = "INFO"
@@ -33,6 +34,8 @@ class TestLoggingConfiguration:
         # Mock Path.exists() to return False (no logs directory)
         mock_path_instance = Mock()
         mock_path_instance.exists.return_value = False
+        mock_path_instance.mkdir = Mock()
+        mock_path_instance.__truediv__ = Mock(return_value=Mock(__str__=Mock(return_value="logs/app.log")))
         mock_path.return_value = mock_path_instance
 
         configure_logging()
@@ -55,11 +58,12 @@ class TestLoggingConfiguration:
 
     @patch("app.core.logging.get_settings")
     @patch("app.core.logging.logging.basicConfig")
+    @patch("app.core.logging.logging.FileHandler")
     @patch("app.core.logging.structlog.configure")
     @patch("app.core.logging.structlog.get_logger")
-    @patch("app.core.logging.Path")
+    @patch("pathlib.Path")
     @patch("app.core.logging.structlog.stdlib.ProcessorFormatter")
-    def test_configure_logging_console(self, mock_processor_formatter, mock_path, mock_get_logger, mock_configure, mock_basic_config, mock_get_settings):
+    def test_configure_logging_console(self, mock_processor_formatter, mock_path, mock_get_logger, mock_configure, mock_file_handler, mock_basic_config, mock_get_settings):
         """Test configure_logging with console format."""
         mock_settings = Mock()
         mock_settings.log_level = "DEBUG"
@@ -70,6 +74,8 @@ class TestLoggingConfiguration:
         # Mock Path.exists() to return False (no logs directory)
         mock_path_instance = Mock()
         mock_path_instance.exists.return_value = False
+        mock_path_instance.mkdir = Mock()
+        mock_path_instance.__truediv__ = Mock(return_value=Mock(__str__=Mock(return_value="logs/app.log")))
         mock_path.return_value = mock_path_instance
 
         configure_logging()

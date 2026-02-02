@@ -331,7 +331,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         
         # Handle no-filters case first (Case 0)
         if not filters or len(filters) == 0:
-            logger.info("Using Case 0: No filters query path")
+            logger.debug("Using Case 0: No filters query path")
             # Use existing early pagination for no filters - delegate to existing implementation
             # (The existing no-filters code is already correct for the new structure)
             # Fall through to existing no-filters implementation below
@@ -347,14 +347,14 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         # Determine query path based on filter combination
         # Case 1: Sample-only filters (no other node filters)
         if has_sample_filters and not has_study_filters and not has_diagnosis_filters and not has_sf_filters and not has_pf_filters:
-            logger.info("Using Case 1: Sample-only filters query path", filters=filters)
+            logger.debug("Using Case 1: Sample-only filters query path")
             return await self._get_samples_case1_sample_only(
                 categorized["sample"], offset, limit, base_url, return_total
             )
         
         # Case 2: Sample + Study filters only (no diagnosis/sequencing_file/pathology_file filters)
         if (has_sample_filters or has_study_filters) and not has_diagnosis_filters and not has_sf_filters and not has_pf_filters:
-            logger.info("Using Case 2: Sample + Study filters only query path", filters=filters)
+            logger.debug("Using Case 2: Sample + Study filters only query path")
             # Combine sample and study filters
             combined_filters = {**categorized["sample"], **categorized["study"]}
             return await self._get_samples_case2_sample_study(
@@ -363,7 +363,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         
         # Optimization: Pathology_file-only filters (no other node filters) - use specialized method
         if has_pf_filters and not has_diagnosis_filters and not has_sf_filters and not has_sample_filters and not has_study_filters:
-            logger.info("Using optimized pathology_file-only filters query path", filters=filters)
+            logger.debug("Using optimized pathology_file-only filters query path")
             return await self._get_samples_by_pathology_file_filters(
                 categorized["pathology_file"], offset, limit, base_url, return_total
             )
@@ -971,16 +971,10 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         else:
             where_clause = ""
         
-        # DEBUG: Log critical parts before building query to debug "trueWHERE" error
         if skip_second_with_for_sf:
-            logger.warning(
-                "DEBUG: Building query with skip_second_with_for_sf=True",
+            logger.debug(
+                "Building query with skip_second_with_for_sf=True",
                 skip_second_with_for_sf=skip_second_with_for_sf,
-                second_with_str=second_with_str,
-                second_with_str_repr=repr(second_with_str),
-                where_clause=where_clause,
-                where_clause_repr=repr(where_clause),
-                where_clause_len=len(where_clause) if where_clause else 0,
                 with_clause=with_clause[:200] if len(with_clause) > 200 else with_clause
             )
         
@@ -1175,18 +1169,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         RETURN sa, p, st, sf, pf, diagnoses
         """.strip()
         
-        # Log the standard query being executed (for debugging)
-        logger.info(
-            "EXECUTING standard query (NO early pagination)",
-            query=cypher[:500] + "..." if len(cypher) > 500 else cypher,
-            query_length=len(cypher),
-            has_skip_after_optional_match="SKIP" in cypher.split("OPTIONAL MATCH")[-1] if "OPTIONAL MATCH" in cypher else True,
-            filters=list(filters.keys()),
-            early_where_clause=early_where_clause[:200] if early_where_clause else None,
-        )
-
-        # Log full query for debugging (truncated if too long)
-        logger.info(
+        logger.debug(
             "Standard query full Cypher",
             cypher_full=cypher,
             params=params,
@@ -1220,7 +1203,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
             
             if cypher_count_std:
                 try:
-                    logger.debug("Standard query count Cypher", cypher_count=cypher_count_std[:500] if len(cypher_count_std) > 500 else cypher_count_std)
+                    logger.debug("Standard query count executed")
                     result_count_std = await self.session.run(cypher_count_std, params)
                     recs_std = []
                     async for r in result_count_std:
@@ -1230,33 +1213,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
                 except Exception as e_count_std:
                     logger.warning("Standard path count query failed, total will come from summary if requested", error=str(e_count_std), exc_info=True)
         
-        # DEBUG: Log the exact query section that might cause "trueWHERE" error
-        if skip_second_with_for_sf:
-            # Extract the problematic section
-            query_section = f"{second_with_str}{where_clause}\n        WITH DISTINCT"
-            logger.warning(
-                "DEBUG: Query section around WHERE clause",
-                query_section=query_section,
-                query_section_repr=repr(query_section),
-                has_truewhere="trueWHERE" in query_section.replace(" ", "").replace("\n", "")
-            )
-        
-        # Build a debug version of the query with parameter values substituted for easier debugging
-        debug_cypher = cypher
-        for param_name, param_value in params.items():
-            # Replace parameter placeholders with actual values for debugging
-            debug_cypher = debug_cypher.replace(f"${param_name}", repr(param_value))
-        
-        logger.info(
-            "Executing get_samples Cypher query",
-            cypher=cypher,
-            debug_cypher=debug_cypher,
-            params=params,
-            with_clause=with_clause,
-            where_clause=where_clause,
-            return_clause=return_clause,
-            identifiers_condition=identifiers_condition if 'identifiers_condition' in locals() else None
-        )
+        logger.debug("Executing get_samples Cypher query", filters=list(filters.keys()))
         
         # Execute query with proper result consumption and retry logic
         # For anatomical_sites, try list version first, fallback to string if it fails
@@ -1384,18 +1341,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
                 LIMIT $limit
                 """.strip()
                 
-                # Build debug version with parameter substitution
-                debug_cypher_string = cypher
-                for param_name, param_value in params.items():
-                    debug_cypher_string = debug_cypher_string.replace(f"${param_name}", repr(param_value))
-                
-                logger.info(
-                    "Retrying anatomical_sites query with string version",
-                    cypher=cypher,
-                    debug_cypher=debug_cypher_string,
-                    params=params,
-                    where_clause=where_clause
-                )
+                logger.debug("Retrying anatomical_sites query with string version")
                 
                 try:
                     result = await self.session.run(cypher, params)
@@ -1443,7 +1389,6 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
                 pf_node = record.get("pf")
                 diagnoses_node = record.get("diagnoses")
                 
-                # Convert Memgraph/Neo4j Node objects to dictionaries using centralized utility
                 from app.repositories.sample_converters import node_to_dict
                 
                 sa = node_to_dict(sa_node)
@@ -1451,7 +1396,6 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
                 st = node_to_dict(st_node)
                 sf = node_to_dict(sf_node)
                 pf = node_to_dict(pf_node)
-                # diagnoses is now a single node (or None) - convert to dict
                 diagnoses = node_to_dict(diagnoses_node) if diagnoses_node else None
                 
                 sample = self._record_to_sample(sa, p, st, sf, pf, diagnoses, base_url=base_url)
@@ -2299,7 +2243,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
             
             total_count = record["total_count"] if record else 0
             
-            logger.info("Reverse summary query executed successfully", total_count=total_count)
+            logger.debug("Reverse summary query executed successfully", total_count=total_count)
             
             # Return in the expected format for the service layer
             return {

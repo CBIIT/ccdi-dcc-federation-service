@@ -1404,7 +1404,6 @@ class FileRepository:
         Returns:
             File object with id, samples, and metadata structure
         """
-        # Convert node objects to dictionaries using centralized utility
         from app.repositories.sample_converters import node_to_dict
         
         sf = node_to_dict(record)

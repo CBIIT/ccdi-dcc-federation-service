@@ -1421,3 +1421,55 @@ class TestRepositoryHelperMethods:
         )
         assert result == ""
 
+
+@pytest.mark.unit
+class TestDateTimeConversion:
+    """Test cases for date/time conversion in repositories."""
+    
+    def test_serialization_utilities_import(self):
+        """Test that serialization utilities can be imported."""
+        from app.core.serialization import convert_date_time_to_string, sanitize_for_json
+        assert callable(convert_date_time_to_string)
+        assert callable(sanitize_for_json)
+    
+    def test_node_to_dict_converts_date_time(self):
+        """Test that node_to_dict converts date/time objects."""
+        from app.repositories.sample_converters import node_to_dict
+        from datetime import datetime
+        
+        dt = datetime(2025, 12, 22, 21, 4, 27, 798862)
+        node = {"created": dt, "sample_id": "SAMP001"}
+        result = node_to_dict(node)
+        
+        assert isinstance(result["created"], str)
+        assert result["created"] == dt.isoformat()
+        assert result["sample_id"] == "SAMP001"
+    
+    def test_get_prop_converts_date_time_indirectly(self):
+        """Test that _get_prop converts date/time objects (tested indirectly via diagnosis processing).
+        
+        Note: _get_prop is a local function inside SubjectRepository methods, so we test
+        it indirectly by verifying that date/time conversion utilities work correctly.
+        The actual conversion happens when processing diagnosis nodes with date/time properties.
+        """
+        from app.core.serialization import convert_date_time_to_string
+        from datetime import datetime
+        
+        # Simulate what _get_prop does: extract value and convert date/time
+        mock_diagnosis_node = {
+            "created": datetime(2025, 12, 22, 21, 4, 27, 798862),
+            "diagnosis": "Neuroblastoma"
+        }
+        
+        # Simulate _get_prop extraction
+        created_value = mock_diagnosis_node.get("created")
+        diagnosis_value = mock_diagnosis_node.get("diagnosis")
+        
+        # Apply date/time conversion (what _get_prop now does)
+        converted_created = convert_date_time_to_string(created_value)
+        converted_diagnosis = convert_date_time_to_string(diagnosis_value)
+        
+        assert isinstance(converted_created, str)
+        assert converted_created == created_value.isoformat()
+        assert converted_diagnosis == "Neuroblastoma"  # Non-date values unchanged
+

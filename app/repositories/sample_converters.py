@@ -33,13 +33,11 @@ def node_to_dict(node):
     if node is None:
         return {}
     if isinstance(node, dict):
-        # Still need to convert date/time values in dict
         return {k: convert_date_time_to_string(v) for k, v in node.items()}
     
     # Try dict() conversion first (works for Neo4j/Memgraph Node objects)
     try:
         node_dict = dict(node)
-        # Convert date/time values in the dictionary
         return {k: convert_date_time_to_string(v) for k, v in node_dict.items()}
     except (TypeError, ValueError):
         # Fall back to accessing properties
@@ -52,8 +50,6 @@ def node_to_dict(node):
             node_dict = dict(node.items())
             return {k: convert_date_time_to_string(v) for k, v in node_dict.items()}
         else:
-            # Last resort: return empty dict to avoid expensive dir() call
-            # If node conversion fails, return empty dict rather than scanning all attributes
             return {}
 
 
@@ -310,7 +306,6 @@ class SampleConverters:
                 from app.models.dto import IdentifierField, IdentifierValue
                 
                 # Build server URL - format: /api/v1/sample/CCDI-DCC/{study_id}/{sample_id}
-                # Note: This format doesn't include entity type, matching user's example
                 server_url = None
                 if base_url:
                     server_url = f"{base_url}/api/v1/sample/CCDI-DCC/{study_id}/{sample_id}"

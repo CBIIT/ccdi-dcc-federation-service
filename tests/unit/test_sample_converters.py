@@ -249,3 +249,61 @@ class TestSampleConverters:
         result = node_to_dict(node)
         assert isinstance(result, dict)
         assert "sample_id" in result or result == {}
+    
+    def test_node_to_dict_converts_date_time_objects(self):
+        """Test node_to_dict converts date/time objects to ISO format strings."""
+        from datetime import datetime
+        
+        # Test with datetime object (has isoformat method)
+        dt = datetime(2025, 12, 22, 21, 4, 27, 798862)
+        node = {"created": dt, "sample_id": "SAMP001"}
+        result = node_to_dict(node)
+        assert isinstance(result, dict)
+        assert result["sample_id"] == "SAMP001"
+        assert isinstance(result["created"], str)
+        assert result["created"] == dt.isoformat()
+    
+    def test_node_to_dict_converts_date_time_in_dict(self):
+        """Test node_to_dict converts date/time objects when input is already a dict."""
+        from datetime import datetime
+        
+        dt = datetime(2025, 12, 22, 21, 4, 27, 798862)
+        node = {"created": dt, "updated": dt}
+        result = node_to_dict(node)
+        assert isinstance(result["created"], str)
+        assert isinstance(result["updated"], str)
+        assert result["created"] == dt.isoformat()
+    
+    def test_node_to_dict_converts_mock_zoned_date_time(self):
+        """Test node_to_dict converts mock ZONED_DATE_TIME-like objects."""
+        class MockZonedDateTime:
+            """Mock ZONED_DATE_TIME object from Memgraph/Neo4j."""
+            def __init__(self):
+                self.value = "2025-12-22T21:04:27.798862+00:00[Etc/UTC]"
+            
+            def isoformat(self):
+                return self.value
+            
+            def __str__(self):
+                return self.value
+        
+        zoned_dt = MockZonedDateTime()
+        node = {"created": zoned_dt, "sample_id": "SAMP001"}
+        result = node_to_dict(node)
+        assert isinstance(result["created"], str)
+        assert result["created"] == "2025-12-22T21:04:27.798862+00:00[Etc/UTC]"
+    
+    def test_node_to_dict_preserves_non_date_values(self):
+        """Test node_to_dict preserves non-date/time values unchanged."""
+        node = {
+            "sample_id": "SAMP001",
+            "age": 25,
+            "name": "Test Sample",
+            "is_active": True,
+            "tags": ["tag1", "tag2"]
+        }
+        result = node_to_dict(node)
+        assert result == node  # Should be unchanged
+        assert isinstance(result["age"], int)
+        assert isinstance(result["is_active"], bool)
+        assert isinstance(result["tags"], list)

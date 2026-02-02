@@ -200,7 +200,7 @@ class SampleQueryCases:
         RETURN sa, p, st, sf, pf, diagnoses
         """.strip()
         
-        logger.info("Case 1 query", cypher=cypher, params=params)
+        logger.debug("Case 1 query")
         
         result = await self.session.run(cypher, params)
         records = []
@@ -727,7 +727,7 @@ class SampleQueryCases:
         RETURN sa, p, st, sf, pf, diagnoses
         """.strip()
         
-        logger.info("Case 3 query", cypher=cypher[:500] if len(cypher) > 500 else cypher, params=params)
+        logger.debug("Case 3 query")
         
         result = await self.session.run(cypher, params)
         records = []

@@ -922,9 +922,7 @@ class SubjectRepository:
                 if 'cypher' in locals() and cypher:
                     logger.error("BUG: cypher is already set from depositions path, but else block is executing! This should never happen.")
                     logger.error("Skipping non-depositions path code since cypher is already set.")
-                    # Skip the rest of this else block - cypher is already set from depositions path
-                    # Create a dummy cypher to prevent errors, but it should never be used
-                    cypher = cypher  # Keep existing cypher
+                    # Cypher already set from depositions path above
                 else:
                     # No depositions filter - use OPTIONAL MATCH for studies
                     # Collect relationships separately to avoid cartesian product
@@ -1192,11 +1190,11 @@ class SubjectRepository:
                 # CRITICAL SAFEGUARD: If dep_param is set, we MUST NOT take the non-depositions path
                 # This is a safeguard to prevent incorrect queries when dep_param is set but the condition above failed
                 if dep_param and dep_param in params:
-                    logger.error(f"BUG: dep_param is set ({dep_param}) and exists in params, but non-depositions path is being taken! This should never happen.")
-                    logger.error(f"dep_param={dep_param}, params keys={list(params.keys())}")
-                    # Don't raise an error - instead, log the issue and let the query proceed
-                    # The query will be incorrect, but at least we'll see the error in logs
-                    # TODO: Fix the root cause of why the condition at line 479 is failing
+                    logger.error(
+                        "Unexpected path selection: dep_param exists but non-depositions path taken",
+                        dep_param=dep_param,
+                        params_keys=list(params.keys())
+                    )
                 # When we have derived filters (vital_status, age_at_vital_status), we MUST process survival/diagnosis first,
                 # then filter, then paginate. We cannot paginate early because the filter depends on computed values.
                 # Build initial WITH clause (similar to early pagination path, but without pagination)
@@ -1399,27 +1397,19 @@ class SubjectRepository:
         ORDER BY toString(name)
         """.strip()
         
-        # Debug printing is extremely noisy; keep it opt-in.
+        # Debug logging for query details (only in debug mode)
         if getattr(self.settings, "debug", False):
-            print("=" * 80)
-            print("FULL CYPHER QUERY:")
-            print("=" * 80)
-            print(cypher if 'cypher' in locals() else "cypher not yet defined")
-            print("=" * 80)
-            print("PARAMS:", params)
-            print("=" * 80)
-            if 'where_clause' in locals():
-                print("where_clause:", where_clause)
-            if 'race_filter_condition' in locals():
-                print("race_filter_condition:", race_filter_condition)
-            if 'race_condition' in locals():
-                print("race_condition:", race_condition)
-            print("=" * 80)
+            logger.debug(
+                "Cypher query details",
+                cypher=cypher if 'cypher' in locals() else "not defined",
+                params=params,
+                where_clause=where_clause if 'where_clause' in locals() else None,
+                race_filter_condition=race_filter_condition if 'race_filter_condition' in locals() else None,
+                race_condition=race_condition if 'race_condition' in locals() else None
+            )
         
-        logger.info(
+        logger.debug(
             "Executing get_subjects Cypher query",
-            cypher=cypher if 'cypher' in locals() else "not defined",
-            params=params,
             filters=filters
         )
 
@@ -1475,14 +1465,6 @@ class SubjectRepository:
                         other_filters=other_filters if 'other_filters' in locals() else None,
                         exc_info=True
                     )
-                    # Also print the query to console for immediate visibility
-                    print("=" * 80)
-                    print("ERROR: Full Cypher Query:")
-                    print("=" * 80)
-                    print(cypher if 'cypher' in locals() else "No query")
-                    print("=" * 80)
-                    print("Params:", params)
-                    print("=" * 80)
                     raise
         
         # Convert to Subject objects

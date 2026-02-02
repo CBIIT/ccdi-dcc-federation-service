@@ -685,7 +685,7 @@ class SampleSpecializedQueries(SampleValidators):
             
             total_count = record["total_count"] if record else 0
             
-            logger.info("Reverse summary query executed successfully", total_count=total_count)
+            logger.debug("Reverse summary query executed successfully", total_count=total_count)
             
             # Return in the expected format for the service layer
             return {

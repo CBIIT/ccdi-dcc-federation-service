@@ -48,7 +48,7 @@ class SampleSummary:
         has_other_filters = any(k not in sequencing_file_filter_keys for k in original_filters_keys)
         
         if has_sf_filters and not has_other_filters:
-            logger.info("Using optimized reverse query for summary with sequencing_file-only filters")
+            logger.debug("Using optimized reverse query for summary with sequencing_file-only filters")
             return await self._get_samples_summary_reverse_query(filters)
         
         # OPTIMIZATION: Specialized summary query for diagnosis search-only filters
@@ -60,7 +60,7 @@ class SampleSummary:
         )
         
         if diagnosis_search_only_summary:
-            logger.info("Using optimized summary query for diagnosis search-only filters")
+            logger.debug("Using optimized summary query for diagnosis search-only filters")
             return await self._get_samples_summary_diagnosis_search(filters)
         
         # If no filters, use simple optimized query (matches the structure used in count queries)
@@ -1326,7 +1326,7 @@ RETURN count(*) AS total_count
             
             total_count = record["total_count"] if record else 0
             
-            logger.info("Reverse summary query executed successfully", total_count=total_count)
+            logger.debug("Reverse summary query executed successfully", total_count=total_count)
             
             # Return in the expected format for the service layer
             return {

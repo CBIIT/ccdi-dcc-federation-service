@@ -41,14 +41,12 @@ def convert_date_time_to_string(value: Any) -> Any:
     if hasattr(value, '__class__'):
         type_name = str(type(value)).lower()
         if 'time' in type_name or 'date' in type_name:
-            # Try to convert to string
             try:
                 if hasattr(value, '__str__'):
                     return str(value)
             except Exception:
                 pass
     
-    # Not a date/time object, return as-is
     return value
 
 
@@ -81,6 +79,5 @@ def sanitize_for_json(obj: Any) -> Any:
     if isinstance(obj, (list, tuple)):
         return [sanitize_for_json(item) for item in obj]
     
-    # For other types, try date/time conversion one more time
-    # (in case it's a custom object that wasn't caught earlier)
+    # Try date/time conversion for other types
     return convert_date_time_to_string(obj)

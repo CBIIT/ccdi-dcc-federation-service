@@ -18,7 +18,7 @@ class PaginationParams(BaseModel):
     """Pagination parameters model."""
     
     page: int = 1
-    per_page: int = 100
+    per_page: int = 50
     
     def __post_init__(self):
         """Validate pagination parameters."""

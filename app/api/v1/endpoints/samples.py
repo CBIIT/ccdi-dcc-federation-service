@@ -16,7 +16,6 @@ from app.api.v1.deps import (
     get_allowlist,
     get_pagination_params,
     get_sample_filters,
-    get_sample_filters_no_descriptions,
     check_rate_limit
 )
 from app.core.config import Settings
@@ -213,63 +212,71 @@ async def list_samples(
         service = SampleService(session, allowlist, settings, cache_service)
         
         # Make a copy of filters for get_samples (it will modify the dict by popping identifiers)
-        # so that get_samples_summary gets the original filters dict
+        # so that get_samples_summary gets the original filters dict if needed
         filters_copy = filters.copy()
         
-        # Get samples
-        samples = await service.get_samples(
+        # Get samples with total count (optimized: uses same filter state when possible)
+        # This avoids a separate get_samples_summary call for most cases
+        result = await service.get_samples(
             filters=filters_copy,
             offset=pagination.offset,
-            limit=pagination.per_page
+            limit=pagination.per_page,
+            return_total=True
         )
         
-        # Get total count for summary (use original filters dict)
-        # If summary fails, use 0 as total (empty results)
-        try:
-            summary_result = await service.get_samples_summary(filters)
-            total_count = summary_result.counts.total
-        except DatabaseConnectionError as summary_error:
-            # Database connection error - log clearly for AWS cloud monitoring
-            logger.error(
-                "Database connection error while getting samples summary - using 0 as total",
-                error=str(summary_error),
-                error_type=type(summary_error).__name__,
-                filters=filters,
-                is_database_connection_error=True,
-                will_use_zero_total=True,
-                aws_cloudwatch_alert=True
-            )
-            total_count = 0
-        except Exception as summary_error:
-            # Check if this is a connection-related error
-            error_str = str(summary_error).lower()
-            is_connection_error = any(keyword in error_str for keyword in [
-                'connection', 'database', 'unavailable', 'timeout', 'network',
-                'service unavailable', 'broken pipe', 'connection reset', 'connection closed'
-            ])
-            
-            if is_connection_error:
-                # Connection-related error - log clearly for AWS cloud monitoring
+        # Handle tuple return (samples, total_count) or list return (samples only)
+        if isinstance(result, tuple):
+            samples, total_count = result
+            logger.debug("Using total count from get_samples (optimized path)", total_count=total_count)
+        else:
+            # Repository didn't return total (e.g. sequencing_file-only reverse query path)
+            # Fall back to get_samples_summary
+            samples = result
+            try:
+                summary_result = await service.get_samples_summary(filters)
+                total_count = summary_result.counts.total
+            except (DatabaseConnectionError, NotFoundError) as summary_error:
+                # DB / no-data error - re-raise so outer handler returns 404
                 logger.error(
-                    "Database connection issue while getting samples summary - using 0 as total",
+                    "Error getting samples summary (backend/DB) - returning 404",
                     error=str(summary_error),
                     error_type=type(summary_error).__name__,
                     filters=filters,
-                    is_connection_related=True,
-                    will_use_zero_total=True,
-                    aws_cloudwatch_alert=True,
                     exc_info=True
                 )
-            else:
-                logger.warning(
-                    "Error getting samples summary, using 0 as total",
+                if isinstance(summary_error, NotFoundError):
+                    raise summary_error
+                error_detail = ErrorDetail(
+                    kind=ErrorKind.NOT_FOUND,
+                    entity="Samples",
+                    message="Unable to find data for your request.",
+                    reason="No data found."
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+                )
+            except Exception as summary_error:
+                # Other errors (e.g. connection-related) - re-raise so outer handler returns 404
+                logger.error(
+                    "Error getting samples summary - returning 404",
                     error=str(summary_error),
                     error_type=type(summary_error).__name__,
                     filters=filters,
-                    sample_count=len(samples),  # Log how many samples were actually returned
                     exc_info=True
                 )
-            total_count = 0
+                if hasattr(summary_error, 'to_http_exception'):
+                    raise summary_error.to_http_exception()
+                error_detail = ErrorDetail(
+                    kind=ErrorKind.NOT_FOUND,
+                    entity="Samples",
+                    message="Unable to find data for your request.",
+                    reason="No data found."
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+                )
         
         # Build pagination info
         pagination_info = PaginationInfo(
@@ -303,11 +310,16 @@ async def list_samples(
         
         # Build response with summary first, then data
         # Always return 200 with empty data if query succeeded but no results found
+        # Calculate summary counts:
+        # - all = total (total count from summary/query)
+        # - current = actual items returned in this page (may be less than per_page on last page)
+        current_count = len(samples)
+        
         result = SamplesResponse(
             summary={
                 "counts": {
-                    "all": total_count,  # Total number of unique samples
-                    "current": len(samples)
+                    "all": total_count,  # Total number of unique samples (calculated at pagination point)
+                    "current": current_count  # Items in current page
                 }
             },
             data=samples_dicts
@@ -316,14 +328,19 @@ async def list_samples(
         return result
         
     except Exception as e:
+        # Re-raise HTTPException (e.g. 404 from summary failure) as-is
+        if isinstance(e, HTTPException):
+            raise e
         # Check if this is a parameter validation error or query error
         if isinstance(e, (InvalidParametersError, UnsupportedFieldError)):
             # This is a parameter validation error - raise it directly
             logger.error("Invalid parameters in request", error=str(e), exc_info=True)
             raise e.to_http_exception()
+        if isinstance(e, NotFoundError):
+            # No data found (e.g. DB error) - return 404
+            raise e.to_http_exception()
         
         # Check if this is a query error (like UnboundVariable, syntax error) that indicates a real problem
-        # vs a scenario where we should return empty results
         error_str = str(e).lower()
         is_query_error = any(keyword in error_str for keyword in [
             "unbound variable", "syntax error", "type error", "mismatched input",
@@ -345,24 +362,22 @@ async def list_samples(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
             )
-        else:
-            # For other errors, log but return 200 with empty results (don't expose internal errors)
-            logger.warning(
-                "Error listing samples, returning empty results",
-                error=str(e),
-                exc_info=True
-            )
-            # Return 200 with empty data instead of 404
-            result = SamplesResponse(
-                summary={
-                    "counts": {
-                        "all": 0,
-                        "current": 0
-                    }
-                },
-                data=[]
-            )
-            return result
+        # For other errors (e.g. DB/backend error), return 404 NotFound, not empty data
+        logger.error(
+            "Error listing samples (backend/DB error), returning 404",
+            error=str(e),
+            exc_info=True
+        )
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Samples",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
 
 
 # ============================================================================
@@ -417,7 +432,6 @@ async def count_samples_by_field(
             "tumor_tissue_morphology", "diagnosis"
         ],
     ),
-    filters: Dict[str, Any] = Depends(get_sample_filters_no_descriptions),
     session: AsyncSession = Depends(get_database_session),
     settings: Settings = Depends(get_app_settings),
     allowlist: FieldAllowlist = Depends(get_allowlist),
@@ -427,17 +441,25 @@ async def count_samples_by_field(
     logger.info(
         "Count samples by field request",
         field=field,
-        filters=filters,
         path=request.url.path
     )
     
     try:
+        # Validate that no query parameters are provided
+        # Check if there are any query parameters (request.query_params is always truthy, need to check length)
+        if len(request.query_params) > 0:
+            raise InvalidParametersError(
+                parameters=[],  # Empty array - don't expose parameter names
+                message="Invalid query parameter(s) provided.",
+                reason="Count endpoint does not accept any query parameters"
+            )
+
         # Create service
         cache_service = get_cache_service()
         service = SampleService(session, allowlist, settings, cache_service)
         
-        # Get counts
-        result = await service.count_samples_by_field(field, filters)
+        # Get counts (no filters - returns counts for all samples)
+        result = await service.count_samples_by_field(field, {})
         
         logger.info(
             "Count samples by field response",
@@ -447,6 +469,10 @@ async def count_samples_by_field(
         
         return result
         
+    except InvalidParametersError as e:
+        # Re-raise InvalidParametersError with proper HTTP exception
+        logger.error("Invalid parameters in count_samples_by_field request", error=str(e), exc_info=True)
+        raise e.to_http_exception()
     except UnsupportedFieldError as e:
         # Re-raise UnsupportedFieldError with proper HTTP exception
         raise e.to_http_exception()
@@ -465,7 +491,6 @@ async def count_samples_by_field(
                 error=str(e), 
                 error_type=type(e).__name__,
                 field=field,
-                filters=filters,
                 exc_info=True
             )
             if hasattr(e, 'to_http_exception'):
@@ -712,7 +737,8 @@ async def get_samples_summary(
     
     try:
         # Validate that no query parameters are provided
-        if request.query_params:
+        # Check if there are any query parameters (request.query_params is always truthy, need to check length)
+        if len(request.query_params) > 0:
             raise InvalidParametersError(
                 parameters=[],  # Empty array - don't expose parameter names
                 message="Invalid query parameter(s) provided.",

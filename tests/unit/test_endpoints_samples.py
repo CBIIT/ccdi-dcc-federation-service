@@ -123,8 +123,7 @@ class TestSampleEndpoints:
     async def test_list_samples_database_error(
         self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
     ):
-        """Test list_samples handles database connection errors."""
-        # The endpoint catches DatabaseConnectionError and returns empty results, not 404
+        """Test list_samples returns 404 (No data found) on database connection errors."""
         with patch('app.api.v1.endpoints.samples.SampleService') as mock_service_class:
             mock_service = Mock()
             mock_service.get_samples = AsyncMock(side_effect=DatabaseConnectionError("Connection failed"))
@@ -132,21 +131,20 @@ class TestSampleEndpoints:
             
             with patch('app.api.v1.endpoints.samples.get_cache_service', return_value=None):
                 with patch('app.api.v1.endpoints.samples.check_rate_limit', return_value=None):
-                    result = await list_samples(
-                        request=mock_request,
-                        response=mock_response,
-                        filters={},
-                        pagination=mock_pagination,
-                        session=mock_session,
-                        settings=mock_settings,
-                        allowlist=mock_allowlist,
-                        _rate_limit=None
-                    )
-        
-        # Should return empty SamplesResponse
-        assert isinstance(result, SamplesResponse)
-        assert len(result.data) == 0
-        assert result.summary["counts"]["all"] == 0
+                    with pytest.raises(HTTPException) as exc_info:
+                        await list_samples(
+                            request=mock_request,
+                            response=mock_response,
+                            filters={},
+                            pagination=mock_pagination,
+                            session=mock_session,
+                            settings=mock_settings,
+                            allowlist=mock_allowlist,
+                            _rate_limit=None
+                        )
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+        assert exc_info.value.detail["errors"][0]["kind"] == "NotFound"
+        assert exc_info.value.detail["errors"][0]["entity"] == "Samples"
 
     async def test_get_sample_success(
         self, mock_session, mock_settings, mock_allowlist, mock_request
@@ -220,6 +218,18 @@ class TestSampleEndpoints:
         """Test count_samples_by_field returns count successfully."""
         from app.models.dto import CountResponse
         
+        # The count endpoint doesn't accept query parameters
+        # Create a new request without query params
+        class QueryParams(dict):
+            def __init__(self, params):
+                super().__init__(params)
+                self._params = params
+            
+            def keys(self):
+                return self._params.keys()
+        
+        mock_request.query_params = QueryParams({})  # Empty query params
+        
         # The service returns a CountResponse object with total, missing, and values attributes
         mock_count_response = CountResponse(
             total=1000,
@@ -256,11 +266,18 @@ class TestSampleEndpoints:
         """Test get_samples_summary returns summary successfully."""
         from app.models.dto import SummaryResponse, SummaryCounts
         
-        # Mock request with no query parameters
-        mock_query_params = Mock()
-        mock_query_params.keys = Mock(return_value=[])
-        mock_query_params.__bool__ = Mock(return_value=False)
-        mock_request.query_params = mock_query_params
+        # Mock request with no query parameters - need to support len() check
+        class EmptyQueryParams(dict):
+            def __init__(self):
+                super().__init__()
+            
+            def keys(self):
+                return []
+            
+            def __len__(self):
+                return 0
+        
+        mock_request.query_params = EmptyQueryParams()
         
         mock_summary = SummaryResponse(counts=SummaryCounts(total=500))
         

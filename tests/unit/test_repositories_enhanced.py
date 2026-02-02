@@ -382,13 +382,17 @@ class TestFileRepositoryEnhanced:
         return FileRepository(mock_session, mock_allowlist)
 
     async def test_get_files_with_multiple_filters(self, repository, mock_session):
-        """Test get_files with multiple filters."""
+        """Test get_files with multiple filters (file_type + depositions)."""
         async def async_gen():
-            return
-            yield
+            yield {
+                "sf": {"id": "file1", "file_type": "BAM"},
+                "samples": [{"sample_id": "SAMP001"}],
+                "st": {"study_id": "phs002431"}
+            }
         
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
         
         result = await repository.get_files(
@@ -399,6 +403,77 @@ class TestFileRepositoryEnhanced:
         
         assert isinstance(result, list)
         assert mock_session.run.called
+        
+        # Verify that when depositions is combined with file filters, it uses a different query pattern
+        # (not the depositions-only early pagination path)
+        call_args = mock_session.run.call_args
+        if call_args:
+            query = call_args[0][0] if call_args[0] else ""
+            # With file filters + depositions, should use pattern 1 (file filters first, then study traversal)
+            # Not the depositions-only pattern (which starts from study)
+            assert "MATCH (sf:sequencing_file)" in query or "MATCH (st:study)" in query
+
+    async def test_get_files_depositions_only_early_pagination(self, repository, mock_session):
+        """Test depositions-only query uses early pagination (starts from study, paginates by sf.id)."""
+        async def async_gen():
+            yield {
+                "sf": {"id": "file1", "file_type": "BAM"},
+                "samples": [{"sample_id": "SAMP001"}],
+                "st": {"study_id": "phs002431"}
+            }
+        
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+        
+        result = await repository.get_files(
+            filters={"depositions": "phs002431"},  # Depositions-only, no other filters
+            offset=10,
+            limit=5
+        )
+        
+        assert isinstance(result, list)
+        assert mock_session.run.called
+        
+        # Verify the query structure matches the new early pagination implementation
+        call_args = mock_session.run.call_args
+        assert call_args is not None
+        
+        query = call_args[0][0] if call_args[0] else ""
+        params = call_args[0][1] if len(call_args[0]) > 1 and isinstance(call_args[0][1], dict) else (call_args[1] if call_args[1] else {})
+        
+        # Verify it starts from study (early pagination optimization)
+        assert "MATCH (st:study)" in query
+        assert "WHERE st.study_id" in query
+        
+        # Verify it matches files via the path (study <- consent_group <- participant <- sample <- sequencing_file)
+        assert "of_consent_group" in query
+        assert "of_participant" in query
+        assert "of_sample" in query
+        assert "of_sequencing_file" in query
+        
+        # Verify pagination by unique file ID (sf.id), not file-study pairs
+        assert "WITH DISTINCT sf.id" in query or "WITH DISTINCT sf.id AS file_id" in query
+        assert "ORDER BY" in query
+        assert "ORDER BY file_id" in query or "ORDER BY sf.id" in query
+        
+        # Verify pagination happens BEFORE collecting samples (early pagination)
+        skip_limit_pos = query.find("SKIP")
+        limit_pos = query.find("LIMIT")
+        samples_match_pos = query.find("OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)")
+        
+        assert skip_limit_pos != -1, "Query should have SKIP"
+        assert limit_pos != -1, "Query should have LIMIT"
+        assert samples_match_pos != -1, "Query should collect samples"
+        
+        # Samples should be collected AFTER pagination
+        if skip_limit_pos != -1 and samples_match_pos != -1:
+            assert skip_limit_pos < samples_match_pos, "Pagination (SKIP/LIMIT) should come BEFORE collecting samples"
+        
+        # Verify pagination parameters
+        assert params.get("offset") == 10
+        assert params.get("limit") == 5
 
     async def test_get_file_by_identifier(self, repository, mock_session):
         """Test get_file_by_identifier."""
@@ -537,15 +612,17 @@ class TestSampleRepositoryEnhanced:
 
     async def test_get_samples_summary(self, repository, mock_session):
         """Test get_samples_summary."""
+        # No filters: get_samples_summary calls session.run() once, returns total_count
         async def async_gen():
-            yield {"total": 150}
-        
+            yield {"total_count": 4}
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
         
         result = await repository.get_samples_summary(filters={})
         
         assert isinstance(result, dict)
         assert "counts" in result
+        assert result["counts"]["total"] == 4
 

@@ -239,7 +239,6 @@ class TestFileEndpoints:
                     result = await count_files_by_field(
                         field="type",
                         request=mock_request,
-                        filters={},
                         session=mock_session,
                         settings=mock_settings,
                         allowlist=mock_allowlist,
@@ -259,11 +258,18 @@ class TestFileEndpoints:
         """Test get_files_summary returns summary successfully."""
         from app.models.dto import SummaryResponse, SummaryCounts
         
-        # Mock request with no query parameters
-        mock_query_params = Mock()
-        mock_query_params.keys = Mock(return_value=[])
-        mock_query_params.__bool__ = Mock(return_value=False)
-        mock_request.query_params = mock_query_params
+        # Mock request with no query parameters - need to support len() check
+        class EmptyQueryParams(dict):
+            def __init__(self):
+                super().__init__()
+            
+            def keys(self):
+                return []
+            
+            def __len__(self):
+                return 0
+        
+        mock_request.query_params = EmptyQueryParams()
         
         mock_summary = SummaryResponse(counts=SummaryCounts(total=500))
         
@@ -289,11 +295,18 @@ class TestFileEndpoints:
         self, mock_session, mock_settings, mock_allowlist, mock_request
     ):
         """Test get_files_summary handles database connection errors."""
-        # Mock request with no query parameters
-        mock_query_params = Mock()
-        mock_query_params.keys = Mock(return_value=[])
-        mock_query_params.__bool__ = Mock(return_value=False)
-        mock_request.query_params = mock_query_params
+        # Mock request with no query parameters - need to support len() check
+        class EmptyQueryParams(dict):
+            def __init__(self):
+                super().__init__()
+            
+            def keys(self):
+                return []
+            
+            def __len__(self):
+                return 0
+        
+        mock_request.query_params = EmptyQueryParams()
         
         with patch('app.api.v1.endpoints.files.FileService') as mock_service_class:
             mock_service = Mock()

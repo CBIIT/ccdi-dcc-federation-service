@@ -10,6 +10,9 @@ from app.core.field_mappings import (
     map_field_value,
     reverse_map_field_value,
     is_database_only_value,
+    is_null_mapped_value,
+    get_null_mappings,
+    build_invalid_value_filter,
     _find_field_config,
     _get_field_mappings
 )
@@ -171,6 +174,34 @@ class TestReverseMapFieldValue:
         
         assert result is None
 
+    @patch('app.core.field_mappings._get_field_mappings')
+    def test_reverse_map_returns_list(self, mock_get_mappings):
+        """Test reverse mapping that returns a list."""
+        mock_get_mappings.return_value = {
+            "sample": {
+                "library_selection_method": {
+                    "reverse_mappings": {
+                        "PCR": ["PCR", "PCR-based"]
+                    }
+                }
+            }
+        }
+        
+        result = reverse_map_field_value("library_selection_method", "PCR")
+        
+        assert isinstance(result, list)
+        assert "PCR" in result
+        assert "PCR-based" in result
+
+    @patch('app.core.field_mappings._get_field_mappings')
+    def test_reverse_map_whitespace_string(self, mock_get_mappings):
+        """Test reverse mapping whitespace-only string."""
+        mock_get_mappings.return_value = {}
+        
+        result = reverse_map_field_value("any_field", "   ")
+        
+        assert result is None
+
 
 @pytest.mark.unit
 class TestIsDatabaseOnlyValue:
@@ -327,4 +358,158 @@ class TestGetFieldMappings:
         
         # Reset cache for other tests
         app.core.field_mappings._field_mappings_cache = None
+
+
+@pytest.mark.unit
+class TestIsNullMappedValue:
+    """Test cases for is_null_mapped_value function."""
+
+    @patch('app.core.field_mappings._get_field_mappings')
+    def test_is_null_mapped_true(self, mock_get_mappings):
+        """Test value that is in null_mappings."""
+        mock_get_mappings.return_value = {
+            "sample": {
+                "library_selection_method": {
+                    "null_mappings": ["-999", "Not Reported"]
+                }
+            }
+        }
+        
+        result = is_null_mapped_value("library_selection_method", "-999")
+        
+        assert result is True
+
+    @patch('app.core.field_mappings._get_field_mappings')
+    def test_is_null_mapped_false(self, mock_get_mappings):
+        """Test value that is not in null_mappings."""
+        mock_get_mappings.return_value = {
+            "sample": {
+                "library_selection_method": {
+                    "null_mappings": ["-999"]
+                }
+            }
+        }
+        
+        result = is_null_mapped_value("library_selection_method", "PCR")
+        
+        assert result is False
+
+    def test_is_null_mapped_none(self):
+        """Test None value."""
+        result = is_null_mapped_value("any_field", None)
+        
+        assert result is False
+
+    def test_is_null_mapped_empty_string(self):
+        """Test empty string."""
+        result = is_null_mapped_value("any_field", "")
+        
+        assert result is False
+
+    @patch('app.core.field_mappings._get_field_mappings')
+    def test_is_null_mapped_field_not_found(self, mock_get_mappings):
+        """Test null mapped check for field not in config."""
+        mock_get_mappings.return_value = {}
+        
+        result = is_null_mapped_value("unknown_field", "value")
+        
+        assert result is False
+
+    @patch('app.core.field_mappings._get_field_mappings')
+    def test_is_null_mapped_no_null_mappings(self, mock_get_mappings):
+        """Test null mapped check when config has no null_mappings."""
+        mock_get_mappings.return_value = {
+            "sample": {
+                "library_selection_method": {}
+            }
+        }
+        
+        result = is_null_mapped_value("library_selection_method", "value")
+        
+        assert result is False
+
+
+@pytest.mark.unit
+class TestGetNullMappings:
+    """Test cases for get_null_mappings function."""
+
+    @patch('app.core.field_mappings._get_field_mappings')
+    def test_get_null_mappings_existing(self, mock_get_mappings):
+        """Test getting null_mappings for existing field."""
+        mock_get_mappings.return_value = {
+            "sample": {
+                "library_selection_method": {
+                    "null_mappings": ["-999", "Not Reported"]
+                }
+            }
+        }
+        
+        result = get_null_mappings("library_selection_method")
+        
+        assert isinstance(result, list)
+        assert "-999" in result
+        assert "Not Reported" in result
+
+    @patch('app.core.field_mappings._get_field_mappings')
+    def test_get_null_mappings_field_not_found(self, mock_get_mappings):
+        """Test getting null_mappings for field not in config."""
+        mock_get_mappings.return_value = {}
+        
+        result = get_null_mappings("unknown_field")
+        
+        assert result == []
+
+    @patch('app.core.field_mappings._get_field_mappings')
+    def test_get_null_mappings_no_null_mappings(self, mock_get_mappings):
+        """Test getting null_mappings when config has no null_mappings."""
+        mock_get_mappings.return_value = {
+            "sample": {
+                "library_selection_method": {}
+            }
+        }
+        
+        result = get_null_mappings("library_selection_method")
+        
+        assert result == []
+
+
+@pytest.mark.unit
+class TestBuildInvalidValueFilter:
+    """Test cases for build_invalid_value_filter function."""
+
+    @patch('app.core.field_mappings.get_null_mappings')
+    def test_build_invalid_value_filter_with_not_reported(self, mock_get_null):
+        """Test building filter with 'Not Reported' in null_mappings."""
+        mock_get_null.return_value = ["-999", "Not Reported"]
+        
+        result = build_invalid_value_filter("sf.library_strategy", "library_strategy")
+        
+        assert "sf.library_strategy IS NOT NULL" in result
+        assert "sf.library_strategy <> ''" in result
+        assert "sf.library_strategy <> '-999'" in result
+        assert "sf.library_strategy <> 'Not Reported'" in result
+
+    @patch('app.core.field_mappings.get_null_mappings')
+    def test_build_invalid_value_filter_without_not_reported(self, mock_get_null):
+        """Test building filter without 'Not Reported' in null_mappings."""
+        mock_get_null.return_value = ["-999"]
+        
+        result = build_invalid_value_filter("sf.library_strategy", "library_strategy")
+        
+        assert "sf.library_strategy IS NOT NULL" in result
+        assert "sf.library_strategy <> ''" in result
+        assert "sf.library_strategy <> '-999'" in result
+        assert "sf.library_strategy <> 'Not Reported'" not in result
+
+    @patch('app.core.field_mappings.get_null_mappings')
+    def test_build_invalid_value_filter_empty_null_mappings(self, mock_get_null):
+        """Test building filter with empty null_mappings."""
+        mock_get_null.return_value = []
+        
+        result = build_invalid_value_filter("sf.library_strategy", "library_strategy")
+        
+        assert "sf.library_strategy IS NOT NULL" in result
+        assert "sf.library_strategy <> ''" in result
+        assert "sf.library_strategy <> '-999'" in result
+        assert "sf.library_strategy <> 'Not Reported'" not in result
 

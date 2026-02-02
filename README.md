@@ -205,10 +205,9 @@ CORS_HEADERS=["*"]
 
 #### Pagination
 ```bash
-DEFAULT_PAGE_SIZE=100
+DEFAULT_PAGE_SIZE=50
 MAX_PAGE_SIZE=1000
 PAGINATION_DEFAULT_PER_PAGE=20
-PAGINATION_MAX_PER_PAGE=100
 ```
 
 #### Rate Limiting
@@ -380,10 +379,10 @@ GET /api/v1/subject?page=2&per_page=50
 
 Response includes RFC 5988 compliant Link header with `first`, `last`, `next`, and `prev` relations:
 ```
-Link: <http://localhost:8000/api/v1/subject?page=1&per_page=20>; rel="first",
-      <http://localhost:8000/api/v1/subject?page=10&per_page=20>; rel="last",
-      <http://localhost:8000/api/v1/subject?page=1&per_page=20>; rel="prev",
-      <http://localhost:8000/api/v1/subject?page=3&per_page=20>; rel="next"
+Link: <http://localhost:8000/api/v1/subject?page=1&per_page=50>; rel="first",
+      <http://localhost:8000/api/v1/subject?page=10&per_page=50>; rel="last",
+      <http://localhost:8000/api/v1/subject?page=1&per_page=50>; rel="prev",
+      <http://localhost:8000/api/v1/subject?page=3&per_page=50>; rel="next"
 ```
 
 The `last` link always points to the final page based on total item count, ensuring accurate pagination navigation.

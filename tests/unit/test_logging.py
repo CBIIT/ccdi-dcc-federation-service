@@ -1,85 +1,3 @@
-from unittest.mock import Mock, patch
-
-import logging
-import structlog
-
-from app.core.logging import add_request_context, configure_logging, get_logger
-
-
-def test_configure_logging_json_format():
-    settings = Mock()
-    settings.log_level = "info"
-    settings.log_format = "json"
-    mock_logger = Mock()
-    wrapper_class = object()
-
-    with patch("app.core.logging.get_settings", return_value=settings), \
-        patch("app.core.logging.logging.basicConfig") as basic_config, \
-        patch("app.core.logging.structlog.configure") as configure, \
-        patch("app.core.logging.structlog.make_filtering_bound_logger", return_value=wrapper_class), \
-        patch("app.core.logging.structlog.get_logger", return_value=mock_logger):
-        result = configure_logging()
-
-    assert result is mock_logger
-    basic_config.assert_called_once()
-    assert basic_config.call_args.kwargs["level"] == logging.INFO
-
-    processors = configure.call_args.kwargs["processors"]
-    assert any(isinstance(p, structlog.processors.JSONRenderer) for p in processors)
-    assert not any(isinstance(p, structlog.dev.ConsoleRenderer) for p in processors)
-    assert configure.call_args.kwargs["wrapper_class"] is wrapper_class
-
-
-def test_configure_logging_console_format():
-    settings = Mock()
-    settings.log_level = "debug"
-    settings.log_format = "console"
-    mock_logger = Mock()
-    wrapper_class = object()
-
-    with patch("app.core.logging.get_settings", return_value=settings), \
-        patch("app.core.logging.logging.basicConfig") as basic_config, \
-        patch("app.core.logging.structlog.configure") as configure, \
-        patch("app.core.logging.structlog.make_filtering_bound_logger", return_value=wrapper_class), \
-        patch("app.core.logging.structlog.get_logger", return_value=mock_logger):
-        result = configure_logging()
-
-    assert result is mock_logger
-    basic_config.assert_called_once()
-    assert basic_config.call_args.kwargs["level"] == logging.DEBUG
-
-    processors = configure.call_args.kwargs["processors"]
-    assert any(isinstance(p, structlog.dev.ConsoleRenderer) for p in processors)
-    assert not any(isinstance(p, structlog.processors.JSONRenderer) for p in processors)
-    assert configure.call_args.kwargs["wrapper_class"] is wrapper_class
-
-
-def test_get_logger_with_name():
-    logger = Mock()
-    with patch("app.core.logging.structlog.get_logger", return_value=logger) as get_logger_mock:
-        result = get_logger("api")
-
-    assert result is logger
-    get_logger_mock.assert_called_once_with("api")
-
-
-def test_get_logger_default():
-    logger = Mock()
-    with patch("app.core.logging.structlog.get_logger", return_value=logger) as get_logger_mock:
-        result = get_logger()
-
-    assert result is logger
-    get_logger_mock.assert_called_once_with()
-
-
-def test_add_request_context():
-    logger = Mock()
-    logger.bind.return_value = "bound"
-
-    result = add_request_context(logger, request_id="abc123")
-
-    assert result == "bound"
-    logger.bind.assert_called_once_with(request_id="abc123")
 """
 Unit tests for logging configuration utilities.
 """
@@ -108,31 +26,99 @@ class TestLoggingConfiguration:
         mock_settings.log_level = "INFO"
         mock_settings.log_format = "json"
         mock_get_settings.return_value = mock_settings
+        
+        mock_logger = Mock()
+        mock_get_logger.return_value = mock_logger
 
         configure_logging()
 
-        mock_basic_config.assert_called_once_with(
-            format="%(message)s",
-            stream=sys.stdout,
-            level=logging.INFO,
-        )
-        processors = mock_configure.call_args[1]["processors"]
-        assert any(isinstance(p, structlog.processors.JSONRenderer) for p in processors)
+        # Check that basicConfig was called with format and stream (server-side version)
+        mock_basic_config.assert_called_once()
+        call_args, call_kwargs = mock_basic_config.call_args
+        assert "format" in call_kwargs
+        assert call_kwargs["format"] == "%(message)s"
+        assert "stream" in call_kwargs
+        assert call_kwargs["stream"] == sys.stdout
+        assert call_kwargs["level"] == logging.INFO
+        
+        # Check that structlog.configure was called
+        mock_configure.assert_called_once()
+        configure_call_args = mock_configure.call_args
+        # Check that JSONRenderer is in the processors (it's instantiated in the code)
+        processors = configure_call_args[1].get("processors", [])
+        # Find the renderer processor (should be JSONRenderer instance)
+        renderer = None
+        for p in processors:
+            if isinstance(p, structlog.processors.JSONRenderer):
+                renderer = p
+                break
+            # Also check by class name in case of mocking
+            if hasattr(p, '__class__') and 'JSONRenderer' in p.__class__.__name__:
+                renderer = p
+                break
+        assert renderer is not None, f"JSONRenderer not found in processors: {[type(p).__name__ for p in processors]}"
+        
+        # Check that PrintLoggerFactory is used (server-side version, instantiated)
+        logger_factory = configure_call_args[1].get("logger_factory")
+        assert logger_factory is not None
+        # PrintLoggerFactory() creates an instance, so check the type
+        assert isinstance(logger_factory, structlog.PrintLoggerFactory) or logger_factory == structlog.PrintLoggerFactory
 
     @patch("app.core.logging.get_settings")
+    @patch("app.core.logging.logging.basicConfig")
     @patch("app.core.logging.structlog.configure")
-    def test_configure_logging_console(self, mock_configure, mock_get_settings):
+    @patch("app.core.logging.structlog.get_logger")
+    def test_configure_logging_console(self, mock_get_logger, mock_configure, mock_basic_config, mock_get_settings):
         """Test configure_logging with console format."""
         mock_settings = Mock()
         mock_settings.log_level = "DEBUG"
         mock_settings.log_format = "console"
         mock_get_settings.return_value = mock_settings
+        
+        mock_logger = Mock()
+        mock_get_logger.return_value = mock_logger
 
         configure_logging()
 
-        processors = mock_configure.call_args[1]["processors"]
-        assert any(isinstance(p, structlog.dev.ConsoleRenderer) for p in processors)
-        assert not any(isinstance(p, structlog.processors.JSONRenderer) for p in processors)
+        # Check that basicConfig was called with format and stream (server-side version)
+        mock_basic_config.assert_called_once()
+        call_args, call_kwargs = mock_basic_config.call_args
+        assert "format" in call_kwargs
+        assert call_kwargs["format"] == "%(message)s"
+        assert "stream" in call_kwargs
+        assert call_kwargs["stream"] == sys.stdout
+        assert call_kwargs["level"] == logging.DEBUG
+        
+        # Check that structlog.configure was called
+        mock_configure.assert_called_once()
+        configure_call_args = mock_configure.call_args
+        # Check that ConsoleRenderer is in the processors (not JSONRenderer)
+        processors = configure_call_args[1].get("processors", [])
+        # Find the renderer processor (should be ConsoleRenderer instance)
+        renderer = None
+        for p in processors:
+            if isinstance(p, structlog.dev.ConsoleRenderer):
+                renderer = p
+                break
+            # Also check by class name in case of mocking
+            if hasattr(p, '__class__') and 'ConsoleRenderer' in p.__class__.__name__:
+                renderer = p
+                break
+        assert renderer is not None, f"ConsoleRenderer not found in processors: {[type(p).__name__ for p in processors]}"
+        
+        # Verify JSONRenderer is NOT in processors
+        json_renderer_found = any(
+            isinstance(p, structlog.processors.JSONRenderer)
+            or (hasattr(p, '__class__') and 'JSONRenderer' in p.__class__.__name__)
+            for p in processors
+        )
+        assert not json_renderer_found, f"JSONRenderer should not be in processors: {[type(p).__name__ for p in processors]}"
+        
+        # Check that PrintLoggerFactory is used (server-side version, instantiated)
+        logger_factory = configure_call_args[1].get("logger_factory")
+        assert logger_factory is not None
+        # PrintLoggerFactory() creates an instance, so check the type
+        assert isinstance(logger_factory, structlog.PrintLoggerFactory) or logger_factory == structlog.PrintLoggerFactory
 
     @patch("app.core.logging.structlog.get_logger")
     def test_get_logger_with_name(self, mock_get_logger):

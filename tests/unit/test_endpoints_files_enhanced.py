@@ -225,7 +225,6 @@ class TestFileEndpointsEnhanced:
             await count_files_by_field(
                 request=mock_request,
                 field="invalid_field",
-                filters={},
                 session=mock_session,
                 settings=mock_settings,
                 allowlist=mock_allowlist,
@@ -237,16 +236,17 @@ class TestFileEndpointsEnhanced:
         mock_request.query_params = {"foo": "bar"}
         mock_request.url.path = "/api/v1/file/by/type/count"
 
-        with pytest.raises(InvalidRouteError):
+        with pytest.raises(HTTPException) as exc_info:
             await count_files_by_field(
                 request=mock_request,
                 field="type",
-                filters={},
                 session=mock_session,
                 settings=mock_settings,
                 allowlist=mock_allowlist,
                 _rate_limit=None
             )
+        
+        assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
 
     async def test_count_files_by_field_invalid_parameters_error(self, mock_request, mock_session, mock_settings, mock_allowlist):
         """Test count_files_by_field handles InvalidParametersError."""
@@ -266,7 +266,6 @@ class TestFileEndpointsEnhanced:
                     await count_files_by_field(
                         request=mock_request,
                         field="type",
-                        filters={},
                         session=mock_session,
                         settings=mock_settings,
                         allowlist=mock_allowlist,
@@ -293,7 +292,6 @@ class TestFileEndpointsEnhanced:
                     await count_files_by_field(
                         request=mock_request,
                         field="type",
-                        filters={},
                         session=mock_session,
                         settings=mock_settings,
                         allowlist=mock_allowlist,
@@ -362,11 +360,18 @@ class TestFileEndpointsEnhanced:
         """Test get_files_summary handles errors."""
         from app.services.file import FileService
 
-        # Mock request with no query parameters
-        mock_query_params = Mock()
-        mock_query_params.keys = Mock(return_value=[])
-        mock_query_params.__bool__ = Mock(return_value=False)
-        mock_request.query_params = mock_query_params
+        # Mock request with no query parameters - need to support len() check
+        class EmptyQueryParams(dict):
+            def __init__(self):
+                super().__init__()
+            
+            def keys(self):
+                return []
+            
+            def __len__(self):
+                return 0
+        
+        mock_request.query_params = EmptyQueryParams()
 
         with patch('app.api.v1.endpoints.files.FileService') as mock_service_class:
             mock_service = AsyncMock(spec=FileService)
@@ -390,11 +395,18 @@ class TestFileEndpointsEnhanced:
 
     async def test_get_files_summary_rejects_parameters(self, mock_request, mock_session, mock_settings, mock_allowlist):
         """Test get_files_summary rejects any query parameters."""
-        # Mock request with query parameters
-        mock_query_params = Mock()
-        mock_query_params.keys = Mock(return_value=["type"])
-        mock_query_params.__bool__ = Mock(return_value=True)  # Make it truthy
-        mock_request.query_params = mock_query_params
+        # Mock request with query parameters - need to support len() check
+        class QueryParamsWithType(dict):
+            def __init__(self):
+                super().__init__({"type": "FASTQ"})
+            
+            def keys(self):
+                return ["type"]
+            
+            def __len__(self):
+                return 1
+        
+        mock_request.query_params = QueryParamsWithType()
         
         # The endpoint should reject any parameters and raise InvalidParametersError
         with pytest.raises(HTTPException) as exc_info:
@@ -416,11 +428,18 @@ class TestFileEndpointsEnhanced:
         """Test get_files_summary works correctly with no parameters."""
         from app.models.dto import SummaryResponse, SummaryCounts
         
-        # Mock request with no query parameters
-        mock_query_params = Mock()
-        mock_query_params.keys = Mock(return_value=[])
-        mock_query_params.__bool__ = Mock(return_value=False)
-        mock_request.query_params = mock_query_params
+        # Mock request with no query parameters - need to support len() check
+        class EmptyQueryParams(dict):
+            def __init__(self):
+                super().__init__()
+            
+            def keys(self):
+                return []
+            
+            def __len__(self):
+                return 0
+        
+        mock_request.query_params = EmptyQueryParams()
         
         mock_summary = SummaryResponse(counts=SummaryCounts(total=500))
         

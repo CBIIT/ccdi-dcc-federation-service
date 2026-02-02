@@ -13,9 +13,12 @@ from fastapi.exceptions import HTTPException, RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.encoders import jsonable_encoder
 from starlette.exceptions import HTTPException as StarletteHTTPException
 import re
+import json
 from pathlib import Path
+from typing import Any
 
 from app.core.config import get_settings, Settings
 from app.core.logging import configure_logging, get_logger
@@ -32,10 +35,28 @@ from app.api.v1.endpoints.root import router as root_router
 from app.api.v1.endpoints.info import router as info_router
 from app.api.v1.endpoints.organizations import router as organizations_router
 from app.models.errors import ErrorsResponse, ErrorDetail, ErrorKind, CCDIException
+from app.core.serialization import sanitize_for_json
 
 # Configure logging before creating the logger
 configure_logging()
 logger = get_logger(__name__)
+
+
+# Override FastAPI's default jsonable_encoder to handle date/time objects globally
+def custom_jsonable_encoder(obj: Any, **kwargs) -> Any:
+    """
+    Custom JSON encoder that handles date/time objects from Memgraph/Neo4j.
+    
+    Global fallback ensuring any date/time objects that slip through conversion
+    functions are properly serialized before JSON encoding.
+    """
+    sanitized = sanitize_for_json(obj)
+    return jsonable_encoder(sanitized, **kwargs)
+
+
+# Monkey-patch FastAPI's jsonable_encoder to use our custom version
+import fastapi.encoders
+fastapi.encoders.jsonable_encoder = custom_jsonable_encoder
 
 
 @asynccontextmanager
@@ -244,7 +265,7 @@ def create_app() -> FastAPI:
     # Add health check
     setup_health_check(app)
     
-    logger.info("FastAPI application created")
+    logger.debug("FastAPI application created")
     return app
 
 
@@ -325,11 +346,11 @@ def setup_middleware(app: FastAPI, settings) -> None:
             allow_methods=settings.cors.allowed_methods,
             allow_headers=settings.cors.allowed_headers,
         )
-        logger.info("CORS middleware enabled")
+        logger.debug("CORS middleware enabled")
     
     # GZip compression middleware
     app.add_middleware(GZipMiddleware, minimum_size=1000)
-    logger.info("GZip middleware enabled")
+    logger.debug("GZip middleware enabled")
 
 
 def setup_routers(app: FastAPI) -> None:
@@ -364,7 +385,7 @@ def setup_routers(app: FastAPI) -> None:
     # Add info routes
     app.include_router(info_router, prefix="/api/v1")
     
-    logger.info("API routers configured")
+    logger.debug("API routers configured")
 
 
 def setup_exception_handlers(app: FastAPI) -> None:
@@ -737,7 +758,7 @@ def setup_exception_handlers(app: FastAPI) -> None:
             content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
         )
     
-    logger.info("Exception handlers configured")
+    logger.debug("Exception handlers configured")
 
 
 def setup_health_check(app: FastAPI) -> None:
@@ -763,7 +784,7 @@ def setup_health_check(app: FastAPI) -> None:
     # Root endpoint is now handled by root_router (returns API root JSON)
     # Available at both /api/v1/ and /
     
-    logger.info("Health check endpoints configured")
+    logger.debug("Health check endpoints configured")
 
 
 def setup_custom_docs_endpoint(app: FastAPI) -> None:
@@ -886,7 +907,6 @@ def setup_custom_docs_endpoint(app: FastAPI) -> None:
         This is a custom implementation to ensure ReDoc works properly
         with the OpenAPI 3.1.0 specification.
         """
-        logger.debug(f"Serving ReDoc at /redoc, base_url: {request.base_url}")
         try:
             # Build absolute OpenAPI URL from the request
             openapi_url = app.openapi_url
@@ -894,8 +914,6 @@ def setup_custom_docs_endpoint(app: FastAPI) -> None:
                 # Make it absolute based on the request
                 base_url = str(request.base_url).rstrip("/")
                 openapi_url = f"{base_url}{openapi_url}"
-            
-            logger.debug(f"ReDoc OpenAPI URL: {openapi_url}")
             
             # Create custom ReDoc HTML with explicit configuration
             # Using ReDoc latest version with JavaScript API for better OpenAPI 3.1.0 support
@@ -963,10 +981,7 @@ def setup_custom_docs_endpoint(app: FastAPI) -> None:
                 detail="Error loading ReDoc documentation"
             )
     
-    logger.info("Custom /docs endpoint configured (dynamic, loads spec from server)")
-    logger.info("Custom /docs-embedded endpoint configured (static, self-contained)")
-    logger.info("Default FastAPI docs available at /docs-api")
-    logger.info("Custom /redoc endpoint configured")
+    logger.debug("Documentation endpoints configured")
 
 
 # Create the application instance

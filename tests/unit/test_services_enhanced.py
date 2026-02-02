@@ -83,9 +83,6 @@ class TestFileServiceEnhanced:
 
     async def test_count_files_by_field_cache_miss(self, service, mock_cache_service):
         """Test count_files_by_field with cache miss."""
-        # Mock materialized view to return None (so it falls back to repository)
-        service.materialized_view_service.get_file_count_by_type = AsyncMock(return_value=None)
-        
         mock_count_result = {
             "total": 50,
             "missing": 0,
@@ -100,48 +97,39 @@ class TestFileServiceEnhanced:
         mock_cache_service.set.assert_called_once()
 
     async def test_count_files_by_field_materialized_view_type(self, service, mock_cache_service):
-        """Test count_files_by_field uses materialized view for type field."""
-        mock_view_result = {
+        """Test count_files_by_field always uses repository (materialized view disabled)."""
+        mock_count_result = {
             "total": 100,
             "missing": 0,
-            "values": [{"value": "BAM", "count": 50}],
-            "last_updated": "2024-01-01T00:00:00Z"
+            "values": [{"value": "BAM", "count": 50}]
         }
-        service.materialized_view_service.get_file_count_by_type = AsyncMock(
-            return_value=mock_view_result
-        )
-        # Mock repository method to track if it's called
-        service.repository.count_files_by_field = AsyncMock()
+        service.repository.count_files_by_field = AsyncMock(return_value=mock_count_result)
         mock_cache_service.get = AsyncMock(return_value=None)
         
         result = await service.count_files_by_field("type", {})
         
         assert result.total == 100
-        service.materialized_view_service.get_file_count_by_type.assert_called_once_with({})
-        service.repository.count_files_by_field.assert_not_called()
+        # Repository should always be called (materialized view disabled)
+        service.repository.count_files_by_field.assert_called_once_with("type", {})
 
     async def test_count_files_by_field_materialized_view_depositions(self, service, mock_cache_service):
-        """Test count_files_by_field uses materialized view for depositions field."""
-        mock_view_result = {
+        """Test count_files_by_field always uses repository for depositions (materialized view disabled)."""
+        mock_count_result = {
             "total": 200,
             "missing": 0,
             "values": [{"value": "phs002431", "count": 200}]
         }
-        service.materialized_view_service.get_file_count_by_depositions = AsyncMock(
-            return_value=mock_view_result
-        )
+        service.repository.count_files_by_field = AsyncMock(return_value=mock_count_result)
         mock_cache_service.get = AsyncMock(return_value=None)
         
         result = await service.count_files_by_field("depositions", {})
         
         assert result.total == 200
-        service.materialized_view_service.get_file_count_by_depositions.assert_called_once()
+        # Repository should always be called (materialized view disabled)
+        service.repository.count_files_by_field.assert_called_once_with("depositions", {})
 
     async def test_count_files_by_field_materialized_view_fallback(self, service, mock_cache_service):
-        """Test count_files_by_field falls back to repository when materialized view fails."""
-        service.materialized_view_service.get_file_count_by_type = AsyncMock(
-            side_effect=Exception("View error")
-        )
+        """Test count_files_by_field always uses repository (materialized view disabled, no fallback needed)."""
         mock_count_result = {
             "total": 50,
             "missing": 0,
@@ -153,33 +141,27 @@ class TestFileServiceEnhanced:
         result = await service.count_files_by_field("type", {})
         
         assert result.total == 50
-        service.repository.count_files_by_field.assert_called_once()
+        # Repository should always be called directly (materialized view disabled)
+        service.repository.count_files_by_field.assert_called_once_with("type", {})
 
     async def test_count_files_by_field_with_filters_uses_repository(self, service, mock_cache_service):
-        """Test count_files_by_field uses repository when filters are present."""
+        """Test count_files_by_field always uses repository (materialized view disabled)."""
         mock_count_result = {
             "total": 30,
             "missing": 0,
             "values": [{"value": "BAM", "count": 30}]
         }
         service.repository.count_files_by_field = AsyncMock(return_value=mock_count_result)
-        # Mock materialized view to track if it's called
-        service.materialized_view_service.get_file_count_by_type = AsyncMock()
         mock_cache_service.get = AsyncMock(return_value=None)
         
-        # When filters are present, materialized view is not used
+        # Repository is always used (materialized view disabled)
         result = await service.count_files_by_field("type", {"file_type": "BAM"})
         
         assert result.total == 30
-        service.repository.count_files_by_field.assert_called_once()
-        # Materialized view should not be called when filters are present
-        service.materialized_view_service.get_file_count_by_type.assert_not_called()
+        service.repository.count_files_by_field.assert_called_once_with("type", {"file_type": "BAM"})
 
     async def test_count_files_by_field_timeout(self, service, mock_cache_service):
         """Test count_files_by_field handles query timeout."""
-        # Mock materialized view to return None (so it falls back to repository)
-        service.materialized_view_service.get_file_count_by_type = AsyncMock(return_value=None)
-        
         # Create a coroutine that will timeout
         async def timeout_coro(*args, **kwargs):
             await asyncio.sleep(0.1)
@@ -198,11 +180,6 @@ class TestFileServiceEnhanced:
 
     async def test_count_files_by_field_no_cache(self, service_no_cache):
         """Test count_files_by_field without cache service."""
-        # Mock materialized view to return None (so it falls back to repository)
-        service_no_cache.materialized_view_service.get_file_count_by_type = AsyncMock(
-            return_value=None
-        )
-        
         mock_count_result = {
             "total": 50,
             "missing": 0,
@@ -215,7 +192,7 @@ class TestFileServiceEnhanced:
         result = await service_no_cache.count_files_by_field("type", {})
         
         assert result.total == 50
-        service_no_cache.repository.count_files_by_field.assert_called_once()
+        service_no_cache.repository.count_files_by_field.assert_called_once_with("type", {})
 
     async def test_get_files_summary_cache_hit(self, service, mock_cache_service):
         """Test get_files_summary returns cached result."""
@@ -405,16 +382,16 @@ class TestSampleServiceEnhanced:
         mock_cache_service.set.assert_called_once()
 
     async def test_get_samples_summary_database_error(self, service, mock_cache_service):
-        """Test get_samples_summary handles database connection errors."""
+        """Test get_samples_summary raises NotFoundError on database connection errors."""
+        from app.models.errors import NotFoundError
         service.repository.get_samples_summary = AsyncMock(
             side_effect=DatabaseConnectionError("Connection failed")
         )
         mock_cache_service.get = AsyncMock(return_value=None)
         
-        result = await service.get_samples_summary({})
-        
-        assert isinstance(result, SummaryResponse)
-        assert result.counts.total == 0
+        with pytest.raises(NotFoundError) as exc_info:
+            await service.get_samples_summary({})
+        assert exc_info.value.entity == "Samples"
 
     async def test_get_samples_summary_no_cache(self, service_no_cache):
         """Test get_samples_summary without cache service."""

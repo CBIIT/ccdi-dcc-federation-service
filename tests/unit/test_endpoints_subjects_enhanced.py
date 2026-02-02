@@ -286,11 +286,18 @@ class TestSubjectEndpointsEnhanced:
 
     async def test_get_subjects_summary_rejects_parameters(self, mock_request, mock_session, mock_settings, mock_allowlist):
         """Test get_subjects_summary rejects any query parameters."""
-        # Mock request with query parameters
-        mock_query_params = Mock()
-        mock_query_params.keys = Mock(return_value=["sex"])
-        mock_query_params.__bool__ = Mock(return_value=True)  # Make it truthy
-        mock_request.query_params = mock_query_params
+        # Mock request with query parameters - need to support len() check
+        class QueryParamsWithSex(dict):
+            def __init__(self):
+                super().__init__({"sex": "M"})
+            
+            def keys(self):
+                return ["sex"]
+            
+            def __len__(self):
+                return 1
+        
+        mock_request.query_params = QueryParamsWithSex()
         
         # The endpoint should reject any parameters and raise InvalidParametersError
         with pytest.raises(HTTPException) as exc_info:
@@ -312,11 +319,18 @@ class TestSubjectEndpointsEnhanced:
         """Test get_subjects_summary with no parameters returns summary."""
         from app.services.subject import SubjectService
         
-        # Mock request with no query parameters
-        mock_query_params = Mock()
-        mock_query_params.keys = Mock(return_value=[])
-        mock_query_params.__bool__ = Mock(return_value=False)  # Make it falsy
-        mock_request.query_params = mock_query_params
+        # Mock request with no query parameters - need to support len() check
+        class EmptyQueryParams(dict):
+            def __init__(self):
+                super().__init__()
+            
+            def keys(self):
+                return []
+            
+            def __len__(self):
+                return 0
+        
+        mock_request.query_params = EmptyQueryParams()
         
         # Mock service
         with patch('app.api.v1.endpoints.subjects.SubjectService') as mock_service_class:
@@ -342,11 +356,18 @@ class TestSubjectEndpointsEnhanced:
         """Test get_subjects_summary handles database connection errors."""
         from app.services.subject import SubjectService
         
-        # Mock request with no query parameters
-        mock_query_params = Mock()
-        mock_query_params.keys = Mock(return_value=[])
-        mock_query_params.__bool__ = Mock(return_value=False)
-        mock_request.query_params = mock_query_params
+        # Mock request with no query parameters - need to support len() check
+        class EmptyQueryParams(dict):
+            def __init__(self):
+                super().__init__()
+            
+            def keys(self):
+                return []
+            
+            def __len__(self):
+                return 0
+        
+        mock_request.query_params = EmptyQueryParams()
         
         # Mock service to raise database error
         with patch('app.api.v1.endpoints.subjects.SubjectService') as mock_service_class:
@@ -374,11 +395,18 @@ class TestSubjectEndpointsEnhanced:
         """Test get_subjects_summary handles connection errors in generic exception handler."""
         from app.services.subject import SubjectService
         
-        # Mock request with no query parameters
-        mock_query_params = Mock()
-        mock_query_params.keys = Mock(return_value=[])
-        mock_query_params.__bool__ = Mock(return_value=False)
-        mock_request.query_params = mock_query_params
+        # Mock request with no query parameters - need to support len() check
+        class EmptyQueryParams(dict):
+            def __init__(self):
+                super().__init__()
+            
+            def keys(self):
+                return []
+            
+            def __len__(self):
+                return 0
+        
+        mock_request.query_params = EmptyQueryParams()
         
         # Mock service to raise a generic exception with connection-related message
         with patch('app.api.v1.endpoints.subjects.SubjectService') as mock_service_class:
@@ -406,11 +434,18 @@ class TestSubjectEndpointsEnhanced:
         """Test get_subjects_summary handles generic errors (non-connection)."""
         from app.services.subject import SubjectService
         
-        # Mock request with no query parameters
-        mock_query_params = Mock()
-        mock_query_params.keys = Mock(return_value=[])
-        mock_query_params.__bool__ = Mock(return_value=False)
-        mock_request.query_params = mock_query_params
+        # Mock request with no query parameters - need to support len() check
+        class EmptyQueryParams(dict):
+            def __init__(self):
+                super().__init__()
+            
+            def keys(self):
+                return []
+            
+            def __len__(self):
+                return 0
+        
+        mock_request.query_params = EmptyQueryParams()
         
         # Mock service to raise a generic exception without connection-related message
         with patch('app.api.v1.endpoints.subjects.SubjectService') as mock_service_class:
@@ -439,11 +474,18 @@ class TestSubjectEndpointsEnhanced:
         from app.services.subject import SubjectService
         from fastapi import HTTPException as FastAPIHTTPException
         
-        # Mock request with no query parameters
-        mock_query_params = Mock()
-        mock_query_params.keys = Mock(return_value=[])
-        mock_query_params.__bool__ = Mock(return_value=False)
-        mock_request.query_params = mock_query_params
+        # Mock request with no query parameters - need to support len() check
+        class EmptyQueryParams(dict):
+            def __init__(self):
+                super().__init__()
+            
+            def keys(self):
+                return []
+            
+            def __len__(self):
+                return 0
+        
+        mock_request.query_params = EmptyQueryParams()
         
         # Create a custom exception with to_http_exception method
         class CustomError(Exception):

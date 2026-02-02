@@ -361,13 +361,17 @@ class TestFileRepository:
         assert mock_session.run.called  # May be called multiple times
 
     async def test_get_files_with_depositions_filter(self, repository, mock_session):
-        """Test get_files with depositions filter."""
+        """Test get_files with depositions filter - verifies early pagination query structure."""
         async def async_gen():
-            return
-            yield
+            yield {
+                "sf": {"id": "file1", "file_type": "BAM"},
+                "samples": [{"sample_id": "SAMP001"}],
+                "st": {"study_id": "phs002431"}
+            }
         
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
         
         result = await repository.get_files(
@@ -377,7 +381,38 @@ class TestFileRepository:
         )
         
         assert isinstance(result, list)
-        assert mock_session.run.called  # May be called multiple times
+        assert mock_session.run.called
+        
+        # Verify the query structure for depositions-only filter
+        call_args = mock_session.run.call_args
+        if call_args:
+            query = call_args[0][0] if call_args[0] else ""
+            params = call_args[0][1] if len(call_args[0]) > 1 and isinstance(call_args[0][1], dict) else (call_args[1] if call_args[1] else {})
+            
+            # Verify it starts from study nodes (early pagination optimization)
+            assert "MATCH (st:study)" in query
+            assert "st.study_id" in query
+            
+            # Verify it matches files via the path (study <- consent_group <- participant <- sample <- sequencing_file)
+            assert "of_consent_group" in query or "of_participant" in query
+            assert "of_sequencing_file" in query
+            
+            # Verify early pagination: DISTINCT sf.id before SKIP/LIMIT
+            assert "WITH DISTINCT sf.id" in query or "WITH DISTINCT sf.id AS file_id" in query
+            assert "ORDER BY" in query
+            assert "SKIP" in query
+            assert "LIMIT" in query
+            
+            # Verify pagination parameters are passed
+            assert params.get("offset") == 0
+            assert params.get("limit") == 20
+            
+            # Verify samples are collected AFTER pagination (not before)
+            # The OPTIONAL MATCH for samples should come after SKIP/LIMIT
+            skip_limit_pos = query.find("LIMIT")
+            samples_match_pos = query.find("OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)")
+            if skip_limit_pos != -1 and samples_match_pos != -1:
+                assert skip_limit_pos < samples_match_pos, "Samples should be collected AFTER pagination"
 
     async def test_get_files_pagination(self, repository, mock_session):
         """Test get_files with pagination."""

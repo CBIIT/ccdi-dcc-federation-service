@@ -54,6 +54,7 @@ class TestSampleFiltersEnhanced:
         request = Mock(spec=Request)
         request.query_params = Mock()
         request.query_params.items = Mock(return_value=[])
+        request.query_params.getlist = Mock(return_value=[])  # Add getlist method
         return request
 
     def test_anatomical_sites_singular_rejected(self, mock_request):
@@ -97,6 +98,7 @@ class TestDiagnosisFiltersEnhanced:
         request.query_params = Mock()
         request.query_params.keys = Mock(return_value=[])
         request.query_params.items = Mock(return_value=[])
+        request.query_params.getlist = Mock(return_value=[])  # Add getlist method
         return request
 
     def test_subject_diagnosis_filters_adds_search(self, mock_request):

@@ -84,8 +84,7 @@ class CORSSettings(BaseModel):
 class PaginationSettings(BaseModel):
     """Pagination settings."""
     default_per_page: int = 20
-    max_per_page: int = 100
-    default_page_size: int = 100
+    default_page_size: int = 50
     max_page_size: int = 1000
 
 
@@ -132,7 +131,7 @@ class Settings(BaseSettings):
     )
     
     # Pagination defaults
-    default_page_size: int = Field(default=100, alias="DEFAULT_PAGE_SIZE")
+    default_page_size: int = Field(default=50, alias="DEFAULT_PAGE_SIZE")
     max_page_size: int = Field(default=1000, alias="MAX_PAGE_SIZE")
     
     # Cache settings
@@ -231,7 +230,6 @@ class Settings(BaseSettings):
     
     # Pagination settings
     pagination_default_per_page: Optional[int] = Field(default=20, description="Default items per page")
-    pagination_max_per_page: Optional[int] = Field(default=100, description="Maximum items per page")
     
     # Valid fields for subject count operations (case-sensitive)
     subject_count_fields: List[str] = Field(
@@ -321,7 +319,6 @@ class Settings(BaseSettings):
         """Get pagination settings."""
         return PaginationSettings(
             default_per_page=self.pagination_default_per_page or 20,
-            max_per_page=self.pagination_max_per_page or 100,
             default_page_size=self.default_page_size,
             max_page_size=self.max_page_size
         )

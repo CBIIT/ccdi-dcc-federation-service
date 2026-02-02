@@ -198,7 +198,8 @@ async def search_samples_by_diagnosis(
     
     try:
         # Validate query parameters - check for unknown parameters
-        # Note: "diagnosis" is not included - use "search" parameter for diagnosis filtering
+        # Note: "diagnosis" is NOT included - use "search" parameter for diagnosis filtering
+        # When "search" is not provided, endpoint behaves like /sample for all other parameters
         allowed_params = {"search", "disease_phase", "anatomical_sites", "library_selection_method", 
                          "library_strategy", "library_source_material", "preservation_method", "tumor_grade",
                          "specimen_molecular_analyte_type", "tissue_type", "tumor_classification", 

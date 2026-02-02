@@ -114,8 +114,7 @@ class TestPaginationSettings:
         """Test PaginationSettings with default values."""
         settings = PaginationSettings()
         assert settings.default_per_page == 20
-        assert settings.max_per_page == 100
-        assert settings.default_page_size == 100
+        assert settings.default_page_size == 50
         assert settings.max_page_size == 1000
 
 
@@ -133,7 +132,7 @@ class TestSettings:
         assert settings.port == 8000
         assert settings.memgraph_uri == "bolt://localhost:7687"
         assert settings.cache_enabled is False
-        assert settings.default_page_size == 100
+        assert settings.default_page_size == 50
         assert settings.max_page_size == 1000
 
     def test_settings_from_env_vars(self):

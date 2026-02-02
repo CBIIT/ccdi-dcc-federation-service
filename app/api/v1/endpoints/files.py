@@ -16,7 +16,6 @@ from app.api.v1.deps import (
     get_allowlist,
     get_pagination_params,
     get_file_filters,
-    get_file_filters_no_descriptions,
     check_rate_limit
 )
 from app.core.config import Settings
@@ -387,7 +386,6 @@ async def count_files_by_field(
             "depositions": {"value": "depositions", "summary": "Count by depositions"}
         },
     ),
-    filters: Dict[str, Any] = Depends(get_file_filters_no_descriptions),
     session: AsyncSession = Depends(get_database_session),
     settings: Settings = Depends(get_app_settings),
     allowlist: FieldAllowlist = Depends(get_allowlist),
@@ -404,34 +402,28 @@ async def count_files_by_field(
         )
         raise UnsupportedFieldError(field, "file")
     
-    # Check if any query parameters are provided - count endpoints don't accept filters
-    if request.query_params:
-        logger.warning(
-            "Invalid route detected - count endpoint does not accept query parameters",
-            path=request.url.path,
-            query_params=list(request.query_params.keys()),
-            field=field
-        )
-        raise InvalidRouteError(
-            method=request.method,
-            route=request.url.path,
-            message="Invalid route requested."
-        )
-    
     logger.info(
         "Count sequencing files by field request",
         field=field,
-        filters=filters,
         path=request.url.path
     )
     
     try:
+        # Validate that no query parameters are provided
+        # Check if there are any query parameters (request.query_params is always truthy, need to check length)
+        if len(request.query_params) > 0:
+            raise InvalidParametersError(
+                parameters=[],  # Empty array - don't expose parameter names
+                message="Invalid query parameter(s) provided.",
+                reason="Count endpoint does not accept any query parameters"
+            )
+
         # Create service
         cache_service = get_cache_service()
         service = FileService(session, allowlist, settings, cache_service)
         
-        # Get counts
-        result = await service.count_files_by_field(field, filters)
+        # Get counts (no filters - returns counts for all files)
+        result = await service.count_files_by_field(field, {})
         
         logger.info(
             "Count sequencing files by field response",
@@ -441,8 +433,9 @@ async def count_files_by_field(
         
         return result
         
-    except InvalidRouteError as e:
-        # Re-raise to let the exception handler process it with proper format
+    except InvalidParametersError as e:
+        # Re-raise InvalidParametersError with proper HTTP exception
+        logger.error("Invalid parameters in count_files_by_field request", error=str(e), exc_info=True)
         raise e.to_http_exception()
     except UnsupportedFieldError as e:
         logger.warning("Unsupported field error counting sequencing files by field", error=str(e), field=field)
@@ -732,7 +725,8 @@ async def get_files_summary(
     
     try:
         # Validate that no query parameters are provided
-        if request.query_params:
+        # Check if there are any query parameters (request.query_params is always truthy, need to check length)
+        if len(request.query_params) > 0:
             raise InvalidParametersError(
                 parameters=[],  # Empty array - don't expose parameter names
                 message="Invalid query parameter(s) provided.",

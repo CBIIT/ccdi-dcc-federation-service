@@ -1,5 +1,9 @@
 """
 Pytest configuration and fixtures for the CCDI Federation Service tests.
+
+NOTE: This conftest.py is for integration tests that need the full app.
+For unit tests, use tests/conftest.py which avoids importing app.main
+to prevent database dependency issues.
 """
 
 import pytest
@@ -8,9 +12,16 @@ from fastapi.testclient import TestClient
 from httpx import AsyncClient, ASGITransport
 from unittest.mock import AsyncMock, MagicMock
 
-from app.main import app
 from app.core.config import Settings, get_settings
-from app.api.v1.deps import get_database_session
+
+
+# Lazy import of app to avoid triggering database imports at module level
+# This prevents ImportError when neo4j is not installed in test environments
+@pytest.fixture(scope="session")
+def app():
+    """Lazy import of the FastAPI app for integration tests."""
+    from app.main import app as _app
+    return _app
 
 
 # Test settings
@@ -33,7 +44,7 @@ def test_settings() -> Settings:
 
 # Override settings dependency
 @pytest.fixture
-def override_settings(test_settings: Settings):
+def override_settings(test_settings: Settings, app):
     """Override the settings dependency."""
     app.dependency_overrides[get_settings] = lambda: test_settings
     yield
@@ -51,8 +62,9 @@ def mock_db_session() -> AsyncMock:
 
 
 @pytest.fixture
-def override_db_session(mock_db_session: AsyncMock):
+def override_db_session(mock_db_session: AsyncMock, app):
     """Override the database session dependency."""
+    from app.api.v1.deps import get_database_session
     app.dependency_overrides[get_database_session] = lambda: mock_db_session
     yield mock_db_session
     app.dependency_overrides.clear()
@@ -60,7 +72,7 @@ def override_db_session(mock_db_session: AsyncMock):
 
 # Synchronous test client
 @pytest.fixture
-def client(override_settings) -> Generator[TestClient, None, None]:
+def client(override_settings, app) -> Generator[TestClient, None, None]:
     """Provide a synchronous test client."""
     with TestClient(app) as test_client:
         yield test_client
@@ -68,7 +80,7 @@ def client(override_settings) -> Generator[TestClient, None, None]:
 
 # Async test client
 @pytest.fixture
-async def async_client(override_settings) -> AsyncGenerator[AsyncClient, None]:
+async def async_client(override_settings, app) -> AsyncGenerator[AsyncClient, None]:
     """Provide an async test client."""
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:

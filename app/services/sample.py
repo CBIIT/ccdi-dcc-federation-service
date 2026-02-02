@@ -6,7 +6,7 @@ including caching, validation, and coordination between
 repositories and API endpoints.
 """
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple, Union
 from neo4j import AsyncSession
 
 from app.core.config import Settings
@@ -40,8 +40,9 @@ class SampleService:
         self,
         filters: Dict[str, Any],
         offset: int = 0,
-        limit: int = 20
-    ) -> List[Sample]:
+        limit: int = 20,
+        return_total: bool = False
+    ) -> Union[List[Sample], Tuple[List[Sample], int]]:
         """
         Get paginated list of samples with filtering.
         
@@ -49,15 +50,18 @@ class SampleService:
             filters: Dictionary of field filters
             offset: Number of records to skip
             limit: Maximum number of records to return
-            
+            return_total: If True, also return total count (same as summary.counts.all)
+                         using the same filter state as the list query when possible.
+        
         Returns:
-            List of Sample objects
+            List of Sample objects, or (List of Sample objects, total_count) when return_total=True
         """
         logger.debug(
             "Getting samples",
             filters=filters,
             offset=offset,
-            limit=limit
+            limit=limit,
+            return_total=return_total
         )
         
         # Validate pagination limits
@@ -72,31 +76,55 @@ class SampleService:
         # Get base URL from settings
         base_url = self.settings.identifier_server_url.rstrip("/") if hasattr(self.settings, 'identifier_server_url') and self.settings.identifier_server_url else None
         
-        # Get data from repository
+        # Get data from repository (optionally with total from same filter state)
         try:
-            samples = await self.repository.get_samples(filters, offset, limit, base_url=base_url)
+            result = await self.repository.get_samples(
+                filters, offset, limit, base_url=base_url, return_total=return_total
+            )
         except DatabaseConnectionError as e:
-            # Database connection error - log clearly for AWS cloud monitoring
+            # Database connection error - log and raise so API returns 404 (No data found), not empty data
             logger.error(
-                "Database connection error while fetching samples - returning empty result",
+                "Database connection error while fetching samples - raising NotFoundError",
                 error=str(e),
                 error_type=type(e).__name__,
                 filters=filters,
                 offset=offset,
                 limit=limit,
                 is_database_connection_error=True,
-                will_return_empty=True
+                exc_info=True
             )
-            # Return empty list instead of raising - API will return 404
-            return []
+            raise NotFoundError("Samples")
         
+        if return_total and isinstance(result, tuple):
+            samples, total_count = result
+            logger.info(
+                "Retrieved samples with total",
+                count=len(samples),
+                total_count=total_count,
+                offset=offset,
+                limit=limit
+            )
+            return (samples, total_count)
+        if return_total:
+            # Repository did not return total (e.g. sequencing_file-only path); fall back to summary
+            summary_result = await self.get_samples_summary(filters)
+            total_count = summary_result.counts.total
+            samples = result
+            logger.info(
+                "Retrieved samples with total from summary",
+                count=len(samples),
+                total_count=total_count,
+                offset=offset,
+                limit=limit
+            )
+            return (samples, total_count)
+        samples = result
         logger.info(
             "Retrieved samples",
             count=len(samples),
             offset=offset,
             limit=limit
         )
-        
         return samples
     
     async def get_sample_by_identifier(
@@ -234,18 +262,16 @@ class SampleService:
         try:
             summary_data = await self.repository.get_samples_summary(filters)
         except DatabaseConnectionError as e:
-            # Database connection error - log clearly for AWS cloud monitoring
+            # Database connection error - log and raise so API returns 404 (No data found), not empty data
             logger.error(
-                "Database connection error while fetching samples summary - returning empty result",
+                "Database connection error while fetching samples summary - raising NotFoundError",
                 error=str(e),
                 error_type=type(e).__name__,
                 filters=filters,
                 is_database_connection_error=True,
-                will_return_empty=True
+                exc_info=True
             )
-            # Return empty summary instead of raising - API will return 404
-            from app.models.dto import SummaryCounts
-            return SummaryResponse(counts=SummaryCounts(total=0))
+            raise NotFoundError("Samples")
         
         # Transform repository format to response format
         from app.models.dto import SummaryCounts

@@ -241,6 +241,18 @@ class TestSubjectEndpoints:
         """Test count_subjects_by_field returns count successfully."""
         from app.models.dto import CountResponse
         
+        # The count endpoint doesn't accept query parameters
+        # Create a new request without query params
+        class QueryParams(dict):
+            def __init__(self, params):
+                super().__init__(params)
+                self._params = params
+            
+            def keys(self):
+                return self._params.keys()
+        
+        mock_request.query_params = QueryParams({})  # Empty query params
+        
         # The service returns a CountResponse object with total, missing, and values attributes
         # CountResponse has: total, missing, values (list of dicts with value and count)
         mock_count_response = CountResponse(
@@ -278,11 +290,18 @@ class TestSubjectEndpoints:
         """Test get_subjects_summary returns summary successfully."""
         from app.models.dto import SummaryResponse, SummaryCounts
         
-        # Mock request with no query parameters (summary endpoint doesn't accept parameters)
-        mock_query_params = Mock()
-        mock_query_params.keys = Mock(return_value=[])
-        mock_query_params.__bool__ = Mock(return_value=False)
-        mock_request.query_params = mock_query_params
+        # Mock request with no query parameters - need to support len() check
+        class EmptyQueryParams(dict):
+            def __init__(self):
+                super().__init__()
+            
+            def keys(self):
+                return []
+            
+            def __len__(self):
+                return 0
+        
+        mock_request.query_params = EmptyQueryParams()
         
         mock_summary = SummaryResponse(counts=SummaryCounts(total=500))
         
@@ -310,11 +329,18 @@ class TestSubjectEndpoints:
         self, mock_session, mock_settings, mock_allowlist, mock_request
     ):
         """Test get_subjects_summary handles database connection errors."""
-        # Mock request with no query parameters (summary endpoint doesn't accept parameters)
-        mock_query_params = Mock()
-        mock_query_params.keys = Mock(return_value=[])
-        mock_query_params.__bool__ = Mock(return_value=False)
-        mock_request.query_params = mock_query_params
+        # Mock request with no query parameters - need to support len() check
+        class EmptyQueryParams(dict):
+            def __init__(self):
+                super().__init__()
+            
+            def keys(self):
+                return []
+            
+            def __len__(self):
+                return 0
+        
+        mock_request.query_params = EmptyQueryParams()
         
         with patch('app.api.v1.endpoints.subjects.SubjectService') as mock_service_class:
             mock_service = Mock()

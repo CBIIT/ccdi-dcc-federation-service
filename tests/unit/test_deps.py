@@ -28,8 +28,8 @@ class TestGetPaginationParams:
         """Test pagination with default values."""
         result = get_pagination_params(page=1, per_page=None)
         assert result.page == 1
-        # per_page defaults to settings.default_page_size (100)
-        assert result.per_page == 100
+        # per_page defaults to settings.default_page_size (50)
+        assert result.per_page == 50
 
     def test_custom_values(self):
         """Test pagination with custom values."""

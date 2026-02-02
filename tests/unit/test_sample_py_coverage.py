@@ -625,6 +625,42 @@ class TestGetSamplesMainMethod:
             )
             
             mock_case3.assert_called_once()
+    
+    async def test_get_samples_case3_diagnosis_filter(self, repository, mock_session):
+        """Test get_samples routes to Case 3 with diagnosis filter."""
+        async def async_gen():
+            yield {
+                "sa": {"sample_id": "SAMP001"},
+                "p": {},
+                "st": {"study_id": "phs001"},
+                "sf": {},
+                "pf": {},
+                "diagnoses": {}
+            }
+        
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+        
+        # Mock the case3 method to verify it's called for diagnosis filter
+        with patch.object(repository, '_get_samples_case3_with_node_filters', new_callable=AsyncMock) as mock_case3:
+            mock_case3.return_value = []
+            result = await repository.get_samples(
+                filters={"diagnosis": "Neuroblastoma"},  # Diagnosis filter should route to Case 3
+                offset=0,
+                limit=20
+            )
+            
+            # Verify Case 3 was called (diagnosis filter should be categorized as diagnosis filter)
+            mock_case3.assert_called_once()
+            # Verify the diagnosis filter was passed to Case 3
+            call_args = mock_case3.call_args
+            assert call_args is not None
+            filters_arg = call_args[0][0] if call_args[0] else {}
+            categorized_arg = call_args[0][1] if len(call_args[0]) > 1 else {}
+            assert "diagnosis" in filters_arg
+            assert "diagnosis" in categorized_arg.get("diagnosis", {})
 
     async def test_get_samples_case1_with_return_total(self, repository, mock_session):
         """Test Case 1 with return_total=True."""

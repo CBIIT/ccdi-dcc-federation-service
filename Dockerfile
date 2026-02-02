@@ -13,9 +13,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     POETRY_VENV_IN_PROJECT=1
 
 # System dependencies required for building (gcc, headers) & curl for potential build scripts
+# Update openssl packages to fix security vulnerabilities (CVE-2025-15467, CVE-2025-69419)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     build-essential \
+    && apt-get upgrade -y --no-install-recommends openssl libssl3 openssl-provider-legacy \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -43,7 +45,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 
 # Minimal runtime deps (curl for HEALTHCHECK)
+# Update openssl packages to fix security vulnerabilities (CVE-2025-15467, CVE-2025-69419)
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && apt-get upgrade -y --no-install-recommends openssl libssl3 openssl-provider-legacy \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

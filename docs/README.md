@@ -96,7 +96,7 @@ Currently, the API does not require authentication. Rate limiting is applied to 
   ],
   "pagination": {
     "page": 1,
-    "per_page": 100,
+    "per_page": 50,
     "total_pages": 1045,
     "total_items": 25696,
     "has_next": true,

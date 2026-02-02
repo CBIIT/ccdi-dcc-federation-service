@@ -166,7 +166,7 @@ paths:
 
           Each server can select its own default value for `per_page` when this
           parameter is not provided. That said, the convention within the
-          community is to use `100` as a default value if any value is equally
+          community is to use `50` as a default value if any value is equally
           reasonable.
         required: false
         schema:
@@ -503,7 +503,7 @@ paths:
 
           Each server can select its own default value for `per_page` when this
           parameter is not provided. That said, the convention within the
-          community is to use `100` as a default value if any value is equally
+          community is to use `50` as a default value if any value is equally
           reasonable.
         required: false
         schema:
@@ -762,7 +762,7 @@ paths:
 
           Each server can select its own default value for `per_page` when this
           parameter is not provided. That said, the convention within the
-          community is to use `100` as a default value if any value is equally
+          community is to use `50` as a default value if any value is equally
           reasonable.
         required: false
         schema:
@@ -1269,7 +1269,7 @@ paths:
 
           Each server can select its own default value for `per_page` when this
           parameter is not provided. That said, the convention within the
-          community is to use `100` as a default value if any value is equally
+          community is to use `50` as a default value if any value is equally
           reasonable.
         required: false
         schema:
@@ -1469,7 +1469,7 @@ paths:
 
           Each server can select its own default value for `per_page` when this
           parameter is not provided. That said, the convention within the
-          community is to use `100` as a default value if any value is equally
+          community is to use `50` as a default value if any value is equally
           reasonable.
         required: false
         schema:

@@ -493,8 +493,10 @@ class SampleSummary:
                               library_strategy_param is not None or
                               library_source_material_param is not None)
         # Also need to collect all diagnoses if disease_phase or other diagnosis filters are present
+        # Note: "diagnosis" filter is handled via optimized query path when alone, but we still need
+        # to set needs_diag_collection correctly for the standard query path fallback
         has_diagnosis_filters = any(
-            field in filters for field in ["disease_phase", "tumor_grade", "tumor_tissue_morphology", "tumor_classification", "age_at_diagnosis"]
+            field in filters for field in ["disease_phase", "tumor_grade", "tumor_tissue_morphology", "tumor_classification", "age_at_diagnosis", "diagnosis"]
         )
         needs_diag_collection = diagnosis_search_term is not None or has_diagnosis_filters
         
@@ -669,6 +671,30 @@ RETURN count(*) AS total_count
                         condition_part = condition.replace("diagnoses IS NOT NULL AND ", "").replace("diagnoses.", "d.")
                         diagnosis_filter_conditions.append(f"size([d IN all_diagnoses WHERE d IS NOT NULL AND {condition_part}]) > 0")
                         all_conditions.remove(condition)
+                    elif isinstance(condition, str) and "diagnoses.diagnosis" in condition:
+                        # Convert diagnosis filter to check all_diagnoses collection
+                        # Original: "(diagnoses IS NOT NULL AND (diagnoses.diagnosis = $param_X OR (toLower(...) = 'see diagnosis_comment' AND diagnoses.diagnosis_comment = $param_X)))"
+                        # New: "size([d IN all_diagnoses WHERE d IS NOT NULL AND (d.diagnosis = $param_X OR (toLower(...) = 'see diagnosis_comment' AND d.diagnosis_comment = $param_X))]) > 0"
+                        # Extract the inner condition (everything after "(diagnoses IS NOT NULL AND ")
+                        condition_stripped = condition.strip()
+                        if condition_stripped.startswith("(diagnoses IS NOT NULL AND "):
+                            # Remove the outer wrapper: "(diagnoses IS NOT NULL AND " and trailing ")"
+                            inner_condition = condition_stripped[len("(diagnoses IS NOT NULL AND "):].rstrip(")")
+                            # Replace diagnoses. with d. in the inner condition
+                            inner_condition = inner_condition.replace("diagnoses.diagnosis", "d.diagnosis").replace("diagnoses.diagnosis_comment", "d.diagnosis_comment")
+                            diagnosis_filter_conditions.append(f"size([d IN all_diagnoses WHERE d IS NOT NULL AND ({inner_condition})]) > 0")
+                        else:
+                            # Fallback: try to extract more flexibly
+                            if "(diagnoses IS NOT NULL AND " in condition:
+                                start_pos = condition.find("(diagnoses IS NOT NULL AND ") + len("(diagnoses IS NOT NULL AND ")
+                                inner_condition = condition[start_pos:].rstrip(")")
+                                inner_condition = inner_condition.replace("diagnoses.diagnosis", "d.diagnosis").replace("diagnoses.diagnosis_comment", "d.diagnosis_comment")
+                                diagnosis_filter_conditions.append(f"size([d IN all_diagnoses WHERE d IS NOT NULL AND ({inner_condition})]) > 0")
+                            else:
+                                # Last resort: simple replacement
+                                condition_part = condition.replace("diagnoses IS NOT NULL AND ", "").replace("diagnoses.", "d.")
+                                diagnosis_filter_conditions.append(f"size([d IN all_diagnoses WHERE d IS NOT NULL AND {condition_part}]) > 0")
+                        all_conditions.remove(condition)
                 if diagnosis_filter_conditions:
                     all_conditions.extend(diagnosis_filter_conditions)
         
@@ -797,6 +823,9 @@ RETURN count(*) AS total_count
                 # needs_diag_collection is True but no diagnosis search - just collect diagnoses
                 # This happens when diagnosis filters (disease_phase, tumor_classification, etc.) are present
                 # but no _diagnosis_search filter
+                # CRITICAL: Pass through all_diagnoses so it's available for WHERE clause conditions
+                # that check all_diagnoses collection (e.g., diagnosis filter conversion)
+                second_with_vars.append("all_diagnoses")
                 # Use head() with list comprehension to pick first non-null diagnosis from the collection
                 # Note: collect(DISTINCT d) may include null if d is null from OPTIONAL MATCH,
                 # so filter out nulls in the list comprehension

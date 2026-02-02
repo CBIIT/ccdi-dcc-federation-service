@@ -399,6 +399,26 @@ class TestGetSamplesSummaryCoverage:
         # Verify optimized query was used
         call_args = mock_session.run.call_args
         assert "diagnosis" in str(call_args).lower() or "diagnoses" in str(call_args).lower()
+    
+    async def test_get_samples_summary_diagnosis_filter_conversion(self, repository, mock_session):
+        """Test get_samples_summary with diagnosis filter converts to check all_diagnoses."""
+        async def async_gen():
+            yield {"total_count": 223}
+        
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+        
+        result = await repository.get_samples_summary({"diagnosis": "Neuroblastoma"})
+        
+        assert result == {"counts": {"total": 223}}
+        # Verify query uses all_diagnoses collection check
+        call_args = mock_session.run.call_args
+        cypher_query = call_args[0][0] if call_args[0] else ""
+        # When not using optimized path, should check all_diagnoses collection
+        # This verifies the diagnosis filter condition is converted correctly
+        assert "all_diagnoses" in cypher_query or "diagnoses" in cypher_query.lower()
 
     async def test_get_samples_summary_diagnosis_optimized_with_identifiers(self, repository, mock_session):
         """Test get_samples_summary with diagnosis and identifiers using optimized path."""

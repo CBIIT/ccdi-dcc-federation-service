@@ -1426,22 +1426,36 @@ class TestSampleRepositoryAdditionalFilters:
         assert mock_session.run.call_count >= 2
 
     async def test_get_samples_with_diagnosis_filter(self, repository, mock_session):
-        """Test get_samples with diagnosis filter."""
+        """Test get_samples with diagnosis filter routes to Case 3."""
         async def async_gen():
             if False:
                 yield  # Makes this an async generator, but never executes
         
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
         
-        result = await repository.get_samples(
-            filters={"diagnosis": "Neuroblastoma"},
-            offset=0,
-            limit=20
-        )
-        
-        assert isinstance(result, list)
+        # Mock Case 3 to verify it's called
+        with patch.object(repository, '_get_samples_case3_with_node_filters', new_callable=AsyncMock) as mock_case3:
+            mock_case3.return_value = []
+            result = await repository.get_samples(
+                filters={"diagnosis": "Neuroblastoma"},
+                offset=0,
+                limit=20
+            )
+            
+            # Verify Case 3 was called (diagnosis filter should be categorized correctly)
+            mock_case3.assert_called_once()
+            call_args = mock_case3.call_args
+            filters_arg = call_args[0][0] if call_args[0] else {}
+            categorized_arg = call_args[0][1] if len(call_args[0]) > 1 else {}
+            
+            # Verify diagnosis filter is in filters and categorized correctly
+            assert "diagnosis" in filters_arg
+            assert "diagnosis" in categorized_arg.get("diagnosis", {}), "diagnosis filter must be in diagnosis category for Case 3 routing"
+            
+            assert isinstance(result, list)
 
 
 # Helper function for async generators

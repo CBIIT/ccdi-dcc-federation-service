@@ -56,7 +56,7 @@ def create_basic_openapi_spec():
                             "in": "query",
                             "description": "Items per page",
                             "required": False,
-                            "schema": {"type": "integer", "default": 20, "minimum": 1, "maximum": 100}
+                            "schema": {"type": "integer", "default": 50, "minimum": 1, "maximum": 1000}
                         },
                         {
                             "name": "sex",
@@ -329,7 +329,7 @@ def create_basic_openapi_spec():
                     "description": "Pagination metadata for client navigation.",
                     "properties": {
                         "page": {"type": "integer", "example": 1},
-                        "per_page": {"type": "integer", "example": 20},
+                        "per_page": {"type": "integer", "example": 50},
                         "total_pages": {"type": "integer", "example": 5225},
                         "total_items": {"type": "integer", "example": 25696},
                         "has_next": {"type": "boolean", "example": True},

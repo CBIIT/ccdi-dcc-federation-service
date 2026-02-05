@@ -17,6 +17,11 @@ class Race(str, Enum):
     This enum represents the standard race categories used in the CCDI-DCC
     federation service. All race values in the system should conform to one
     of these values.
+    
+    Note: Race values are case-sensitive. Values must match exactly as defined
+    in this enum (e.g., "Not allowed to collect" not "NOT ALLOWED TO COLLECT").
+    Only fields with explicit data mappings/transformations use case-insensitive
+    matching (e.g., sex values via sex_value_mappings).
     """
     NOT_ALLOWED_TO_COLLECT = "Not allowed to collect"
     NATIVE_HAWAIIAN_OR_OTHER_PACIFIC_ISLANDER = "Native Hawaiian or other Pacific Islander"
@@ -42,11 +47,14 @@ class Race(str, Enum):
         """
         Check if a given value is a valid race value.
         
+        Validation is case-sensitive - the value must match exactly as defined
+        in the enum (e.g., "Not allowed to collect" not "NOT ALLOWED TO COLLECT").
+        
         Args:
-            value: The race value to validate
+            value: The race value to validate (case-sensitive)
             
         Returns:
-            True if the value is valid, False otherwise
+            True if the value is valid (exact case match), False otherwise
         """
         return value in cls.values()
 

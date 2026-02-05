@@ -75,6 +75,32 @@
       "reverse_mappings": {
         "Not reported": "Not Reported"
       }
+    },
+    "sex": {
+      "description": "Maps database sex_at_birth values to normalized API sex values. NOTE: Currently implemented via Settings.sex_value_mappings and hardcoded reverse mapping in subject.py. This entry is for reference/documentation only.",
+      "source_property": "sex_at_birth",
+      "mappings": {
+        "Male": "M",
+        "Female": "F",
+        "Not Reported": "U"
+      },
+      "null_mappings": [],
+      "reverse_mappings": {
+        "M": "Male",
+        "F": "Female",
+        "U": "Not Reported"
+      }
+    },
+    "race": {
+      "description": "Maps database race values to normalized API race values",
+      "source_property": "race",
+      "mappings": {
+        "Not Allowed to Collect": "Not allowed to collect"
+      },
+      "null_mappings": [],
+      "reverse_mappings": {
+        "Not allowed to collect": "Not Allowed to Collect"
+      }
     }
   }
 }

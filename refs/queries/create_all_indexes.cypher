@@ -4,10 +4,6 @@
 // This script creates all recommended indexes for the CCDI Federation Service
 // Run this script on the TARGET Memgraph instance.
 //
-// Generated from:
-//   - memgraph-query-results-export_target.tsv
-//   - memgraph-query-results-export.tsv
-//
 // Includes all edge indexes, label indexes, and label+property indexes
 // ============================================================================
 
@@ -15,7 +11,6 @@
 // EDGE INDEXES (Relationship Type Indexes)
 // ----------------------------------------------------------------------------
 
-CREATE EDGE INDEX ON :IN_STUDY;
 CREATE EDGE INDEX ON :of_cell_line;
 CREATE EDGE INDEX ON :of_consent_group;
 CREATE EDGE INDEX ON :of_diagnosis;
@@ -116,14 +111,11 @@ CREATE INDEX ON :treatment_response(id);
 // ----------------------------------------------------------------------------
 
 // Verify indexes were created
-SHOW INDEXES;
+SHOW INDEX INFO;
 
 // ----------------------------------------------------------------------------
 // NOTES
 // ----------------------------------------------------------------------------
 // - Node indexes improve query performance for property lookups and filtering
 // - Edge indexes improve traversal performance for relationship queries
-// - The IN_STUDY edge index is particularly important for sample/subject queries
-// - If an index already exists, Memgraph will return an error (safe to ignore)
-// - This script includes all indexes from both target and export TSV files
 // ============================================================================

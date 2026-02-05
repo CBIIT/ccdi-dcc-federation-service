@@ -57,28 +57,25 @@ class TestSubjectEndpointsEnhanced:
         allowlist.is_field_allowed = Mock(return_value=True)
         return allowlist
 
-    async def test_get_subject_field_based_filter_with_value(self, mock_request, mock_session, mock_settings, mock_allowlist):
-        """Test get_subject with field-based filter and value parameter."""
+    async def test_get_subject_field_name_as_participant_id(self, mock_request, mock_session, mock_settings, mock_allowlist):
+        """Test get_subject treats field names (like 'sex') as regular participant IDs."""
         from app.services.subject import SubjectService
-        from app.core.cache import get_cache_service
         
-        # Mock query params to include value
-        mock_request.query_params = {"value": "Female"}
+        mock_request.query_params = {}
         
-        # Mock service
+        # Mock service - field names are now treated as participant IDs, not filters
         with patch('app.api.v1.endpoints.subjects.SubjectService') as mock_service_class:
             mock_service = AsyncMock(spec=SubjectService)
             mock_subject = Mock(spec=Subject)
-            mock_subject.model_dump = Mock(return_value={"id": {"name": "TEST-001"}})
-            mock_service.get_subjects = AsyncMock(return_value=[mock_subject])
-            mock_service.get_subjects_summary = AsyncMock(return_value=SummaryResponse(counts=SummaryCounts(total=100)))
+            mock_subject.model_dump = Mock(return_value={"id": {"name": "sex"}})
+            mock_service.get_subject_by_identifier = AsyncMock(return_value=mock_subject)
             mock_service_class.return_value = mock_service
             
             with patch('app.api.v1.endpoints.subjects.get_cache_service', return_value=None):
                 result = await get_subject(
                     organization="CCDI-DCC",
                     namespace="phs002431",
-                    name="sex",
+                    name="sex",  # Treated as participant ID, not field filter
                     request=mock_request,
                     session=mock_session,
                     settings=mock_settings,
@@ -86,37 +83,11 @@ class TestSubjectEndpointsEnhanced:
                     _rate_limit=None
                 )
                 
-                assert isinstance(result, SubjectResponse)
-                assert len(result.data) == 1
-
-    @pytest.mark.skip(reason="Complex field-based filter logic requires more detailed mocking")
-    async def test_get_subject_field_based_filter_no_value(self, mock_request, mock_session, mock_settings, mock_allowlist):
-        """Test get_subject with field-based filter but no value parameter."""
-        from app.services.subject import SubjectService
-        
-        # Mock query params without value
-        mock_request.query_params = {}
-        
-        # Mock service
-        with patch('app.api.v1.endpoints.subjects.SubjectService') as mock_service_class:
-            mock_service = AsyncMock(spec=SubjectService)
-            mock_service_class.return_value = mock_service
-            
-            with patch('app.api.v1.endpoints.subjects.get_cache_service', return_value=None):
-                result = await get_subject(
-                    organization="CCDI-DCC",
-                    namespace="phs002431",
-                    name="sex",
-                    request=mock_request,
-                    session=mock_session,
-                    settings=mock_settings,
-                    allowlist=mock_allowlist,
-                    _rate_limit=None
-                )
-                
-                assert isinstance(result, SubjectResponse)
-                assert result.summary.counts.all == 0
-                assert len(result.data) == 0
+                # Should return subject dict (single participant ID lookup)
+                assert isinstance(result, dict)
+                assert "id" in result
+                # Verify it was called as participant ID lookup, not filter
+                mock_service.get_subject_by_identifier.assert_called_once()
 
     async def test_get_subject_participant_id_search_single(self, mock_request, mock_session, mock_settings, mock_allowlist):
         """Test get_subject with single participant ID search."""
@@ -148,56 +119,48 @@ class TestSubjectEndpointsEnhanced:
                 assert isinstance(result, dict)
                 assert "id" in result
 
-    async def test_get_subject_participant_id_search_multiple(self, mock_request, mock_session, mock_settings, mock_allowlist):
-        """Test get_subject with multiple participant IDs."""
-        from app.services.subject import SubjectService
-        
+    async def test_get_subject_participant_id_search_multiple_rejected(self, mock_request, mock_session, mock_settings, mock_allowlist):
+        """Test get_subject rejects multiple participant IDs (comma-separated)."""
         mock_request.query_params = {}
         
-        # Mock service
-        with patch('app.api.v1.endpoints.subjects.SubjectService') as mock_service_class:
-            mock_service = AsyncMock(spec=SubjectService)
-            mock_subject1 = Mock(spec=Subject)
-            mock_subject1.model_dump = Mock(return_value={"id": {"name": "TEST-001"}})
-            mock_subject2 = Mock(spec=Subject)
-            mock_subject2.model_dump = Mock(return_value={"id": {"name": "TEST-002"}})
-            mock_service.get_subjects = AsyncMock(return_value=[mock_subject1, mock_subject2])
-            mock_service_class.return_value = mock_service
-            
-            with patch('app.api.v1.endpoints.subjects.get_cache_service', return_value=None):
-                result = await get_subject(
-                    organization="CCDI-DCC",
-                    namespace="phs002431",
-                    name="TEST-001,TEST-002",
-                    request=mock_request,
-                    session=mock_session,
-                    settings=mock_settings,
-                    allowlist=mock_allowlist,
-                    _rate_limit=None
-                )
-                
-                assert isinstance(result, SubjectResponse)
-                assert len(result.data) == 2
+        # The endpoint should raise InvalidParametersError for comma-separated IDs
+        with pytest.raises(HTTPException) as exc_info:
+            await get_subject(
+                organization="CCDI-DCC",
+                namespace="phs002431",
+                name="TEST-001,TEST-002",  # Multiple IDs - should be rejected
+                request=mock_request,
+                session=mock_session,
+                settings=mock_settings,
+                allowlist=mock_allowlist,
+                _rate_limit=None
+            )
+        
+        assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
+        error_detail = exc_info.value.detail.get("errors", [])[0] if isinstance(exc_info.value.detail, dict) else None
+        if error_detail:
+            assert error_detail.get("kind") == "InvalidParameters"
+            reason_lower = error_detail.get("reason", "").lower()
+            assert ("single participant id" in reason_lower or "multiple ids" in reason_lower or "not supported" in reason_lower)
 
-    @pytest.mark.skip(reason="Complex participant ID search logic requires more detailed mocking")
     async def test_get_subject_participant_id_search_no_namespace(self, mock_request, mock_session, mock_settings, mock_allowlist):
         """Test get_subject with participant ID search without namespace."""
         from app.services.subject import SubjectService
         
         mock_request.query_params = {}
         
-        # Mock service
+        # Mock service - now always uses get_subject_by_identifier (even without namespace)
         with patch('app.api.v1.endpoints.subjects.SubjectService') as mock_service_class:
             mock_service = AsyncMock(spec=SubjectService)
             mock_subject = Mock(spec=Subject)
             mock_subject.model_dump = Mock(return_value={"id": {"name": "TEST-001"}})
-            mock_service.get_subjects = AsyncMock(return_value=[mock_subject])
+            mock_service.get_subject_by_identifier = AsyncMock(return_value=mock_subject)
             mock_service_class.return_value = mock_service
             
             with patch('app.api.v1.endpoints.subjects.get_cache_service', return_value=None):
                 result = await get_subject(
                     organization="CCDI-DCC",
-                    namespace="",
+                    namespace="",  # Empty namespace - still uses get_subject_by_identifier
                     name="TEST-001",
                     request=mock_request,
                     session=mock_session,
@@ -206,8 +169,11 @@ class TestSubjectEndpointsEnhanced:
                     _rate_limit=None
                 )
                 
-                assert isinstance(result, SubjectResponse)
-                mock_service.get_subjects.assert_called()
+                # Should return dict for single participant ID
+                assert isinstance(result, dict)
+                assert "id" in result
+                # Verify it was called as participant ID lookup
+                mock_service.get_subject_by_identifier.assert_called_once()
 
     @pytest.mark.skip(reason="Complex mocking required for get_subject_by_identifier with namespace")
     async def test_get_subject_participant_id_search_no_matches(self, mock_request, mock_session, mock_settings, mock_allowlist):

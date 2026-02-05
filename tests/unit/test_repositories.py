@@ -194,6 +194,44 @@ class TestSubjectRepository:
         assert isinstance(result, list)
         assert mock_session.run.called  # May be called multiple times
 
+    async def test_get_subjects_with_race_filter_mapping(self, repository, mock_session):
+        """Test get_subjects with race filter applies reverse mapping (API -> DB)."""
+        from unittest.mock import patch
+        
+        async def async_gen():
+            return
+            yield
+        
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_session.run = AsyncMock(return_value=mock_result)
+        
+        # Mock reverse_map_field_value to return database value
+        with patch("app.repositories.subject.reverse_map_field_value") as mock_reverse_map:
+            mock_reverse_map.return_value = "Not Allowed to Collect"
+            
+            result = await repository.get_subjects(
+                filters={"race": "Not allowed to collect"},  # API value
+                offset=0,
+                limit=20
+            )
+            
+            # Verify reverse mapping was called with API value
+            mock_reverse_map.assert_called_once_with("race", "Not allowed to collect")
+            
+            # Verify the database value was used in the query params
+            assert mock_session.run.called
+            # Check that the mapped DB value is in the params
+            call_args = mock_session.run.call_args
+            if call_args and len(call_args) > 1:
+                params = call_args[1] if isinstance(call_args[1], dict) else call_args[0][1] if len(call_args[0]) > 1 else {}
+                # The race_tokens param should contain the DB value
+                for key, value in params.items():
+                    if "race" in key.lower() or (isinstance(value, list) and "Not Allowed to Collect" in value):
+                        assert "Not Allowed to Collect" in (value if isinstance(value, list) else [value])
+        
+        assert isinstance(result, list)
+
     async def test_get_subjects_with_depositions_filter(self, repository, mock_session):
         """Test get_subjects with depositions filter."""
         async def async_gen():

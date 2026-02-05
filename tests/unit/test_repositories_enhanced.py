@@ -96,6 +96,78 @@ class TestSubjectRepositoryEnhanced:
         assert isinstance(result, list)
         assert mock_session.run.called
 
+    async def test_get_subjects_with_race_filter_reverse_mapping(self, repository, mock_session):
+        """Test get_subjects with race filter applies reverse mapping for API values."""
+        from unittest.mock import patch
+        
+        async def async_gen():
+            return
+            yield
+        
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_session.run = AsyncMock(return_value=mock_result)
+        
+        # Test with API value that needs mapping
+        with patch("app.repositories.subject.reverse_map_field_value") as mock_reverse_map:
+            # Mock reverse mapping: API -> DB
+            def reverse_map_side_effect(field, value):
+                if field == "race" and value == "Not allowed to collect":
+                    return "Not Allowed to Collect"
+                return value  # No mapping for other values
+            
+            mock_reverse_map.side_effect = reverse_map_side_effect
+            
+            result = await repository.get_subjects(
+                filters={"race": "Not allowed to collect"},  # API value
+                offset=0,
+                limit=20
+            )
+            
+            # Verify reverse mapping was called
+            mock_reverse_map.assert_called_with("race", "Not allowed to collect")
+            
+            # Verify query was executed
+            assert mock_session.run.called
+        
+        assert isinstance(result, list)
+
+    async def test_get_subjects_with_race_list_filter_reverse_mapping(self, repository, mock_session):
+        """Test get_subjects with race list filter applies reverse mapping for each value."""
+        from unittest.mock import patch
+        
+        async def async_gen():
+            return
+            yield
+        
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_session.run = AsyncMock(return_value=mock_result)
+        
+        # Test with mixed API values (some need mapping, some don't)
+        with patch("app.repositories.subject.reverse_map_field_value") as mock_reverse_map:
+            def reverse_map_side_effect(field, value):
+                if field == "race" and value == "Not allowed to collect":
+                    return "Not Allowed to Collect"
+                return value  # No mapping for other values
+            
+            mock_reverse_map.side_effect = reverse_map_side_effect
+            
+            result = await repository.get_subjects(
+                filters={"race": ["White", "Not allowed to collect"]},  # Mixed: API value + mapped value
+                offset=0,
+                limit=20
+            )
+            
+            # Verify reverse mapping was called for each race value
+            assert mock_reverse_map.call_count == 2
+            mock_reverse_map.assert_any_call("race", "White")
+            mock_reverse_map.assert_any_call("race", "Not allowed to collect")
+            
+            assert mock_session.run.called
+        
+        assert isinstance(result, list)
+
     async def test_get_subjects_with_diagnosis_search(self, repository, mock_session):
         """Test get_subjects with diagnosis search filter."""
         async def async_gen():
@@ -292,6 +364,36 @@ class TestSubjectRepositoryEnhanced:
         assert isinstance(result, dict)
         # The result structure is {"total_count": ...}
         assert "total_count" in result
+
+    async def test_get_subjects_summary_with_race_filter_mapping(self, repository, mock_session):
+        """Test get_subjects_summary with race filter applies reverse mapping."""
+        from unittest.mock import patch
+        
+        async def async_gen():
+            yield {"total_count": 5}
+        
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_session.run = AsyncMock(return_value=mock_result)
+        
+        # Test with API value that needs mapping
+        with patch("app.repositories.subject.reverse_map_field_value") as mock_reverse_map:
+            def reverse_map_side_effect(field, value):
+                if field == "race" and value == "Not allowed to collect":
+                    return "Not Allowed to Collect"
+                return value
+            
+            mock_reverse_map.side_effect = reverse_map_side_effect
+            
+            result = await repository.get_subjects_summary(
+                filters={"race": "Not allowed to collect"}  # API value
+            )
+            
+            # Verify reverse mapping was called
+            mock_reverse_map.assert_called_with("race", "Not allowed to collect")
+            assert mock_session.run.called
+        
+        assert isinstance(result, dict)
 
     async def test_get_subjects_with_empty_race_list(self, repository, mock_session):
         """Test get_subjects with empty race list (covers line 129)."""

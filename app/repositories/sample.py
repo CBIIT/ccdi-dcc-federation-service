@@ -1353,7 +1353,6 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
                         "Query executed successfully (string version)",
                         records_count=len(records),
                         cypher=cypher,
-                        debug_cypher=debug_cypher_string,
                         params=params
                     )
                 except Exception as e2:
@@ -2612,3 +2611,30 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         )
         
         return sample
+
+    async def get_samples_for_diagnosis_endpoint(
+        self,
+        filters: Dict[str, Any],
+        offset: int = 0,
+        limit: int = 20,
+        base_url: Optional[str] = None,
+    ) -> Tuple[List[Sample], int]:
+        """
+        Dedicated data+total path for /sample-diagnosis endpoint.
+        Keeps /sample endpoint behavior untouched.
+        """
+        result = await self.get_samples(
+            filters=filters,
+            offset=offset,
+            limit=limit,
+            base_url=base_url,
+            return_total=True,
+        )
+
+        if isinstance(result, tuple):
+            samples, total_count = result
+            return samples, int(total_count or 0)
+
+        # Defensive fallback: repository path didn't produce total_count
+        samples = result if isinstance(result, list) else []
+        return samples, 0

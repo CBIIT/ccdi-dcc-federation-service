@@ -115,14 +115,8 @@ def test_sample_diagnosis_endpoint_contract(client, monkeypatch):
         def __init__(self, *args, **kwargs):
             pass
 
-        async def get_samples(self, filters: Dict[str, Any], offset: int = 0, limit: int = 20, return_total: bool = False):
-            samples = [_sample()]
-            if return_total:
-                return (samples, 1)
-            return samples
-
-        async def get_samples_summary(self, filters: Dict[str, Any]):
-            return SummaryResponse(counts=SummaryCounts(total=1))
+        async def get_samples_for_diagnosis_endpoint(self, filters: Dict[str, Any], offset: int = 0, limit: int = 20):
+            return ([_sample()], 1)
 
     monkeypatch.setattr(experimental_ep, "SampleService", FakeSampleService)
 

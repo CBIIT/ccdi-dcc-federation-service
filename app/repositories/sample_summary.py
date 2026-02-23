@@ -38,7 +38,8 @@ class SampleSummary:
         
         # IMPORTANT: Check routing BEFORE popping identifiers (identifiers is popped later for early filtering)
         # This ensures routing decisions include identifiers filter
-        original_filters_keys = set(filters.keys())
+        # Filter out keys with None or empty values for routing decisions
+        original_filters_keys = {k for k, v in filters.items() if v is not None and v != ""}
         
         # PERFORMANCE OPTIMIZATION: Use reverse query for sequencing_file-only filters
         sequencing_file_filter_keys = {"library_selection_method", "library_strategy", "library_source_material", "specimen_molecular_analyte_type"}
@@ -52,17 +53,51 @@ class SampleSummary:
             return await self._get_samples_summary_reverse_query(filters)
         
         # OPTIMIZATION: Specialized summary query for diagnosis search-only filters
-        has_diagnosis_search = "_diagnosis_search" in filters
-        allowed_with_diagnosis_search = {"identifiers", "depositions", "_diagnosis_search"}
+        has_diagnosis_search = "_diagnosis_search" in original_filters_keys
+        allowed_with_diagnosis_search = {
+            "identifiers", "depositions", "_diagnosis_search",
+            "disease_phase", "tumor_grade", "tumor_classification",
+            "tumor_tissue_morphology", "age_at_diagnosis"
+        }
+        # Debug: Log which keys are causing routing to fail
+        if has_diagnosis_search:
+            disallowed_keys = original_filters_keys - allowed_with_diagnosis_search
+            if disallowed_keys:
+                logger.debug(
+                    "Diagnosis search routing check failed - disallowed keys present",
+                    disallowed_keys=disallowed_keys,
+                    original_filters_keys=original_filters_keys,
+                    allowed_keys=allowed_with_diagnosis_search
+                )
+
         diagnosis_search_only_summary = (
             has_diagnosis_search and
             all(k in allowed_with_diagnosis_search for k in original_filters_keys)
         )
-        
+
         if diagnosis_search_only_summary:
             logger.debug("Using optimized summary query for diagnosis search-only filters")
             return await self._get_samples_summary_diagnosis_search(filters)
-        
+
+        # OPTIMIZATION: Specialized summary query for diagnosis-heavy filters (no _diagnosis_search)
+        diagnosis_filter_keys = {
+            "disease_phase", "tumor_grade", "tumor_classification",
+            "tumor_tissue_morphology", "age_at_diagnosis", "diagnosis"
+        }
+        allowed_companion_keys = {"anatomical_sites", "tissue_type", "identifiers", "depositions"}
+        allowed_diag_heavy_keys = diagnosis_filter_keys | allowed_companion_keys
+
+        has_diagnosis_filters = any(k in original_filters_keys for k in diagnosis_filter_keys)
+        diag_heavy_summary = (
+            has_diagnosis_filters
+            and "_diagnosis_search" not in original_filters_keys
+            and all(k in allowed_diag_heavy_keys for k in original_filters_keys)
+        )
+
+        if diag_heavy_summary:
+            logger.debug("Using optimized summary query for diagnosis-heavy filters (no diagnosis search)")
+            return await self._get_samples_summary_diagnosis_filters_optimized(filters)
+
         # If no filters, use simple optimized query (matches the structure used in count queries)
         # Check if filters dict is empty or only contains None values
         has_real_filters = any(v is not None and v != "" for v in filters.values()) if filters else False
@@ -151,6 +186,9 @@ class SampleSummary:
                     # Don't add to where_conditions - it's now applied early in MATCH WHERE clause
         
         with_conditions = []
+        # Collect diagnosis-field predicates so diagnosis search can require
+        # the same diagnosis node to satisfy both search and structured filters.
+        diagnosis_filter_parts_for_search = []
         
         # Handle diagnosis search - need to check if ANY diagnosis in the sample matches
         diagnosis_search_term = None
@@ -241,6 +279,7 @@ class SampleSummary:
                     # The value is stored in DB as-is, so match it directly
                     params[param_name] = value
                     with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase = ${param_name}")
+                    diagnosis_filter_parts_for_search.append(f"d.disease_phase = ${param_name}")
                 else:
                     # Apply reverse mapping for filtering (API value -> DB value(s))
                     # "Relapse" can map to both "Recurrent Disease" and "Relapse" in DB
@@ -249,9 +288,11 @@ class SampleSummary:
                         # Multiple DB values map to this API value - use IN clause with parameter for better query planning
                         params[param_name] = reverse_mapped
                         with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase IN ${param_name}")
+                        diagnosis_filter_parts_for_search.append(f"d.disease_phase IN ${param_name}")
                     else:
                         params[param_name] = reverse_mapped
                         with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase = ${param_name}")
+                        diagnosis_filter_parts_for_search.append(f"d.disease_phase = ${param_name}")
             elif field == "library_source_material":
                 # Use helper function to validate library_source_material filter
                 # Note: Returns None if invalid (null_mapped), but we don't need to return [] here
@@ -277,10 +318,13 @@ class SampleSummary:
                     # If reverse_mapped is None, use the original value (no mapping needed)
                     params[param_name] = reverse_mapped if reverse_mapped else value
                     with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_classification = ${param_name}")
+                    diagnosis_filter_parts_for_search.append(f"d.tumor_classification = ${param_name}")
             elif field == "tumor_grade":
                 with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_grade = ${param_name}")
+                diagnosis_filter_parts_for_search.append(f"d.tumor_grade = ${param_name}")
             elif field == "tumor_tissue_morphology":
                 with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_tissue_morphology = ${param_name}")
+                diagnosis_filter_parts_for_search.append(f"d.tumor_tissue_morphology = ${param_name}")
             elif field == "age_at_diagnosis":
                 with_conditions.append(f"diagnoses IS NOT NULL AND toInteger(diagnoses.age_at_diagnosis) = ${param_name}")
                 # Convert value to number for numeric comparison
@@ -288,6 +332,7 @@ class SampleSummary:
                     params[param_name] = int(value) if value is not None else None
                 except (ValueError, TypeError):
                     params[param_name] = value
+                diagnosis_filter_parts_for_search.append(f"toInteger(d.age_at_diagnosis) = ${param_name}")
             elif field == "age_at_collection":
                 with_conditions.append(f"toInteger(sa.participant_age_at_collection) = ${param_name}")
                 # Convert value to number for numeric comparison
@@ -328,6 +373,12 @@ class SampleSummary:
                     f"trim(toString(diagnoses.diagnosis_comment)) = ${param_name})))"
                 )
                 with_conditions.append(diagnosis_condition)
+                diagnosis_filter_parts_for_search.append(
+                    f"""(d.diagnosis = ${param_name} OR
+                        (toLower(trim(toString(d.diagnosis))) = 'see diagnosis_comment' AND
+                         d.diagnosis_comment IS NOT NULL AND
+                         trim(toString(d.diagnosis_comment)) = ${param_name}))"""
+                )
             else:
                 # Default to sample node
                 if isinstance(value, list):
@@ -440,22 +491,12 @@ class SampleSummary:
             library_selection_method_param == "invalid" or
             library_strategy_param == "invalid" or
             library_source_material_param == "invalid"):
-            logger.info(
-                "Invalid filter value detected in summary query - returning empty results",
-                filters=filters,
-                specimen_molecular_analyte_type_invalid=specimen_molecular_analyte_type_single_param == "invalid",
-                library_selection_method_invalid=library_selection_method_param == "invalid",
-                library_strategy_invalid=library_strategy_param == "invalid",
-                library_source_material_invalid=library_source_material_param == "invalid"
-            )
+            logger.info("Invalid filter value detected in summary query - returning empty results")
             return {"counts": {"total": 0}}
         
         # Build early WHERE conditions (applied before OPTIONAL MATCHes)
         # Separate cheap filters (can be applied before OPTIONAL MATCHes) from expensive ones
-        early_where_conditions = [
-            "sa.sample_id IS NOT NULL",
-            "toString(sa.sample_id) <> ''"
-        ]
+        early_where_conditions = [ "sa.sample_id IS NOT NULL" ]
         
         # OPTIMIZATION: Add identifiers filter early (before OPTIONAL MATCHes)
         # This significantly reduces the dataset before expensive joins
@@ -524,10 +565,19 @@ class SampleSummary:
         # When ONLY diagnosis filter is present (or with identifiers/depositions), use optimized query structure
         has_diagnosis_filter_summary = "diagnosis" in filters
         allowed_with_diagnosis_summary = {"identifiers", "depositions", "diagnosis"}
+
+        # "diagnosis" is intentionally handled by the specialized optimized branch below,
+        # so don't block that branch just because generic needs_diag_collection is True.
+        has_non_diagnosis_diag_filters = any(
+            field in filters
+            for field in ["disease_phase", "tumor_grade", "tumor_tissue_morphology", "tumor_classification", "age_at_diagnosis"]
+        )
+
         diagnosis_only_summary = (
             has_diagnosis_filter_summary and
             not needs_sf_collection and
-            not needs_diag_collection and
+            not diagnosis_search_term and
+            not has_non_diagnosis_diag_filters and
             not anatomical_sites_list_condition and
             all(k in allowed_with_diagnosis_summary for k in filters.keys())
         )
@@ -632,6 +682,9 @@ RETURN count(*) AS total_count
         # Build early WHERE clause
         early_where_clause = "\n        WHERE " + " AND ".join(early_where_conditions) if early_where_conditions else ""
         
+        # Track which conditions are already in early_where_conditions to prevent duplication
+        early_conditions_set = set(early_where_conditions) if early_where_conditions else set()
+        
         # Build WHERE clause - use list version for anatomical_sites if present
         all_conditions = regular_conditions.copy()
         
@@ -641,10 +694,17 @@ RETURN count(*) AS total_count
         # (the filter value is applied in OPTIONAL MATCH WHERE clause via early filter optimization)
         if preservation_method_param:
             all_conditions.append("pf IS NOT NULL")
-        
-        if anatomical_sites_list_condition:
+            
+        # Only add anatomical_sites to all_conditions if not already in early_where_conditions
+        # (anatomical_sites is stored as a variable, not in regular_conditions, so we need to check early_where_conditions)
+        if anatomical_sites_list_condition:     
             # Use list version first (will try string version if it fails)
-            all_conditions.append(anatomical_sites_list_condition)
+            if anatomical_sites_list_condition not in early_conditions_set:
+                all_conditions.append(anatomical_sites_list_condition)
+        elif anatomical_sites_string_condition:
+            # Only add if not already in early_where_conditions
+            if anatomical_sites_string_condition not in early_conditions_set:
+                all_conditions.append(anatomical_sites_string_condition)
         # Add sequencing_file field conditions if present (will be checked after collecting all sequencing_files)
         # needs_sf_collection is already defined earlier
         if needs_sf_collection:
@@ -654,23 +714,41 @@ RETURN count(*) AS total_count
         if needs_diag_collection:
             if diagnosis_search_term is not None:
                 all_conditions.append("has_matching_diagnosis = true")
+                # In diagnosis-search mode, diagnosis field filters are folded into
+                # has_matching_diagnosis. Remove head(diagnoses)-based checks.
+                all_conditions = [
+                    c for c in all_conditions
+                    if not (
+                        isinstance(c, str)
+                        and c.startswith("diagnoses IS NOT NULL AND diagnoses.")
+                    )
+                ]
             elif has_diagnosis_filters:
                 # For diagnosis filters, check if ANY diagnosis matches
                 # Find disease_phase condition and convert it to check all_diagnoses
                 diagnosis_filter_conditions = []
+        
                 for condition in all_conditions[:]:
                     if isinstance(condition, str) and "diagnoses.disease_phase" in condition:
                         # Convert to check all_diagnoses collection
                         # Original: "diagnoses IS NOT NULL AND diagnoses.disease_phase = $param_X"
                         # New: "size([d IN all_diagnoses WHERE d IS NOT NULL AND d.disease_phase = $param_X]) > 0"
                         condition_part = condition.replace("diagnoses IS NOT NULL AND ", "").replace("diagnoses.", "d.")
-                        diagnosis_filter_conditions.append(f"size([d IN all_diagnoses WHERE d IS NOT NULL AND {condition_part}]) > 0")
+                        diagnosis_filter_conditions.append(f"size([d IN all_diagnoses WHERE d IS NOT NULL AND {condition_part} | d ]) > 0")
                         all_conditions.remove(condition)
                     elif isinstance(condition, str) and ("diagnoses.tumor_grade" in condition or "diagnoses.tumor_classification" in condition or "diagnoses.tumor_tissue_morphology" in condition or "diagnoses.age_at_diagnosis" in condition):
                         # Convert other diagnosis filters similarly
                         condition_part = condition.replace("diagnoses IS NOT NULL AND ", "").replace("diagnoses.", "d.")
-                        diagnosis_filter_conditions.append(f"size([d IN all_diagnoses WHERE d IS NOT NULL AND {condition_part}]) > 0")
+                        filter_condition = f"size([d IN all_diagnoses WHERE d IS NOT NULL AND {condition_part} | d ]) > 0"
+                        # Validate that WHERE keyword is present
+                        if "WHERE" not in filter_condition:
+                            # Fix it by ensuring WHERE is present
+                            filter_condition = f"size([d IN all_diagnoses WHERE d IS NOT NULL AND {condition_part} | d ]) > 0"
+                       
+                        diagnosis_filter_conditions.append(filter_condition)
                         all_conditions.remove(condition)
+                        # diagnosis_filter_conditions.append(f"size([d IN all_diagnoses WHERE d IS NOT NULL AND {condition_part} | d ]) > 0")
+                        # all_conditions.remove(condition)
                     elif isinstance(condition, str) and "diagnoses.diagnosis" in condition:
                         # Convert diagnosis filter to check all_diagnoses collection
                         # Original: "(diagnoses IS NOT NULL AND (diagnoses.diagnosis = $param_X OR (toLower(...) = 'see diagnosis_comment' AND diagnoses.diagnosis_comment = $param_X)))"
@@ -682,18 +760,18 @@ RETURN count(*) AS total_count
                             inner_condition = condition_stripped[len("(diagnoses IS NOT NULL AND "):].rstrip(")")
                             # Replace diagnoses. with d. in the inner condition
                             inner_condition = inner_condition.replace("diagnoses.diagnosis", "d.diagnosis").replace("diagnoses.diagnosis_comment", "d.diagnosis_comment")
-                            diagnosis_filter_conditions.append(f"size([d IN all_diagnoses WHERE d IS NOT NULL AND ({inner_condition})]) > 0")
+                            diagnosis_filter_conditions.append(f"size([d IN all_diagnoses WHERE d IS NOT NULL AND ({inner_condition}) | d ]) > 0")
                         else:
                             # Fallback: try to extract more flexibly
                             if "(diagnoses IS NOT NULL AND " in condition:
                                 start_pos = condition.find("(diagnoses IS NOT NULL AND ") + len("(diagnoses IS NOT NULL AND ")
                                 inner_condition = condition[start_pos:].rstrip(")")
                                 inner_condition = inner_condition.replace("diagnoses.diagnosis", "d.diagnosis").replace("diagnoses.diagnosis_comment", "d.diagnosis_comment")
-                                diagnosis_filter_conditions.append(f"size([d IN all_diagnoses WHERE d IS NOT NULL AND ({inner_condition})]) > 0")
+                                diagnosis_filter_conditions.append(f"size([d IN all_diagnoses WHERE d IS NOT NULL AND ({inner_condition}) | d ]) > 0")
                             else:
                                 # Last resort: simple replacement
                                 condition_part = condition.replace("diagnoses IS NOT NULL AND ", "").replace("diagnoses.", "d.")
-                                diagnosis_filter_conditions.append(f"size([d IN all_diagnoses WHERE d IS NOT NULL AND {condition_part}]) > 0")
+                                diagnosis_filter_conditions.append(f"size([d IN all_diagnoses WHERE d IS NOT NULL AND {condition_part} | d ]) > 0")
                         all_conditions.remove(condition)
                 if diagnosis_filter_conditions:
                     all_conditions.extend(diagnosis_filter_conditions)
@@ -803,7 +881,7 @@ RETURN count(*) AS total_count
                 # - Pre-processed search term (toLower done in Python)
                 # - Simplified list handling (avoid wrapper for single values)
                 # Handle both d.diagnosis and d.diagnosis_comment (when diagnosis = "see diagnosis_comment")
-                diagnosis_search_condition = f"""size([d IN all_diagnoses WHERE d IS NOT NULL AND (
+                diagnosis_search_base = f"""(
                     (toLower(trim(toString(d.diagnosis))) <> $diagnosis_search_term_see_comment AND 
                      CASE 
                        WHEN valueType(d.diagnosis) = 'LIST' THEN 
@@ -815,9 +893,17 @@ RETURN count(*) AS total_count
                     (toLower(trim(toString(d.diagnosis))) = $diagnosis_search_term_see_comment AND 
                      d.diagnosis_comment IS NOT NULL AND 
                      toLower(toString(d.diagnosis_comment)) CONTAINS $diagnosis_search_term_lower)
-                )]) > 0"""
+                )"""
+
+                if diagnosis_filter_parts_for_search:
+                    diagnosis_search_base = f"{diagnosis_search_base} AND " + " AND ".join(
+                        f"({p})" for p in diagnosis_filter_parts_for_search
+                    )
+
+                diagnosis_search_condition = (
+                    f"size([d IN all_diagnoses WHERE d IS NOT NULL AND ({diagnosis_search_base}) | d ]) > 0"
+                )
                 second_with_vars.append(f"{diagnosis_search_condition} AS has_matching_diagnosis")
-                # Use head() to pick first matching diagnosis from the collection
                 second_with_vars.append("head([d IN all_diagnoses WHERE d IS NOT NULL | d]) AS diagnoses")
             elif needs_diag_collection:
                 # needs_diag_collection is True but no diagnosis search - just collect diagnoses
@@ -929,8 +1015,12 @@ RETURN count(*) AS total_count
         
         # Parse where_clause to separate conditions with has_matching_sf/has_matching_diagnosis from others
         if where_clause:
-            # Extract conditions from where_clause (remove "WHERE " prefix)
-            where_conditions_str = where_clause.replace("WHERE ", "").strip()
+            # Extract conditions from where_clause (remove "WHERE " prefix only, not all occurrences)
+            # Use removeprefix() or check if it starts with "WHERE " to avoid removing WHERE inside list comprehensions
+            if where_clause.strip().startswith("WHERE "):
+                where_conditions_str = where_clause.strip()[6:].strip()  # Remove "WHERE " (6 characters)
+            else:
+                where_conditions_str = where_clause.strip()
             if where_conditions_str:
                 # Split by " AND " to get individual conditions
                 # But be careful not to split on " AND " inside brackets/parentheses (e.g., in list comprehensions)
@@ -1022,13 +1112,23 @@ RETURN count(*) AS total_count
                 # Extract conditions from both (remove "WHERE " prefix and combine with AND)
                 first_conditions = []
                 if first_where_clause.strip():
-                    first_where_str = first_where_clause.replace("WHERE", "").strip()
+                    # Only remove prefix, not all occurrences (to preserve WHERE in list comprehensions)
+                    first_where_str = first_where_clause.strip()
+                    if first_where_str.startswith("WHERE "):
+                        first_where_str = first_where_str[6:].strip()  # Remove "WHERE " prefix
+                    elif first_where_str.startswith("WHERE"):
+                        first_where_str = first_where_str[5:].strip()  # Remove "WHERE" prefix (no space)
                     if first_where_str:
                         first_conditions.append(first_where_str)
                 
                 second_conditions = []
                 if final_where_clause.strip():
-                    second_where_str = final_where_clause.replace("WHERE", "").strip()
+                    # Only remove prefix, not all occurrences (to preserve WHERE in list comprehensions)
+                    second_where_str = final_where_clause.strip()
+                    if second_where_str.startswith("WHERE "):
+                        second_where_str = second_where_str[6:].strip()  # Remove "WHERE " prefix
+                    elif second_where_str.startswith("WHERE"):
+                        second_where_str = second_where_str[5:].strip()  # Remove "WHERE" prefix (no space)
                     if second_where_str:
                         second_conditions.append(second_where_str)
                 
@@ -1105,18 +1205,6 @@ RETURN count(*) AS total_count
         RETURN count(*) as total_count
         """.strip()
         
-        logger.info(
-            "Executing get_samples_summary Cypher query",
-            cypher=cypher,
-            params=params,
-            identifiers_condition=identifiers_condition if identifiers_condition else None,
-            where_conditions=where_conditions,
-            final_where_conditions=final_where_conditions if 'final_where_conditions' in locals() else None,
-            with_clause=with_clause,
-            depositions_study_filter_summary=depositions_study_filter_summary,
-            _depositions_early_params=getattr(self, '_depositions_early_params', None)
-        )
-        
         # Execute query with proper result consumption and retry logic
         # For anatomical_sites, try list version first, fallback to string if it fails
         max_retries = 2
@@ -1159,19 +1247,17 @@ RETURN count(*) AS total_count
             )
             
             if not records:
-                logger.warning("No records returned from summary query")
+                logger.debug("No records returned from summary query")
                 return {"counts": {"total": 0}}
             
             summary = records[0]
             total_count = summary.get("total_count", 0)
-            logger.info("Completed samples summary", total_count=total_count)
-            
             return {"counts": {"total": total_count}}
         except Exception as e:
             error_msg = str(e).lower()
             # If anatomical_sites filter is present and we got an IN error, try string version
             if anatomical_sites_param and anatomical_sites_string_condition and ("in expected a list" in error_msg or "in expected" in error_msg):
-                logger.debug("List query failed for anatomical_sites in summary, trying string version")
+                # logger.debug("List query failed for anatomical_sites in summary, trying string version")
                 # Rebuild query with string version
                 all_conditions = regular_conditions.copy()
                 all_conditions.append(anatomical_sites_string_condition)  # Use string version
@@ -1208,16 +1294,14 @@ RETURN count(*) AS total_count
                     result = await self.session.run(cypher, params)
                     async for record in result:
                         records.append(dict(record))
-                    logger.debug("Successfully executed anatomical_sites summary query as string")
-                    
+                    # logger.debug("Successfully executed anatomical_sites summary query as string")
                     if not records:
-                        logger.warning("No records returned from summary query")
+                        logger.debug("No records returned from summary query")
                         return {"counts": {"total": 0}}
                     
                     summary = records[0]
                     total_count = summary.get("total_count", 0)
-                    logger.info("Completed samples summary (string version)", total_count=total_count)
-                    
+                    # logger.info("Completed samples summary (string version)", total_count=total_count)
                     return {"counts": {"total": total_count}}
                 except Exception as e2:
                     logger.error(
@@ -1239,7 +1323,192 @@ RETURN count(*) AS total_count
                     exc_info=True
                 )
                 raise
-    
+
+    async def _get_samples_summary_diagnosis_filters_optimized(
+        self,
+        filters: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Optimized summary query for diagnosis-heavy filters without _diagnosis_search.
+        Avoids generic collect-heavy summary path that can destabilize Memgraph.
+        """
+        params: Dict[str, Any] = {}
+        param_counter = 0
+
+        # Early sample filters
+        sa_where_parts = ["sa.sample_id IS NOT NULL", "trim(toString(sa.sample_id)) <> ''"]
+
+        # identifiers
+        if "identifiers" in filters:
+            identifiers_value = filters["identifiers"]
+            if isinstance(identifiers_value, str) and "||" in identifiers_value:
+                ids = [i.strip() for i in identifiers_value.split("||") if i.strip()]
+                identifiers_value = ids if ids else None
+            if identifiers_value:
+                param_counter += 1
+                id_param = f"param_{param_counter}"
+                params[id_param] = identifiers_value
+                if isinstance(identifiers_value, list):
+                    sa_where_parts.append(f"sa.sample_id IN ${id_param}")
+                else:
+                    sa_where_parts.append(f"sa.sample_id = ${id_param}")
+
+        # anatomical_sites
+        if "anatomical_sites" in filters:
+            sites = filters["anatomical_sites"]
+            if isinstance(sites, str) and "||" in sites:
+                site_list = [s.strip() for s in sites.split("||") if s.strip()]
+                if len(site_list) > 1:
+                    or_conditions = []
+                    for s in site_list:
+                        param_counter += 1
+                        p = f"param_{param_counter}"
+                        params[p] = s
+                        or_conditions.append(
+                            f"""(
+                                ${p} = sa.anatomic_site OR
+                                reduce(found = false, tok IN SPLIT(toString(sa.anatomic_site), ';') |
+                                  CASE WHEN trim(tok) = trim(toString(${p})) THEN true ELSE found END
+                                ) = true
+                            )"""
+                        )
+                    sa_where_parts.append(f"sa.anatomic_site IS NOT NULL AND ({' OR '.join(or_conditions)})")
+                elif len(site_list) == 1:
+                    param_counter += 1
+                    p = f"param_{param_counter}"
+                    params[p] = site_list[0]
+                    sa_where_parts.append(
+                        f"""sa.anatomic_site IS NOT NULL AND (
+                            ${p} = sa.anatomic_site OR
+                            reduce(found = false, tok IN SPLIT(toString(sa.anatomic_site), ';') |
+                              CASE WHEN trim(tok) = trim(toString(${p})) THEN true ELSE found END
+                            ) = true
+                        )"""
+                    )
+            else:
+                param_counter += 1
+                p = f"param_{param_counter}"
+                params[p] = sites
+                sa_where_parts.append(
+                    f"""sa.anatomic_site IS NOT NULL AND (
+                        ${p} = sa.anatomic_site OR
+                        reduce(found = false, tok IN SPLIT(toString(sa.anatomic_site), ';') |
+                          CASE WHEN trim(tok) = trim(toString(${p})) THEN true ELSE found END
+                        ) = true
+                    )"""
+                )
+
+        # tissue_type -> sample_tumor_status
+        if "tissue_type" in filters:
+            param_counter += 1
+            t_param = f"param_{param_counter}"
+            params[t_param] = filters["tissue_type"]
+            sa_where_parts.append(f"sa.sample_tumor_status = ${t_param}")
+
+        sa_where_clause = " AND ".join(sa_where_parts)
+
+        # depositions on study_id
+        dep_where_clause = ""
+        if "depositions" in filters:
+            dep_value = filters["depositions"]
+            if isinstance(dep_value, str) and "||" in dep_value:
+                dep_list = [d.strip() for d in dep_value.split("||") if d.strip()]
+                if len(dep_list) > 1:
+                    param_counter += 1
+                    dep_param = f"param_{param_counter}"
+                    params[dep_param] = dep_list
+                    dep_where_clause = f"WHERE sid IN ${dep_param}"
+                elif len(dep_list) == 1:
+                    param_counter += 1
+                    dep_param = f"param_{param_counter}"
+                    params[dep_param] = dep_list[0]
+                    dep_where_clause = f"WHERE sid = ${dep_param}"
+            else:
+                param_counter += 1
+                dep_param = f"param_{param_counter}"
+                params[dep_param] = dep_value
+                dep_where_clause = f"WHERE sid = ${dep_param}"
+
+        # Diagnosis predicates on same dx node
+        dx_conditions = []
+
+        if "disease_phase" in filters:
+            v = filters["disease_phase"]
+            if is_database_only_value("disease_phase", v) or is_null_mapped_value("disease_phase", v):
+                return {"counts": {"total": 0}}
+            reverse_mapped = reverse_map_field_value("disease_phase", v)
+            param_counter += 1
+            p = f"param_{param_counter}"
+            params[p] = reverse_mapped
+            if isinstance(reverse_mapped, list):
+                dx_conditions.append(f"dx.disease_phase IN ${p}")
+            else:
+                dx_conditions.append(f"dx.disease_phase = ${p}")
+
+        if "tumor_grade" in filters:
+            param_counter += 1
+            p = f"param_{param_counter}"
+            params[p] = filters["tumor_grade"]
+            dx_conditions.append(f"dx.tumor_grade = ${p}")
+
+        if "tumor_classification" in filters:
+            v = filters["tumor_classification"]
+            if is_null_mapped_value("tumor_classification", v):
+                return {"counts": {"total": 0}}
+            reverse_mapped = reverse_map_field_value("tumor_classification", v)
+            param_counter += 1
+            p = f"param_{param_counter}"
+            params[p] = reverse_mapped if reverse_mapped else v
+            dx_conditions.append(f"dx.tumor_classification = ${p}")
+
+        if "tumor_tissue_morphology" in filters:
+            param_counter += 1
+            p = f"param_{param_counter}"
+            params[p] = filters["tumor_tissue_morphology"]
+            dx_conditions.append(f"dx.tumor_tissue_morphology = ${p}")
+
+        if "age_at_diagnosis" in filters:
+            param_counter += 1
+            p = f"param_{param_counter}"
+            try:
+                params[p] = int(filters["age_at_diagnosis"]) if filters["age_at_diagnosis"] is not None else None
+            except (ValueError, TypeError):
+                params[p] = filters["age_at_diagnosis"]
+            dx_conditions.append(f"toInteger(dx.age_at_diagnosis) = ${p}")
+
+        if not dx_conditions:
+            return {"counts": {"total": 0}}
+
+        dx_where = " AND ".join([f"({c})" for c in dx_conditions])
+
+        cypher = f"""
+        MATCH (sa:sample)
+        WHERE {sa_where_clause}
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+        WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+        WITH sa, [id IN (st1_list + st2_list) WHERE id IS NOT NULL | id] AS combined_ids
+        UNWIND combined_ids AS sid
+        MATCH (st:study {{study_id: sid}})
+        {dep_where_clause}
+        OPTIONAL MATCH (sa)<-[:of_diagnosis]-(dx:diagnosis)
+        WHERE {dx_where}
+        WITH sa, st, collect(DISTINCT dx) AS diagnoses
+        WHERE size(diagnoses) > 0
+        WITH DISTINCT sa.sample_id AS sample_id, st.study_id AS study_id
+        RETURN count(*) AS total_count
+        """.strip()
+
+        result = await self.session.run(cypher, params)
+        records = []
+        async for record in result:
+            records.append(dict(record))
+        await result.consume()
+
+        total_count = records[0].get("total_count", 0) if records else 0
+        return {"counts": {"total": total_count}}
+
     def _validate_filters(self, filters: Dict[str, Any], entity_type: str) -> None:
         """
         Validate that all filter fields are allowed.

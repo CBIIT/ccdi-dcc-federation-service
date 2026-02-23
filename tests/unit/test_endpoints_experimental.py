@@ -84,7 +84,6 @@ class TestExperimentalEndpoints:
         self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
     ):
         """Test search_samples_by_diagnosis returns samples."""
-        from app.models.dto import Sample, SummaryResponse, SummaryCounts
         
         # Create a proper mock that has model_dump method
         class MockSample:
@@ -98,13 +97,10 @@ class TestExperimentalEndpoints:
                 }
         
         mock_samples = [MockSample()]
-        
-        mock_summary = SummaryResponse(counts=SummaryCounts(total=100))
-        
+
         with patch('app.api.v1.endpoints.experimental.SampleService') as mock_service_class:
             mock_service = Mock()
-            mock_service.get_samples = AsyncMock(return_value=mock_samples)
-            mock_service.get_samples_summary = AsyncMock(return_value=mock_summary)
+            mock_service.get_samples_for_diagnosis_endpoint = AsyncMock(return_value=(mock_samples, 100))
             mock_service_class.return_value = mock_service
             
             with patch('app.api.v1.endpoints.experimental.get_cache_service', return_value=None):
@@ -124,6 +120,7 @@ class TestExperimentalEndpoints:
         assert len(result.data) == 1
         assert result.summary["counts"]["all"] == 100
         assert result.summary["counts"]["current"] == 1
+        mock_service.get_samples_for_diagnosis_endpoint.assert_awaited_once()
 
     async def test_search_samples_by_diagnosis_invalid_params(
         self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
@@ -161,10 +158,10 @@ class TestExperimentalEndpoints:
             # Should raise HTTPException with 400 status (InvalidParameters)
             assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
 
-    async def test_search_samples_by_diagnosis_summary_error(
+    async def test_search_samples_by_diagnosis_handles_total_fallback(
         self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
     ):
-        """Test search_samples_by_diagnosis handles summary errors gracefully."""
+        """Test search_samples_by_diagnosis handles missing total from repository path."""
         # Create a proper mock that has model_dump method
         class MockSample:
             def model_dump(self, exclude=None, exclude_none=None, exclude_unset=None):
@@ -180,9 +177,7 @@ class TestExperimentalEndpoints:
         
         with patch('app.api.v1.endpoints.experimental.SampleService') as mock_service_class:
             mock_service = Mock()
-            mock_service.get_samples = AsyncMock(return_value=mock_samples)
-            # Summary fails but should not crash the endpoint
-            mock_service.get_samples_summary = AsyncMock(side_effect=Exception("Summary error"))
+            mock_service.get_samples_for_diagnosis_endpoint = AsyncMock(return_value=(mock_samples, 0))
             mock_service_class.return_value = mock_service
             
             with patch('app.api.v1.endpoints.experimental.get_cache_service', return_value=None):
@@ -198,10 +193,10 @@ class TestExperimentalEndpoints:
                         _rate_limit=None
                     )
         
-        # Should still return results with total_count = 0 when summary fails
+        # Should still return results with total_count = 0 fallback
         assert isinstance(result, SamplesResponse)
         assert result.summary["counts"]["all"] == 0
-        assert len(result.data) == 1  # Samples should still be returned
+        assert len(result.data) == 1
 
     async def test_search_subjects_by_diagnosis_success(
         self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination

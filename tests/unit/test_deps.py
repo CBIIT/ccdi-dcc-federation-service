@@ -1201,32 +1201,30 @@ class TestGetSampleDiagnosisFilters:
         class QueryParamsWithDiagnosis:
             def __init__(self, params):
                 self._params = params
-            
+
             def keys(self):
                 return self._params.keys()
-            
+
             def items(self):
                 return self._params.items()
-            
+
             def __iter__(self):
                 return iter(self._params.items())
-            
+
             def get(self, key, default=None):
                 return self._params.get(key, default)
-            
+
             def getlist(self, key, default=None):
-                """Return list of values for key, or default if not found."""
                 value = self._params.get(key, default)
                 if value is None:
                     return default if default is not None else []
                 return [value] if not isinstance(value, list) else value
-        
+
         mock_request.query_params = QueryParamsWithDiagnosis({
             "diagnosis": "Neuroblastoma",
             "disease_phase": "Primary"
         })
-        
-        # When search is None, should extract diagnosis from query_params
+
         result = get_sample_diagnosis_filters(
             search=None,
             disease_phase="Primary",
@@ -1234,8 +1232,24 @@ class TestGetSampleDiagnosisFilters:
         )
         assert "_diagnosis_search" not in result
         assert result["disease_phase"] == "Primary"
-        # Should pass diagnosis to get_sample_filters
-        assert result.get("diagnosis") == "Neuroblastoma"
+        # diagnosis must not be propagated for /sample-diagnosis
+        assert "diagnosis" not in result or result.get("diagnosis") is None
+
+        mock_request.query_params = QueryParamsWithDiagnosis({
+            "diagnosis": "Neuroblastoma",
+            "disease_phase": "Primary"
+        })
+        
+        # When search is None, diagnosis from query_params should NOT be propagated
+        result = get_sample_diagnosis_filters(
+            search=None,
+            disease_phase="Primary",
+            request=mock_request
+        )
+        assert "_diagnosis_search" not in result
+        assert result["disease_phase"] == "Primary"
+        # diagnosis is not supported on /sample-diagnosis
+        assert "diagnosis" not in result or result.get("diagnosis") is None
     
     def test_diagnosis_search_without_search_no_diagnosis_param(self, mock_request):
         """Test that when search is not provided and no diagnosis param, behaves normally."""
@@ -1312,10 +1326,10 @@ class TestGetSampleDiagnosisFilters:
             request=mock_request
         )
         # Empty/whitespace search should not add _diagnosis_search
-        # But should still extract diagnosis from query_params
+        # diagnosis is still not supported on /sample-diagnosis
         assert "_diagnosis_search" not in result
         assert result["disease_phase"] == "Primary"
-        assert result.get("diagnosis") == "Neuroblastoma"
+        assert "diagnosis" not in result or result.get("diagnosis") is None
 
 
 @pytest.mark.unit

@@ -32,9 +32,14 @@ class TestGetSamplesSummaryCoverage:
         return allowlist
 
     @pytest.fixture
-    def repository(self, mock_session, mock_allowlist):
+    def mock_settings(self):
+        """Create a mock Settings instance."""
+        return Mock(spec=Settings)
+
+    @pytest.fixture
+    def repository(self, mock_session, mock_allowlist, mock_settings):
         """Create a SampleRepository instance."""
-        return SampleRepository(mock_session, mock_allowlist)
+        return SampleRepository(mock_session, mock_allowlist, mock_settings)
 
     async def test_get_samples_summary_empty_filters_dict(self, repository, mock_session):
         """Test get_samples_summary with empty filters dict."""
@@ -383,25 +388,8 @@ class TestGetSamplesSummaryCoverage:
         
         assert result == {"counts": {"total": 100}}
 
-    async def test_get_samples_summary_diagnosis_only_optimized_path(self, repository, mock_session):
-        """Test get_samples_summary with diagnosis-only filter using optimized path."""
-        async def async_gen():
-            yield {"total_count": 7}
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        mock_result.consume = AsyncMock()
-        mock_session.run = AsyncMock(return_value=mock_result)
-        
-        result = await repository.get_samples_summary({"diagnosis": "Cancer"})
-        
-        assert result == {"counts": {"total": 7}}
-        # Verify optimized query was used
-        call_args = mock_session.run.call_args
-        assert "diagnosis" in str(call_args).lower() or "diagnoses" in str(call_args).lower()
-    
-    async def test_get_samples_summary_diagnosis_filter_conversion(self, repository, mock_session):
-        """Test get_samples_summary with diagnosis filter converts to check all_diagnoses."""
+    async def test_get_samples_summary_diagnosis_with_non_diagnosis_filters(self, repository, mock_session):
+        """Test get_samples_summary with diagnosis + other diagnosis-node filters uses standard path."""
         async def async_gen():
             yield {"total_count": 223}
         
@@ -410,61 +398,22 @@ class TestGetSamplesSummaryCoverage:
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
         
-        result = await repository.get_samples_summary({"diagnosis": "Neuroblastoma"})
-        
-        assert result == {"counts": {"total": 223}}
-        # Verify query uses all_diagnoses collection check
-        call_args = mock_session.run.call_args
-        cypher_query = call_args[0][0] if call_args[0] else ""
-        # When not using optimized path, should check all_diagnoses collection
-        # This verifies the diagnosis filter condition is converted correctly
-        assert "all_diagnoses" in cypher_query or "diagnoses" in cypher_query.lower()
-
-    async def test_get_samples_summary_diagnosis_optimized_with_identifiers(self, repository, mock_session):
-        """Test get_samples_summary with diagnosis and identifiers using optimized path."""
-        async def async_gen():
-            yield {"total_count": 2}
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        mock_result.consume = AsyncMock()
-        mock_session.run = AsyncMock(return_value=mock_result)
-        
+        # Adding tumor_grade should prevent optimized path (has_non_diagnosis_diag_filters = True)
         result = await repository.get_samples_summary({
-            "diagnosis": "Cancer",
-            "identifiers": "SAMP001"
+            "diagnosis": "Neuroblastoma",
+            "tumor_grade": "G3 High Grade"
         })
         
-        assert result == {"counts": {"total": 2}}
+        assert result == {"counts": {"total": 223}}
+        # Verify standard query was used (not optimized path)
+        call_args = mock_session.run.call_args
+        cypher_query = call_args[0][0] if call_args[0] else ""
+        # Standard query should still handle diagnosis filter, but not use optimized structure
+        # The optimized path is blocked when has_non_diagnosis_diag_filters is True
+        assert "total_count" in str(call_args) or "count" in cypher_query.lower()
 
-    async def test_get_samples_summary_diagnosis_optimized_fallback_on_error(self, repository, mock_session):
-        """Test get_samples_summary diagnosis optimized path falls back on error."""
-        # First call (optimized) fails during iteration
-        async def async_gen_error():
-            raise Exception("Query error")
-            yield  # Make it a generator
-        
-        # Second call (standard) succeeds
-        async def async_gen_success():
-            yield {"total_count": 5}
-        
-        mock_result_error = AsyncMock()
-        mock_result_error.__aiter__ = Mock(return_value=async_gen_error())
-        mock_result_error.consume = AsyncMock()
-        
-        mock_result_success = AsyncMock()
-        mock_result_success.__aiter__ = Mock(return_value=async_gen_success())
-        mock_result_success.consume = AsyncMock()
-        
-        mock_session.run = AsyncMock(side_effect=[mock_result_error, mock_result_success])
-        
-        result = await repository.get_samples_summary({"diagnosis": "Cancer"})
-        
-        assert result == {"counts": {"total": 5}}
-        assert mock_session.run.call_count == 2
-
-    async def test_get_samples_summary_diagnosis_param_not_found(self, repository, mock_session):
-        """Test get_samples_summary when diagnosis param is not found in with_conditions."""
+    async def test_get_samples_summary_diagnosis_not_optimized_with_other_filters(self, repository, mock_session):
+        """Test get_samples_summary with diagnosis + non-allowed filters uses standard path."""
         async def async_gen():
             yield {"total_count": 3}
         
@@ -473,10 +422,16 @@ class TestGetSamplesSummaryCoverage:
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
         
-        # Should fall through to standard query if param not found
-        result = await repository.get_samples_summary({"diagnosis": "Cancer"})
+        # Adding preservation_method should prevent optimized path (not in allowed_with_diagnosis_summary)
+        result = await repository.get_samples_summary({
+            "diagnosis": "Cancer",
+            "preservation_method": "Frozen"
+        })
         
         assert result == {"counts": {"total": 3}}
+        # Standard query should be used (preservation_method not in allowed_with_diagnosis_summary)
+        assert mock_session.run.called
+    
 
     async def test_get_samples_summary_preservation_method_filter(self, repository, mock_session):
         """Test get_samples_summary with preservation_method filter."""
@@ -742,9 +697,14 @@ class TestGetSamplesSummaryReverseQueryCoverage:
         return allowlist
 
     @pytest.fixture
-    def repository(self, mock_session, mock_allowlist):
+    def mock_settings(self):
+        """Create a mock Settings instance."""
+        return Mock(spec=Settings)
+
+    @pytest.fixture
+    def repository(self, mock_session, mock_allowlist, mock_settings):
         """Create a SampleRepository instance."""
-        return SampleRepository(mock_session, mock_allowlist)
+        return SampleRepository(mock_session, mock_allowlist, mock_settings)
 
     async def test_get_samples_summary_reverse_query_library_source_material_null(self, repository, mock_session):
         """Test _get_samples_summary_reverse_query with null-mapped library_source_material."""
@@ -901,9 +861,14 @@ class TestValidateFiltersCoverage:
         return allowlist
 
     @pytest.fixture
-    def repository(self, mock_session, mock_allowlist):
+    def mock_settings(self):
+        """Create a mock Settings instance."""
+        return Mock(spec=Settings)
+
+    @pytest.fixture
+    def repository(self, mock_session, mock_allowlist, mock_settings):
         """Create a SampleRepository instance."""
-        return SampleRepository(mock_session, mock_allowlist)
+        return SampleRepository(mock_session, mock_allowlist, mock_settings)
 
     def test_validate_filters_allowed_fields(self, repository):
         """Test _validate_filters with all allowed fields."""

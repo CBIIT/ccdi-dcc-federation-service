@@ -947,7 +947,7 @@ def get_sample_diagnosis_filters(
         age_at_collection=age_at_collection,
         tumor_tissue_morphology=tumor_tissue_morphology,
         depositions=depositions,
-        diagnosis=diagnosis_param if not search_stripped else None,  # Only pass diagnosis when search is not provided
+        diagnosis=None,  # Explicitly disable diagnosis param on /sample-diagnosis
         identifiers=identifiers,
         request=request
     )

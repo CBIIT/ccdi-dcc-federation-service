@@ -221,37 +221,18 @@ async def search_samples_by_diagnosis(
         cache_service = get_cache_service()
         service = SampleService(session, allowlist, settings, cache_service)
         
-        # Make a copy of filters for get_samples (it will modify the dict by popping identifiers)
-        # so that get_samples_summary gets the original filters dict
-        filters_copy = filters.copy()
-        
-        # Get samples
-        samples = await service.get_samples(
-            filters=filters_copy,
+        # Dedicated /sample-diagnosis path: fetch data + total together
+        samples, total_count = await service.get_samples_for_diagnosis_endpoint(
+            filters=filters.copy(),
             offset=pagination.offset,
-            limit=pagination.per_page
+            limit=pagination.per_page,
         )
-        
-        # Get total count for summary (use original filters dict)
-        # If summary fails, use 0 as total (empty results)
-        try:
-            summary_result = await service.get_samples_summary(filters)
-            total_count = summary_result.counts.total
-        except Exception as summary_error:
-            # If summary fails, log but don't fail the request - return 0 as total
-            logger.warning(
-                "Error getting samples summary, using 0 as total",
-                error=str(summary_error),
-                exc_info=True
-            )
-            total_count = 0
-        
         # Build pagination info
         pagination_info = PaginationInfo(
             page=pagination.page,
             per_page=pagination.per_page,
             total_pages=None,
-            total_items=total_count,  # Use total_count from summary, not len(samples)
+            total_items=total_count,  # # Use total_count from diagnosis endpoint path
             has_next=len(samples) == pagination.per_page,  # If we got a full page, there might be more
             has_prev=pagination.page > 1
         )

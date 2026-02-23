@@ -168,7 +168,7 @@ class TestSubjectStudyMatchingConsistency:
         
         repo = SubjectRepository(session=AsyncMock(), allowlist=FieldAllowlist(), settings=Settings())
         
-        # Create a mock record with specific study_id
+        # Create a mock record with specific study_id (row mode: one row per participant-study pair)
         record = {
             "name": "00301d78915737fa100f",
             "race": "White",
@@ -179,19 +179,19 @@ class TestSubjectStudyMatchingConsistency:
             "survival_records": [],
             "diagnosis_nodes": [],
             "sex": "F",
-            "namespace": "phs002431",  # Specific study_id
-            "depositions": ["phs002430", "phs002431"]  # All studies for this participant
+            "namespace": "phs002431",  # row_namespace: study_id for this specific row
+            "depositions": ["phs002430", "phs002431"]  # All studies (not used in row mode)
         }
         
         # Convert record to subject
         subject = repo._record_to_subject(record)
         
-        # Verify namespace matches the study_id
+        # Verify namespace matches the row_namespace (study_id for this row)
         assert subject is not None
         assert subject.id.namespace.name == "phs002431"
-        # Verify depositions contains all studies
-        assert "phs002430" in [d.value for d in (subject.metadata.depositions or [])]
-        assert "phs002431" in [d.value for d in (subject.metadata.depositions or [])]
+        # Row mode: depositions contains only the row_namespace (study_id for this row)
+        assert len(subject.metadata.depositions) == 1
+        assert subject.metadata.depositions[0].value == "phs002431"
 
 
 class TestSubjectEndpointConsistency:

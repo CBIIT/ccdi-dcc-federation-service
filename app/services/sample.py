@@ -304,7 +304,41 @@ class SampleService:
         
         return response
     
-    
+    async def get_samples_for_diagnosis_endpoint(
+        self,
+        filters: Dict[str, Any],
+        offset: int = 0,
+        limit: int = 20,
+    ) -> Tuple[List[Sample], int]:
+        """
+        Dedicated service path for /sample-diagnosis that avoids summary endpoint query.
+        """
+        base_url = (
+            self.settings.identifier_server_url.rstrip("/")
+            if hasattr(self.settings, "identifier_server_url") and self.settings.identifier_server_url
+            else None
+        )
+
+        try:
+            samples, total_count = await self.repository.get_samples_for_diagnosis_endpoint(
+                filters=filters,
+                offset=offset,
+                limit=limit,
+                base_url=base_url,
+            )
+            return samples, total_count
+        except DatabaseConnectionError as e:
+            logger.error(
+                "Database connection error while fetching diagnosis samples",
+                error=str(e),
+                error_type=type(e).__name__,
+                filters=filters,
+                offset=offset,
+                limit=limit,
+                exc_info=True,
+            )
+            raise NotFoundError("Samples")
+        
     def _validate_identifier_params(self, organization: str, namespace: str, name: str) -> None:
         """
         Validate identifier parameters.

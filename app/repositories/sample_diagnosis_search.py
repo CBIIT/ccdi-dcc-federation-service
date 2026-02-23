@@ -93,6 +93,49 @@ class SampleDiagnosisSearch:
                 params[dp_param] = reverse_mapped
                 disease_phase_filter = f" AND d.disease_phase = ${dp_param}"
         
+        # Handle other diagnosis field filters (tumor_grade, tumor_classification, etc.)
+        additional_diagnosis_filters = []
+        
+        # Handle tumor_grade filter
+        if "tumor_grade" in filters:
+            tumor_grade_value = filters["tumor_grade"]
+            param_counter += 1
+            tg_param = f"param_{param_counter}"
+            params[tg_param] = tumor_grade_value
+            additional_diagnosis_filters.append(f"d.tumor_grade = ${tg_param}")
+        
+        # Handle tumor_classification filter
+        if "tumor_classification" in filters:
+            tumor_classification_value = filters["tumor_classification"]
+            if is_null_mapped_value("tumor_classification", tumor_classification_value):
+                logger.info("Invalid tumor_classification value - returning empty results", value=tumor_classification_value)
+                return [] if not return_total else ([], 0)
+            reverse_mapped = reverse_map_field_value("tumor_classification", tumor_classification_value)
+            param_counter += 1
+            tc_param = f"param_{param_counter}"
+            params[tc_param] = reverse_mapped if reverse_mapped else tumor_classification_value
+            additional_diagnosis_filters.append(f"d.tumor_classification = ${tc_param}")
+        
+        # Handle tumor_tissue_morphology filter
+        if "tumor_tissue_morphology" in filters:
+            tumor_tissue_morphology_value = filters["tumor_tissue_morphology"]
+            param_counter += 1
+            ttm_param = f"param_{param_counter}"
+            params[ttm_param] = tumor_tissue_morphology_value
+            additional_diagnosis_filters.append(f"d.tumor_tissue_morphology = ${ttm_param}")
+        
+        # Handle age_at_diagnosis filter
+        if "age_at_diagnosis" in filters:
+            age_at_diagnosis_value = filters["age_at_diagnosis"]
+            try:
+                age_int = int(age_at_diagnosis_value) if age_at_diagnosis_value is not None else None
+            except (ValueError, TypeError):
+                age_int = age_at_diagnosis_value
+            param_counter += 1
+            aad_param = f"param_{param_counter}"
+            params[aad_param] = age_int
+            additional_diagnosis_filters.append(f"toInteger(d.age_at_diagnosis) = ${aad_param}")
+        
         # Handle identifiers filter if present
         identifiers_early_filter = None
         if "identifiers" in filters:
@@ -149,6 +192,12 @@ class SampleDiagnosisSearch:
             # disease_phase_filter_condition already contains " AND dx.disease_phase..."
             diagnosis_where_clause += disease_phase_filter_condition
         
+        # Add additional diagnosis field filters (convert 'd.' to 'dx.' for OPTIONAL MATCH)
+        if additional_diagnosis_filters:
+            # Convert variable name from 'd.' to 'dx.' since we use 'dx' in OPTIONAL MATCH
+            additional_filters_dx = [f.replace("d.", "dx.") for f in additional_diagnosis_filters]
+            diagnosis_where_clause += " AND " + " AND ".join(additional_filters_dx)
+
         # Convert depositions_study_filter to depositions_sid_filter for use in UNWIND clause
         depositions_sid_filter = depositions_study_filter.replace("st.study_id", "sid") if depositions_study_filter else ""
         # Build WHERE clause for depositions filter (remove " AND " prefix since it will be in WHERE clause)
@@ -400,7 +449,50 @@ class SampleDiagnosisSearch:
                 params[dp_param] = reverse_mapped
                 disease_phase_param_name = dp_param
                 disease_phase_filter_condition = f" AND dx.disease_phase = ${dp_param}"
+             
+        # Handle other diagnosis field filters (tumor_grade, tumor_classification, etc.)
+        additional_diagnosis_filters = []
         
+        # Handle tumor_grade filter
+        if "tumor_grade" in filters:
+            tumor_grade_value = filters["tumor_grade"]
+            param_counter += 1
+            tg_param = f"param_{param_counter}"
+            params[tg_param] = tumor_grade_value
+            additional_diagnosis_filters.append(f"dx.tumor_grade = ${tg_param}")
+        
+        # Handle tumor_classification filter
+        if "tumor_classification" in filters:
+            tumor_classification_value = filters["tumor_classification"]
+            if is_null_mapped_value("tumor_classification", tumor_classification_value):
+                logger.info("Invalid tumor_classification value - returning empty results", value=tumor_classification_value)
+                return {"counts": {"total": 0}}
+            reverse_mapped = reverse_map_field_value("tumor_classification", tumor_classification_value)
+            param_counter += 1
+            tc_param = f"param_{param_counter}"
+            params[tc_param] = reverse_mapped if reverse_mapped else tumor_classification_value
+            additional_diagnosis_filters.append(f"dx.tumor_classification = ${tc_param}")
+        
+        # Handle tumor_tissue_morphology filter
+        if "tumor_tissue_morphology" in filters:
+            tumor_tissue_morphology_value = filters["tumor_tissue_morphology"]
+            param_counter += 1
+            ttm_param = f"param_{param_counter}"
+            params[ttm_param] = tumor_tissue_morphology_value
+            additional_diagnosis_filters.append(f"dx.tumor_tissue_morphology = ${ttm_param}")
+        
+        # Handle age_at_diagnosis filter
+        if "age_at_diagnosis" in filters:
+            age_at_diagnosis_value = filters["age_at_diagnosis"]
+            try:
+                age_int = int(age_at_diagnosis_value) if age_at_diagnosis_value is not None else None
+            except (ValueError, TypeError):
+                age_int = age_at_diagnosis_value
+            param_counter += 1
+            aad_param = f"param_{param_counter}"
+            params[aad_param] = age_int
+            additional_diagnosis_filters.append(f"toInteger(dx.age_at_diagnosis) = ${aad_param}")
+
         # Handle identifiers filter if present
         identifiers_early_filter = None
         if "identifiers" in filters:
@@ -462,9 +554,14 @@ class SampleDiagnosisSearch:
         diagnosis_where_clause_summary = f"""(
             {diagnosis_search_filter_condition}
         )"""
+
         if disease_phase_filter_condition:
             # disease_phase_filter_condition already contains " AND dx.disease_phase..."
             diagnosis_where_clause_summary += disease_phase_filter_condition
+             
+        # Add additional diagnosis field filters
+        if additional_diagnosis_filters:
+            diagnosis_where_clause_summary += " AND " + " AND ".join(additional_diagnosis_filters)
         
         cypher_summary = f"""
         MATCH (sa:sample)

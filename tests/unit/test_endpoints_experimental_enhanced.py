@@ -73,12 +73,14 @@ class TestExperimentalEndpointsEnhanced:
     async def test_search_samples_by_diagnosis_database_error(
         self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
     ):
-        """Test search_samples_by_diagnosis handles database errors from get_samples."""
+        """Test search_samples_by_diagnosis handles database errors from diagnosis endpoint path."""
         from app.services.sample import SampleService
 
         with patch("app.api.v1.endpoints.experimental.SampleService") as mock_service_class:
             mock_service = AsyncMock(spec=SampleService)
-            mock_service.get_samples = AsyncMock(side_effect=DatabaseConnectionError("Connection failed"))
+            mock_service.get_samples_for_diagnosis_endpoint = AsyncMock(
+                side_effect=DatabaseConnectionError("Connection failed")
+            )
             mock_service_class.return_value = mock_service
 
             with patch("app.api.v1.endpoints.experimental.get_cache_service", return_value=None):
@@ -99,12 +101,14 @@ class TestExperimentalEndpointsEnhanced:
     async def test_search_samples_by_diagnosis_connection_error(
         self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
     ):
-        """Test search_samples_by_diagnosis handles connection-related errors from get_samples."""
+        """Test search_samples_by_diagnosis handles connection-related errors from diagnosis endpoint path."""
         from app.services.sample import SampleService
 
         with patch("app.api.v1.endpoints.experimental.SampleService") as mock_service_class:
             mock_service = AsyncMock(spec=SampleService)
-            mock_service.get_samples = AsyncMock(side_effect=Exception("Database connection timeout"))
+            mock_service.get_samples_for_diagnosis_endpoint = AsyncMock(
+                side_effect=Exception("Database connection timeout")
+            )
             mock_service_class.return_value = mock_service
 
             with patch("app.api.v1.endpoints.experimental.get_cache_service", return_value=None):

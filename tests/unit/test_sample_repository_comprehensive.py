@@ -607,6 +607,43 @@ class TestSampleRepositoryGetSamples:
         assert isinstance(result, list)
         assert mock_session.run.called
 
+    async def test_get_samples_for_diagnosis_endpoint_returns_tuple(self, repository):
+        """Dedicated diagnosis endpoint path returns tuple from get_samples(return_total=True)."""
+        with patch.object(repository, "get_samples", new_callable=AsyncMock) as mock_get_samples:
+            mock_get_samples.return_value = ([Mock()], 8)
+
+            samples, total_count = await repository.get_samples_for_diagnosis_endpoint(
+                filters={"_diagnosis_search": "glioma"},
+                offset=0,
+                limit=20,
+                base_url="https://example.org",
+            )
+
+            assert isinstance(samples, list)
+            assert total_count == 8
+            mock_get_samples.assert_awaited_once_with(
+                filters={"_diagnosis_search": "glioma"},
+                offset=0,
+                limit=20,
+                base_url="https://example.org",
+                return_total=True,
+            )
+
+    async def test_get_samples_for_diagnosis_endpoint_fallback_list(self, repository):
+        """Dedicated diagnosis endpoint path returns zero total if get_samples omits count."""
+        with patch.object(repository, "get_samples", new_callable=AsyncMock) as mock_get_samples:
+            mock_get_samples.return_value = [Mock()]
+
+            samples, total_count = await repository.get_samples_for_diagnosis_endpoint(
+                filters={"_diagnosis_search": "glioma"},
+                offset=0,
+                limit=20,
+            )
+
+            assert isinstance(samples, list)
+            assert len(samples) == 1
+            assert total_count == 0
+
 
 @pytest.mark.unit
 class TestSampleRepositoryGetSamplesSummary:

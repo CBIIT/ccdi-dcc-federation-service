@@ -461,6 +461,212 @@ class TestSubjectRepositoryEnhanced:
         
         assert isinstance(result2, list)
 
+    async def test_get_subjects_summary_for_diagnosis_fallback_without_search(self, repository):
+        """Test diagnosis-summary path falls back to standard summary when _diagnosis_search is missing."""
+        repository.get_subjects_summary = AsyncMock(return_value={"total_count": 11})
+
+        result = await repository.get_subjects_summary_for_diagnosis_endpoint(
+            filters={"sex": "F", "_invalid_sex": True}
+        )
+
+        assert result == {"total_count": 11}
+        repository.get_subjects_summary.assert_called_once_with({"sex": "F", "_invalid_sex": True})
+
+    async def test_get_subjects_summary_for_diagnosis_maps_sex_values(self, repository, mock_session):
+        """Test diagnosis-summary path maps API sex values (F -> Female)."""
+        mock_result = AsyncMock()
+        mock_result.data = AsyncMock(return_value=[{"total_count": 5}])
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        await repository.get_subjects_summary_for_diagnosis_endpoint(
+            filters={"_diagnosis_search": "Neuroblastoma", "sex": "F"}
+        )
+
+        assert mock_session.run.called
+        _, params = mock_session.run.call_args.args
+        assert any(v == "Female" for v in params.values())
+        assert not any(v == "F" for v in params.values())
+
+    async def test_get_subjects_summary_for_diagnosis_skips_internal_marker_keys(self, repository, mock_session):
+        """Test diagnosis-summary path does not convert internal marker keys into participant filters."""
+        mock_result = AsyncMock()
+        mock_result.data = AsyncMock(return_value=[{"total_count": 3}])
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        await repository.get_subjects_summary_for_diagnosis_endpoint(
+            filters={
+                "_diagnosis_search": "Neuroblastoma",
+                "_unknown_parameters": ["bad_param"],
+                "_invalid_sex": "X",
+                "_age_at_vital_status_reason": "invalid",
+                "sex": "F",
+            }
+        )
+
+        cypher = mock_session.run.call_args.args[0]
+        assert "p._unknown_parameters" not in cypher
+        assert "p._invalid_sex" not in cypher
+        assert "p._age_at_vital_status_reason" not in cypher
+
+    async def test_get_subjects_summary_for_diagnosis_identifiers_with_depositions_has_id_list(
+        self, repository, mock_session
+    ):
+        """Test diagnosis-summary depositions branch includes id_list scope for identifiers filter."""
+        mock_result = AsyncMock()
+        mock_result.data = AsyncMock(return_value=[{"total_count": 2}])
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        await repository.get_subjects_summary_for_diagnosis_endpoint(
+            filters={
+                "_diagnosis_search": "Neuroblastoma",
+                "identifiers": "IID_H211943",
+                "depositions": "phs002620",
+            }
+        )
+
+        cypher = mock_session.run.call_args.args[0]
+        assert "AS id_list" in cypher
+        assert "p.participant_id IN id_list" in cypher
+
+    async def test_get_subjects_summary_for_diagnosis_identifiers_without_depositions_has_id_list(
+        self, repository, mock_session
+    ):
+        """Test diagnosis-summary non-depositions branch includes id_list scope for identifiers filter."""
+        mock_result = AsyncMock()
+        mock_result.data = AsyncMock(return_value=[{"total_count": 4}])
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        await repository.get_subjects_summary_for_diagnosis_endpoint(
+            filters={
+                "_diagnosis_search": "Neuroblastoma",
+                "identifiers": "IID_H211943",
+            }
+        )
+
+        cypher = mock_session.run.call_args.args[0]
+        assert "AS id_list" in cypher
+        assert "p.participant_id IN id_list" in cypher
+
+    async def test_get_subjects_summary_for_diagnosis_race_not_reported(self, repository, mock_session):
+        """Test diagnosis-summary path handles race filter with 'Not Reported' correctly."""
+        mock_result = AsyncMock()
+        mock_result.data = AsyncMock(return_value=[{"total_count": 8}])
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        await repository.get_subjects_summary_for_diagnosis_endpoint(
+            filters={
+                "_diagnosis_search": "Neuroblastoma",
+                "race": "Not Reported",
+            }
+        )
+
+        cypher = mock_session.run.call_args.args[0]
+        # Should include special logic for "Not Reported" race
+        assert "Not Reported" in cypher or "reduce" in cypher
+
+    async def test_get_subjects_summary_for_diagnosis_vital_status_filter(self, repository, mock_session):
+        """Test diagnosis-summary path applies vital_status derived filter correctly."""
+        mock_result = AsyncMock()
+        mock_result.data = AsyncMock(return_value=[{"total_count": 12}])
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        await repository.get_subjects_summary_for_diagnosis_endpoint(
+            filters={
+                "_diagnosis_search": "Neuroblastoma",
+                "vital_status": "Alive",
+            }
+        )
+
+        cypher = mock_session.run.call_args.args[0]
+        assert "final_vital_status" in cypher
+        # Check params for vital_status value
+        _, params = mock_session.run.call_args.args
+        assert any("Alive" in str(v) or "alive" in str(v).lower() for v in params.values())
+
+    async def test_get_subjects_summary_for_diagnosis_age_at_vital_status_filter(self, repository, mock_session):
+        """Test diagnosis-summary path applies age_at_vital_status derived filter correctly."""
+        mock_result = AsyncMock()
+        mock_result.data = AsyncMock(return_value=[{"total_count": 6}])
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        await repository.get_subjects_summary_for_diagnosis_endpoint(
+            filters={
+                "_diagnosis_search": "Neuroblastoma",
+                "age_at_vital_status": 3407,
+            }
+        )
+
+        cypher = mock_session.run.call_args.args[0]
+        assert "final_age_at_vital_status" in cypher
+
+    async def test_get_subjects_summary_for_diagnosis_multiple_depositions(self, repository, mock_session):
+        """Test diagnosis-summary path handles multiple depositions with || delimiter."""
+        mock_result = AsyncMock()
+        mock_result.data = AsyncMock(return_value=[{"total_count": 15}])
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        await repository.get_subjects_summary_for_diagnosis_endpoint(
+            filters={
+                "_diagnosis_search": "Neuroblastoma",
+                "depositions": "phs002620||phs003111",
+            }
+        )
+
+        cypher = mock_session.run.call_args.args[0]
+        assert "IN" in cypher or "=" in cypher
+
+    async def test_get_subjects_summary_for_diagnosis_empty_result(self, repository, mock_session):
+        """Test diagnosis-summary path handles empty result correctly."""
+        mock_result = AsyncMock()
+        mock_result.data = AsyncMock(return_value=[])
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        result = await repository.get_subjects_summary_for_diagnosis_endpoint(
+            filters={
+                "_diagnosis_search": "NonExistentDiagnosis",
+            }
+        )
+
+        assert result == {"total_count": 0}
+
+    async def test_get_subjects_summary_for_diagnosis_sex_mapping_all_values(self, repository, mock_session):
+        """Test diagnosis-summary path maps all API sex values correctly."""
+        mock_result = AsyncMock()
+        mock_result.data = AsyncMock(return_value=[{"total_count": 1}])
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        # Test M -> Male
+        await repository.get_subjects_summary_for_diagnosis_endpoint(
+            filters={"_diagnosis_search": "Cancer", "sex": "M"}
+        )
+        _, params_m = mock_session.run.call_args.args
+        assert any(v == "Male" for v in params_m.values())
+
+        # Test U -> Not Reported
+        await repository.get_subjects_summary_for_diagnosis_endpoint(
+            filters={"_diagnosis_search": "Cancer", "sex": "U"}
+        )
+        _, params_u = mock_session.run.call_args.args
+        assert any(v == "Not Reported" for v in params_u.values())
+
+    async def test_get_subjects_summary_for_diagnosis_where_clause_hardening(self, repository, mock_session):
+        """Test diagnosis-summary path WHERE clause hardening removes malformed fragments."""
+        mock_result = AsyncMock()
+        mock_result.data = AsyncMock(return_value=[{"total_count": 3}])
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        await repository.get_subjects_summary_for_diagnosis_endpoint(
+            filters={
+                "_diagnosis_search": "Neuroblastoma",
+                "sex": "F",
+            }
+        )
+
+        cypher = mock_session.run.call_args.args[0]
+        # Should not contain malformed WHERE clauses
+        assert "WHERE AND" not in cypher
+        assert "WHERE OR" not in cypher
+
 
 @pytest.mark.unit
 class TestFileRepositoryEnhanced:

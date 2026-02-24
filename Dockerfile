@@ -20,6 +20,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get upgrade -y --no-install-recommends openssl libssl3 openssl-provider-legacy \
     && rm -rf /var/lib/apt/lists/*
 
+
+# Patch pip to fix security vulnerabilities
+RUN python -m pip install --no-cache-dir --upgrade "pip==25.3"
+
 WORKDIR /app
 
 # Only copy dependency definition & metadata first for layer caching
@@ -49,6 +53,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && apt-get upgrade -y --no-install-recommends openssl libssl3 openssl-provider-legacy \
     && rm -rf /var/lib/apt/lists/*
+
+# Keep pip patched in builder image for security scans
+RUN python -m pip install --no-cache-dir --upgrade "pip==25.3"
 
 WORKDIR /app
 

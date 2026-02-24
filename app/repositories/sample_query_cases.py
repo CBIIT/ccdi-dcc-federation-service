@@ -395,6 +395,7 @@ class SampleQueryCases:
         # Handle diagnosis search - needs special collection filter
         diagnosis_search_filter = None
         disease_phase_collection_filter = None
+        combined_diagnosis_condition = None
         if needs_diagnosis_search:
             # Pre-process search term to lowercase (done once in Python)
             diagnosis_search_term_lower = diagnosis_search_term.lower().strip()
@@ -598,13 +599,14 @@ class SampleQueryCases:
         if has_diagnosis_filters or needs_diagnosis_search:
             # Collect all diagnoses to filter for matches
             if needs_diagnosis_search:
-                # Apply diagnosis search filter during collection
+                # Apply diagnosis search + diagnosis field filters during collection
+                combined_parts = [f"({diagnosis_search_filter})"]
                 if disease_phase_collection_filter:
-                    # Combine diagnosis search with disease_phase filter
-                    combined_filter = f"d IS NOT NULL AND ({diagnosis_search_filter}) AND ({disease_phase_collection_filter})"
-                else:
-                    # Only diagnosis search filter
-                    combined_filter = f"d IS NOT NULL AND ({diagnosis_search_filter})"
+                    combined_parts.append(f"({disease_phase_collection_filter})")
+                if combined_diagnosis_condition:
+                    combined_parts.append(f"({combined_diagnosis_condition})")
+                
+                combined_filter = "d IS NOT NULL AND " + " AND ".join(combined_parts)
                 with_collects.append(f"[d IN collect(DISTINCT d) WHERE {combined_filter}] AS all_diagnoses")
             else:
                 # Regular diagnosis filters - collect all, filter later
@@ -656,17 +658,6 @@ class SampleQueryCases:
             WITH DISTINCT sa.sample_id AS sample_id, st.study_id AS study_id
             RETURN count(*) AS total_count
             """.strip()
-            
-            logger.info(
-                "Case 3 count query",
-                cypher=cypher_count[:1000] if len(cypher_count) > 1000 else cypher_count,
-                params=params,
-                sample_where_str=sample_where_str,
-                has_pf_filters=has_pf_filters,
-                has_diagnosis_filters=has_diagnosis_filters,
-                has_sf_filters=has_sf_filters,
-                where_clause=where_clause
-            )
             
             try:
                 result_count = await self.session.run(cypher_count, params)

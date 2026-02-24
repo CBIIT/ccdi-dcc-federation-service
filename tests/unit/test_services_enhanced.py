@@ -431,3 +431,29 @@ class TestSampleServiceEnhanced:
         with pytest.raises(ValidationError):
             await service.get_sample_by_identifier("org", "namespace", "")
 
+    async def test_get_samples_for_diagnosis_endpoint_success(self, service):
+        """Test dedicated diagnosis endpoint path returns samples and total."""
+        mock_samples = [Mock()]
+        service.repository.get_samples_for_diagnosis_endpoint = AsyncMock(return_value=(mock_samples, 42))
+
+        samples, total_count = await service.get_samples_for_diagnosis_endpoint(
+            filters={"_diagnosis_search": "glioma"},
+            offset=5,
+            limit=10,
+        )
+
+        assert samples == mock_samples
+        assert total_count == 42
+        service.repository.get_samples_for_diagnosis_endpoint.assert_awaited_once()
+
+    async def test_get_samples_for_diagnosis_endpoint_database_error(self, service):
+        """Test dedicated diagnosis endpoint path maps DB errors to NotFoundError."""
+        service.repository.get_samples_for_diagnosis_endpoint = AsyncMock(
+            side_effect=DatabaseConnectionError("Connection failed")
+        )
+
+        with pytest.raises(NotFoundError) as exc_info:
+            await service.get_samples_for_diagnosis_endpoint(filters={"_diagnosis_search": "glioma"})
+
+        assert exc_info.value.entity == "Samples"
+

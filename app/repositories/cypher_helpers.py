@@ -45,7 +45,9 @@ def adapt_where_clause_for_query_pattern(
         return ""
     
     # Remove WHERE prefix if present (we'll add it back if needed)
-    clause = where_clause.replace("WHERE", "").strip()
+    clause = where_clause.strip()
+    if clause.startswith("WHERE "):
+        clause = clause[6:]  # Remove "WHERE " prefix (6 characters)
     
     # Skip if empty after removing WHERE
     if not clause:

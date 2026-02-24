@@ -357,9 +357,13 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
             logger.debug("Using Case 2: Sample + Study filters only query path")
             # Combine sample and study filters
             combined_filters = {**categorized["sample"], **categorized["study"]}
-            return await self._get_samples_case2_sample_study(
+            result_case2 = await self._get_samples_case2_sample_study(
                 combined_filters, offset, limit, base_url, return_total
             )
+            # Case 2 may return None when early-pagination path cannot handle the specific filter set.
+            # Fall through to Case 3/standard flow instead of returning None to callers.
+            if result_case2 is not None:
+                return result_case2
         
         # Optimization: Pathology_file-only filters (no other node filters) - use specialized method
         if has_pf_filters and not has_diagnosis_filters and not has_sf_filters and not has_sample_filters and not has_study_filters:
@@ -1353,7 +1357,6 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
                         "Query executed successfully (string version)",
                         records_count=len(records),
                         cypher=cypher,
-                        debug_cypher=debug_cypher_string,
                         params=params
                     )
                 except Exception as e2:
@@ -2612,3 +2615,30 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         )
         
         return sample
+
+    async def get_samples_for_diagnosis_endpoint(
+        self,
+        filters: Dict[str, Any],
+        offset: int = 0,
+        limit: int = 20,
+        base_url: Optional[str] = None,
+    ) -> Tuple[List[Sample], int]:
+        """
+        Dedicated data+total path for /sample-diagnosis endpoint.
+        Keeps /sample endpoint behavior untouched.
+        """
+        result = await self.get_samples(
+            filters=filters,
+            offset=offset,
+            limit=limit,
+            base_url=base_url,
+            return_total=True,
+        )
+
+        if isinstance(result, tuple):
+            samples, total_count = result
+            return samples, int(total_count or 0)
+
+        # Defensive fallback: repository path didn't produce total_count
+        samples = result if isinstance(result, list) else []
+        return samples, 0

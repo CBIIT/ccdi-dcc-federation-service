@@ -60,9 +60,6 @@ class TestExperimentalEndpoints:
             
             def __getitem__(self, key):
                 return self._params[key]
-            
-            def __iter__(self):
-                return iter(self._params.items())
         
         request.query_params = QueryParams({"search": "cancer", "page": "1", "per_page": "20"})
         return request
@@ -84,7 +81,6 @@ class TestExperimentalEndpoints:
         self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
     ):
         """Test search_samples_by_diagnosis returns samples."""
-        from app.models.dto import Sample, SummaryResponse, SummaryCounts
         
         # Create a proper mock that has model_dump method
         class MockSample:
@@ -98,13 +94,10 @@ class TestExperimentalEndpoints:
                 }
         
         mock_samples = [MockSample()]
-        
-        mock_summary = SummaryResponse(counts=SummaryCounts(total=100))
-        
+
         with patch('app.api.v1.endpoints.experimental.SampleService') as mock_service_class:
             mock_service = Mock()
-            mock_service.get_samples = AsyncMock(return_value=mock_samples)
-            mock_service.get_samples_summary = AsyncMock(return_value=mock_summary)
+            mock_service.get_samples_for_diagnosis_endpoint = AsyncMock(return_value=(mock_samples, 100))
             mock_service_class.return_value = mock_service
             
             with patch('app.api.v1.endpoints.experimental.get_cache_service', return_value=None):
@@ -124,6 +117,7 @@ class TestExperimentalEndpoints:
         assert len(result.data) == 1
         assert result.summary["counts"]["all"] == 100
         assert result.summary["counts"]["current"] == 1
+        mock_service.get_samples_for_diagnosis_endpoint.assert_awaited_once()
 
     async def test_search_samples_by_diagnosis_invalid_params(
         self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
@@ -161,10 +155,10 @@ class TestExperimentalEndpoints:
             # Should raise HTTPException with 400 status (InvalidParameters)
             assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
 
-    async def test_search_samples_by_diagnosis_summary_error(
+    async def test_search_samples_by_diagnosis_handles_total_fallback(
         self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
     ):
-        """Test search_samples_by_diagnosis handles summary errors gracefully."""
+        """Test search_samples_by_diagnosis handles missing total from repository path."""
         # Create a proper mock that has model_dump method
         class MockSample:
             def model_dump(self, exclude=None, exclude_none=None, exclude_unset=None):
@@ -180,9 +174,7 @@ class TestExperimentalEndpoints:
         
         with patch('app.api.v1.endpoints.experimental.SampleService') as mock_service_class:
             mock_service = Mock()
-            mock_service.get_samples = AsyncMock(return_value=mock_samples)
-            # Summary fails but should not crash the endpoint
-            mock_service.get_samples_summary = AsyncMock(side_effect=Exception("Summary error"))
+            mock_service.get_samples_for_diagnosis_endpoint = AsyncMock(return_value=(mock_samples, 0))
             mock_service_class.return_value = mock_service
             
             with patch('app.api.v1.endpoints.experimental.get_cache_service', return_value=None):
@@ -198,10 +190,140 @@ class TestExperimentalEndpoints:
                         _rate_limit=None
                     )
         
-        # Should still return results with total_count = 0 when summary fails
+        # Should still return results with total_count = 0 fallback
         assert isinstance(result, SamplesResponse)
         assert result.summary["counts"]["all"] == 0
-        assert len(result.data) == 1  # Samples should still be returned
+        assert len(result.data) == 1
+
+    async def test_search_samples_by_diagnosis_without_search_uses_non_diagnosis_filters(
+        self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response
+    ):
+        """Test /sample-diagnosis accepts non-search filters and forwards them without _diagnosis_search."""
+        from app.core.pagination import PaginationParams
+
+        # Exercise the non-model_dump branch in endpoint serialization
+        mock_samples = [{
+            "id": {"namespace": {"organization": "CCDI-DCC", "name": "phs002430"}, "name": "sample1"},
+            "metadata": {"age_at_collection": {"value": 1461}},
+            "gateways": [{"name": "ignore-me"}],
+        }]
+        pagination = PaginationParams(page=1, per_page=50)
+
+        class QueryParams:
+            def __init__(self, params):
+                self._params = params
+
+            def keys(self):
+                return self._params.keys()
+
+            def __iter__(self):
+                return iter(self._params.items())
+
+            def __getitem__(self, key):
+                return self._params[key]
+
+        mock_request.query_params = QueryParams({
+            "depositions": "phs002430",
+            "age_at_collection": "1461",
+            "page": "1",
+            "per_page": "50",
+        })
+
+        with patch("app.api.v1.endpoints.experimental.SampleService") as mock_service_class:
+            mock_service = Mock()
+            mock_service.get_samples_for_diagnosis_endpoint = AsyncMock(return_value=(mock_samples, 1))
+            mock_service_class.return_value = mock_service
+
+            with patch("app.api.v1.endpoints.experimental.get_cache_service", return_value=None):
+                with patch("app.api.v1.endpoints.experimental.check_rate_limit", return_value=None):
+                    result = await search_samples_by_diagnosis(
+                        request=mock_request,
+                        response=mock_response,
+                        filters={"depositions": "phs002430", "age_at_collection": "1461"},
+                        pagination=pagination,
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None,
+                    )
+
+        assert isinstance(result, SamplesResponse)
+        assert result.summary["counts"]["all"] == 1
+        assert result.summary["counts"]["current"] == 1
+        # Endpoint should strip gateways from output payload
+        assert "gateways" not in result.data[0]
+        call_kwargs = mock_service.get_samples_for_diagnosis_endpoint.await_args.kwargs
+        assert "_diagnosis_search" not in call_kwargs["filters"]
+        assert call_kwargs["filters"]["depositions"] == "phs002430"
+        assert call_kwargs["filters"]["age_at_collection"] == "1461"
+        assert call_kwargs["offset"] == 0
+        assert call_kwargs["limit"] == 50
+
+    async def test_search_samples_by_diagnosis_sets_link_header(
+        self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
+    ):
+        """Test endpoint sets link header when pagination helper returns one."""
+        class MockSample:
+            def model_dump(self, exclude=None, exclude_none=None, exclude_unset=None):
+                return {
+                    "id": {"namespace": {"organization": "CCDI-DCC", "name": "phs002431"}, "name": "sample1"},
+                    "metadata": {}
+                }
+
+        with patch("app.api.v1.endpoints.experimental.SampleService") as mock_service_class:
+            mock_service = Mock()
+            mock_service.get_samples_for_diagnosis_endpoint = AsyncMock(return_value=([MockSample()], 100))
+            mock_service_class.return_value = mock_service
+
+            with patch("app.api.v1.endpoints.experimental.get_cache_service", return_value=None):
+                with patch("app.api.v1.endpoints.experimental.build_link_header", return_value="<http://test>; rel=\"next\""):
+                    with patch("app.api.v1.endpoints.experimental.check_rate_limit", return_value=None):
+                        await search_samples_by_diagnosis(
+                            request=mock_request,
+                            response=mock_response,
+                            filters={"search": "cancer"},
+                            pagination=mock_pagination,
+                            session=mock_session,
+                            settings=mock_settings,
+                            allowlist=mock_allowlist,
+                            _rate_limit=None,
+                        )
+
+        assert mock_response.headers.get("link") == "<http://test>; rel=\"next\""
+
+    async def test_search_samples_by_diagnosis_rejects_diagnosis_query_param(
+        self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
+    ):
+        """Test /sample-diagnosis rejects diagnosis param (must use search)."""
+        class QueryParams:
+            def __init__(self, params):
+                self._params = params
+
+            def keys(self):
+                return self._params.keys()
+
+            def __iter__(self):
+                return iter(self._params.items())
+
+            def __getitem__(self, key):
+                return self._params[key]
+
+        mock_request.query_params = QueryParams({"diagnosis": "Neuroblastoma", "page": "1", "per_page": "20"})
+
+        with patch("app.api.v1.endpoints.experimental.check_rate_limit", return_value=None):
+            with pytest.raises(HTTPException) as exc_info:
+                await search_samples_by_diagnosis(
+                    request=mock_request,
+                    response=mock_response,
+                    filters={"diagnosis": "Neuroblastoma"},
+                    pagination=mock_pagination,
+                    session=mock_session,
+                    settings=mock_settings,
+                    allowlist=mock_allowlist,
+                    _rate_limit=None,
+                )
+
+        assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
 
     async def test_search_subjects_by_diagnosis_success(
         self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
@@ -233,7 +355,7 @@ class TestExperimentalEndpoints:
         with patch('app.api.v1.endpoints.experimental.SubjectService') as mock_service_class:
             mock_service = Mock()
             mock_service.get_subjects = AsyncMock(return_value=mock_subjects)
-            mock_service.get_subjects_summary = AsyncMock(return_value=mock_summary)
+            mock_service.get_subjects_summary_for_diagnosis_endpoint = AsyncMock(return_value=mock_summary)
             mock_service_class.return_value = mock_service
             
             with patch('app.api.v1.endpoints.experimental.get_cache_service', return_value=None):

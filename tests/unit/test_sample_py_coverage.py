@@ -597,6 +597,78 @@ class TestGetSamplesMainMethod:
             )
             
             mock_case2.assert_called_once()
+    
+    async def test_get_samples_case2_none_falls_through_to_case3(self, repository, mock_session):
+        """Test get_samples falls through to Case 3 when Case 2 returns None."""
+        with patch.object(repository, '_get_samples_case2_sample_study', new_callable=AsyncMock) as mock_case2, \
+             patch.object(repository, '_get_samples_case3_with_node_filters', new_callable=AsyncMock) as mock_case3:
+            # Reproduce problematic shape: sample + study filters where Case 2 can't handle it
+            mock_case2.return_value = None
+            mock_case3.return_value = []
+            
+            result = await repository.get_samples(
+                filters={"age_at_collection": "1461", "depositions": "phs002430"},
+                offset=0,
+                limit=50,
+                return_total=True,
+            )
+            
+            mock_case2.assert_called_once()
+            mock_case3.assert_called_once()
+            assert result == []
+
+    async def test_get_samples_case2_none_falls_through_to_case3_without_total(self, repository, mock_session):
+        """Regression: Case 2 None should still return list path when return_total=False."""
+        with patch.object(repository, '_get_samples_case2_sample_study', new_callable=AsyncMock) as mock_case2, \
+             patch.object(repository, '_get_samples_case3_with_node_filters', new_callable=AsyncMock) as mock_case3:
+            mock_case2.return_value = None
+            mock_case3.return_value = []
+
+            result = await repository.get_samples(
+                filters={"age_at_collection": "1461", "depositions": "phs002430"},
+                offset=0,
+                limit=50,
+                return_total=False,
+            )
+
+            mock_case2.assert_called_once()
+            mock_case3.assert_called_once()
+            assert isinstance(result, list)
+            assert result == []
+
+    async def test_get_samples_case2_none_and_case3_none_fall_through_to_standard_query(self, repository, mock_session):
+        """Regression: when Case 2 and Case 3 both return None, standard query path should run."""
+        async def async_gen():
+            yield {
+                "sa": {"sample_id": "SAMP001"},
+                "p": {},
+                "st": {"study_id": "phs002430"},
+                "sf": {},
+                "pf": {},
+                "diagnoses": {}
+            }
+
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        with patch.object(repository, '_get_samples_case2_sample_study', new_callable=AsyncMock) as mock_case2, \
+             patch.object(repository, '_get_samples_case3_with_node_filters', new_callable=AsyncMock) as mock_case3:
+            mock_case2.return_value = None
+            mock_case3.return_value = None
+
+            result = await repository.get_samples(
+                filters={"age_at_collection": "1461", "depositions": "phs002430"},
+                offset=0,
+                limit=50,
+                return_total=False,
+            )
+
+            mock_case2.assert_called_once()
+            mock_case3.assert_called_once()
+            assert mock_session.run.called
+            assert isinstance(result, list)
 
     async def test_get_samples_case3_node_filters(self, repository, mock_session):
         """Test get_samples routes to Case 3 (has other node filters)."""
@@ -661,6 +733,21 @@ class TestGetSamplesMainMethod:
             categorized_arg = call_args[0][1] if len(call_args[0]) > 1 else {}
             assert "diagnosis" in filters_arg
             assert "diagnosis" in categorized_arg.get("diagnosis", {})
+
+    async def test_get_samples_recent_tumor_grade_and_tissue_type_routes_case3_with_total(self, repository, mock_session):
+        """Coverage for recent API combo: tumor_grade + tissue_type (Case 3 with total)."""
+        with patch.object(repository, '_get_samples_case3_with_node_filters', new_callable=AsyncMock) as mock_case3:
+            mock_case3.return_value = ([], 55)
+            result = await repository.get_samples(
+                filters={"tumor_grade": "G3 High Grade", "tissue_type": "Tumor"},
+                offset=0,
+                limit=10,
+                return_total=True,
+            )
+
+            mock_case3.assert_called_once()
+            assert isinstance(result, tuple)
+            assert result[1] == 55
 
     async def test_get_samples_case1_with_return_total(self, repository, mock_session):
         """Test Case 1 with return_total=True."""

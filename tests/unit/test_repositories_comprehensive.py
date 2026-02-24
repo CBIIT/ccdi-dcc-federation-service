@@ -114,8 +114,8 @@ class TestSubjectRepositoryInternal:
         }
         record = {
             "name": "P1",
-            "namespace": "phs001",
-            "depositions": ["phs001", "phs002"],
+            "namespace": "phs001",  # row_namespace: study_id for this row
+            "depositions": ["phs001", "phs002"],  # All studies (not used in row mode)
             "race": "Hispanic or Latino;White",
             "sex": "female",
             "vital_status": None,
@@ -133,11 +133,15 @@ class TestSubjectRepositoryInternal:
 
         subject = repository._record_to_subject(record, base_url="http://example.org")
 
-        assert subject.id.namespace.name == "phs002"
+        # Row mode: namespace comes from row_namespace (record["namespace"]), not from depositions
+        assert subject.id.namespace.name == "phs001"
         assert subject.id.name == "P1"
         assert subject.metadata.sex.value == "F"
         assert subject.metadata.ethnicity.value == "Hispanic or Latino"
         assert [item.value for item in subject.metadata.race] == ["White"]
+        # Row mode: depositions contains only the row_namespace (study_id for this row)
+        assert len(subject.metadata.depositions) == 1
+        assert subject.metadata.depositions[0].value == "phs001"
 
     def test_record_to_subject_applies_race_mapping(self, repository):
         """Test _record_to_subject applies race value mapping (DB -> API)."""

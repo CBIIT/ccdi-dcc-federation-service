@@ -360,6 +360,92 @@ class SubjectService:
         
         return response
     
+    async def get_subjects_summary_for_diagnosis_endpoint(
+        self,
+        filters: Dict[str, Any]
+    ) -> SummaryResponse:
+        """
+        Get summary statistics for subjects with diagnosis search.
+        Optimized to filter by diagnosis FIRST before collecting survival records.
+        
+        Args:
+            filters: Filters to apply (must include _diagnosis_search)
+            
+        Returns:
+            SummaryResponse with summary statistics
+        """
+        logger.debug(
+            "Getting subjects summary for diagnosis endpoint",
+            filters=filters
+        )
+
+        # If no diagnosis search term, use standard subject summary behavior.
+        if not filters or not filters.get("_diagnosis_search"):
+            return await self.get_subjects_summary(filters or {})
+        
+        # Check cache first
+        cache_key = None
+        if self.cache_service:
+            cache_key = self._build_cache_key("subject_summary_diagnosis", None, filters)
+            logger.debug("Cache key for diagnosis endpoint", cache_key=cache_key, filters=filters)
+            cached_result = await self.cache_service.get(cache_key)
+            if cached_result:
+                logger.debug(
+                    "Returning cached subjects summary for diagnosis endpoint",
+                    cached_total=cached_result.get("counts", {}).get("total") if isinstance(cached_result, dict) and "counts" in cached_result else cached_result.get("total_count")
+                )
+                if "counts" in cached_result:
+                    return SummaryResponse(**cached_result)
+                else:
+                    return SummaryResponse(
+                        counts=SummaryCounts(total=cached_result.get("total_count", 0))
+                    )
+        
+        # Get summary from repository
+        try:
+            summary_data = await self.repository.get_subjects_summary_for_diagnosis_endpoint(filters)
+        except DatabaseConnectionError as e:
+            logger.error(
+                "Database connection error while fetching subjects summary for diagnosis endpoint - returning empty result",
+                error=str(e),
+                error_type=type(e).__name__,
+                filters=filters,
+                is_database_connection_error=True,
+                will_return_empty=True
+            )
+            return SummaryResponse(counts=SummaryCounts(total=0))
+        except Exception as e:
+            logger.error(
+                "Error getting subjects summary for diagnosis endpoint",
+                error=str(e),
+                error_type=type(e).__name__,
+                filters=filters,
+                exc_info=True
+            )
+            raise
+        
+        # Transform repository format to response format
+        response = SummaryResponse(
+            counts=SummaryCounts(total=summary_data.get("total_count", 0))
+        )
+        
+        # Cache result
+        if self.cache_service and cache_key:
+            logger.debug("Caching summary result for diagnosis endpoint", cache_key=cache_key, total=response.counts.total)
+            await self.cache_service.set(
+                cache_key,
+                response.model_dump(),
+                ttl=self.settings.cache.summary_ttl
+            )
+        
+        logger.info(
+            "Completed subjects summary for diagnosis endpoint",
+            total_count=response.counts.total
+        )
+        
+        return response
+    
+    
     def _validate_identifier_params(self, organization: str, namespace: Optional[str], name: str) -> None:
         """
         Validate identifier parameters.

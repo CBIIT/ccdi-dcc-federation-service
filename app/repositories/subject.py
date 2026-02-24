@@ -4195,6 +4195,352 @@ WITH p, d, c, st,
         
         return summary
     
+    async def get_subjects_summary_for_diagnosis_endpoint(
+        self,
+        filters: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Get summary statistics for subjects with diagnosis search.
+        Optimized to filter by diagnosis FIRST before collecting survival records.
+        
+        Args:
+            filters: Filters to apply (must include _diagnosis_search)
+            
+        Returns:
+            Dictionary with summary statistics
+        """
+        logger.debug("Getting subjects summary for diagnosis endpoint", filters=filters)
+        # Avoid mutating the caller's dict
+        filters = dict(filters or {})
+        
+        # Ensure diagnosis search is present and remove internal key from generic filter processing
+        diagnosis_search_term = filters.pop("_diagnosis_search", None)
+        if not diagnosis_search_term:
+            logger.warning("get_subjects_summary_for_diagnosis_endpoint called without _diagnosis_search")
+            return await self.get_subjects_summary(filters)
+        
+        # Build WHERE conditions and parameters (reuse logic from get_subjects_summary)
+        where_conditions = []
+        params = {"diagnosis_search_term": diagnosis_search_term}
+        param_counter = 0
+        
+        # Handle race parameter normalization
+        race_condition = ""
+        race_filter_condition = ""
+        if "race" in filters:
+            race_value = filters.pop("race")
+            if race_value is not None:
+                if isinstance(race_value, str):
+                    race_list = [race_value.strip()] if race_value.strip() else []
+                elif isinstance(race_value, list):
+                    race_list = [str(r).strip() for r in race_value if r and str(r).strip()]
+                else:
+                    race_list = []
+                
+                if race_list:
+                    db_race_list = []
+                    for api_race in race_list:
+                        db_race = reverse_map_field_value("race", api_race)
+                        if db_race:
+                            if isinstance(db_race, list):
+                                db_race_list.extend(db_race)
+                            else:
+                                db_race_list.append(db_race)
+                        else:
+                            db_race_list.append(api_race)
+                    
+                    db_race_list = list(dict.fromkeys(db_race_list))
+                    param_counter += 1
+                    race_param = f"param_{param_counter}"
+                    params[race_param] = db_race_list
+                    
+                    includes_not_reported = any(r.strip() == "Not Reported" for r in race_list)
+                    race_condition = f""",
+                    ${race_param} AS race_tokens,
+                    [pt IN SPLIT(COALESCE(p.race, ''), ';') | trim(pt)] AS pr_tokens"""
+                    
+                    if includes_not_reported:
+                        race_filter_condition = """(reduce(found = false, tok IN race_tokens | found OR tok IN pr_tokens) OR 
+                        (size(pr_tokens) > 0 AND reduce(all_hispanic = true, pt IN pr_tokens | all_hispanic AND pt = 'Hispanic or Latino') AND 'Not Reported' IN race_tokens))"""
+                    else:
+                        race_filter_condition = "reduce(found = false, tok IN race_tokens | found OR (tok IN pr_tokens AND tok <> 'Hispanic or Latino'))"
+        
+        # Handle identifiers
+        identifiers_condition = ""
+        if "identifiers" in filters:
+            identifiers_value = filters.pop("identifiers")
+            identifiers_list = self._split_or_values(identifiers_value)
+            if identifiers_list:
+                identifiers_value = identifiers_list[0] if len(identifiers_list) == 1 else identifiers_list
+                param_counter += 1
+                id_param = f"param_{param_counter}"
+                params[id_param] = identifiers_value
+                identifiers_condition = f""",
+                    CASE
+                      WHEN ${id_param} IS NULL THEN NULL
+                      WHEN valueType(${id_param}) = 'LIST'   THEN [id IN ${id_param} | trim(id)]
+                      WHEN valueType(${id_param}) = 'STRING' THEN [trim(${id_param})]
+                      ELSE []
+                    END AS id_list"""
+                where_conditions.append("p.participant_id IN id_list")
+        
+        # Handle depositions
+        dep_param = None
+        depositions_list = None
+        deposition_operator = None
+        if "depositions" in filters:
+            depositions_value = filters.pop("depositions")
+            depositions_list = self._split_or_values(depositions_value)
+            if depositions_list:
+                param_counter += 1
+                dep_param = f"param_{param_counter}"
+                if len(depositions_list) == 1:
+                    params[dep_param] = depositions_list[0]
+                    deposition_operator = "="
+                else:
+                    params[dep_param] = depositions_list
+                    deposition_operator = "IN"
+        
+        # Map API sex values to database values (M -> Male, F -> Female, U -> Not Reported)
+        if "sex" in filters and filters["sex"]:
+            sex_value = filters["sex"]
+            sex_mapping = {
+                "M": "Male",
+                "F": "Female",
+                "U": "Not Reported"
+            }
+            if sex_value in sex_mapping:
+                filters["sex"] = sex_mapping[sex_value]
+        # Handle other filters
+        field_name_mapping = {"sex": "sex_at_birth"}
+        for field, value in filters.items():
+            if field.startswith("_") or field in {"vital_status", "age_at_vital_status", "ethnicity"}:
+                continue  # Derived fields handled separately
+            
+            db_field = field_name_mapping.get(field, field)
+            param_counter += 1
+            param_name = f"param_{param_counter}"
+            condition = f"p.{db_field} IN ${param_name}" if isinstance(value, list) else f"p.{db_field} = ${param_name}"
+            params[param_name] = value
+            where_conditions.append(condition)
+        
+        # Build WHERE clause
+        where_clause = ""
+        if where_conditions:
+            filtered_conditions = [c for c in where_conditions if c and c.strip()]
+            if filtered_conditions:
+                where_clause = "WHERE " + " AND ".join(filtered_conditions)
+        # Optional hardening: normalize malformed WHERE fragments defensively
+        if where_clause:
+            where_clause = " ".join(where_clause.split())  # collapse duplicated whitespace
+            where_clause = where_clause.replace("WHERE AND ", "WHERE ").replace("WHERE OR ", "WHERE ")
+            if where_clause in {"WHERE", "WHERE AND", "WHERE OR"}:
+                where_clause = ""
+        # Handle derived fields
+        derived_filters = {}
+        derived_conditions = []
+        if "vital_status" in filters:
+            derived_filters["vital_status"] = filters["vital_status"]
+        if "age_at_vital_status" in filters:
+            derived_filters["age_at_vital_status"] = filters["age_at_vital_status"]
+        
+        needs_survival_processing = bool(derived_filters.get("vital_status") or derived_filters.get("age_at_vital_status"))
+        
+        for field, value in derived_filters.items():
+            param_counter += 1
+            param_name = f"derived_{field}_{param_counter}"
+            if field == "vital_status":
+                if is_database_only_value("vital_status", value):
+                    derived_conditions.append("false")
+                else:
+                    derived_conditions.append(
+                        f"(final_vital_status IS NOT NULL AND toLower(toString(final_vital_status)) = toLower(toString(${param_name})))"
+                    )
+                    value = reverse_map_field_value("vital_status", value) if value else value
+            elif field == "age_at_vital_status":
+                derived_conditions.append(f"final_age_at_vital_status = ${param_name}")
+                try:
+                    value = int(value) if value is not None else value
+                except (ValueError, TypeError):
+                    logger.warning(f"Invalid age_at_vital_status value: {value}, keeping as-is")
+            params[param_name] = value
+        
+        derived_where_clause = ""
+        if derived_conditions:
+            filtered_derived = [c for c in derived_conditions if c and c.strip()]
+            if filtered_derived:
+                derived_where_clause = "WHERE " + " AND ".join(filtered_derived)
+        
+        # Clean where_clause for summary
+        where_clause_clean_for_summary = where_clause
+        if where_clause_clean_for_summary:
+            where_clause_clean_for_summary = where_clause_clean_for_summary.replace("study_id =", "").replace("study_id IN", "").replace("study_id=", "").replace("study_idIN", "")
+            where_clause_clean_for_summary = where_clause_clean_for_summary.replace("AND AND", "AND").strip()
+            while where_clause_clean_for_summary.startswith("AND "):
+                where_clause_clean_for_summary = where_clause_clean_for_summary[4:].strip()
+            while where_clause_clean_for_summary.endswith(" AND"):
+                where_clause_clean_for_summary = where_clause_clean_for_summary[:-4].strip()
+            if where_clause_clean_for_summary == "WHERE" or where_clause_clean_for_summary == "AND" or not where_clause_clean_for_summary.strip():
+                where_clause_clean_for_summary = ""
+        
+        # Build optimized query: filter by diagnosis FIRST, then collect survival
+        if dep_param:
+            # Depositions path: filter by diagnosis FIRST
+            cypher = f"""
+        MATCH (p:participant)
+        MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
+        WHERE st.study_id {deposition_operator} ${dep_param}
+        WITH p, st{race_condition}{identifiers_condition}
+        {combine_where_clauses(where_clause_clean_for_summary, race_filter_condition if race_filter_condition else "")}
+        
+        // Apply diagnosis search filter EARLY (before collecting survival records)
+        OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
+        WITH p, st, d
+        WHERE d IS NOT NULL AND ANY(diag IN CASE WHEN valueType(d.diagnosis) = 'LIST' THEN d.diagnosis ELSE [d.diagnosis] END WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))
+        WITH DISTINCT p, st
+        
+        // Now collect survival records only for filtered participants
+        OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
+        WITH p, st,
+             collect(DISTINCT s) AS survival_records
+        WITH p, st, survival_records,
+             [sr IN survival_records WHERE sr.last_known_survival_status IS NOT NULL] AS survs
+        WITH p, st, survs,
+             any(sr IN survs WHERE sr.last_known_survival_status = 'Dead') AS has_dead,
+             reduce(dead_max_age = 0, sr IN survs |
+                    CASE 
+                      WHEN sr.last_known_survival_status = 'Dead' 
+                           AND sr.age_at_last_known_survival_status IS NOT NULL 
+                           AND coalesce(toInteger(sr.age_at_last_known_survival_status), -999) > dead_max_age
+                      THEN coalesce(toInteger(sr.age_at_last_known_survival_status), -999) 
+                      ELSE dead_max_age 
+                    END) AS max_dead_age,
+             reduce(max_age = 0, sr IN survs |
+                    CASE 
+                      WHEN sr.age_at_last_known_survival_status IS NOT NULL 
+                           AND coalesce(toInteger(sr.age_at_last_known_survival_status), -999) > max_age
+                      THEN coalesce(toInteger(sr.age_at_last_known_survival_status), -999) 
+                      ELSE max_age 
+                    END) AS max_age
+        WITH p, st,
+             CASE 
+               WHEN size(survs) = 0 THEN NULL
+               WHEN has_dead THEN 'Dead'
+               ELSE CASE
+                 WHEN head([sr IN survs 
+                             WHERE sr.age_at_last_known_survival_status IS NOT NULL AND toInteger(sr.age_at_last_known_survival_status) = max_age 
+                             | sr.last_known_survival_status]) IS NOT NULL
+                 THEN head([sr IN survs 
+                             WHERE sr.age_at_last_known_survival_status IS NOT NULL AND toInteger(sr.age_at_last_known_survival_status) = max_age 
+                             | sr.last_known_survival_status])
+                 ELSE head([sr IN survs | sr.last_known_survival_status])
+               END
+             END AS final_vital_status,
+             CASE 
+               WHEN size(survs) = 0 THEN NULL
+               WHEN has_dead THEN max_dead_age
+               ELSE max_age
+             END AS final_age_at_vital_status
+        {derived_where_clause}
+        WITH p.participant_id AS participant_id, st.study_id AS study_id
+        WHERE toString(study_id) <> ''
+        WITH DISTINCT participant_id, study_id
+        RETURN count(*) as total_count
+        """.strip()
+        else:
+            # Non-depositions path: same optimized pattern
+            cypher = f"""
+        MATCH (p:participant)
+        WITH p{race_condition}{identifiers_condition}
+        {combine_where_clauses(where_clause_clean_for_summary, race_filter_condition if race_filter_condition else "")}
+        
+        // Require study context
+        MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study)
+        WITH DISTINCT p
+        
+        // Apply diagnosis search filter EARLY (before collecting survival records)
+        OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
+        WITH p, d
+        WHERE d IS NOT NULL AND ANY(diag IN CASE WHEN valueType(d.diagnosis) = 'LIST' THEN d.diagnosis ELSE [d.diagnosis] END WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))
+        WITH DISTINCT p
+        
+        // Now collect survival records only for filtered participants
+        OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
+        WITH p, collect(DISTINCT s) AS survival_records
+        WITH p, survival_records,
+             [sr IN survival_records WHERE sr.last_known_survival_status IS NOT NULL] AS survs
+        WITH p, survs,
+             any(sr IN survs WHERE sr.last_known_survival_status = 'Dead') AS has_dead,
+             reduce(dead_max_age = 0, sr IN survs |
+                    CASE
+                      WHEN sr.last_known_survival_status = 'Dead'
+                           AND sr.age_at_last_known_survival_status IS NOT NULL
+                           AND coalesce(toInteger(sr.age_at_last_known_survival_status), -999) > dead_max_age
+                      THEN coalesce(toInteger(sr.age_at_last_known_survival_status), -999)
+                      ELSE dead_max_age
+                    END) AS max_dead_age,
+             reduce(max_age = 0, sr IN survs |
+                    CASE
+                      WHEN sr.age_at_last_known_survival_status IS NOT NULL
+                           AND coalesce(toInteger(sr.age_at_last_known_survival_status), -999) > max_age
+                      THEN coalesce(toInteger(sr.age_at_last_known_survival_status), -999)
+                      ELSE max_age
+                    END) AS max_age
+        WITH p,
+             CASE 
+               WHEN size(survs) = 0 THEN NULL
+               WHEN has_dead THEN 'Dead'
+               ELSE CASE
+                 WHEN head([sr IN survs 
+                             WHERE sr.age_at_last_known_survival_status IS NOT NULL AND toInteger(sr.age_at_last_known_survival_status) = max_age 
+                             | sr.last_known_survival_status]) IS NOT NULL
+                 THEN head([sr IN survs 
+                             WHERE sr.age_at_last_known_survival_status IS NOT NULL AND toInteger(sr.age_at_last_known_survival_status) = max_age 
+                             | sr.last_known_survival_status])
+                 ELSE head([sr IN survs | sr.last_known_survival_status])
+               END
+             END AS final_vital_status,
+             CASE 
+               WHEN size(survs) = 0 THEN NULL
+               WHEN has_dead THEN max_dead_age
+               ELSE max_age
+             END AS final_age_at_vital_status
+        {derived_where_clause}
+        
+        // Join studies after derived filters
+        MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
+        WITH p.participant_id AS participant_id, st.study_id AS study_id
+        WHERE toString(study_id) <> ''
+        WITH DISTINCT participant_id, study_id
+        RETURN count(*) AS total_count
+        """.strip()
+        
+        # Execute query
+        logger.debug("Executing get_subjects_summary_for_diagnosis_endpoint Cypher query", cypher=cypher, params=params)
+        
+        # Strip comments for execution
+        cypher_to_run = "\n".join([line for line in cypher.split("\n") if not line.strip().startswith("//")])
+        
+        try:
+            result = await self.session.run(cypher_to_run, params)
+            records = await result.data()
+        except Exception as e:
+            logger.error(
+                "Error executing get_subjects_summary_for_diagnosis_endpoint query",
+                error=str(e),
+                error_type=type(e).__name__,
+                exc_info=True
+            )
+            raise
+        
+        if not records:
+            return {"total_count": 0}
+        
+        summary = records[0]
+        logger.debug("Completed subjects summary for diagnosis endpoint", total_count=summary.get("total_count", 0))
+        
+        return summary
+    
     def _validate_filters(self, filters: Dict[str, Any], entity_type: str) -> None:
         """
         Validate that all filter fields are allowed.

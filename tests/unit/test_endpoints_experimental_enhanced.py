@@ -151,7 +151,7 @@ class TestExperimentalEndpointsEnhanced:
         with patch("app.api.v1.endpoints.experimental.SubjectService") as mock_service_class:
             mock_service = AsyncMock(spec=SubjectService)
             mock_service.get_subjects = AsyncMock(return_value=mock_subjects)
-            mock_service.get_subjects_summary = AsyncMock(
+            mock_service.get_subjects_summary_for_diagnosis_endpoint = AsyncMock(
                 side_effect=DatabaseConnectionError("Connection failed")
             )
             mock_service_class.return_value = mock_service
@@ -197,7 +197,7 @@ class TestExperimentalEndpointsEnhanced:
         with patch("app.api.v1.endpoints.experimental.SubjectService") as mock_service_class:
             mock_service = AsyncMock(spec=SubjectService)
             mock_service.get_subjects = AsyncMock(return_value=mock_subjects)
-            mock_service.get_subjects_summary = AsyncMock(
+            mock_service.get_subjects_summary_for_diagnosis_endpoint = AsyncMock(
                 side_effect=Exception("Database connection timeout")
             )
             mock_service_class.return_value = mock_service
@@ -243,7 +243,7 @@ class TestExperimentalEndpointsEnhanced:
         with patch("app.api.v1.endpoints.experimental.SubjectService") as mock_service_class:
             mock_service = AsyncMock(spec=SubjectService)
             mock_service.get_subjects = AsyncMock(return_value=mock_subjects)
-            mock_service.get_subjects_summary = AsyncMock(
+            mock_service.get_subjects_summary_for_diagnosis_endpoint = AsyncMock(
                 side_effect=Exception("Some other error")
             )
             mock_service_class.return_value = mock_service

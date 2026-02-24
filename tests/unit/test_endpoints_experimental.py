@@ -228,7 +228,7 @@ class TestExperimentalEndpoints:
         with patch('app.api.v1.endpoints.experimental.SubjectService') as mock_service_class:
             mock_service = Mock()
             mock_service.get_subjects = AsyncMock(return_value=mock_subjects)
-            mock_service.get_subjects_summary = AsyncMock(return_value=mock_summary)
+            mock_service.get_subjects_summary_for_diagnosis_endpoint = AsyncMock(return_value=mock_summary)
             mock_service_class.return_value = mock_service
             
             with patch('app.api.v1.endpoints.experimental.get_cache_service', return_value=None):

@@ -461,6 +461,92 @@ class TestSubjectRepositoryEnhanced:
         
         assert isinstance(result2, list)
 
+    async def test_get_subjects_summary_for_diagnosis_fallback_without_search(self, repository):
+        """Test diagnosis-summary path falls back to standard summary when _diagnosis_search is missing."""
+        repository.get_subjects_summary = AsyncMock(return_value={"total_count": 11})
+
+        result = await repository.get_subjects_summary_for_diagnosis_endpoint(
+            filters={"sex": "F", "_invalid_sex": True}
+        )
+
+        assert result == {"total_count": 11}
+        repository.get_subjects_summary.assert_called_once_with({"sex": "F", "_invalid_sex": True})
+
+    async def test_get_subjects_summary_for_diagnosis_maps_sex_values(self, repository, mock_session):
+        """Test diagnosis-summary path maps API sex values (F -> Female)."""
+        mock_result = AsyncMock()
+        mock_result.data = AsyncMock(return_value=[{"total_count": 5}])
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        await repository.get_subjects_summary_for_diagnosis_endpoint(
+            filters={"_diagnosis_search": "Neuroblastoma", "sex": "F"}
+        )
+
+        assert mock_session.run.called
+        _, params = mock_session.run.call_args.args
+        assert any(v == "Female" for v in params.values())
+        assert not any(v == "F" for v in params.values())
+
+    async def test_get_subjects_summary_for_diagnosis_skips_internal_marker_keys(self, repository, mock_session):
+        """Test diagnosis-summary path does not convert internal marker keys into participant filters."""
+        mock_result = AsyncMock()
+        mock_result.data = AsyncMock(return_value=[{"total_count": 3}])
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        await repository.get_subjects_summary_for_diagnosis_endpoint(
+            filters={
+                "_diagnosis_search": "Neuroblastoma",
+                "_unknown_parameters": ["bad_param"],
+                "_invalid_sex": "X",
+                "_age_at_vital_status_reason": "invalid",
+                "sex": "F",
+            }
+        )
+
+        cypher = mock_session.run.call_args.args[0]
+        assert "p._unknown_parameters" not in cypher
+        assert "p._invalid_sex" not in cypher
+        assert "p._age_at_vital_status_reason" not in cypher
+
+    async def test_get_subjects_summary_for_diagnosis_identifiers_with_depositions_has_id_list(
+        self, repository, mock_session
+    ):
+        """Test diagnosis-summary depositions branch includes id_list scope for identifiers filter."""
+        mock_result = AsyncMock()
+        mock_result.data = AsyncMock(return_value=[{"total_count": 2}])
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        await repository.get_subjects_summary_for_diagnosis_endpoint(
+            filters={
+                "_diagnosis_search": "Neuroblastoma",
+                "identifiers": "IID_H211943",
+                "depositions": "phs002620",
+            }
+        )
+
+        cypher = mock_session.run.call_args.args[0]
+        assert "AS id_list" in cypher
+        assert "p.participant_id IN id_list" in cypher
+
+    async def test_get_subjects_summary_for_diagnosis_identifiers_without_depositions_has_id_list(
+        self, repository, mock_session
+    ):
+        """Test diagnosis-summary non-depositions branch includes id_list scope for identifiers filter."""
+        mock_result = AsyncMock()
+        mock_result.data = AsyncMock(return_value=[{"total_count": 4}])
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        await repository.get_subjects_summary_for_diagnosis_endpoint(
+            filters={
+                "_diagnosis_search": "Neuroblastoma",
+                "identifiers": "IID_H211943",
+            }
+        )
+
+        cypher = mock_session.run.call_args.args[0]
+        assert "AS id_list" in cypher
+        assert "p.participant_id IN id_list" in cypher
+
 
 @pytest.mark.unit
 class TestFileRepositoryEnhanced:

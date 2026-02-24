@@ -458,6 +458,58 @@ async def search_subjects_by_diagnosis(
                 message="Invalid query parameter(s) provided.",
                 reason="Unknown query parameter(s)"
             )
+        
+        # Check for unknown parameters from filter dependency (backup check)
+        unknown_params_from_filter = filters.get("_unknown_parameters")
+        if unknown_params_from_filter:
+            raise InvalidParametersError(
+                parameters=[],  # Empty array - don't expose parameter names
+                message="Invalid query parameter(s) provided.",
+                reason="Unknown query parameter(s)"
+            )
+
+        # Check for invalid parameter values - return empty result instead of error
+        invalid_ethnicity_value = filters.get("_invalid_ethnicity")
+        invalid_sex_value = filters.get("_invalid_sex")
+        invalid_race_value = filters.get("_invalid_race")
+        invalid_vital_status_value = filters.get("_invalid_vital_status")
+        invalid_age_value = filters.get("_invalid_age_at_vital_status")
+
+        if (
+            invalid_ethnicity_value
+            or invalid_sex_value
+            or invalid_race_value
+            or invalid_vital_status_value
+            or invalid_age_value
+        ):
+            logger.info(
+                "Invalid filter value detected in subject-diagnosis, returning empty result",
+                invalid_ethnicity=invalid_ethnicity_value,
+                invalid_sex=invalid_sex_value,
+                invalid_race=invalid_race_value,
+                invalid_vital_status=invalid_vital_status_value,
+                invalid_age=invalid_age_value
+            )
+
+            return SubjectResponse(
+                summary={
+                    "counts": {
+                        "all": 0,
+                        "current": 0
+                    }
+                },
+                data=[]
+            )
+
+        # Remove internal marker keys before repository/service handling
+        filters.pop("_unknown_parameters", None)
+        filters.pop("_invalid_ethnicity", None)
+        filters.pop("_invalid_sex", None)
+        filters.pop("_invalid_race", None)
+        filters.pop("_invalid_vital_status", None)
+        filters.pop("_invalid_age_at_vital_status", None)
+        filters.pop("_age_at_vital_status_reason", None)
+
         # Create service
         cache_service = get_cache_service()
         service = SubjectService(session, allowlist, settings, cache_service)
@@ -477,9 +529,9 @@ async def search_subjects_by_diagnosis(
         )
         
         # Get total count for summary (use original filters dict)
-        # If summary fails, use 0 as total (empty results)
+        # Use dedicated diagnosis endpoint method for optimized query
         try:
-            summary_result = await service.get_subjects_summary(filters)
+            summary_result = await service.get_subjects_summary_for_diagnosis_endpoint(filters)
             total_count = summary_result.counts.total
         except DatabaseConnectionError as summary_error:
             # Database connection error - log clearly for AWS cloud monitoring
@@ -520,7 +572,7 @@ async def search_subjects_by_diagnosis(
                     exc_info=True
                 )
             total_count = 0
-        
+
         # Build pagination info
         # NOTE: total_count is the number of unique subjects matching filters (not just the current page size)
         # This is needed for accurate Link headers and client-side pagination.

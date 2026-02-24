@@ -431,7 +431,79 @@ class TestGetSamplesSummaryCoverage:
         assert result == {"counts": {"total": 3}}
         # Standard query should be used (preservation_method not in allowed_with_diagnosis_summary)
         assert mock_session.run.called
-    
+
+    async def test_get_samples_summary_diagnosis_only_current_behavior(self, repository, mock_session):
+        """Document current diagnosis-only summary behavior (returns empty summary)."""
+        mock_session.run = AsyncMock()
+        result = await repository.get_samples_summary({"diagnosis": "Neuroblastoma"})
+        assert result == {"counts": {"total": 0}}
+        mock_session.run.assert_not_called()
+
+    async def test_get_samples_summary_diagnosis_with_tumor_grade_and_anatomical_sites_string(self, repository, mock_session):
+        """Test diagnosis-node filters + anatomical_sites string use standard query path."""
+        async def async_gen():
+            yield {"total_count": 9}
+
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        result = await repository.get_samples_summary({
+            "diagnosis": "Neuroblastoma",
+            "tumor_grade": "G3 High Grade",
+            "anatomical_sites": "C72.9 : Central nervous system",
+        })
+
+        assert result == {"counts": {"total": 9}}
+        cypher_query = mock_session.run.call_args[0][0]
+        # Standard branch uses explicit diagnosis node alias "dx"
+        assert "OPTIONAL MATCH (sa)<-[:of_diagnosis]-(dx:diagnosis)" in cypher_query
+
+    async def test_get_samples_summary_diagnosis_with_tumor_grade_and_anatomical_sites_list(self, repository, mock_session):
+        """Test diagnosis-node filters + anatomical_sites list use standard query path."""
+        async def async_gen():
+            yield {"total_count": 12}
+
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        result = await repository.get_samples_summary({
+            "diagnosis": "Neuroblastoma",
+            "tumor_grade": "G3 High Grade",
+            "anatomical_sites": ["C72.9 : Central nervous system", "C80 : UNKNOWN PRIMARY SITE"],
+        })
+
+        assert result == {"counts": {"total": 12}}
+        cypher_query = mock_session.run.call_args[0][0]
+        assert "OPTIONAL MATCH (sa)<-[:of_diagnosis]-(dx:diagnosis)" in cypher_query
+
+    async def test_get_samples_summary_diagnosis_with_empty_anatomical_sites_string(self, repository, mock_session):
+        """Test diagnosis + empty anatomical_sites string follows current no-results behavior."""
+        mock_session.run = AsyncMock()
+
+        result = await repository.get_samples_summary({
+            "diagnosis": "Neuroblastoma",
+            "anatomical_sites": "",
+        })
+
+        assert result == {"counts": {"total": 0}}
+        mock_session.run.assert_not_called()
+
+    async def test_get_samples_summary_diagnosis_with_whitespace_anatomical_sites_string(self, repository, mock_session):
+        """Test diagnosis + whitespace anatomical_sites string follows current no-results behavior."""
+        mock_session.run = AsyncMock()
+
+        result = await repository.get_samples_summary({
+            "diagnosis": "Neuroblastoma",
+            "anatomical_sites": "   ",
+        })
+
+        assert result == {"counts": {"total": 0}}
+        mock_session.run.assert_not_called()
+
 
     async def test_get_samples_summary_preservation_method_filter(self, repository, mock_session):
         """Test get_samples_summary with preservation_method filter."""

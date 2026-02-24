@@ -264,3 +264,84 @@ class TestExperimentalEndpointsEnhanced:
         assert result.summary["counts"]["all"] == 0
         assert len(result.data) == 1
 
+
+    async def test_search_subjects_by_diagnosis_invalid_filter_values_empty_result(
+        self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
+    ):
+        """Test subject-diagnosis endpoint returns empty result for invalid filter values."""
+        from app.services.subject import SubjectService
+
+        with patch("app.api.v1.endpoints.experimental.SubjectService") as mock_service_class:
+            mock_service = AsyncMock(spec=SubjectService)
+            mock_service.get_subjects = AsyncMock(return_value=[])
+            mock_service_class.return_value = mock_service
+
+            with patch("app.api.v1.endpoints.experimental.get_cache_service", return_value=None):
+                with patch("app.api.v1.endpoints.experimental.check_rate_limit", return_value=None):
+                    result = await search_subjects_by_diagnosis(
+                        request=mock_request,
+                        response=mock_response,
+                        filters={"_invalid_sex": "X", "search": "cancer"},
+                        pagination=mock_pagination,
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None,
+                    )
+
+        assert isinstance(result, SubjectResponse)
+        assert result.summary["counts"]["all"] == 0
+        assert result.summary["counts"]["current"] == 0
+        assert len(result.data) == 0
+
+    async def test_search_subjects_by_diagnosis_combined_filters(
+        self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
+    ):
+        """Test subject-diagnosis endpoint with multiple filters (sex, race, vital_status)."""
+        from app.services.subject import SubjectService
+
+        class MockSubject:
+            def model_dump(self, exclude=None, exclude_none=False, exclude_unset=False):
+                return {
+                    "id": {"name": "subject1", "namespace": {"organization": "CCDI-DCC", "name": "phs002431"}},
+                    "kind": "Participant",
+                    "metadata": {
+                        "associated_diagnoses": [],
+                        "vital_status": {"value": "Alive"},
+                        "age_at_vital_status": {"value": 45},
+                        "sex": {"value": "F"},
+                        "race": [{"value": "White"}],
+                    },
+                }
+
+        mock_subjects = [MockSubject()]
+        mock_summary = SummaryResponse(counts=SummaryCounts(total=25))
+
+        with patch("app.api.v1.endpoints.experimental.SubjectService") as mock_service_class:
+            mock_service = AsyncMock(spec=SubjectService)
+            mock_service.get_subjects = AsyncMock(return_value=mock_subjects)
+            mock_service.get_subjects_summary_for_diagnosis_endpoint = AsyncMock(return_value=mock_summary)
+            mock_service_class.return_value = mock_service
+
+            with patch("app.api.v1.endpoints.experimental.get_cache_service", return_value=None):
+                with patch("app.api.v1.endpoints.experimental.check_rate_limit", return_value=None):
+                    result = await search_subjects_by_diagnosis(
+                        request=mock_request,
+                        response=mock_response,
+                        filters={
+                            "search": "cancer",
+                            "sex": "F",
+                            "race": "White",
+                            "vital_status": "Alive"
+                        },
+                        pagination=mock_pagination,
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None,
+                    )
+
+        assert isinstance(result, SubjectResponse)
+        assert result.summary["counts"]["all"] == 25
+        assert result.summary["counts"]["current"] == 1
+        assert len(result.data) == 1

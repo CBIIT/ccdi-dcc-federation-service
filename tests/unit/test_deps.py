@@ -1234,22 +1234,6 @@ class TestGetSampleDiagnosisFilters:
         assert result["disease_phase"] == "Primary"
         # diagnosis must not be propagated for /sample-diagnosis
         assert "diagnosis" not in result or result.get("diagnosis") is None
-
-        mock_request.query_params = QueryParamsWithDiagnosis({
-            "diagnosis": "Neuroblastoma",
-            "disease_phase": "Primary"
-        })
-        
-        # When search is None, diagnosis from query_params should NOT be propagated
-        result = get_sample_diagnosis_filters(
-            search=None,
-            disease_phase="Primary",
-            request=mock_request
-        )
-        assert "_diagnosis_search" not in result
-        assert result["disease_phase"] == "Primary"
-        # diagnosis is not supported on /sample-diagnosis
-        assert "diagnosis" not in result or result.get("diagnosis") is None
     
     def test_diagnosis_search_without_search_no_diagnosis_param(self, mock_request):
         """Test that when search is not provided and no diagnosis param, behaves normally."""
@@ -1330,6 +1314,55 @@ class TestGetSampleDiagnosisFilters:
         assert "_diagnosis_search" not in result
         assert result["disease_phase"] == "Primary"
         assert "diagnosis" not in result or result.get("diagnosis") is None
+
+    def test_diagnosis_search_trims_value_and_ignores_diagnosis_query_param(self, mock_request):
+        """Test non-empty search is trimmed and diagnosis query param is ignored."""
+        class QueryParamsWithDiagnosis:
+            def __init__(self, params):
+                self._params = params
+
+            def keys(self):
+                return self._params.keys()
+
+            def items(self):
+                return self._params.items()
+
+            def __iter__(self):
+                return iter(self._params.items())
+
+            def get(self, key, default=None):
+                return self._params.get(key, default)
+
+            def getlist(self, key, default=None):
+                value = self._params.get(key, default)
+                if value is None:
+                    return default if default is not None else []
+                return [value] if not isinstance(value, list) else value
+
+        mock_request.query_params = QueryParamsWithDiagnosis({
+            "diagnosis": "Neuroblastoma",
+            "depositions": "phs002790",
+        })
+
+        result = get_sample_diagnosis_filters(
+            search="  Neuroblastoma  ",
+            depositions="phs002790",
+            request=mock_request
+        )
+
+        assert result["_diagnosis_search"] == "Neuroblastoma"
+        assert result["depositions"] == "phs002790"
+        assert "diagnosis" not in result or result.get("diagnosis") is None
+
+    def test_diagnosis_search_whitespace_disease_phase_drops_filter(self, mock_request):
+        """Test whitespace-only disease_phase is normalized away."""
+        result = get_sample_diagnosis_filters(
+            search="Neuro",
+            disease_phase="   ",
+            request=mock_request
+        )
+        assert result["_diagnosis_search"] == "Neuro"
+        assert "disease_phase" not in result or result.get("disease_phase") is None
 
 
 @pytest.mark.unit

@@ -504,6 +504,77 @@ class TestGetSamplesSummaryCoverage:
         assert result == {"counts": {"total": 0}}
         mock_session.run.assert_not_called()
 
+    async def test_get_samples_summary_recent_tumor_grade_and_tumor_classification(self, repository, mock_session):
+        """Coverage for recent API combo: tumor_grade + tumor_classification."""
+        async def async_gen():
+            yield {"total_count": 0}
+
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        result = await repository.get_samples_summary({
+            "tumor_grade": "G3 High Grade",
+            "tumor_classification": "Not Reported",
+        })
+
+        assert result == {"counts": {"total": 0}}
+        mock_session.run.assert_called_once()
+
+    async def test_get_samples_summary_recent_tumor_grade_and_tissue_type(self, repository, mock_session):
+        """Coverage for recent API combo: tumor_grade + tissue_type."""
+        async def async_gen():
+            yield {"total_count": 55}
+
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        result = await repository.get_samples_summary({
+            "tumor_grade": "G3 High Grade",
+            "tissue_type": "Tumor",
+        })
+
+        assert result == {"counts": {"total": 55}}
+        mock_session.run.assert_called_once()
+
+    async def test_get_samples_summary_recent_anatomical_sites_or_string(self, repository, mock_session):
+        """Coverage for recent API combo: anatomical_sites with || values."""
+        async def async_gen():
+            yield {"total_count": 12271}
+
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        result = await repository.get_samples_summary({
+            "anatomical_sites": "C72.9 : Central nervous system||C80 : UNKNOWN PRIMARY SITE",
+        })
+
+        assert result == {"counts": {"total": 12271}}
+        mock_session.run.assert_called_once()
+
+    async def test_get_samples_summary_recent_age_at_collection_with_depositions(self, repository, mock_session):
+        """Coverage for recent API combo: age_at_collection + depositions."""
+        async def async_gen():
+            yield {"total_count": 1}
+
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        result = await repository.get_samples_summary({
+            "age_at_collection": "1461",
+            "depositions": "phs002430",
+        })
+
+        assert result == {"counts": {"total": 1}}
+        mock_session.run.assert_called_once()
+
 
     async def test_get_samples_summary_preservation_method_filter(self, repository, mock_session):
         """Test get_samples_summary with preservation_method filter."""

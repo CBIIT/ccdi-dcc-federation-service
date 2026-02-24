@@ -357,9 +357,13 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
             logger.debug("Using Case 2: Sample + Study filters only query path")
             # Combine sample and study filters
             combined_filters = {**categorized["sample"], **categorized["study"]}
-            return await self._get_samples_case2_sample_study(
+            result_case2 = await self._get_samples_case2_sample_study(
                 combined_filters, offset, limit, base_url, return_total
             )
+            # Case 2 may return None when early-pagination path cannot handle the specific filter set.
+            # Fall through to Case 3/standard flow instead of returning None to callers.
+            if result_case2 is not None:
+                return result_case2
         
         # Optimization: Pathology_file-only filters (no other node filters) - use specialized method
         if has_pf_filters and not has_diagnosis_filters and not has_sf_filters and not has_sample_filters and not has_study_filters:

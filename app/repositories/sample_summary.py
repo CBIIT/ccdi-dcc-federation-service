@@ -573,15 +573,21 @@ class SampleSummary:
             for field in ["disease_phase", "tumor_grade", "tumor_tissue_morphology", "tumor_classification", "age_at_diagnosis"]
         )
 
+        has_anatomical_sites_filter = (
+            bool(anatomical_sites_list_condition)
+            or bool(anatomical_sites_string_condition)
+            or ("anatomical_sites" in filters and filters.get("anatomical_sites") not in (None, "", []))
+        )
+
         diagnosis_only_summary = (
             has_diagnosis_filter_summary and
             not needs_sf_collection and
             not diagnosis_search_term and
             not has_non_diagnosis_diag_filters and
-            not anatomical_sites_list_condition and
+            not has_anatomical_sites_filter and
             all(k in allowed_with_diagnosis_summary for k in filters.keys())
         )
-        
+ 
         if diagnosis_only_summary:
             # Extract diagnosis filter parameter and value
             diagnosis_param_summary = None

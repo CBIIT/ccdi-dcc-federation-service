@@ -4,10 +4,12 @@ Additional unit tests for memgraph.py to improve coverage.
 Tests missing error paths, retry logic, and edge cases.
 """
 
-import pytest
+import asyncio
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, Mock, MagicMock, patch
-import asyncio
+
+import pytest
+
 from neo4j import AsyncDriver, AsyncSession
 from neo4j.exceptions import ServiceUnavailable, AuthError, TransientError, SessionExpired
 
@@ -196,10 +198,7 @@ class TestMemgraphConnectionAdditional:
         mock_session.run = AsyncMock(side_effect=ValueError("General error"))
         mock_session.commit = AsyncMock()
         mock_session.close = AsyncMock()
-        # Make session work as async context manager
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=None)
-        
+       
         # The code uses: async with self.get_session() as session:
         # This is actually incorrect syntax (can't use async with on a coroutine)
         # But to make the test work, we need get_session() to return something that can be used as async context manager

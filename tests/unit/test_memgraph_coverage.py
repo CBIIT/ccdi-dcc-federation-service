@@ -4,9 +4,12 @@ Additional unit tests for memgraph.py to improve coverage.
 Tests missing error paths, retry logic, and edge cases.
 """
 
-import pytest
-from unittest.mock import AsyncMock, Mock, MagicMock, patch
 import asyncio
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock, Mock, MagicMock, patch
+
+import pytest
+
 from neo4j import AsyncDriver, AsyncSession
 from neo4j.exceptions import ServiceUnavailable, AuthError, TransientError, SessionExpired
 
@@ -164,77 +167,41 @@ class TestMemgraphConnectionAdditional:
             await connection.execute_query("MATCH (n) RETURN n")
 
     async def test_execute_write_query_auth_error(self, connection):
-        """Test execute_write_query handles AuthError."""
+        """Test execute_write_query handles AuthError (session.run raises)."""
         mock_session = AsyncMock(spec=AsyncSession)
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=iter([]))
         mock_session.run = AsyncMock(side_effect=AuthError("Auth failed"))
         mock_session.commit = AsyncMock()
         mock_session.close = AsyncMock()
-        # Make session work as async context manager
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=None)
-        
-        # get_session returns session that can be used as async context manager
-        connection.get_session = AsyncMock(return_value=mock_session)
-        
+        # Production uses async with self.get_session() as session — get_session() must return
+        # an async context manager so the coroutine is not left unawaited.
+        @asynccontextmanager
+        async def mock_get_session():
+            yield mock_session
+        connection.get_session = Mock(return_value=mock_get_session())
         with pytest.raises(DatabaseConnectionError):
             await connection.execute_write_query("CREATE (n:Node)")
 
     async def test_execute_write_query_general_exception(self, connection):
-        """Test execute_write_query handles general exceptions."""
+        """Test execute_write_query handles general exceptions (session.run raises)."""
         mock_session = AsyncMock(spec=AsyncSession)
-        mock_result = AsyncMock()
-        
-        # Create proper async iterator
-        async def async_iter():
-            return
-            yield
-        
-        mock_result.__aiter__ = Mock(return_value=async_iter())
         mock_session.run = AsyncMock(side_effect=ValueError("General error"))
         mock_session.commit = AsyncMock()
         mock_session.close = AsyncMock()
-        # Make session work as async context manager
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=None)
-        
-        # The code uses: async with self.get_session() as session:
-        # This is actually incorrect syntax (can't use async with on a coroutine)
-        # But to make the test work, we need get_session() to return something that can be used as async context manager
-        # Create a mock context manager that returns mock_session
-        mock_cm = AsyncMock()
-        mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_cm.__aexit__ = AsyncMock(return_value=None)
-        
-        # The code uses: async with self.get_session() as session:
-        # This is problematic because get_session() is async and returns a coroutine,
-        # but async with expects an async context manager.
-        # The actual code has a bug, but for testing we need to make get_session()
-        # return an async context manager that yields the session.
-        from contextlib import asynccontextmanager
-        
+        # Production uses async with self.get_session() — return an async context manager.
         @asynccontextmanager
         async def mock_get_session():
             yield mock_session
-        
-        # Make get_session() return an async context manager (not a coroutine)
         connection.get_session = Mock(return_value=mock_get_session())
-        
-        # The exception from session.run() is caught by inner except Exception at line 327,
-        # which re-raises it. Then it's caught by outer except Exception at line 337,
-        # which wraps it in DatabaseConnectionError with message "Database is not available: {str(e)}"
-        # where e is ValueError("General error"), so str(e) = "General error"
         with pytest.raises(DatabaseConnectionError) as exc_info:
             await connection.execute_write_query("CREATE (n:Node)")
         assert "Database is not available" in str(exc_info.value)
         assert "General error" in str(exc_info.value)
 
     async def test_execute_write_query_session_error(self, connection):
-        """Test execute_write_query when get_session fails."""
-        # get_session raises error when called
-        connection.get_session = AsyncMock(side_effect=DatabaseConnectionError("Session error"))
-        
+        """Test execute_write_query when get_session fails (called before async with)."""
+        # get_session() is called first; use Mock(side_effect=...) so it raises and no
+        # coroutine is returned (avoid "coroutine was never awaited").
+        connection.get_session = Mock(side_effect=DatabaseConnectionError("Session error"))
         with pytest.raises(DatabaseConnectionError):
             await connection.execute_write_query("CREATE (n:Node)")
 

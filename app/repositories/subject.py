@@ -1321,9 +1321,17 @@ class SubjectRepository:
                ELSE 'Not reported'
              END AS ethnicity_value
                 {derived_where_clause}
+            WITH p, diagnosis_nodes, study_id, final_vital_status, final_age_at_vital_status, 
+            ethnicity_value{", race_tokens, pr_tokens" if race_condition else ""},
+            [node IN diagnosis_nodes WHERE node IS NOT NULL] AS non_null_nodes
             WITH toString(p.participant_id) AS participant_id, study_id, p,
              final_vital_status, final_age_at_vital_status, ethnicity_value{", race_tokens, pr_tokens" if race_condition else ""},
-             [] AS d
+             reduce(all_diagnoses = [], node IN non_null_nodes |
+                    CASE 
+                      WHEN node.diagnosis IS NOT NULL THEN
+                        all_diagnoses + [node.diagnosis]
+                      ELSE all_diagnoses
+                    END) AS d
         ORDER BY participant_id, study_id
         SKIP $offset
         LIMIT $limit
@@ -1535,13 +1543,14 @@ class SubjectRepository:
                ELSE max_age
              END AS final_age_at_vital_status
         // Now collect all study_ids for this participant (not just the filtered one)
-        WITH toString(p.participant_id) AS participant_id, p, d, survs, final_vital_status, final_age_at_vital_status
+        WITH toString(p.participant_id) AS participant_id, p, survs, final_vital_status, final_age_at_vital_status,
+        collect(DISTINCT d) AS diagnosis_nodes
         // Get all studies for this participant
         OPTIONAL MATCH (p)-[:of_participant]->(c_all:consent_group)-[:of_consent_group]->(st_all:study)
-        WITH participant_id, p, d, survs, final_vital_status, final_age_at_vital_status,
+        WITH participant_id, p, diagnosis_nodes, survs, final_vital_status, final_age_at_vital_status,
              // Collect all distinct study_ids for this participant
              collect(DISTINCT st_all.study_id) AS study_ids
-        WITH participant_id, p, d, survs, final_vital_status, final_age_at_vital_status,
+        WITH participant_id, p, diagnosis_nodes, survs, final_vital_status, final_age_at_vital_status,
              // Use requested namespace for namespace (for backward compatibility)
              $namespace AS namespace,
              // All study_ids for depositions
@@ -1555,7 +1564,8 @@ class SubjectRepository:
           END AS ethnicity,
           CASE WHEN final_age_at_vital_status IS NOT NULL THEN final_age_at_vital_status ELSE -999 END AS age_at_vital_status,
           final_vital_status AS vital_status,
-          d.diagnosis AS associated_diagnoses,
+          NULL AS associated_diagnoses,
+          diagnosis_nodes AS diagnosis_nodes,
           p.sex_at_birth AS sex,
           toString(namespace) AS namespace,
           study_ids AS depositions
@@ -1627,10 +1637,10 @@ class SubjectRepository:
                ELSE max_age
              END AS final_age_at_vital_status
         // Collect all study_ids for this participant
-        WITH toString(p.participant_id) AS participant_id, p, d, survs, final_vital_status, final_age_at_vital_status,
+        WITH toString(p.participant_id) AS participant_id, p, collect(DISTINCT d) AS diagnosis_nodes, survs, final_vital_status, final_age_at_vital_status,
              // Collect all distinct study_ids for this participant
              collect(DISTINCT st.study_id) AS study_ids
-        WITH participant_id, p, d, survs, final_vital_status, final_age_at_vital_status,
+        WITH participant_id, p, diagnosis_nodes, survs, final_vital_status, final_age_at_vital_status,
              // Use first study_id for namespace (for backward compatibility)
              head(study_ids) AS namespace,
              // All study_ids for depositions
@@ -1644,7 +1654,8 @@ class SubjectRepository:
           END AS ethnicity,
           CASE WHEN final_age_at_vital_status IS NOT NULL THEN final_age_at_vital_status ELSE -999 END AS age_at_vital_status,
           final_vital_status AS vital_status,
-          d.diagnosis AS associated_diagnoses,
+          NULL AS associated_diagnoses,
+          diagnosis_nodes AS diagnosis_nodes,
           p.sex_at_birth AS sex,
           toString(namespace) AS namespace,
           study_ids AS depositions

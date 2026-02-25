@@ -1321,7 +1321,7 @@ class SubjectRepository:
                ELSE 'Not reported'
              END AS ethnicity_value
                 {derived_where_clause}
-            WITH p, diagnosis_nodes, study_id,final_vital_status, final_age_at_vital_status, 
+            WITH p, diagnosis_nodes, study_id, final_vital_status, final_age_at_vital_status, 
             ethnicity_value{", race_tokens, pr_tokens" if race_condition else ""},
             [node IN diagnosis_nodes WHERE node IS NOT NULL] AS non_null_nodes
             WITH toString(p.participant_id) AS participant_id, study_id, p,

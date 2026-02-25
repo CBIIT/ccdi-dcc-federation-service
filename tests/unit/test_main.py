@@ -4,6 +4,8 @@ Unit tests for main application module.
 Tests application creation, middleware setup, exception handlers, and route configuration.
 """
 
+import warnings
+
 import pytest
 from unittest.mock import Mock, patch, MagicMock, AsyncMock
 from fastapi import FastAPI, Request, status
@@ -485,7 +487,10 @@ class TestOpenApiCustomization:
                 break
 
         assert endpoint_func is not None
-        schema = await endpoint_func()
+        # Suppress Pydantic V2 deprecation (e.g. __fields__ -> model_fields) from OpenAPI schema generation
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*__fields__.*", category=DeprecationWarning)
+            schema = await endpoint_func()
         excluded_paths = {"/health", "/ping", "/version", "/api/v1/errors/examples"}
         assert not excluded_paths.intersection(set(schema.get("paths", {}).keys()))
 

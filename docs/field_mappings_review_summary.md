@@ -54,28 +54,28 @@ At a glance:
    - Forward mappings: 2
    - Reverse mappings: 2
    - Null mappings: 0
-   - ✅ Fully bidirectional
+   - Fully bidirectional
 
 2. **`library_source_material`**
    - Source: `library_source_material`
    - Forward mappings: 0 (pass-through)
    - Reverse mappings: 0
    - Null mappings: 1 (`["Other"]`)
-   - ✅ Null filtering only
+   - Null filtering only
 
 3. **`specimen_molecular_analyte_type`**
    - Source: `library_source_molecule`
    - Forward mappings: 3
    - Reverse mappings: 2 (one-to-many: "RNA" → ["Transcriptomic", "Viral RNA"])
    - Null mappings: 1 (`["Not Reported"]`)
-   - ✅ Complex one-to-many mapping handled correctly
+   - Complex one-to-many mapping handled correctly
 
 4. **`library_strategy`**
    - Source: `library_strategy`
    - Forward mappings: 1
    - Reverse mappings: 1
    - Null mappings: 0
-   - ✅ Fully bidirectional
+   - Fully bidirectional
 
 ### Diagnosis Fields (2)
 
@@ -87,14 +87,14 @@ At a glance:
    - ⚠️ **Note**: Reverse mapping includes "Relapse" which is not in forward mappings
      - **Intentional**: "Relapse" can exist directly in database
      - **Behavior**: Both "Recurrent Disease" and "Relapse" map to "Relapse" in API
-     - **Status**: ✅ Acceptable (handles both database values)
+     - **Status**: Acceptable (handles both database values)
 
 2. **`tumor_classification`**
    - Source: `tumor_classification`
    - Forward mappings: 0 (pass-through)
    - Reverse mappings: 0
    - Null mappings: 1 (`["non-malignant"]`)
-   - ✅ Null filtering only
+   - Null filtering only
 
 ### Subject Fields (3)
 
@@ -103,14 +103,14 @@ At a glance:
    - Forward mappings: 1 (`"Not Reported"` → `"Not reported"`)
    - Reverse mappings: 1 (`"Not reported"` → `"Not Reported"`)
    - Null mappings: 0
-   - ✅ Fully bidirectional (case normalization)
+   - Fully bidirectional (case normalization)
 
 2. **`sex`**
    - Source: `sex_at_birth`
    - Forward mappings: 3 (`"Male"` → `"M"`, `"Female"` → `"F"`, `"Not Reported"` → `"U"`)
    - Reverse mappings: 3 (`"M"` → `"Male"`, `"F"` → `"Female"`, `"U"` → `"Not Reported"`)
    - Null mappings: 0
-   - ✅ Fully bidirectional
+   - Fully bidirectional
    - ⚠️ **Note**: Reference only - Currently implemented via Settings.sex_value_mappings (forward) and hardcoded reverse mapping in subject.py. Code implementation unchanged for performance reasons.
 
 3. **`race`**
@@ -118,7 +118,7 @@ At a glance:
    - Forward mappings: 1 (`"Not Allowed to Collect"` → `"Not allowed to collect"`)
    - Reverse mappings: 1 (`"Not allowed to collect"` → `"Not Allowed to Collect"`)
    - Null mappings: 0
-   - ✅ Bidirectional case-normalization mapping
+   - Bidirectional case-normalization mapping
    - ⚠️ `"Hispanic or Latino"` handling is part of subject logic (used for ethnicity derivation), not a direct race mapping entry.
 
 ---

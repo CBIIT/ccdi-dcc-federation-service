@@ -5,14 +5,15 @@ This module provides custom exceptions and error responses according to
 the OpenAPI specification.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from fastapi import HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class ErrorKind:
     """Error kinds as defined in the OpenAPI specification."""
+    INVALID_ROUTE = "InvalidRoute"
     INVALID_PARAMETERS = "InvalidParameters"
     UNSUPPORTED_FIELD = "UnsupportedField"
     NOT_FOUND = "NotFound"
@@ -21,17 +22,36 @@ class ErrorKind:
 
 
 class ErrorDetail(BaseModel):
-    """Individual error detail model."""
-    kind: str
-    message: str
+    """Individual error detail model matching OpenAPI specification.
+    
+    Fields vary by error kind:
+    - InvalidRoute: kind, method, route, message
+    - InvalidParameters: kind, parameters, message, reason
+    - NotFound: kind, entity, message, reason
+    - UnshareableData: kind, entity, message, reason
+    - UnsupportedField: kind, field, message, reason
+    """
+    
+    model_config = ConfigDict(exclude_none=True)
+    
+    kind: Optional[str] = None  # Optional to support MessageOnly format
+    message: Optional[str] = None
+    # InvalidRoute fields
+    method: Optional[str] = None
+    route: Optional[str] = None
+    # InvalidParameters fields
     parameters: Optional[List[str]] = None
-    field: Optional[str] = None
+    # NotFound/UnshareableData fields
     entity: Optional[str] = None
+    # UnsupportedField fields
+    field: Optional[str] = None
     reason: Optional[str] = None
 
 
 class ErrorsResponse(BaseModel):
     """Error response model matching OpenAPI specification."""
+    model_config = ConfigDict(exclude_none=True)
+    
     errors: List[ErrorDetail]
 
 
@@ -40,32 +60,56 @@ class CCDIException(Exception):
     
     def __init__(
         self, 
-        message: str, 
-        kind: str,
+        kind: Optional[str],
         status_code: int = status.HTTP_500_INTERNAL_SERVER_ERROR,
+        method: Optional[str] = None,
+        route: Optional[str] = None,
         parameters: Optional[List[str]] = None,
         field: Optional[str] = None,
         entity: Optional[str] = None,
+        message: Optional[str] = None,
         reason: Optional[str] = None
     ):
         """Initialize CCDI exception."""
-        super().__init__(message)
-        self.message = message
         self.kind = kind
         self.status_code = status_code
+        self.method = method
+        self.route = route
         self.parameters = parameters or []
         self.field = field
         self.entity = entity
+        self.message = message or self._generate_message()
         self.reason = reason
+        super().__init__(self.message)
+    
+    def _generate_message(self) -> str:
+        """Generate error message from error details."""
+        if not self.kind:
+            return "Unable to find data for your request."
+        if self.kind == ErrorKind.INVALID_ROUTE:
+            return f"Invalid route: {self.method} {self.route}"
+        elif self.kind == ErrorKind.INVALID_PARAMETERS:
+            param_list = "', '".join(self.parameters) if self.parameters else ""
+            return f"Invalid parameter{'s' if len(self.parameters) > 1 else ''} '{param_list}'"
+        elif self.kind == ErrorKind.NOT_FOUND:
+            return f"{self.entity or 'Resource'} not found."
+        elif self.kind == ErrorKind.UNSHAREABLE_DATA:
+            return f"Unable to share data for {self.entity or 'resource'}"
+        elif self.kind == ErrorKind.UNSUPPORTED_FIELD:
+            return f"Field '{self.field}' is not supported"
+        else:
+            return "An error occurred."
     
     def to_error_detail(self) -> ErrorDetail:
         """Convert exception to error detail."""
         return ErrorDetail(
             kind=self.kind,
-            message=self.message,
+            method=self.method,
+            route=self.route,
             parameters=self.parameters if self.parameters else None,
             field=self.field,
             entity=self.entity,
+            message=self.message,
             reason=self.reason
         )
     
@@ -73,7 +117,39 @@ class CCDIException(Exception):
         """Convert to FastAPI HTTPException."""
         return HTTPException(
             status_code=self.status_code,
-            detail=ErrorsResponse(errors=[self.to_error_detail()]).model_dump()
+            detail=ErrorsResponse(errors=[self.to_error_detail()]).model_dump(exclude_none=True)
+        )
+
+
+class InvalidRouteError(CCDIException):
+    """Invalid API route error."""
+    
+    def __init__(
+        self, 
+        method: str,
+        route: str,
+        status_code: int = status.HTTP_404_NOT_FOUND,
+        message: Optional[str] = None
+    ):
+        if message is None:
+            message = f"Invalid route: {method} {route}"
+        super().__init__(
+            kind=ErrorKind.INVALID_ROUTE,
+            status_code=status_code,
+            method=method,
+            route=route,
+            message=message
+        )
+    
+    def to_error_detail(self) -> ErrorDetail:
+        """Convert exception to error detail - match Error-InvalidRoute-404.json format."""
+        # Match specification: route should be "Invalid route requested." as a string
+        return ErrorDetail(
+            kind=self.kind,
+            method=self.method or "GET",
+            route="Invalid route requested.",
+            message="Invalid route requested.",  # Not in specification
+            reason=None  # Not in specification
         )
 
 
@@ -83,19 +159,41 @@ class InvalidParametersError(CCDIException):
     def __init__(
         self, 
         parameters: List[str], 
-        reason: str,
-        message: Optional[str] = None
+        message: Optional[str] = None,
+        status_code: int = status.HTTP_400_BAD_REQUEST,
+        method: Optional[str] = None,
+        route: Optional[str] = None,
+        reason: Optional[str] = None
     ):
-        if not message:
-            param_list = "', '".join(parameters)
-            message = f"Invalid value for parameter{'s' if len(parameters) > 1 else ''} '{param_list}': {reason}"
-        
+        if message is None:
+            message = "Invalid query parameter(s) provided."
+        if reason is None:
+            reason = "Unknown query parameter(s)"
+        # Always use empty parameters array to avoid exposing user inputs
         super().__init__(
-            message=message,
             kind=ErrorKind.INVALID_PARAMETERS,
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            parameters=parameters,
+            status_code=status_code,
+            parameters=[],  # Empty array - don't expose parameter names
+            method=method,
+            route=route,
+            message=message,
             reason=reason
+        )
+
+
+class ValidationError(CCDIException):
+    """General validation error for invalid input parameters."""
+    
+    def __init__(
+        self, 
+        message: str,
+        status_code: int = status.HTTP_400_BAD_REQUEST
+    ):
+        super().__init__(
+            kind=ErrorKind.INVALID_PARAMETERS,
+            status_code=status_code,
+            parameters=["input"],
+            message=message
         )
 
 
@@ -106,28 +204,38 @@ class UnsupportedFieldError(CCDIException):
         self, 
         field: str, 
         entity_type: str,
-        operation: str = "filtering"
+        status_code: int = status.HTTP_400_BAD_REQUEST,
+        message: Optional[str] = None,
+        reason: Optional[str] = None
     ):
-        reason = f"This field is not present for {entity_type.lower()}s."
-        message = f"Field '{field}' is not supported: {reason}"
+        if message is None:
+            message = f"Field is not supported for {entity_type}."
+        if reason is None:
+            reason = f"This field is not present for {entity_type}."
+        
+        # Store entity_type for use in to_error_detail
+        self._entity_type = entity_type
         
         super().__init__(
-            message=message,
             kind=ErrorKind.UNSUPPORTED_FIELD,
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status_code,
             field=field,
+            message=message,
             reason=reason
         )
-
-
-class ValidationError(CCDIException):
-    """General validation error for invalid input parameters."""
     
-    def __init__(self, message: str):
-        super().__init__(
-            message=message,
-            kind=ErrorKind.INVALID_PARAMETERS,
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY
+    def to_error_detail(self) -> ErrorDetail:
+        """Convert exception to error detail - match Error-UnsupportedField-400-template.json format."""
+        # Match specification: use "wrong field" instead of actual field name to avoid exposing user inputs
+        return ErrorDetail(
+            kind=self.kind,
+            method=self.method,
+            route=self.route,
+            parameters=self.parameters if self.parameters else None,
+            field="wrong field",  # Use generic value instead of actual field name to avoid exposing user input
+            entity=self.entity,
+            message=self.message,  # "Field is not supported for {entity_type}."
+            reason=self.reason  # "This field is not present for {entity_type}."
         )
 
 
@@ -137,16 +245,20 @@ class NotFoundError(CCDIException):
     def __init__(
         self, 
         entity: str,
-        message: Optional[str] = None
+        status_code: int = status.HTTP_404_NOT_FOUND,
+        message: Optional[str] = None,
+        reason: Optional[str] = None
     ):
-        if not message:
-            message = f"{entity} not found."
-        
+        if message is None:
+            message = "Unable to find data for your request."
+        if reason is None:
+            reason = "No data found."
         super().__init__(
-            message=message,
             kind=ErrorKind.NOT_FOUND,
-            status_code=status.HTTP_404_NOT_FOUND,
-            entity=entity
+            status_code=status_code,
+            entity=entity,
+            message=message,
+            reason=reason
         )
 
 
@@ -156,15 +268,17 @@ class UnshareableDataError(CCDIException):
     def __init__(
         self, 
         entity: str,
-        reason: str = "Our agreement with data providers prohibits us from sharing line-level data."
+        message: str = "Our agreement with data providers prohibits us from sharing line-level data.",
+        status_code: int = status.HTTP_404_NOT_FOUND,
+        reason: Optional[str] = None
     ):
-        message = f"Unable to share data for {entity.lower()}: {reason}"
-        
+        if reason is None:
+            reason = "Data sharing is restricted by agreement with data providers."
         super().__init__(
-            message=message,
             kind=ErrorKind.UNSHAREABLE_DATA,
-            status_code=status.HTTP_404_NOT_FOUND,
+            status_code=status_code,
             entity=entity,
+            message=message,
             reason=reason
         )
 
@@ -174,14 +288,14 @@ class InternalServerError(CCDIException):
     
     def __init__(
         self, 
-        message: str = "An internal error occurred.",
-        reason: Optional[str] = None
+        message: Optional[str] = None
     ):
+        if message is None:
+            message = "An internal server error occurred"
         super().__init__(
-            message=message,
             kind=ErrorKind.INTERNAL_SERVER_ERROR,
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            reason=reason
+            message=message
         )
 
 
@@ -195,9 +309,13 @@ def create_pagination_error(page: Optional[int] = None, per_page: Optional[int] 
     if per_page is not None and per_page < 1:
         parameters.append("per_page")
     
+    param_list = "', '".join(parameters) if parameters else "page and per_page"
+    reason = f"Invalid value for parameter{'s' if len(parameters) > 1 else ''} '{param_list}': unable to calculate offset."
+    
     return InvalidParametersError(
-        parameters=parameters or ["page", "per_page"],
-        reason="Unable to calculate offset."
+        parameters=[],  # Empty array - don't expose parameter names
+        message="Invalid query parameter(s) provided.",
+        reason="Unknown query parameter(s)"
     )
 
 
@@ -212,11 +330,13 @@ def create_entity_not_found_error(
     namespace: Optional[str] = None, 
     name: Optional[str] = None
 ) -> NotFoundError:
-    """Create an entity not found error."""
-    if organization and namespace and name:
-        entity = f"{entity_type} with namespace '{namespace}' and name '{name}'"
-    else:
-        entity = entity_type.title() + "s"
+    """Create an entity not found error.
+    
+    Note: Invalid values (organization, namespace, name) are not included in the error message
+    to avoid exposing user input. They should be logged separately.
+    """
+    # Don't include invalid values in the entity description
+    entity = entity_type.title() + "s"
     
     return NotFoundError(entity)
 
@@ -224,3 +344,29 @@ def create_entity_not_found_error(
 def create_unshareable_data_error(entity_type: str) -> UnshareableDataError:
     """Create an unshareable data error."""
     return UnshareableDataError(entity_type.title() + "s")
+
+
+def create_message_only_error(message: str = "Unable to find data for your request.") -> ErrorDetail:
+    """
+    Create a message-only error detail matching Error-MessageOnly.json format.
+    
+    This format is used for simpler 404 errors that only include a message field,
+    without kind, entity, or reason fields.
+    
+    Args:
+        message: Error message (defaults to standard message)
+        
+    Returns:
+        ErrorDetail with only message field set (other fields will be excluded via exclude_none)
+    """
+    # Create ErrorDetail with only message - other fields will be None and excluded via exclude_none
+    return ErrorDetail(
+        kind=None,  # Not included in MessageOnly format
+        message=message,
+        entity=None,
+        reason=None,
+        method=None,
+        route=None,
+        parameters=None,
+        field=None
+    )

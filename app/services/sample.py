@@ -6,7 +6,7 @@ including caching, validation, and coordination between
 repositories and API endpoints.
 """
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple, Union
 from neo4j import AsyncSession
 
 from app.core.config import Settings
@@ -16,6 +16,7 @@ from app.lib.field_allowlist import FieldAllowlist
 from app.models.dto import Sample, CountResponse, SummaryResponse
 from app.models.errors import NotFoundError, ValidationError
 from app.repositories.sample import SampleRepository
+from app.db.memgraph import DatabaseConnectionError
 
 logger = get_logger(__name__)
 
@@ -31,7 +32,7 @@ class SampleService:
         cache_service: Optional[CacheService] = None
     ):
         """Initialize service with dependencies."""
-        self.repository = SampleRepository(session, allowlist)
+        self.repository = SampleRepository(session, allowlist, settings)
         self.settings = settings
         self.cache_service = cache_service
         
@@ -39,8 +40,9 @@ class SampleService:
         self,
         filters: Dict[str, Any],
         offset: int = 0,
-        limit: int = 20
-    ) -> List[Sample]:
+        limit: int = 20,
+        return_total: bool = False
+    ) -> Union[List[Sample], Tuple[List[Sample], int]]:
         """
         Get paginated list of samples with filtering.
         
@@ -48,50 +50,95 @@ class SampleService:
             filters: Dictionary of field filters
             offset: Number of records to skip
             limit: Maximum number of records to return
-            
+            return_total: If True, also return total count (same as summary.counts.all)
+                         using the same filter state as the list query when possible.
+        
         Returns:
-            List of Sample objects
+            List of Sample objects, or (List of Sample objects, total_count) when return_total=True
         """
         logger.debug(
             "Getting samples",
             filters=filters,
             offset=offset,
-            limit=limit
+            limit=limit,
+            return_total=return_total
         )
         
         # Validate pagination limits
-        if limit > self.settings.pagination.max_per_page:
-            limit = self.settings.pagination.max_per_page
+        if limit > self.settings.pagination.max_page_size:
+            limit = self.settings.pagination.max_page_size
             logger.debug(
                 "Limiting page size",
                 requested=limit,
-                max_allowed=self.settings.pagination.max_per_page
+                max_allowed=self.settings.pagination.max_page_size
             )
         
-        # Get data from repository
-        samples = await self.repository.get_samples(filters, offset, limit)
+        # Get base URL from settings
+        base_url = self.settings.identifier_server_url.rstrip("/") if hasattr(self.settings, 'identifier_server_url') and self.settings.identifier_server_url else None
         
+        # Get data from repository (optionally with total from same filter state)
+        try:
+            result = await self.repository.get_samples(
+                filters, offset, limit, base_url=base_url, return_total=return_total
+            )
+        except DatabaseConnectionError as e:
+            # Database connection error - log and raise so API returns 404 (No data found), not empty data
+            logger.error(
+                "Database connection error while fetching samples - raising NotFoundError",
+                error=str(e),
+                error_type=type(e).__name__,
+                filters=filters,
+                offset=offset,
+                limit=limit,
+                is_database_connection_error=True,
+                exc_info=True
+            )
+            raise NotFoundError("Samples")
+        
+        if return_total and isinstance(result, tuple):
+            samples, total_count = result
+            logger.info(
+                "Retrieved samples with total",
+                count=len(samples),
+                total_count=total_count,
+                offset=offset,
+                limit=limit
+            )
+            return (samples, total_count)
+        if return_total:
+            # Repository did not return total (e.g. sequencing_file-only path); fall back to summary
+            summary_result = await self.get_samples_summary(filters)
+            total_count = summary_result.counts.total
+            samples = result
+            logger.info(
+                "Retrieved samples with total from summary",
+                count=len(samples),
+                total_count=total_count,
+                offset=offset,
+                limit=limit
+            )
+            return (samples, total_count)
+        samples = result
         logger.info(
             "Retrieved samples",
             count=len(samples),
             offset=offset,
             limit=limit
         )
-        
         return samples
     
     async def get_sample_by_identifier(
         self,
-        org: str,
-        ns: str,
+        organization: str,
+        namespace: str,
         name: str
     ) -> Sample:
         """
         Get a specific sample by organization, namespace, and name.
         
         Args:
-            org: Organization identifier
-            ns: Namespace identifier  
+            organization: Organization identifier
+            namespace: Namespace identifier  
             name: Sample name/identifier
             
         Returns:
@@ -102,24 +149,27 @@ class SampleService:
         """
         logger.debug(
             "Getting sample by identifier",
-            org=org,
-            ns=ns,
+            organization=organization,
+            namespace=namespace,
             name=name
         )
         
         # Validate parameters
-        self._validate_identifier_params(org, ns, name)
+        self._validate_identifier_params(organization, namespace, name)
+        
+        # Get base URL from settings
+        base_url = self.settings.identifier_server_url.rstrip("/") if hasattr(self.settings, 'identifier_server_url') and self.settings.identifier_server_url else None
         
         # Get from repository
-        sample = await self.repository.get_sample_by_identifier(org, ns, name)
+        sample = await self.repository.get_sample_by_identifier(organization, namespace, name, base_url=base_url)
         
         if not sample:
-            raise NotFoundError(f"Sample not found: {org}.{ns}.{name}")
+            raise NotFoundError("Samples")
         
         logger.info(
             "Retrieved sample by identifier",
-            org=org,
-            ns=ns,
+            organization=organization,
+            namespace=namespace,
             name=name,
             sample_data=getattr(sample, 'id', str(sample)[:50])  # Flexible logging
         )
@@ -157,26 +207,29 @@ class SampleService:
                 return CountResponse(**cached_result)
         
         # Get counts from repository
-        counts = await self.repository.count_samples_by_field(field, filters)
+        result = await self.repository.count_samples_by_field(field, filters)
         
         # Build response
         response = CountResponse(
-            field=field,
-            counts=counts
+            total=result.get("total", 0),
+            missing=result.get("missing", 0),
+            values=result.get("values", [])
         )
         
         # Cache result
         if self.cache_service and cache_key:
             await self.cache_service.set(
                 cache_key,
-                response.dict(),
+                response.model_dump(),
                 ttl=self.settings.cache.count_ttl
             )
         
         logger.info(
             "Completed sample count by field",
             field=field,
-            result_count=len(counts)
+            total=response.total,
+            missing=response.missing,
+            values_count=len(response.values)
         )
         
         return response
@@ -206,49 +259,109 @@ class SampleService:
                 return SummaryResponse(**cached_result)
         
         # Get summary from repository
-        summary_data = await self.repository.get_samples_summary(filters)
+        try:
+            summary_data = await self.repository.get_samples_summary(filters)
+        except DatabaseConnectionError as e:
+            # Database connection error - log and raise so API returns 404 (No data found), not empty data
+            logger.error(
+                "Database connection error while fetching samples summary - raising NotFoundError",
+                error=str(e),
+                error_type=type(e).__name__,
+                filters=filters,
+                is_database_connection_error=True,
+                exc_info=True
+            )
+            raise NotFoundError("Samples")
         
-        # Build response
-        response = SummaryResponse(**summary_data)
+        # Transform repository format to response format
+        from app.models.dto import SummaryCounts
+        # Repository returns {"counts": {"total": ...}} or {"total_count": ...} (for filtered case)
+        # Handle case where repository returns empty list (shouldn't happen, but be defensive)
+        if isinstance(summary_data, list):
+            logger.warning("Repository returned list instead of dict for summary", summary_data=summary_data)
+            total_count = 0
+        elif "counts" in summary_data:
+            total_count = summary_data["counts"].get("total", 0)
+        else:
+            total_count = summary_data.get("total_count", 0)
+        
+        response = SummaryResponse(
+            counts=SummaryCounts(total=total_count)
+        )
         
         # Cache result
         if self.cache_service and cache_key:
             await self.cache_service.set(
                 cache_key,
-                response.dict(),
-                ttl=self.settings.cache.summary_ttl
+                response.model_dump(),
+                ttl=self.settings.cache_ttl_summary_endpoints
             )
         
         logger.info(
             "Completed samples summary",
-            total_count=response.total_count
+            total_count=response.counts.total
         )
         
         return response
     
-    def _validate_identifier_params(self, org: str, ns: str, name: str) -> None:
+    async def get_samples_for_diagnosis_endpoint(
+        self,
+        filters: Dict[str, Any],
+        offset: int = 0,
+        limit: int = 20,
+    ) -> Tuple[List[Sample], int]:
+        """
+        Dedicated service path for /sample-diagnosis that avoids summary endpoint query.
+        """
+        base_url = (
+            self.settings.identifier_server_url.rstrip("/")
+            if hasattr(self.settings, "identifier_server_url") and self.settings.identifier_server_url
+            else None
+        )
+
+        try:
+            samples, total_count = await self.repository.get_samples_for_diagnosis_endpoint(
+                filters=filters,
+                offset=offset,
+                limit=limit,
+                base_url=base_url,
+            )
+            return samples, total_count
+        except DatabaseConnectionError as e:
+            logger.error(
+                "Database connection error while fetching diagnosis samples",
+                error=str(e),
+                error_type=type(e).__name__,
+                filters=filters,
+                offset=offset,
+                limit=limit,
+                exc_info=True,
+            )
+            raise NotFoundError("Samples")
+        
+    def _validate_identifier_params(self, organization: str, namespace: str, name: str) -> None:
         """
         Validate identifier parameters.
         
         Args:
-            org: Organization identifier
-            ns: Namespace identifier
+            organization: Organization identifier
+            namespace: Namespace identifier
             name: Sample name
             
         Raises:
             ValidationError: If parameters are invalid
         """
-        if not org or not org.strip():
+        if not organization or not organization.strip():
             raise ValidationError("Organization identifier cannot be empty")
         
-        if not ns or not ns.strip():
+        if not namespace or not namespace.strip():
             raise ValidationError("Namespace identifier cannot be empty")
         
         if not name or not name.strip():
             raise ValidationError("Sample name cannot be empty")
         
         # Check for invalid characters
-        for param_name, param_value in [("org", org), ("ns", ns), ("name", name)]:
+        for param_name, param_value in [("organization", organization), ("namespace", namespace), ("name", name)]:
             if any(char in param_value for char in [".", "/", "\\", " "]):
                 raise ValidationError(f"Invalid characters in {param_name}: {param_value}")
     

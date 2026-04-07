@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ page.title | default: site.title }}</title>
+    <meta name="description" content="{{ page.description | default: site.description }}">
+    
+    <!-- CSS -->
+    <link rel="stylesheet" href="{{ '/assets/css/style.css' | relative_url }}">
+    <style>
+        .hero {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 4rem 2rem;
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+        .hero h1 {
+            margin: 0;
+            font-size: 3rem;
+            font-weight: 300;
+        }
+        .hero p {
+            margin: 1rem 0 0 0;
+            font-size: 1.3rem;
+            opacity: 0.9;
+        }
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 2rem;
+            margin: 2rem 0;
+        }
+        .feature-card {
+            background: white;
+            padding: 2rem;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+        .feature-card h3 {
+            color: #667eea;
+            margin-top: 0;
+        }
+        .api-link {
+            display: inline-block;
+            background: #007bff;
+            color: white;
+            padding: 1rem 2rem;
+            text-decoration: none;
+            border-radius: 5px;
+            margin: 1rem;
+            font-weight: bold;
+            transition: background 0.3s;
+        }
+        .api-link:hover {
+            background: #0056b3;
+            color: white;
+            text-decoration: none;
+        }
+        .code-block {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 5px;
+            padding: 1rem;
+            margin: 1rem 0;
+            overflow-x: auto;
+        }
+        .code-block code {
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="hero">
+        <h1>{{ site.title }}</h1>
+        <p>{{ site.description }}</p>
+    </div>
+
+    <div class="container">
+        <div class="features">
+            <div class="feature-card">
+                <h3>🚀 Interactive API</h3>
+                <p>Explore the API with our interactive Swagger UI documentation</p>
+                <a href="{{ '/index.html' | relative_url }}" class="api-link">View API Docs</a>
+            </div>
+            
+            <div class="feature-card">
+                <h3>📋 OpenAPI Spec</h3>
+                <p>Download the complete OpenAPI specification in JSON or YAML format</p>
+                <a href="{{ '/swagger.yml' | relative_url }}" class="api-link">YAML Spec</a>
+                <a href="{{ '/openapi.json' | relative_url }}" class="api-link">JSON Spec</a>
+            </div>
+            
+            <div class="feature-card">
+                <h3>🔧 Quick Start</h3>
+                <p>Get started with our API using the provided examples and guides</p>
+                <a href="{{ '/README.md' | relative_url }}" class="api-link">Read Guide</a>
+            </div>
+        </div>
+
+        <div class="content">
+            <h2>Quick Start Examples</h2>
+            
+            <h3>Single Subject Search</h3>
+            <div class="code-block">
+                <code>curl "https://your-server.com/api/v1/subject/CCDI-DCC/CCDI-DCC/TARGET-10-PAKKMW"</code>
+            </div>
+            
+            <h3>Multiple Subjects Search</h3>
+            <div class="code-block">
+                <code>curl "https://your-server.com/api/v1/subject/CCDI-DCC/CCDI-DCC/TARGET-10-PAKKMW,TARGET-20-PAWUUE"</code>
+            </div>
+            
+            <h3>Advanced Search with Pagination</h3>
+            <div class="code-block">
+                <code>curl "https://your-server.com/api/v1/subject/search/CCDI-DCC/CCDI-DCC/TARGET-10-PAKKMW?page=1&per_page=10"</code>
+            </div>
+
+            {{ content }}
+        </div>
+    </div>
+
+    <footer style="text-align: center; padding: 2rem; background: #f8f9fa; margin-top: 2rem;">
+        <p>&copy; 2025 CCDI Federation Service. Built with FastAPI and Swagger UI.</p>
+    </footer>
+</body>
+</html>

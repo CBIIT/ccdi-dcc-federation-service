@@ -1,12 +1,13 @@
 # CCDI Federation Service
 
+**Version: 1.2.0**
+
 A REST API service for querying the CCDI (Childhood Cancer Data Initiative) graph database. This service provides endpoints for retrieving subjects, samples, files, and metadata from a Memgraph graph database.
 
 ## Features
 
 - **REST API**: FastAPI-based service with automatic OpenAPI documentation
 - **Graph Database**: Memgraph integration with Cypher query support  
-- **Caching**: Redis-based caching for count and summary endpoints
 - **Pagination**: RFC 5988 compliant pagination with Link headers
 - **Field Validation**: Allowlist-based field filtering for security
 - **Error Handling**: Comprehensive error handling matching OpenAPI specification
@@ -29,8 +30,7 @@ A REST API service for querying the CCDI (Childhood Cancer Data Initiative) grap
 │   ├── core/                # Core utilities
 │   │   ├── config.py        # Comprehensive configuration management
 │   │   ├── logging.py       # Structured logging with correlation IDs
-│   │   ├── pagination.py    # RFC 5988 compliant pagination 
-│   │   └── cache.py         # Async Redis caching service
+│   │   └── pagination.py    # RFC 5988 compliant pagination
 │   ├── db/                  # Database layer
 │   │   └── memgraph.py      # Memgraph connection with lifecycle management
 │   ├── lib/                 # Shared libraries
@@ -46,34 +46,31 @@ A REST API service for querying the CCDI (Childhood Cancer Data Initiative) grap
 ### Key Architectural Features
 - **Layered Architecture**: Clean separation between API, Service, and Repository layers
 - **Dependency Injection**: Extensive use of FastAPI dependencies for shared concerns  
-- **Async Support**: Full async/await implementation with async Redis
-- **Error Handling**: Custom exception hierarchy with automatic HTTP status mapping
-- **Caching Strategy**: Redis-based caching with configurable TTLs per endpoint type
+- **Async Support**: Full async/await implementation
+- **Error Handling**: Custom exception hierarchy with automatic HTTP status mapping and security-first design
 - **Configuration Management**: Nested settings with environment-specific overrides
+- **Query Optimization**: Combined Cypher queries for performance (e.g., single-query count operations)
+- **Code Reusability**: Extracted validation logic into reusable helper methods
 
 ## API Endpoints
 
 #### Subjects
 - `GET /api/v1/subject` - List subjects with pagination and filtering
-- `GET /api/v1/subject/{org}/{ns}/{name}` - Get specific subject by identifier
+- `GET /api/v1/subject/{organization}/{namespace}/{name}` - Get specific subject by identifier
 - `GET /api/v1/subject/by/{field}/count` - Count subjects by field value
-- `GET /api/v1/subject/summary` - Get subject summary statistics
-- `GET /api/v1/subject/diagnosis/search` - Search subjects by diagnosis
-- `GET /api/v1/subject/diagnosis/by/{field}/count` - Count subjects by field with diagnosis
-- `GET /api/v1/subject/diagnosis/summary` - Subject summary with diagnosis filtering
+- `GET /api/v1/subject/summary` - Get subject summary statistics (total count only, no parameters accepted)
 
 #### Samples
 - `GET /api/v1/sample` - List samples with pagination and filtering
-- `GET /api/v1/sample/{org}/{ns}/{name}` - Get specific sample by identifier
+- `GET /api/v1/sample/{organization}/{namespace}/{name}` - Get specific sample by identifier
 - `GET /api/v1/sample/by/{field}/count` - Count samples by field value
-- `GET /api/v1/sample/summary` - Get sample summary statistics
-- `GET /api/v1/sample/diagnosis/*` - Sample diagnosis endpoints (similar to subjects)
+- `GET /api/v1/sample/summary` - Get sample summary statistics (total count only, no parameters accepted)
 
 #### Files
 - `GET /api/v1/file` - List files with pagination and filtering
-- `GET /api/v1/file/{org}/{ns}/{name}` - Get specific file by identifier
+- `GET /api/v1/file/{organization}/{namespace}/{name}` - Get specific file by identifier
 - `GET /api/v1/file/by/{field}/count` - Count files by field value
-- `GET /api/v1/file/summary` - Get file summary statistics
+- `GET /api/v1/file/summary` - Get file summary statistics (total count only, no parameters accepted)
 
 #### Metadata
 - `GET /api/v1/metadata/fields/subject` - Get filterable subject fields
@@ -91,13 +88,16 @@ A REST API service for querying the CCDI (Childhood Cancer Data Initiative) grap
 #### Server Info
 - `GET /api/v1/info` - Server information and capabilities
 
-#### Standalone Diagnosis
+#### Error Examples
+- `GET /api/v1/errors/examples` - View error response examples for all error types
+
+#### Experimental Endpoints
 - `GET /api/v1/sample-diagnosis` - Standalone sample diagnosis search
 - `GET /api/v1/subject-diagnosis` - Standalone subject diagnosis search
 
 ### Health & System
 - `GET /health` - Service health check
-- `GET /` - Service information
+- `GET /api/v1` - Service information
 
 ## Quick Start
 
@@ -118,34 +118,24 @@ A REST API service for querying the CCDI (Childhood Cancer Data Initiative) grap
    - API: http://localhost:8000
    - API Documentation: http://localhost:8000/docs
    - Memgraph Lab: http://localhost:3000
-   - Redis: localhost:6379
 
 ### Manual Setup
 
 #### Option 1: Using Poetry (Recommended)
 
-1. **Install dependencies**:
+ **Install dependencies**:
    ```bash
    pip install poetry
    poetry install
    ```
-
-2. **Set up environment**:
+ **Set up environment**:
    ```bash
    cp .env.example .env
    # Edit .env with your configuration
    ```
 
-3. **Start external services**:
-   ```bash
-   # Start Memgraph
-   docker run -p 7687:7687 -p 7444:7444 memgraph/memgraph:2.11.1
 
-   # Start Redis (optional, for caching)
-   docker run -p 6379:6379 redis:7.2-alpine
-   ```
-
-4. **Run the application**:
+ **Run the application**:
    ```bash
    poetry run uvicorn app.main:app --reload
    ```
@@ -169,21 +159,12 @@ A REST API service for querying the CCDI (Childhood Cancer Data Initiative) grap
    # Edit .env with your configuration
    ```
 
-4. **Start external services**:
-   ```bash
-   # Start Memgraph
-   docker run -p 7687:7687 -p 7444:7444 memgraph/memgraph:2.11.1
-
-   # Start Redis (optional, for caching)
-   docker run -p 6379:6379 redis:7.2-alpine
-   ```
-
-5. **Run the application**:
+4. **Run the application**:
    ```bash
    uvicorn app.main:app --reload
    ```
 
-6. **Deactivate virtual environment when done**:
+5. **Deactivate virtual environment when done**:
    ```bash
    deactivate
    ```
@@ -213,18 +194,6 @@ MEMGRAPH_MAX_CONNECTION_LIFETIME=3600
 MEMGRAPH_MAX_CONNECTION_POOL_SIZE=50
 ```
 
-#### Cache (Redis)
-```bash
-CACHE_ENABLED=true
-CACHE_REDIS_HOST=localhost
-CACHE_REDIS_PORT=6379
-CACHE_REDIS_DB=0
-CACHE_REDIS_PASSWORD=
-CACHE_TTL_COUNT_ENDPOINTS=1800      # 30 minutes
-CACHE_TTL_SUMMARY_ENDPOINTS=900     # 15 minutes  
-CACHE_TTL_LIST_ENDPOINTS=300        # 5 minutes
-```
-
 #### CORS
 ```bash
 CORS_ENABLED=true
@@ -236,10 +205,9 @@ CORS_HEADERS=["*"]
 
 #### Pagination
 ```bash
-DEFAULT_PAGE_SIZE=100
+DEFAULT_PAGE_SIZE=50
 MAX_PAGE_SIZE=1000
 PAGINATION_DEFAULT_PER_PAGE=20
-PAGINATION_MAX_PER_PAGE=100
 ```
 
 #### Rate Limiting
@@ -303,22 +271,44 @@ poetry run pytest
 
 ```bash
 # Run all tests
-poetry run pytest
+uv run pytest
 
 # Run with coverage
-poetry run pytest --cov=app --cov-report=html
+uv run pytest --cov=app --cov-report=html
 
 # Run specific test file
-poetry run pytest tests/test_subjects.py
+uv run pytest tests/unit/test_services.py
+
+# Run error response tests
+uv run pytest tests/test_error_responses.py
+
+# Run endpoint integration tests
+python test_all_endpoints.py
 ```
 
 **Test Structure:**
 ```
 tests/
 ├── __init__.py
-├── unit/
-└── integration/
+├── test_error_responses.py    # Error handling validation tests
+├── test_contract_subjects.py  # Subject endpoint contract tests
+├── test_contract_files.py     # File endpoint contract tests
+├── unit/                      # Unit tests
+└── integration/                # Integration tests
 ```
+
+**Test Documentation:**
+- [TEST_README.md](TEST_README.md) - Comprehensive test documentation
+- [TEST_COVERAGE_SUMMARY.md](TEST_COVERAGE_SUMMARY.md) - Detailed coverage information
+
+
+**Test Coverage:**
+- Error response validation (no 500 errors, sanitized messages)
+- Endpoint contract compliance
+- Summary count accuracy
+- Pagination Link header correctness
+- Field validation and allowlist enforcement
+- **Current Overall Coverage: ~80%**
 
 ## Data Model
 
@@ -328,7 +318,7 @@ The service works with the following entities:
 ```python
 {
   "id": "string",
-  "identifiers": ["org.namespace.name"],
+  "identifiers": ["organization.namespace.name"],
   "sex": "string",
   "race": "string", 
   "ethnicity": "string",
@@ -387,42 +377,158 @@ All list endpoints support pagination:
 GET /api/v1/subject?page=2&per_page=50
 ```
 
-Response includes RFC 5988 compliant Link header:
+Response includes RFC 5988 compliant Link header with `first`, `last`, `next`, and `prev` relations:
 ```
-Link: <http://localhost:8000/api/v1/subject?page=1&per_page=20>; rel="prev",
-      <http://localhost:8000/api/v1/subject?page=3&per_page=20>; rel="next"
+Link: <http://localhost:8000/api/v1/subject?page=1&per_page=50>; rel="first",
+      <http://localhost:8000/api/v1/subject?page=10&per_page=50>; rel="last",
+      <http://localhost:8000/api/v1/subject?page=1&per_page=50>; rel="prev",
+      <http://localhost:8000/api/v1/subject?page=3&per_page=50>; rel="next"
 ```
+
+The `last` link always points to the final page based on total item count, ensuring accurate pagination navigation.
 
 ## Error Handling
 
-The API returns structured error responses matching the OpenAPI specification:
+The API returns structured error responses matching the OpenAPI specification. All error responses follow strict security guidelines: **no internal error messages or user inputs are exposed** in responses. These details are logged for debugging but never returned to clients.
 
+### Error Response Format
+
+All errors follow this structure:
 ```json
 {
   "errors": [
     {
-      "kind": "InvalidParameters",
-      "message": "Invalid value for parameter 'page': Must be a positive integer",  
-      "parameters": ["page"],
-      "reason": "Unable to calculate offset"
+      "kind": "ErrorKind",
+      "message": "User-friendly error message",
+      // Additional fields vary by error type
     }
   ]
 }
 ```
 
-**Error Types:**
-- `InvalidParameters` (422) - Invalid query/path parameters
-- `UnsupportedField` (422) - Field not available for filtering/counting  
-- `NotFound` (404) - Entity not found by identifier
-- `UnshareableData` (404) - Data sharing restrictions
-- `InternalServerError` (500) - Server-side errors
+### Error Types
 
-**Custom Exception Classes:**
+#### InvalidRoute (404)
+Returned when requesting a non-existent route:
+```json
+{
+  "errors": [
+    {
+      "kind": "InvalidRoute",
+      "method": "GET",
+      "route": "Invalid route requested."
+    }
+  ]
+}
+```
+
+#### InvalidParameters (400)
+Returned when query or path parameters are invalid:
+```json
+{
+  "errors": [
+    {
+      "kind": "InvalidParameters",
+      "parameters": [],
+      "message": "Invalid query parameter(s) provided.",
+      "reason": "Unknown query parameter(s)"
+    }
+  ]
+}
+```
+**Note:** The `parameters` array is always empty to avoid exposing user input.
+
+#### NotFound (404)
+Returned when a requested resource is not found:
+```json
+{
+  "errors": [
+    {
+      "kind": "NotFound",
+      "entity": "Subjects",
+      "message": "Unable to find data for your request.",
+      "reason": "No data found"
+    }
+  ]
+}
+```
+
+#### MessageOnly (404)
+Simplified error format with only a message:
+```json
+{
+  "errors": [
+    {
+      "message": "Unable to find data for your request."
+    }
+  ]
+}
+```
+
+#### UnsupportedField (400)
+Returned when a field is not supported for filtering or counting:
+```json
+{
+  "errors": [
+    {
+      "kind": "UnsupportedField",
+      "field": "wrong field",
+      "reason": "This field is not present for subjects.",
+      "message": "Field is not supported for subjects."
+    }
+  ]
+}
+```
+**Note:** The `field` value is always `"wrong field"` to avoid exposing user input.
+
+#### UnshareableData (404)
+Returned when data cannot be shared due to agreements:
+```json
+{
+  "errors": [
+    {
+      "kind": "UnshareableData",
+      "entity": "Sample",
+      "message": "Our agreement with data providers prohibits us from sharing line-level data.",
+      "reason": "Data sharing is restricted by agreement with data providers."
+    }
+  ]
+}
+```
+
+### Empty Data Responses (200)
+
+For list endpoints, when no data is found or errors occur, the API returns **200 OK with empty data** instead of 404:
+```json
+{
+  "data": [],
+  "summary": {
+    "counts": {
+      "all": 0,
+      "current": 0
+    }
+  }
+}
+```
+
+This follows the `NoDataFoundResponse-200.json` specification pattern.
+
+### Error Handling Principles
+
+1. **No 500 Errors**: All server errors are converted to 404 NotFound or 200 empty data responses
+2. **No Internal Details**: Internal error messages, stack traces, and database errors are never exposed
+3. **No User Input Exposure**: User-provided values (field names, parameter values) are sanitized in responses
+4. **Consistent Format**: All errors follow the structured `ErrorsResponse` format
+5. **Logging**: Full error details (including user inputs) are logged for debugging but not returned
+
+### Custom Exception Classes
+
 - `CCDIException` - Base exception with HTTP mapping
-- `InvalidParametersError` - Parameter validation failures
-- `UnsupportedFieldError` - Field allowlist violations
-- `NotFoundError` - Resource not found  
-- `UnshareableDataError` - Data sharing policy violations
+- `InvalidRouteError` - Invalid API route (404)
+- `InvalidParametersError` - Parameter validation failures (400)
+- `UnsupportedFieldError` - Field allowlist violations (400)
+- `NotFoundError` - Resource not found (404)
+- `UnshareableDataError` - Data sharing policy violations (404)
 
 ## Monitoring
 
@@ -467,13 +573,7 @@ The service provides structured logging with configurable format:
 - Configurable log levels (DEBUG, INFO, WARNING, ERROR)
 - JSON or text format options
 
-### Caching Metrics
 
-Cache operations are logged for monitoring:
-- Cache hits/misses
-- Cache set/delete operations  
-- Redis connection health
-- TTL expiration tracking
 
 ## Deployment
 
@@ -490,39 +590,5 @@ Cache operations are logged for monitoring:
      -p 8000:8000 \
      -e DEBUG=false \
      -e MEMGRAPH_URI=bolt://your-memgraph:7687 \
-     -e CACHE_REDIS_HOST=your-redis \
      ccdi-federation-service
    ```
-
-### Docker Compose (Development)
-
-The included `docker-compose.yml` sets up:
-- FastAPI application
-- Memgraph database  
-- Redis cache
-- Development environment configuration
-
-### Kubernetes
-
-Example deployment configuration available in `k8s/` directory (if present).
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests for new functionality
-5. Ensure all tests pass
-6. Submit a pull request
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Support
-
-For questions and support:
-
-- Create an issue in the repository
-- Contact the CCDI team
-- Check the API documentation at `/docs`

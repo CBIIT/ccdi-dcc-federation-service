@@ -48,15 +48,15 @@ class FieldDetails(BaseModel):
 class UnharmonizedField(BaseModel):
     """Unharmonized metadata field."""
     value: Any = Field(..., description="Field value")
-    ancestors: Optional[List[str]] = None
+    ancestors: Optional[List[str]] = Field(default=None, exclude=True)
     details: Optional[FieldDetails] = None
     comment: Optional[str] = None
 
 
 class HarmonizedStandard(BaseModel):
     """Standard to which a field is harmonized."""
-    name: str = Field(..., description="Standard name")
-    url: str = Field(..., description="Standard URL")
+    name: Optional[str] = Field(None, description="Standard name")
+    url: Optional[str] = Field(None, description="Standard URL")
 
 
 class HarmonizedFieldDescription(BaseModel):
@@ -65,6 +65,19 @@ class HarmonizedFieldDescription(BaseModel):
     path: str = Field(..., description="Dot-delimited path to field location")
     wiki_url: str = Field(..., description="Wiki URL for field documentation")
     standard: Optional[HarmonizedStandard] = None
+
+
+class MetadataFieldInfo(BaseModel):
+    """Metadata field information for /metadata/fields endpoint."""
+    path: str = Field(..., description="Field path")
+    harmonized: bool = Field(..., description="Whether the field is harmonized")
+    wiki_url: str = Field(..., description="Wiki URL for field documentation")
+    standard: HarmonizedStandard = Field(..., description="Standard information")
+
+
+class MetadataFieldsInfoResponse(BaseModel):
+    """Response for /metadata/fields/{field_type} endpoint."""
+    fields: List[MetadataFieldInfo] = Field(..., description="List of metadata fields")
 
 
 class UnharmonizedFieldDescription(BaseModel):
@@ -267,25 +280,55 @@ class SampleIdentifier(BaseModel):
     name: str = Field(..., description="Sample name", examples=["SampleName001"])
 
 
+class DiagnosisField(BaseModel):
+    """Diagnosis field with value and comment."""
+    value: str = Field(..., description="Diagnosis value")
+    comment: Optional[str] = Field(default=None, description="Diagnosis comment")
+
+
+class ValueField(BaseModel):
+    """Simple field with value attribute."""
+    value: str = Field(..., description="Field value")
+
+class IntegerValueField(BaseModel):
+    """Integer field with value attribute."""
+    value: int = Field(..., description="Field value")
+
+
+class IdentifierValue(BaseModel):
+    """Identifier value with nested structure."""
+    namespace: NamespaceIdentifier = Field(..., description="Namespace identifier")
+    name: str = Field(..., description="Identifier name")
+    type: Optional[str] = Field(default="Linked", description="Identifier type")
+    server: Optional[str] = Field(default=None, description="Server URL")
+
+class IdentifierField(BaseModel):
+    """Identifier field with nested value."""
+    value: IdentifierValue = Field(..., description="Identifier value")
+    ancestors: Optional[Any] = Field(default=None, description="Ancestor entities", exclude=True)
+
+
 class SampleMetadata(CommonMetadata):
     """Sample metadata model."""
-    disease_phase: Optional[UnharmonizedField] = None
-    anatomical_sites: Optional[UnharmonizedField] = None
-    library_selection_method: Optional[UnharmonizedField] = None
-    library_strategy: Optional[UnharmonizedField] = None
-    library_source_material: Optional[UnharmonizedField] = None
-    preservation_method: Optional[UnharmonizedField] = None
-    tumor_grade: Optional[UnharmonizedField] = None
-    specimen_molecular_analyte_type: Optional[UnharmonizedField] = None
-    tissue_type: Optional[UnharmonizedField] = None
-    tumor_classification: Optional[UnharmonizedField] = None
-    age_at_diagnosis: Optional[UnharmonizedField] = None
-    age_at_collection: Optional[UnharmonizedField] = None
-    tumor_tissue_morphology: Optional[UnharmonizedField] = None
-    diagnosis: Optional[UnharmonizedField] = None
-    identifiers: Optional[List[UnharmonizedField]] = None
+    disease_phase: Optional[ValueField] = None
+    anatomical_sites: Optional[List[ValueField]] = None
+    library_selection_method: Optional[ValueField] = None
+    library_strategy: Optional[ValueField] = None
+    library_source_material: Optional[ValueField] = None
+    preservation_method: Optional[ValueField] = None
+    tumor_grade: Optional[ValueField] = None
+    specimen_molecular_analyte_type: Optional[ValueField] = None
+    tissue_type: Optional[ValueField] = None
+    tumor_classification: Optional[ValueField] = None
+    age_at_diagnosis: Optional[IntegerValueField] = None
+    age_at_collection: Optional[IntegerValueField] = None
+    tumor_tissue_morphology: Optional[ValueField] = None
+    depositions: Optional[List[DepositionAccession]] = None
+    diagnosis: Optional[DiagnosisField] = None
+    identifiers: Optional[List[IdentifierField]] = None
     unharmonized: Optional[Dict[str, UnharmonizedField]] = Field(
         None,
+        exclude=True,  # Exclude from serialization
         description="Unharmonized metadata fields"
     )
 
@@ -317,21 +360,89 @@ class FileMetadata(CommonMetadata):
 # Entity Models
 # ============================================================================
 
+# ============================================================================
+# Nested Structure Models for CCDI-DCC Format
+# ============================================================================
+
+class NamespaceIdentifier(BaseModel):
+    """Namespace identifier for nested structure."""
+    organization: str = Field(default="CCDI-DCC", description="Organization identifier")
+    name: str = Field(..., description="Namespace name (study ID)")
+
+class SubjectId(BaseModel):
+    """Subject identifier with nested namespace."""
+    namespace: NamespaceIdentifier = Field(..., description="Namespace identifier")
+    name: str = Field(..., description="Subject name (participant ID)")
+
+class MetadataField(BaseModel):
+    """Metadata field with value and ancestors."""
+    value: Any = Field(..., description="Field value")
+    ancestors: Optional[Any] = Field(default=None, description="Ancestor entities", exclude=True)
+
+class AssociatedDiagnosisField(BaseModel):
+    """Associated diagnosis field with detailed structure."""
+    value: str = Field(..., description="Diagnosis ID")
+    ancestors: Optional[Any] = Field(default=None, description="Ancestor entities", exclude=True)
+    comment: Optional[str] = Field(default=None, description="Comment")
+
+class SubjectMetadata(BaseModel):
+    """Subject metadata with nested field structure."""
+    sex: Optional[MetadataField] = None
+    race: Optional[List[MetadataField]] = None
+    ethnicity: Optional[MetadataField] = None
+    identifiers: Optional[List[IdentifierField]] = None
+    associated_diagnoses: Optional[List[AssociatedDiagnosisField]] = None
+    unharmonized: Optional[Any] = Field(
+        default=None,
+        exclude=True,  # Exclude from serialization but keep as placeholder for future use
+        description="Unharmonized metadata fields (reserved for future use)"
+    )
+    vital_status: Optional[MetadataField] = None
+    age_at_vital_status: Optional[MetadataField] = None
+    depositions: Optional[List[DepositionAccession]] = None
+
 class Subject(BaseModel):
-    """Flexible subject model that can contain any fields."""
+    """Subject model with nested CCDI-DCC structure."""
     model_config = ConfigDict(extra="allow")
+    
+    # Required fields for CCDI-DCC format
+    id: SubjectId = Field(..., description="Subject identifier with nested namespace")
+    kind: str = Field(default="Participant", description="Entity kind")
+    metadata: SubjectMetadata = Field(..., description="Subject metadata")
+    gateways: List[Any] = Field(
+        default_factory=list,
+        exclude=True,  # Exclude from serialization but keep as placeholder in code
+        description="Gateway access information (placeholder - excluded from responses)"
+    )
     
     # Allow any additional fields to be added dynamically
     def __init__(self, **data):
+        # Set defaults if not provided
+        if 'kind' not in data:
+            data['kind'] = "Participant"
+        if 'gateways' not in data:
+            data['gateways'] = []
         super().__init__(**data)
 
 
 class Sample(BaseModel):
-    """Flexible sample model that can contain any fields."""
+    """Sample model with proper structure."""
     model_config = ConfigDict(extra="allow")
+    
+    id: SampleIdentifier = Field(..., description="Sample identifier")
+    subject: Optional[SubjectId] = Field(default=None, description="Subject reference")
+    metadata: SampleMetadata = Field(..., description="Sample metadata")
+    gateways: List[Any] = Field(
+        default_factory=list,
+        exclude=True,  # Exclude from serialization but keep as placeholder in code
+        description="Gateway access information (placeholder - excluded from responses)"
+    )
     
     # Allow any additional fields to be added dynamically
     def __init__(self, **data):
+        # Set defaults if not provided
+        if 'gateways' not in data:
+            data['gateways'] = []
         super().__init__(**data)
 
 
@@ -353,13 +464,17 @@ class Organization(BaseModel):
 
 class NamespaceMetadata(CommonMetadata):
     """Namespace metadata model."""
-    study_short_title: Optional[UnharmonizedField] = None
-    study_name: Optional[UnharmonizedField] = None
-    study_funding_id: Optional[List[UnharmonizedField]] = None
-    study_id: Optional[UnharmonizedField] = None
+    model_config = ConfigDict()  # Don't exclude None values - include null in JSON response
+    
+    study_short_title: Optional[Dict[str, str]] = None  # Format: {"value": "string"} or null
+    study_name: Optional[Dict[str, str]] = None  # Format: {"value": "string"} or null
+    study_funding_id: Optional[List[Dict[str, str]]] = None  # Format: [{"value": "string"}] or null
+    study_id: Optional[Dict[str, str]] = None  # Format: {"value": "string"} or null
+    # depositions inherited from CommonMetadata as Optional[List[DepositionAccession]]
     unharmonized: Optional[Dict[str, UnharmonizedField]] = Field(
         None,
-        description="Unharmonized metadata fields"
+        exclude=True,  # Exclude from serialization but keep as placeholder in code
+        description="Unharmonized metadata fields (placeholder - excluded from responses)"
     )
 
 
@@ -390,14 +505,18 @@ class CountResult(BaseModel):
 
 class CountResponse(BaseModel):
     """Generic count response for field counting."""
-    field: str = Field(..., description="Field name that was counted")
-    counts: List[CountResult] = Field(..., description="Count results for field values")
+    total: int = Field(default=0, description="Total counts of all unique participants")
+    missing: int = Field(default=0, description="Count of unique participants with null value in the field")
+    values: List[CountResult] = Field(default_factory=list, description="Count results for field values")
 
+
+class SummaryCounts(BaseModel):
+    """Summary counts structure."""
+    total: int = Field(..., description="Total entity count")
 
 class SummaryResponse(BaseModel):
     """Generic summary response model."""
-    total_count: int = Field(..., description="Total entity count")
-    # Add other summary fields as needed based on the summary data structure
+    counts: SummaryCounts = Field(..., description="Summary counts")
 
 
 class SubjectsResponse(BaseModel):
@@ -405,9 +524,11 @@ class SubjectsResponse(BaseModel):
     model_config = ConfigDict(extra="allow")
     
     subjects: List[Subject] = Field(..., description="List of subjects with flexible structure")
+    # gateways field kept as placeholder in code but excluded from responses
     gateways: Optional[Dict[str, NamedGateway]] = Field(
         None,
-        description="Named gateways referenced by subjects"
+        exclude=True,  # Exclude from serialization but keep as placeholder in code
+        description="Named gateways referenced by subjects (placeholder - excluded from responses)"
     )
 
 
@@ -415,11 +536,26 @@ class SamplesResponse(BaseModel):
     """Flexible samples list response that can accommodate any sample structure."""
     model_config = ConfigDict(extra="allow")
     
-    samples: List[Sample] = Field(..., description="List of samples with flexible structure")
-    gateways: Optional[Dict[str, NamedGateway]] = Field(
-        None,
-        description="Named gateways referenced by samples"
+    summary: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Summary information with counts"
     )
+    data: List[Sample] = Field(..., description="List of samples with flexible structure")
+    # gateways: Optional[List[Any]] = Field(
+    #     default=None,
+    #     exclude=True,  # Exclude from serialization
+    #     description="Gateway access information (placeholder - excluded from responses)"
+    # )
+    # gateways: Optional[Dict[str, NamedGateway]] = Field(
+    #     None,
+    #     description="Named gateways referenced by samples (placeholder - excluded from responses)"
+    # )
+    
+    def model_dump(self, **kwargs):
+        """Override model_dump to exclude gateways from serialization."""
+        data = super().model_dump(**kwargs)
+        data.pop('gateways', None)
+        return data
 
 
 class FilesResponse(BaseModel):
@@ -427,30 +563,35 @@ class FilesResponse(BaseModel):
     model_config = ConfigDict(extra="allow")
     
     files: List[File] = Field(..., description="List of files with flexible structure")
+    # gateways field kept as placeholder in code but excluded from responses
     gateways: Optional[Dict[str, NamedGateway]] = Field(
         None,
-        description="Named gateways referenced by files"
+        description="Named gateways referenced by files (placeholder - excluded from responses)"
     )
+    
+    def model_dump(self, **kwargs):
+        """Override model_dump to exclude gateways from serialization."""
+        data = super().model_dump(**kwargs)
+        data.pop('gateways', None)
+        return data
 
 
 class SubjectResponse(BaseModel):
-    """Flexible subject response that can handle both single subjects and lists with pagination."""
+    """Subject response with nested structure matching CCDI-DCC format."""
     model_config = ConfigDict(extra="allow")
     
-    # For single subject responses
-    # subject: Optional[Subject] = Field(None, description="Single subject details")
-    
-    # For multiple subject responses  
-    subjects: Optional[List[Subject]] = Field(None, description="List of subjects")
-    
-    # Common fields
-    gateways: Optional[Dict[str, NamedGateway]] = Field(
-        None,
-        description="Named gateways referenced by subjects"
+    # Top-level response structure
+    summary: Optional[Dict[str, Any]] = Field(None, description="Summary statistics")
+    data: List[Any] = Field(..., description="List of subjects with nested structure")
+    # gateways field kept as placeholder in code but excluded from responses
+    gateways: List[Any] = Field(
+        default_factory=list,
+        exclude=True,  # Exclude from serialization but keep as placeholder in code
+        description="Named gateways referenced by subjects (placeholder - excluded from responses)"
     )
     
-    # For paginated responses
-    pagination: Optional[Any] = Field(None, description="Pagination information")
+    # Pagination removed - no longer included in responses
+    # pagination: Optional[Any] = Field(None, description="Pagination information")
 
 
 class SampleResponse(BaseModel):
@@ -464,13 +605,20 @@ class SampleResponse(BaseModel):
     samples: Optional[List[Sample]] = Field(None, description="List of samples")
     
     # Common fields
+    # gateways field kept as placeholder in code but excluded from responses
     gateways: Optional[Dict[str, NamedGateway]] = Field(
         None,
-        description="Named gateways referenced by samples"
+        description="Named gateways referenced by samples (placeholder - excluded from responses)"
     )
     
     # For paginated responses
     pagination: Optional[Any] = Field(None, description="Pagination information")
+    
+    def model_dump(self, **kwargs):
+        """Override model_dump to exclude gateways from serialization."""
+        data = super().model_dump(**kwargs)
+        data.pop('gateways', None)
+        return data
 
 
 class FileResponse(BaseModel):
@@ -480,17 +628,24 @@ class FileResponse(BaseModel):
     # For single file responses
     file: Optional[File] = Field(None, description="Single file details")
     
-    # For multiple file responses  
+    # For multiple file responses
     files: Optional[List[File]] = Field(None, description="List of files")
     
     # Common fields
+    # gateways field kept as placeholder in code but excluded from responses
     gateways: Optional[Dict[str, NamedGateway]] = Field(
         None,
-        description="Named gateways referenced by files"
+        description="Named gateways referenced by files (placeholder - excluded from responses)"
     )
     
     # For paginated responses
     pagination: Optional[Any] = Field(None, description="Pagination information")
+    
+    def model_dump(self, **kwargs):
+        """Override model_dump to exclude gateways from serialization."""
+        data = super().model_dump(**kwargs)
+        data.pop('gateways', None)
+        return data
 
 
 class SubjectCountResponse(BaseModel):

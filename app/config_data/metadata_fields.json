@@ -1,0 +1,241 @@
+{
+  "subjects": {
+    "fields": [
+      {
+        "path": "sex",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api/wiki/Subject-Metadata-Fields#sex",
+        "standard": {
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=6343385%20and%20ver_nr=1",
+          "name": "caDSR CDE 6343385 v1.00"
+        }
+      },
+      {
+        "path": "race",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api/wiki/Subject-Metadata-Fields#race",
+        "standard": {
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=2192199%20and%20ver_nr=1",
+          "name": "caDSR CDE 2192199 v1.00"
+        }
+      },
+      {
+        "path": "ethnicity",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api/wiki/Subject-Metadata-Fields#ethnicity",
+        "standard": {
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=2192217%20and%20ver_nr=2",
+          "name": "caDSR CDE 2192217 v2.00"
+        }
+      },
+      {
+        "path": "identifiers",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api/wiki/Subject-Metadata-Fields#identifiers",
+        "standard": {
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=6380049%20and%20ver_nr=1",
+          "name": "caDSR CDE 6380049 v1.00"
+        }
+      },
+      {
+        "path": "vital_status",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api/wiki/Subject-Metadata-Fields#vital_status",
+        "standard": {
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=2847330%20and%20ver_nr=1",
+          "name": "caDSR CDE 2847330 v1.00"
+        }
+      },
+      {
+        "path": "age_at_vital_status",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api/wiki/Subject-Metadata-Fields#age_at_vital_status",
+        "standard": {
+          "url": null,
+          "name": null
+        }
+      },
+      {
+        "path": "associated_diagnoses",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api/wiki/Subject-Metadata-Fields#associated_diagnoses",
+        "standard": {
+          "url": null,
+          "name": null
+        }
+      },
+      {
+        "path": "depositions",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api/wiki/Subject-Metadata-Fields",
+        "standard": {
+          "url": null,
+          "name": null
+        }
+      }
+    ]
+  },
+  "samples": {
+    "fields": [
+      {
+        "harmonized": true,
+        "path": "disease_phase",
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#disease_phase",
+        "standard": {
+          "name": "caDSR CDE 12217251 v1.00",
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=12217251%20and%20ver_nr=1.0"
+        }
+      },
+      {
+        "harmonized": true,
+        "path": "tissue_type",
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#tissue_type",
+        "standard": {
+          "name": "caDSR CDE 14688604 v1.00",
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=14688604%20and%20ver_nr=1.0"
+        }
+      },
+      {
+        "harmonized": true,
+        "path": "tumor_classification",
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#tumor_classification",
+        "standard": {
+          "name": "caDSR CDE 12922545 v1.00",
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=12922545%20and%20ver_nr=1.0"
+        }
+      },
+      {
+        "harmonized": true,
+        "path": "tumor_tissue_morphology",
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#tumor_tissue_morphology",
+        "standard": {
+          "name": "caDSR CDE 11326261 v1.00",
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=11326261%20and%20ver_nr=1"
+        }
+      },
+      {
+        "harmonized": true,
+        "path": "age_at_collection",
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#age_at_collection"
+      },
+      {
+        "harmonized": true,
+        "path": "library_strategy",
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#library_strategy",
+        "standard": {
+          "name": "caDSR CDE 6273393 v1.00",
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=6273393%20and%20ver_nr=1.0"
+        }
+      },
+      {
+        "harmonized": true,
+        "path": "preservation_method",
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#preservation_method",
+        "standard": {
+          "name": "caDSR CDE 8028962 v2.00",
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=8028962%20and%20ver_nr=2.0"
+        }
+      },
+      {
+        "harmonized": true,
+        "path": "library_selection_method",
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#library_selection_method",
+        "standard": {
+          "name": "caDSR CDE 6347743 v1.00",
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=6347743%20and%20ver_nr=2.0"
+        }
+      },
+      {
+        "harmonized": true,
+        "path": "library_source_material",
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#library_source_material",
+        "standard": {
+          "name": "caDSR CDE 15235975 v1.00",
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=15235975%20and%20ver_nr=1.0"
+        }
+      },
+      {
+        "harmonized": true,
+        "path": "specimen_molecular_analyte_type",
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#specimen_molecular_analyte_type",
+        "standard": {
+          "name": "caDSR CDE 15063661 v1.00",
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=15063661%20and%20ver_nr=1"
+        }
+      },
+      {
+        "harmonized": false,
+        "path": "tumor_grade",
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#tumor_grade",
+        "standard": {
+          "name": "caDSR CDE 11325685 v2.00",
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=11325685%20and%20ver_nr=2.0"
+        }
+      },
+      {
+        "harmonized": true,
+        "path": "anatomical_sites"
+      },
+      {
+        "harmonized": true,
+        "path": "diagnosis",
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#diagnosis"
+      },
+      {
+        "harmonized": true,
+        "path": "age_at_diagnosis",
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#age_at_diagnosis"
+      },
+      {
+        "harmonized": true,
+        "path": "depositions",
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields"
+      }
+    ]
+  },
+  "file": {
+    "fields": [
+      {
+        "harmonized": true,
+        "path": "type",
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/File-Metadata-Fields#type",
+        "standard": {
+          "name": "caDSR CDE 11416926 v1.00",
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=11416926%20and%20ver_nr=1.0"
+        }
+      },
+      {
+        "harmonized": true,
+        "path": "size",
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/File-Metadata-Fields#size",
+        "standard": {
+          "name": "caDSR CDE 11479876 v1.00",
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=11479876%20and%20ver_nr=1.0"
+        }
+      },
+      {
+        "harmonized": true,
+        "path": "depositions",
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/File-Metadata-Fields"
+      },
+      {
+        "harmonized": true,
+        "path": "checksums",
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/File-Metadata-Fields#checksumsmd5",
+        "standard": {
+          "name": "caDSR CDE 11556150 v1.00",
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=11556150%20and%20ver_nr=1"
+        }
+      },
+      {
+        "harmonized": true,
+        "path": "description",
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/File-Metadata-Fields#description",
+        "standard": {
+          "name": "caDSR CDE 11280338 v1.00",
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=11280338%20and%20ver_nr=1"
+        }
+      }
+    ]
+  }
+}

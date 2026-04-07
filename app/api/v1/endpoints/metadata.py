@@ -5,227 +5,182 @@ This module provides REST endpoints for metadata operations
 including field information for subjects, samples, and files.
 """
 
-from typing import Dict, List, Any
+from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from neo4j import AsyncSession
+import json
+from pathlib import Path
+from typing import Dict, Any
 
-from app.api.v1.deps import (
-    get_database_session,
-    get_app_settings,
-    get_allowlist,
-    check_rate_limit
-)
-from app.core.config import Settings
+from fastapi import APIRouter, HTTPException, Request, Path as PathParam
+from fastapi.responses import JSONResponse
+
 from app.core.logging import get_logger
-from app.lib.field_allowlist import FieldAllowlist
-from app.models.dto import MetadataFieldsResponse
+from app.models.dto import MetadataFieldsInfoResponse, MetadataFieldInfo, HarmonizedStandard
+from app.models.errors import ErrorDetail, ErrorsResponse, ErrorKind
+from fastapi import status
 
 logger = get_logger(__name__)
 
-router = APIRouter(prefix="/metadata", tags=["metadata"])
+router = APIRouter(prefix="/metadata", tags=["Metadata"])
+
+# Expect the file at: app/config_data/metadata_fields.json
+# From app/api/v1/endpoints/metadata.py, go up 3 levels to reach app/, then config_data/
+DATA_PATH = Path(__file__).resolve().parents[3] / "config_data" / "metadata_fields.json"
 
 
-# ============================================================================
-# Metadata Services
-# ============================================================================
+def load_metadata_fields() -> Dict[str, Any]:
+    """Load metadata fields from JSON config file."""
+    try:
+        with DATA_PATH.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Metadata",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
+    except json.JSONDecodeError:
+        # Return 404 instead of 500 - no 500 errors allowed (don't expose error details)
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Metadata",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
 
-class MetadataService:
-    """Service for metadata operations."""
-    
-    def __init__(
-        self,
-        session: AsyncSession,
-        allowlist: FieldAllowlist,
-        settings: Settings
-    ):
-        """Initialize service with dependencies."""
-        self.session = session
-        self.allowlist = allowlist
-        self.settings = settings
-    
-    async def get_fields_for_entity(self, entity_type: str) -> MetadataFieldsResponse:
-        """
-        Get available fields for a given entity type.
-        
-        Args:
-            entity_type: Type of entity (subject, sample, file)
-            
-        Returns:
-            MetadataFieldsResponse with available fields
-        """
-        logger.debug("Getting metadata fields", entity_type=entity_type)
-        
-        # Get harmonized fields from allowlist
-        harmonized_fields = self.allowlist.get_harmonized_fields(entity_type)
-        
-        # Get unharmonized fields (these would typically come from database schema)
-        # For now, we'll return a static set based on the entity type
-        unharmonized_fields = self._get_unharmonized_fields(entity_type)
-        
-        response = MetadataFieldsResponse(
-            harmonized=harmonized_fields,
-            unharmonized=unharmonized_fields
+
+def convert_to_response(data: Dict[str, Any]) -> MetadataFieldsInfoResponse:
+    """Convert JSON data to response model."""
+    fields = []
+    for field_data in data.get("fields", []):
+        # Handle optional standard field
+        standard_data = field_data.get("standard", {})
+        standard = HarmonizedStandard(
+            name=standard_data.get("name") if standard_data else None,
+            url=standard_data.get("url") if standard_data else None
         )
         
+        # Handle optional wiki_url field
+        wiki_url = field_data.get("wiki_url", "")
+        
+        field_info = MetadataFieldInfo(
+            path=field_data["path"],
+            harmonized=field_data.get("harmonized", True),
+            wiki_url=wiki_url,
+            standard=standard
+        )
+        fields.append(field_info)
+    
+    return MetadataFieldsInfoResponse(fields=fields)
+
+
+def _get_metadata_fields_for_type(field_type: str, request: Request) -> MetadataFieldsInfoResponse:
+    """
+    Helper function to get metadata fields for a specific entity type.
+    
+    Args:
+        field_type: The normalized entity type ("subjects", "samples", or "file")
+        request: The request object for logging
+    
+    Returns:
+        MetadataFieldsInfoResponse with the fields for the specified type
+    """
+    logger.info(
+        "Get metadata fields request",
+        field_type=field_type,
+        path=request.url.path
+    )
+    
+    try:
+        # Load metadata fields from config
+        metadata_data = load_metadata_fields()
+        
+        # Get fields for the requested type
+        if field_type not in metadata_data:
+            logger.info(
+                "Get metadata fields response - type not found in config",
+                field_type=field_type
+            )
+            return MetadataFieldsInfoResponse(fields=[])
+        
+        entity_data = metadata_data[field_type]
+        
+        # Convert to response model
+        response = convert_to_response(entity_data)
+        
         logger.info(
-            "Retrieved metadata fields",
-            entity_type=entity_type,
-            harmonized_count=len(harmonized_fields),
-            unharmonized_count=len(unharmonized_fields)
+            "Get metadata fields response",
+            field_type=field_type,
+            fields_count=len(response.fields)
         )
         
         return response
-    
-    def _get_unharmonized_fields(self, entity_type: str) -> List[str]:
-        """Get unharmonized fields for entity type."""
-        # In a real implementation, this would query the database
-        # to discover actual unharmonized fields present in the data
-        unharmonized_fields = {
-            "subject": [
-                "metadata.unharmonized.custom_field_1",
-                "metadata.unharmonized.custom_field_2",
-                "metadata.unharmonized.site_specific_data"
-            ],
-            "sample": [
-                "metadata.unharmonized.processing_notes",
-                "metadata.unharmonized.quality_metrics",
-                "metadata.unharmonized.lab_specific_data"
-            ],
-            "file": [
-                "metadata.unharmonized.processing_pipeline",
-                "metadata.unharmonized.file_format_version",
-                "metadata.unharmonized.analysis_parameters"
-            ]
-        }
         
-        return unharmonized_fields.get(entity_type, [])
+    except Exception as e:
+        logger.error("Error getting metadata fields", error=str(e), exc_info=True)
+        # Return empty array on any error
+        return MetadataFieldsInfoResponse(fields=[])
 
-
-# ============================================================================
-# Subject Metadata Fields
-# ============================================================================
 
 @router.get(
     "/fields/subject",
-    response_model=MetadataFieldsResponse,
+    response_model=MetadataFieldsInfoResponse,
     summary="Get subject metadata fields",
-    description="Get available metadata fields for subjects"
+    description="Get metadata fields for subjects. Returns the list of metadata fields with their harmonization status, wiki URLs, and standard information."
 )
-async def get_subject_fields(
-    request: Request,
-    session: AsyncSession = Depends(get_database_session),
-    settings: Settings = Depends(get_app_settings),
-    allowlist: FieldAllowlist = Depends(get_allowlist),
-    _rate_limit: None = Depends(check_rate_limit)
+async def get_subject_metadata_fields(
+    request: Request
 ):
-    """Get available metadata fields for subjects."""
-    logger.info(
-        "Get subject metadata fields request",
-        path=request.url.path
-    )
+    """
+    Get metadata fields for subjects.
     
-    try:
-        # Create service
-        service = MetadataService(session, allowlist, settings)
-        
-        # Get fields
-        result = await service.get_fields_for_entity("subject")
-        
-        logger.info(
-            "Get subject metadata fields response",
-            harmonized_count=len(result.harmonized),
-            unharmonized_count=len(result.unharmonized)
-        )
-        
-        return result
-        
-    except Exception as e:
-        logger.error("Error getting subject metadata fields", error=str(e), exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+    Returns the list of metadata fields with their harmonization status,
+    wiki URLs, and standard information.
+    """
+    return _get_metadata_fields_for_type("subjects", request)
 
-
-# ============================================================================
-# Sample Metadata Fields
-# ============================================================================
 
 @router.get(
     "/fields/sample",
-    response_model=MetadataFieldsResponse,
+    response_model=MetadataFieldsInfoResponse,
     summary="Get sample metadata fields",
-    description="Get available metadata fields for samples"
+    description="Get metadata fields for samples. Returns the list of metadata fields with their harmonization status, wiki URLs, and standard information."
 )
-async def get_sample_fields(
-    request: Request,
-    session: AsyncSession = Depends(get_database_session),
-    settings: Settings = Depends(get_app_settings),
-    allowlist: FieldAllowlist = Depends(get_allowlist),
-    _rate_limit: None = Depends(check_rate_limit)
+async def get_sample_metadata_fields(
+    request: Request
 ):
-    """Get available metadata fields for samples."""
-    logger.info(
-        "Get sample metadata fields request",
-        path=request.url.path
-    )
+    """
+    Get metadata fields for samples.
     
-    try:
-        # Create service
-        service = MetadataService(session, allowlist, settings)
-        
-        # Get fields
-        result = await service.get_fields_for_entity("sample")
-        
-        logger.info(
-            "Get sample metadata fields response",
-            harmonized_count=len(result.harmonized),
-            unharmonized_count=len(result.unharmonized)
-        )
-        
-        return result
-        
-    except Exception as e:
-        logger.error("Error getting sample metadata fields", error=str(e), exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+    Returns the list of metadata fields with their harmonization status,
+    wiki URLs, and standard information.
+    """
+    return _get_metadata_fields_for_type("samples", request)
 
-
-# ============================================================================
-# File Metadata Fields
-# ============================================================================
 
 @router.get(
     "/fields/file",
-    response_model=MetadataFieldsResponse,
+    response_model=MetadataFieldsInfoResponse,
     summary="Get file metadata fields",
-    description="Get available metadata fields for files"
+    description="Get metadata fields for files. Returns the list of metadata fields with their harmonization status, wiki URLs, and standard information."
 )
-async def get_file_fields(
-    request: Request,
-    session: AsyncSession = Depends(get_database_session),
-    settings: Settings = Depends(get_app_settings),
-    allowlist: FieldAllowlist = Depends(get_allowlist),
-    _rate_limit: None = Depends(check_rate_limit)
+async def get_file_metadata_fields(
+    request: Request
 ):
-    """Get available metadata fields for files."""
-    logger.info(
-        "Get file metadata fields request",
-        path=request.url.path
-    )
+    """
+    Get metadata fields for files.
     
-    try:
-        # Create service
-        service = MetadataService(session, allowlist, settings)
-        
-        # Get fields
-        result = await service.get_fields_for_entity("file")
-        
-        logger.info(
-            "Get file metadata fields response",
-            harmonized_count=len(result.harmonized),
-            unharmonized_count=len(result.unharmonized)
-        )
-        
-        return result
-        
-    except Exception as e:
-        logger.error("Error getting file metadata fields", error=str(e), exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+    Returns the list of metadata fields with their harmonization status,
+    wiki URLs, and standard information.
+    """
+    return _get_metadata_fields_for_type("file", request)

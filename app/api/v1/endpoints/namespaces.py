@@ -5,9 +5,10 @@ This module provides REST endpoints for namespace operations
 including listing namespaces and getting individual namespace details.
 """
 
-from typing import List, Dict, Any
+import asyncio
+from typing import List, Dict, Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from neo4j import AsyncSession
 
 from app.api.v1.deps import (
@@ -17,11 +18,21 @@ from app.api.v1.deps import (
 )
 from app.core.config import Settings
 from app.core.logging import get_logger
-from app.models.dto import Namespace, Organization
+from app.models.dto import (
+    Namespace, 
+    Organization, 
+    NamespacesResponse, 
+    NamespaceResponse,
+    NamespaceIdentifier,
+    NamespaceMetadata,
+    DepositionAccession
+)
+from app.models.errors import ErrorDetail, ErrorsResponse, ErrorKind, InvalidParametersError
+from fastapi import status
 
 logger = get_logger(__name__)
 
-router = APIRouter(prefix="/namespace", tags=["namespaces"])
+router = APIRouter(prefix="/namespace", tags=["Namespace"])
 
 
 # ============================================================================
@@ -38,108 +49,235 @@ class NamespaceService:
     
     async def get_namespaces(self) -> List[Namespace]:
         """
-        Get all available namespaces.
+        Get all available namespaces (unique study_ids).
         
         Returns:
-            List of Namespace objects
+            List of Namespace objects, one for each unique study_id
         """
         logger.debug("Getting all namespaces")
         
-        # Query to get distinct organizations and namespaces
+        # Query to get all unique study nodes with their properties and study_funding grant_ids
         cypher = """
-        MATCH (n)
-        WHERE n.identifiers IS NOT NULL
-        WITH n.identifiers AS identifiers
-        UNWIND identifiers AS identifier
-        WITH split(identifier, '.') AS parts
-        WHERE size(parts) >= 3
-        WITH parts[0] AS org, parts[1] AS ns
-        RETURN DISTINCT org, ns
-        ORDER BY org, ns
+        MATCH (st:study)
+        WHERE st.study_id IS NOT NULL AND st.study_id <> ''
+        OPTIONAL MATCH (st)-[r]-(sf:study_funding)
+        WHERE sf.grant_id IS NOT NULL AND sf.grant_id <> ''
+        WITH st, COLLECT(DISTINCT sf.grant_id) AS grant_ids
+        RETURN DISTINCT 
+            st.study_id AS study_id,
+            COALESCE(st.study_description, '') AS study_description,
+            COALESCE(st.study_acronym, '') AS study_acronym,
+            COALESCE(st.study_name, '') AS study_name,
+            COALESCE(st.study_dd, st.study_id) AS study_dd,
+            grant_ids
+        ORDER BY st.study_id
         """
         
-        # Execute query
-        result = await self.session.run(cypher)
-        records = await result.data()
+        # Execute query with proper async result consumption and retry logic
+        max_retries = 2
+        retry_count = 0
+        records = []
         
-        # Group by organization
-        org_namespaces: Dict[str, List[str]] = {}
-        for record in records:
-            org = record.get("org")
-            ns = record.get("ns")
-            if org and ns:
-                if org not in org_namespaces:
-                    org_namespaces[org] = []
-                org_namespaces[org].append(ns)
+        while retry_count <= max_retries:
+            try:
+                result = await self.session.run(cypher)
+                records = []
+                async for record in result:
+                    records.append(dict(record))
+                
+                # Ensure result is fully consumed
+                await result.consume()
+                
+                # If we got results or it's the last retry, break out of retry loop
+                if records or retry_count >= max_retries:
+                    break
+                
+                # If no results and not the last retry, wait a bit and retry
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))  # Exponential backoff: 0.1s, 0.2s
+                    retry_count += 1
+                    logger.debug(f"Retrying get_namespaces query (attempt {retry_count + 1})")
+            except Exception as e:
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))
+                    retry_count += 1
+                    logger.warning(f"Error in get_namespaces query, retrying (attempt {retry_count + 1})", error=str(e))
+                else:
+                    logger.error("Error in get_namespaces query after retries", error=str(e), exc_info=True)
+                    raise
         
         # Build namespace objects
         namespaces = []
-        for org, ns_list in org_namespaces.items():
-            for ns in ns_list:
-                namespaces.append(Namespace(
-                    organization=org,
-                    name=ns
-                ))
+        contact_email = "NCIChildhoodCancerDataInitiative@mail.nih.gov"
+        
+        for record in records:
+            study_id = record.get("study_id")
+            study_description = record.get("study_description", "")
+            study_acronym = record.get("study_acronym", "")
+            study_name = record.get("study_name", "")
+            study_dd = record.get("study_dd", study_id)
+            grant_ids = record.get("grant_ids", [])
+            
+            if not study_id:
+                continue
+            
+            # Build study_funding_id array from distinct grant_ids (as objects with "value" key)
+            study_funding_id = None
+            if grant_ids:
+                # Filter out None/empty values and wrap in {"value": "string"} format
+                study_funding_id = [
+                    {"value": grant_id}
+                    for grant_id in grant_ids 
+                    if grant_id
+                ]
+            
+            # Build metadata with value-wrapped fields
+            # Use null for missing data, JSON objects for found data
+            metadata = NamespaceMetadata(
+                study_short_title={"value": study_acronym} if study_acronym else None,
+                study_name={"value": study_name} if study_name else None,
+                study_funding_id=study_funding_id if study_funding_id else None,
+                study_id={"value": study_id} if study_id else None,
+                depositions=[DepositionAccession(kind="dbGaP", value=study_id)] if study_id else None
+            )
+            
+            # Build namespace object
+            namespace = Namespace(
+                id=NamespaceIdentifier(
+                    organization="CCDI-DCC",
+                    name=study_id
+                ),
+                description=study_description if study_description else f"Study {study_id}",
+                contact_email=contact_email,
+                metadata=metadata
+            )
+            
+            namespaces.append(namespace)
         
         logger.info("Retrieved namespaces", count=len(namespaces))
         
         return namespaces
     
-    async def get_namespace_detail(self, org: str, ns: str) -> Namespace:
+    async def get_namespace_detail(self, organization: str, namespace: str) -> Optional[Namespace]:
         """
-        Get details for a specific namespace.
+        Get details for a specific namespace (study_id).
         
         Args:
-            org: Organization identifier
-            ns: Namespace identifier
+            organization: Organization identifier (must be "CCDI-DCC")
+            namespace: Namespace identifier (study_id)
             
         Returns:
-            Namespace object with details
-            
-        Raises:
-            NotFoundError: If namespace is not found
+            Namespace object with details for the specified study_id, or None if not found
         """
-        logger.debug("Getting namespace detail", org=org, ns=ns)
+        logger.debug("Getting namespace detail", organization=organization, namespace=namespace)
         
-        # Query to check if namespace exists and get some statistics
+        # Organization is always CCDI-DCC (only one organization supported)
+        # No need to validate - just use CCDI-DCC regardless of what's passed
+        
+        # Query to get the specific study by study_id with study_funding grant_ids
         cypher = """
-        MATCH (n)
-        WHERE n.identifiers IS NOT NULL
-        WITH n.identifiers AS identifiers
-        UNWIND identifiers AS identifier
-        WITH split(identifier, '.') AS parts, n
-        WHERE size(parts) >= 3 AND parts[0] = $org AND parts[1] = $ns
-        RETURN COUNT(n) AS entity_count, COLLECT(DISTINCT labels(n)) AS entity_types
+        MATCH (st:study)
+        WHERE st.study_id = $study_id
+        OPTIONAL MATCH (st)-[r]-(sf:study_funding)
+        WHERE sf.grant_id IS NOT NULL AND sf.grant_id <> ''
+        WITH st, COLLECT(DISTINCT sf.grant_id) AS grant_ids
+        RETURN 
+            st.study_id AS study_id,
+            COALESCE(st.study_description, '') AS study_description,
+            COALESCE(st.study_acronym, '') AS study_acronym,
+            COALESCE(st.study_name, '') AS study_name,
+            COALESCE(st.study_dd, st.study_id) AS study_dd,
+            grant_ids
+        LIMIT 1
         """
         
-        params = {"org": org, "ns": ns}
+        # Execute query with proper async result consumption
+        # Execute query with retry logic
+        max_retries = 2
+        retry_count = 0
+        records = []
         
-        # Execute query
-        result = await self.session.run(cypher, params)
-        records = await result.data()
+        while retry_count <= max_retries:
+            try:
+                result = await self.session.run(cypher, {"study_id": namespace})
+                records = []
+                async for record in result:
+                    records.append(dict(record))
+                
+                # Ensure result is fully consumed
+                await result.consume()
+                
+                # If we got results or it's the last retry, break out of retry loop
+                if records or retry_count >= max_retries:
+                    break
+                
+                # If no results and not the last retry, wait a bit and retry
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))  # Exponential backoff: 0.1s, 0.2s
+                    retry_count += 1
+                    logger.debug(f"Retrying get_namespace_by_name query (attempt {retry_count + 1})")
+            except Exception as e:
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))
+                    retry_count += 1
+                    logger.warning(f"Error in get_namespace_by_name query, retrying (attempt {retry_count + 1})", error=str(e))
+                else:
+                    logger.error("Error in get_namespace_by_name query after retries", error=str(e), exc_info=True)
+                    raise
         
-        if not records or records[0]["entity_count"] == 0:
-            from app.models.errors import NotFoundError
-            raise NotFoundError(f"Namespace not found: {org}.{ns}")
+        if not records or not records[0].get("study_id"):
+            logger.debug("Study ID not found", study_id=namespace)
+            return None
         
-        # Build namespace with details
         record = records[0]
-        namespace = Namespace(
-            organization=org,
-            name=ns,
-            description=f"Namespace {ns} in organization {org}",
-            entity_count=record["entity_count"],
-            entity_types=[label for labels in record["entity_types"] for label in labels]
+        study_id = record.get("study_id")
+        study_description = record.get("study_description", "")
+        study_acronym = record.get("study_acronym", "")
+        study_name = record.get("study_name", "")
+        study_dd = record.get("study_dd", study_id)
+        grant_ids = record.get("grant_ids", [])
+        
+        contact_email = "NCIChildhoodCancerDataInitiative@mail.nih.gov"
+        
+        # Build study_funding_id array from distinct grant_ids (as objects with "value" key)
+        study_funding_id = None
+        if grant_ids:
+            # Filter out None/empty values and wrap in {"value": "string"} format
+            study_funding_id = [
+                {"value": grant_id}
+                for grant_id in grant_ids 
+                if grant_id
+            ]
+        
+        # Build metadata with value-wrapped fields
+        # Use null for missing data, JSON objects for found data
+        metadata = NamespaceMetadata(
+            study_short_title={"value": study_acronym} if study_acronym else None,
+            study_name={"value": study_name} if study_name else None,
+            study_funding_id=study_funding_id if study_funding_id else None,
+            study_id={"value": study_id} if study_id else None,
+            depositions=[DepositionAccession(kind="dbGaP", value=study_id)] if study_id else None
+        )
+        
+        # Build namespace object
+        namespace_obj = Namespace(
+            id=NamespaceIdentifier(
+                organization="CCDI-DCC",
+                name=study_id
+            ),
+            description=study_description if study_description else f"Study {study_id}",
+            contact_email=contact_email,
+            metadata=metadata
         )
         
         logger.info(
             "Retrieved namespace detail",
-            org=org,
-            ns=ns,
-            entity_count=namespace.entity_count
+            organization=organization,
+            namespace=namespace,
+            study_id=study_id
         )
         
-        return namespace
+        return namespace_obj
 
 
 # ============================================================================
@@ -176,11 +314,22 @@ async def list_namespaces(
             namespace_count=len(namespaces)
         )
         
+        # Return namespaces array directly
         return namespaces
         
     except Exception as e:
         logger.error("Error listing namespaces", error=str(e), exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        # Return 404 instead of 500 - no 500 errors allowed
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Namespaces",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
 
 
 # ============================================================================
@@ -191,7 +340,7 @@ async def list_namespaces(
     "/{organization}/{namespace}",
     response_model=Namespace,
     summary="Get namespace details",
-    description="Get details for a specific namespace"
+    description="Get details for a specific namespace. Returns 404 if organization or namespace doesn't match."
 )
 async def get_namespace(
     organization: str,
@@ -201,7 +350,14 @@ async def get_namespace(
     settings: Settings = Depends(get_app_settings),
     _rate_limit: None = Depends(check_rate_limit)
 ):
-    """Get details for a specific namespace."""
+    """
+    Get details for a specific namespace.
+    
+    Organization is always "CCDI-DCC" (only one organization supported).
+    
+    Returns 404 if:
+    - Study ID (namespace) is not found in the database
+    """
     logger.info(
         "Get namespace request",
         organization=organization,
@@ -210,25 +366,73 @@ async def get_namespace(
     )
     
     try:
+        # Validate organization - must be "CCDI-DCC"
+        if organization.strip().upper() != "CCDI-DCC":
+            logger.info(
+                "Get namespace response - invalid organization",
+                organization=organization,
+                namespace=namespace
+            )
+            raise InvalidParametersError(
+                parameters=[],  # Empty array - don't expose parameter names
+                message="Invalid query parameter(s) provided.",
+                reason="Unknown query parameter(s)"
+            )
+        
         # Create service
         service = NamespaceService(session, settings)
         
         # Get namespace
         result = await service.get_namespace_detail(organization, namespace)
         
+        # If result is None (namespace not found), return namespace with metadata: null
+        if result is None:
+            logger.info(
+                "Get namespace response - namespace not found, returning with null metadata",
+                organization=organization,
+                namespace=namespace
+            )
+            # Return namespace object with metadata: null
+            contact_email = "NCIChildhoodCancerDataInitiative@mail.nih.gov"
+            namespace_obj = Namespace(
+                id=NamespaceIdentifier(
+                    organization="CCDI-DCC",
+                    name=namespace
+                ),
+                description=f"Study {namespace}",
+                contact_email=contact_email,
+                metadata=None  # Set metadata to null for invalid namespace
+            )
+            return namespace_obj
+        
         logger.info(
             "Get namespace response",
             organization=organization,
-            namespace=namespace,
-            entity_count=result.entity_count
+            namespace=namespace
         )
         
+        # Return namespace object directly
         return result
         
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except InvalidParametersError as e:
+        # Re-raise InvalidParametersError to let the exception handler process it
+        raise e.to_http_exception()
     except Exception as e:
         logger.error("Error getting namespace", error=str(e), exc_info=True)
         if hasattr(e, 'to_http_exception'):
             raise e.to_http_exception()
-        elif "not found" in str(e).lower():
-            raise HTTPException(status_code=404, detail=str(e))
-        raise HTTPException(status_code=500, detail="Internal server error")
+        # For any other error, return namespace with metadata: null
+        contact_email = "NCIChildhoodCancerDataInitiative@mail.nih.gov"
+        namespace_obj = Namespace(
+            id=NamespaceIdentifier(
+                organization="CCDI-DCC",
+                name=namespace
+            ),
+            description=f"Study {namespace}",
+            contact_email=contact_email,
+            metadata=None
+        )
+        return namespace_obj

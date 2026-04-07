@@ -5,24 +5,48 @@ This module uses pydantic-settings for configuration management, supporting
 environment variables and .env files.
 """
 
+import json
 from functools import lru_cache
-from typing import Optional, List
+from pathlib import Path
+from typing import Optional, List, Dict, Any
 
 from pydantic import Field, BaseModel
 from pydantic_settings import BaseSettings
 
 
+def load_info_json() -> Dict[str, Any]:
+    """Load info.json file and return its contents."""
+    # From app/core/config.py, go up 1 level to reach app/, then config_data/
+    info_path = Path(__file__).resolve().parents[1] / "config_data" / "info.json"
+    
+    try:
+        with info_path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        # Return empty dict if file doesn't exist or is invalid
+        # This allows the app to still work with environment variable defaults
+        return {}
+
+
+# Load info.json once at module level
+_info_data = load_info_json()
+_server_info = _info_data.get("server", {})
+_api_info = _info_data.get("api", {})
+
+
 class AppSettings(BaseModel):
     """Application-specific settings."""
-    name: str = "CCDI Federation Service"
-    version: str = "v1.2.0" 
+    name: str = _server_info.get("name", "CCDI Federation Service")
+    version: str = _api_info.get("api_version", "v1.2.0")
     debug: bool = False
 
 
 class DatabaseSettings(BaseModel):
     """Database connection settings."""
-    uri: str = "bolt://127.0.0.1:7687"
-    user: str = ""
+    # NOTE: Defaults intentionally point to localhost with no password.
+    # Real values should be injected via environment variables consumed by `Settings`.
+    uri: str = "bolt://localhost:7687"
+    user: str = "memgraph"
     password: str = ""
     database: str = "memgraph"
     max_connection_lifetime: int = 3600
@@ -31,7 +55,8 @@ class DatabaseSettings(BaseModel):
 
 class CacheSettings(BaseModel):
     """Cache and Redis settings."""
-    enabled: bool = True
+    # Redis is not deployed in many environments; keep caching opt-in.
+    enabled: bool = False
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_db: int = 0
@@ -59,17 +84,22 @@ class CORSSettings(BaseModel):
 class PaginationSettings(BaseModel):
     """Pagination settings."""
     default_per_page: int = 20
-    max_per_page: int = 100
-    default_page_size: int = 100
+    default_page_size: int = 50
     max_page_size: int = 1000
 
 
 class Settings(BaseSettings):
-    """Application settings loaded from environment variables."""
+    """Application settings loaded from environment variables and info.json."""
 
-    # Application
-    app_name: str = Field(default="CCDI Federation Service", alias="APP_NAME")
-    app_version: str = Field(default="v1.2.0", alias="APP_VERSION")
+    # Application - defaults from info.json, can be overridden by environment variables
+    app_name: str = Field(
+        default=_server_info.get("name", "CCDI Federation Service"),
+        alias="APP_NAME"
+    )
+    app_version: str = Field(
+        default=_api_info.get("api_version", "v1.2.0"),
+        alias="APP_VERSION"
+    )
     debug: bool = Field(default=False, alias="DEBUG")
     
     # Server
@@ -78,10 +108,11 @@ class Settings(BaseSettings):
     
     # Database (Memgraph)
     memgraph_uri: str = Field(
+        # Default kept generic; override with MEMGRAPH_URI in env (.env, container secrets, etc.)
         default="bolt://localhost:7687", 
         alias="MEMGRAPH_URI"
     )
-    memgraph_user: str = Field(default="", alias="MEMGRAPH_USER")
+    memgraph_user: str = Field(default="memgraph", alias="MEMGRAPH_USER")
     memgraph_password: str = Field(default="", alias="MEMGRAPH_PASSWORD")
     memgraph_database: str = Field(default="memgraph", alias="MEMGRAPH_DATABASE")
     memgraph_max_connection_lifetime: int = Field(
@@ -100,11 +131,12 @@ class Settings(BaseSettings):
     )
     
     # Pagination defaults
-    default_page_size: int = Field(default=100, alias="DEFAULT_PAGE_SIZE")
+    default_page_size: int = Field(default=50, alias="DEFAULT_PAGE_SIZE")
     max_page_size: int = Field(default=1000, alias="MAX_PAGE_SIZE")
     
     # Cache settings
-    cache_enabled: bool = Field(default=True, alias="CACHE_ENABLED")
+    # Redis is not deployed yet; keep caching opt-in via CACHE_ENABLED=true.
+    cache_enabled: bool = Field(default=False, alias="CACHE_ENABLED")
     cache_ttl_count_endpoints: int = Field(
         default=1800,  # 30 minutes
         alias="CACHE_TTL_COUNT_ENDPOINTS"
@@ -150,22 +182,35 @@ class Settings(BaseSettings):
         alias="SHARE_LINE_LEVEL_DATA"
     )
     
-    # Organization and server info
+    # Namespace prefix
+    namespace_prefix: str = Field(
+        default="dbGaP_",
+        alias="NAMESPACE_PREFIX"
+    )
+    
+    # Organization and server info - defaults from info.json
     organization_name: str = Field(
-        default="Example Organization",
+        default=_server_info.get("owner", "Example Organization"),
         alias="ORGANIZATION_NAME"
     )
     server_name: str = Field(
-        default="Example CCDI Federation Node",
+        default=_server_info.get("name", "Example CCDI Federation Node"),
         alias="SERVER_NAME"
     )
     contact_email: str = Field(
-        default="support@example.com",
+        default=_server_info.get("contact_email", "support@example.com"),
         alias="CONTACT_EMAIL"
     )
     
+    # Identifier server URL - used for building identifier URLs in responses
+    identifier_server_url: str = Field(
+        default="https://dcc.ccdi.cancer.gov",
+        alias="IDENTIFIER_SERVER_URL",
+        description="Base URL used for identifier server values in API responses"
+    )
+    
     # Database settings
-    database_url: str = Field(default="bolt://127.0.0.1:7687", description="Database connection URL")
+    database_url: str = Field(default="bolt://localhost:7687", description="Database connection URL")
 
     # Cache/Redis settings
     cache_redis_host: Optional[str] = Field(default="localhost", description="Redis host")
@@ -174,6 +219,7 @@ class Settings(BaseSettings):
     cache_redis_password: Optional[str] = Field(default="", description="Redis password")
     cache_count_ttl: Optional[int] = Field(default=300, description="Cache TTL for count queries")
     cache_summary_ttl: Optional[int] = Field(default=600, description="Cache TTL for summary queries")
+    query_timeout: Optional[int] = Field(default=60, description="Query timeout in seconds")
     
     # CORS settings
     cors_enabled: Optional[bool] = Field(default=True, description="Enable CORS")
@@ -184,12 +230,35 @@ class Settings(BaseSettings):
     
     # Pagination settings
     pagination_default_per_page: Optional[int] = Field(default=20, description="Default items per page")
-    pagination_max_per_page: Optional[int] = Field(default=100, description="Maximum items per page")
     
+    # Valid fields for subject count operations (case-sensitive)
+    subject_count_fields: List[str] = Field(
+        default=["sex", "race", "ethnicity", "vital_status", "age_at_vital_status","associated_diagnoses"],
+        alias="SUBJECT_COUNT_FIELDS",
+        description="Valid field names for /subject/by/{field}/count endpoint"
+    )
+    
+    # Sex value mappings: database values -> normalized output values
+    sex_value_mappings: Dict[str, str] = Field(
+        default={
+            "Male": "M",
+            "Female": "F",
+            "Not Reported": "U"
+        },
+        alias="SEX_VALUE_MAPPINGS",
+        description="Mapping of database sex values to normalized output values"
+    )
+    
+    # NOTE:
+    # We intentionally do NOT hardcode `env_file=".env"` here.
+    #
+    # - In CI/unit tests, `.env` may not exist.
+    # - In sandboxed environments, reading dotfiles may be restricted.
+    #
+    # `get_settings()` below will opt-in to `.env` only when it is present and readable.
     model_config = {
         "extra": "allow",  # Allow extra fields that aren't defined
-        "env_file": ".env",
-        "case_sensitive": False
+        "case_sensitive": False,
     }
     
     # Nested settings properties
@@ -250,17 +319,21 @@ class Settings(BaseSettings):
         """Get pagination settings."""
         return PaginationSettings(
             default_per_page=self.pagination_default_per_page or 20,
-            max_per_page=self.pagination_max_per_page or 100,
             default_page_size=self.default_page_size,
             max_page_size=self.max_page_size
         )
 
 
-# Create settings instance
-settings = Settings()
-
-
 @lru_cache()
 def get_settings() -> Settings:
     """Get cached application settings."""
-    return Settings()
+    # Only load `.env` when it exists and is readable; otherwise fall back to env vars/defaults.
+    # This prevents startup/test failures when `.env` is missing or not accessible.
+    try:
+        env_path = Path(".env")
+        if env_path.is_file():
+            return Settings(_env_file=".env")
+    except OSError:
+        # PermissionError / sandbox restrictions / etc.
+        pass
+    return Settings(_env_file=None)

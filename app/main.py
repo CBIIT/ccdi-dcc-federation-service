@@ -2,28 +2,61 @@
 CCDI Federation Service - Main Application
 
 This is the main FastAPI application that provides REST endpoints
-for querying the CCDI graph database.
+for querying the CCDI-DCC  graph database.
 """
 
 from contextlib import asynccontextmanager
+import os
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status, Depends
+from fastapi.exceptions import HTTPException, RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.encoders import jsonable_encoder
+from starlette.exceptions import HTTPException as StarletteHTTPException
+import re
+import json
+from pathlib import Path
+from typing import Any
 
-from app.core.config import get_settings
+from app.core.config import get_settings, Settings
 from app.core.logging import configure_logging, get_logger
 from app.core.cache import redis_lifespan
-from app.db.memgraph import memgraph_lifespan
+from app.db.memgraph import memgraph_lifespan, DatabaseConnectionError
 from app.api.v1.endpoints.subjects import router as subjects_router
 from app.api.v1.endpoints.samples import router as samples_router
+from app.api.v1.endpoints.experimental import router as experimental_router
 from app.api.v1.endpoints.files import router as files_router
 from app.api.v1.endpoints.metadata import router as metadata_router
 from app.api.v1.endpoints.namespaces import router as namespaces_router
+from app.api.v1.endpoints.errors import router as errors_router
+from app.api.v1.endpoints.root import router as root_router
+from app.api.v1.endpoints.info import router as info_router
+from app.api.v1.endpoints.organizations import router as organizations_router
+from app.models.errors import ErrorsResponse, ErrorDetail, ErrorKind, CCDIException
+from app.core.serialization import sanitize_for_json
 
 # Configure logging before creating the logger
 configure_logging()
 logger = get_logger(__name__)
+
+
+# Override FastAPI's default jsonable_encoder to handle date/time objects globally
+def custom_jsonable_encoder(obj: Any, **kwargs) -> Any:
+    """
+    Custom JSON encoder that handles date/time objects from Memgraph/Neo4j.
+    
+    Global fallback ensuring any date/time objects that slip through conversion
+    functions are properly serialized before JSON encoding.
+    """
+    sanitized = sanitize_for_json(obj)
+    return jsonable_encoder(sanitized, **kwargs)
+
+
+# Monkey-patch FastAPI's jsonable_encoder to use our custom version
+import fastapi.encoders
+fastapi.encoders.jsonable_encoder = custom_jsonable_encoder
 
 
 @asynccontextmanager
@@ -53,16 +86,178 @@ def create_app() -> FastAPI:
     # Create FastAPI app
     app = FastAPI(
         title="CCDI Federation Service",
-        description="REST API for querying CCDI graph database",
+        description="REST API for querying CCDI-DCC  graph database",
         version="1.0.0",
         openapi_url="/openapi.json",
-        docs_url="/docs" if settings.app.debug else None,
-        redoc_url="/redoc" if settings.app.debug else None,
-        lifespan=lifespan
+        docs_url="/docs-api",  # Default FastAPI Swagger UI at /docs-api
+        redoc_url=None,  # Disable default ReDoc, using custom endpoint instead
+        lifespan=lifespan,
+        openapi_tags=[
+            {
+                "name": "Subject",
+                "description": "Subjects within the CCDI-DCC ecosystem."
+            },
+            {
+                "name": "Sample",
+                "description": "Samples within the CCDI-DCC ecosystem."
+            },
+            {
+                "name": "File",
+                "description": "Files within the CCDI-DCC ecosystem.-- (sequencing files only this release)"
+            },
+            {
+                "name": "Metadata",
+                "description": "List and describe provided metadata fields."
+            },
+            {
+                "name": "Namespace",
+                "description": "List and describe namespaces known by this server."
+            },
+            {
+                "name": "Organization",
+                "description": "List and describe organizations known by this server."
+            },
+            {
+                "name": "Info",
+                "description": "Information about the API implementation itself."
+            },
+            # {
+            #     "name": "Experimental",
+            #     "description": "Endpoints and features in an experimental phase."
+            # },
+            # {
+            #     "name": "Errors",
+            #     "description": "Errors within the CCDI-DCC ecosystem."
+            # },
+            # {
+            #     "name": "Root",
+            #     "description": "Root endpoints within the CCDI-DCC ecosystem."
+            # }
+        ]
     )
+    
+    # Customize OpenAPI schema to replace 422 "Validation Error" descriptions
+    def custom_openapi():
+        if app.openapi_schema:
+            return app.openapi_schema
+        from fastapi.openapi.utils import get_openapi
+        openapi_schema = get_openapi(
+            title=app.title,
+            version=app.version,
+            description=app.description,
+            routes=app.routes,
+        )
+        # Add tag descriptions from app.openapi_tags
+        if hasattr(app, 'openapi_tags') and app.openapi_tags:
+            openapi_schema["tags"] = app.openapi_tags
+        
+        # Replace "Validation Error" with "Invalid query or path parameters." in 422 responses
+        # Also remove 404 and 422 responses from /api/v1/sample/summary and /api/v1/file/summary endpoints
+        for path, path_item in openapi_schema.get("paths", {}).items():
+            for method, operation in path_item.items():
+                if isinstance(operation, dict) and "responses" in operation:
+                    # Remove 404 and 422 responses from /api/v1/sample/summary endpoint
+                    if path == "/api/v1/sample/summary" or path.endswith("/sample/summary"):
+                        if "404" in operation["responses"]:
+                            del operation["responses"]["404"]
+                        if "422" in operation["responses"]:
+                            del operation["responses"]["422"]
+                    # Remove 404 and 422 responses from /api/v1/file/summary endpoint
+                    elif path == "/api/v1/file/summary" or path.endswith("/file/summary"):
+                        if "404" in operation["responses"]:
+                            del operation["responses"]["404"]
+                        if "422" in operation["responses"]:
+                            del operation["responses"]["422"]
+                    # Remove 422 response from /api/v1/sample/by/{field}/count endpoint (uses 400 instead)
+                    elif "/sample/by/" in path and path.endswith("/count"):
+                        if "422" in operation["responses"]:
+                            del operation["responses"]["422"]
+                    # Remove 422 and 404 responses from /api/v1/file/by/{field}/count endpoint (uses 400 instead)
+                    elif "/file/by/" in path and path.endswith("/count"):
+                        if "422" in operation["responses"]:
+                            del operation["responses"]["422"]
+                        if "404" in operation["responses"]:
+                            del operation["responses"]["404"]
+                    elif "422" in operation["responses"]:
+                        response_422 = operation["responses"]["422"]
+                        if "description" in response_422:
+                            if response_422["description"] == "Validation Error":
+                                response_422["description"] = "Invalid query or path parameters."
+                        
+                        # Customize the 422 error example to use ErrorsResponse format
+                        if "content" in response_422 and "application/json" in response_422["content"]:
+                            content = response_422["content"]["application/json"]
+                            # Replace the default HTTPValidationError schema with ErrorsResponse
+                            if "schema" in content:
+                                # Change schema reference to ErrorsResponse
+                                content["schema"] = {"$ref": "#/components/schemas/ErrorsResponse"}
+                            # Add custom example
+                            if "example" not in content:
+                                content["example"] = {
+                                    "errors": [
+                                        {
+                                            "kind": "InvalidParameters",
+                                            "parameters": [],
+                                            "message": "Invalid query parameter(s) provided.",
+                                            "reason": "Unknown query parameter(s)"
+                                        }
+                                    ]
+                                }
+        
+        app.openapi_schema = openapi_schema
+        return app.openapi_schema
+    
+    app.openapi = custom_openapi
+    
+    # Create a filtered OpenAPI schema for /docs (excludes certain endpoints)
+    # This keeps endpoints visible in /docs-api but hides them from /docs
+    def get_filtered_openapi():
+        """Get filtered OpenAPI schema with certain endpoints excluded."""
+        # Get the full schema
+        full_schema = app.openapi()
+        
+        # Create a copy to avoid modifying the original
+        import copy
+        filtered_schema = copy.deepcopy(full_schema)
+        
+        # Define paths to exclude from /docs (but keep in /docs-api)
+        excluded_paths = [
+            # Add paths to exclude here (regex patterns supported)
+            "/health",  # Example: uncomment to hide this endpoint
+            "/ping",
+            "/version",
+            "/api/v1/errors/examples",
+            # "/api/v1/experimental/.*",  # Example: uncomment to hide all experimental endpoints
+        ]
+        
+        if excluded_paths:
+            paths_to_remove = []
+            for path in filtered_schema.get("paths", {}):
+                for excluded_pattern in excluded_paths:
+                    import re
+                    if re.match(excluded_pattern.replace("*", ".*"), path):
+                        paths_to_remove.append(path)
+                        break
+            
+            for path in paths_to_remove:
+                del filtered_schema["paths"][path]
+        
+        return filtered_schema
+    
+    # Add filtered OpenAPI endpoint for /docs
+    @app.get("/openapi-filtered.json", include_in_schema=False)
+    async def get_filtered_openapi_schema():
+        """Get filtered OpenAPI schema (excludes certain endpoints for /docs)."""
+        return get_filtered_openapi()
     
     # Add middleware
     setup_middleware(app, settings)
+    
+    # Add custom docs endpoints FIRST (before exception handlers and routers) to ensure they're registered
+    setup_custom_docs_endpoint(app)
+    
+    # Add exception handlers
+    setup_exception_handlers(app)
     
     # Add routers
     setup_routers(app)
@@ -70,8 +265,73 @@ def create_app() -> FastAPI:
     # Add health check
     setup_health_check(app)
     
-    logger.info("FastAPI application created")
+    logger.debug("FastAPI application created")
     return app
+
+
+def _suggest_correct_path(path: str) -> str:
+    """
+    Detect common path typos and suggest the correct path.
+    
+    Examples:
+    - /api/v1/subject/by2/race2/count -> /api/v1/subject/by/race/count
+    - /api/v1/subject/by3/sex2/count -> /api/v1/subject/by/sex/count
+    - /api/v1/subject/by2/race/count -> /api/v1/subject/by/race/count
+    - /api/v1/subject/b1y/sex/count -> /api/v1/subject/by/sex/count
+    - /api/v1/subject/by1/race/count -> /api/v1/subject/by/race/count
+    """
+    # Match pattern: /subject/by{number}/{field}{number}/count
+    # Pattern: /api/v1/subject/by2/race2/count
+    pattern = r'(/api/v1/subject/)(by)(\d+)(/)([^/]+?)(\d+)(/count)'
+    match = re.search(pattern, path)
+    if match:
+        prefix = match.group(1)  # /api/v1/subject/
+        by_part = match.group(2)  # by
+        slash = match.group(4)  # /
+        field_part = match.group(5)  # race, sex, etc.
+        suffix = match.group(7)  # /count
+        return f"{prefix}{by_part}{slash}{field_part}{suffix}"
+    
+    # Also handle cases where only 'by' has a typo: /subject/by2/{field}/count
+    # Pattern: /api/v1/subject/by2/race/count
+    pattern_by_only = r'(/api/v1/subject/)(by)(\d+)(/[^/]+/count)'
+    match_by = re.search(pattern_by_only, path)
+    if match_by:
+        prefix = match_by.group(1)
+        by_part = match_by.group(2)
+        rest = match_by.group(4)
+        return f"{prefix}{by_part}{rest}"
+    
+    # Handle cases where 'by' has a typo with number in middle: /subject/b1y/{field}/count
+    # Pattern: /api/v1/subject/b1y/sex/count or /api/v1/subject/by1/race/count
+    pattern_by_typo = r'(/api/v1/subject/)(b)(\d+)(y)(/[^/]+/count)'
+    match_typo = re.search(pattern_by_typo, path)
+    if match_typo:
+        prefix = match_typo.group(1)  # /api/v1/subject/
+        b_part = match_typo.group(2)  # b
+        number = match_typo.group(3)  # 1, 2, etc.
+        y_part = match_typo.group(4)  # y
+        rest = match_typo.group(5)  # /sex/count
+        return f"{prefix}{b_part}{y_part}{rest}"
+    
+    # Handle pattern: /subject/{typo}/field/count where typo looks like "by"
+    # Pattern: /api/v1/subject/b1y/sex/count
+    pattern_typo_field_count = r'(/api/v1/subject/)([^/]+)/([^/]+)/(count)'
+    match_typo_field = re.search(pattern_typo_field_count, path)
+    if match_typo_field:
+        prefix = match_typo_field.group(1)  # /api/v1/subject/
+        first_seg = match_typo_field.group(2)  # b1y, by2, etc.
+        field_seg = match_typo_field.group(3)  # sex, race, etc.
+        count_seg = match_typo_field.group(4)  # count
+        
+        # Check if first segment looks like a typo of "by" (contains 'b' and 'y' with numbers)
+        if re.match(r'^b.*y.*$', first_seg, re.IGNORECASE) and count_seg == "count":
+            # Valid field names for count endpoint
+            valid_fields = {"sex", "race", "ethnicity", "vital_status", "age_at_vital_status", "associated_diagnoses"}
+            if field_seg.lower() in valid_fields:
+                return f"{prefix}by/{field_seg}/{count_seg}"
+    
+    return None
 
 
 def setup_middleware(app: FastAPI, settings) -> None:
@@ -86,11 +346,11 @@ def setup_middleware(app: FastAPI, settings) -> None:
             allow_methods=settings.cors.allowed_methods,
             allow_headers=settings.cors.allowed_headers,
         )
-        logger.info("CORS middleware enabled")
+        logger.debug("CORS middleware enabled")
     
     # GZip compression middleware
     app.add_middleware(GZipMiddleware, minimum_size=1000)
-    logger.info("GZip middleware enabled")
+    logger.debug("GZip middleware enabled")
 
 
 def setup_routers(app: FastAPI) -> None:
@@ -101,6 +361,7 @@ def setup_routers(app: FastAPI) -> None:
     
     # Add sample routes
     app.include_router(samples_router, prefix="/api/v1")
+    app.include_router(experimental_router, prefix="/api/v1")
     
     # Add file routes
     app.include_router(files_router, prefix="/api/v1")
@@ -111,7 +372,393 @@ def setup_routers(app: FastAPI) -> None:
     # Add namespace routes
     app.include_router(namespaces_router, prefix="/api/v1")
     
-    logger.info("API routers configured")
+    # Add organization routes
+    app.include_router(organizations_router, prefix="/api/v1")
+    
+    # Add error examples routes
+    app.include_router(errors_router, prefix="/api/v1")
+    
+    # Add root API routes - available at both /api/v1/ and /
+    app.include_router(root_router, prefix="/api/v1")
+    app.include_router(root_router)
+    
+    # Add info routes
+    app.include_router(info_router, prefix="/api/v1")
+    
+    logger.debug("API routers configured")
+
+
+def setup_exception_handlers(app: FastAPI) -> None:
+    """Set up global exception handlers for consistent error responses."""
+    
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_exception_handler(request: Request, exc: RequestValidationError):
+        """Handle FastAPI request validation errors - convert to InvalidParameters or UnsupportedField format."""
+        # Log the validation error details for debugging
+        logger.warning(
+            "Request validation error",
+            method=request.method,
+            path=str(request.url.path),
+            errors=exc.errors()
+        )
+        
+        # Check if this is an enum violation for a "field" path parameter in a count endpoint
+        path_str = str(request.url.path)
+        is_count_endpoint = "/by/" in path_str and "/count" in path_str
+        
+        if is_count_endpoint:
+            errors = exc.errors()
+            for error in errors:
+                # Check if this is an enum violation for a path parameter named "field"
+                error_type = error.get("type", "")
+                error_loc = error.get("loc", ())
+                
+                # Enum violations can have types like "enum", "value_error.enum", or "literal"
+                is_enum_error = any(keyword in error_type.lower() for keyword in ["enum", "literal"])
+                is_field_param = len(error_loc) >= 2 and error_loc[0] == "path" and error_loc[1] == "field"
+                
+                if is_enum_error and is_field_param:
+                    # Determine entity type from path more reliably
+                    # Path pattern: /api/v1/{entity}/by/{field}/count
+                    path_parts = path_str.strip("/").split("/")
+                    entity_type = None
+                    
+                    # Try to extract entity from path segments
+                    # Look for known entity patterns in the path
+                    if "/file/" in path_str or "/file" in path_str:
+                        entity_type = "files"
+                    elif "/sample/" in path_str or "/sample" in path_str:
+                        entity_type = "samples"
+                    elif "/subject/" in path_str or "/subject" in path_str:
+                        entity_type = "subjects"
+                    else:
+                        # Try to extract from path segments: /api/v1/{entity}/by/{field}/count
+                        # Entity should be at index 2 (0=api, 1=v1, 2=entity)
+                        if len(path_parts) >= 3 and path_parts[0] == "api" and path_parts[1] == "v1":
+                            potential_entity = path_parts[2]
+                            # Map common entity names to plural form
+                            entity_map = {
+                                "file": "files",
+                                "sample": "samples",
+                                "subject": "subjects"
+                            }
+                            entity_type = entity_map.get(potential_entity.lower())
+                    
+                    # If still not determined, log warning and use generic message
+                    if entity_type is None:
+                        logger.warning(
+                            "Unable to determine entity type from path for UnsupportedField error",
+                            path=path_str,
+                            error_type=error_type,
+                            error_loc=error_loc
+                        )
+                        # Use generic message without entity type
+                        error_detail = ErrorDetail(
+                            kind=ErrorKind.UNSUPPORTED_FIELD,
+                            field="wrong field",
+                            message="Field is not supported.",
+                            reason="This field is not present."
+                        )
+                    else:
+                        # Return UnsupportedField error with determined entity type
+                        error_detail = ErrorDetail(
+                            kind=ErrorKind.UNSUPPORTED_FIELD,
+                            field="wrong field",  # Don't expose actual field name
+                            message=f"Field is not supported for {entity_type}.",
+                            reason=f"This field is not present for {entity_type}."
+                        )
+                    return JSONResponse(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+                    )
+        
+        # Return sanitized InvalidParameters error for other validation errors
+        error_detail = ErrorDetail(
+            kind=ErrorKind.INVALID_PARAMETERS,
+            parameters=[],  # Empty array - don't expose parameter names
+            message="Invalid query parameter(s) provided.",
+            reason="Unknown query parameter(s)"
+        )
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
+    
+    @app.exception_handler(DatabaseConnectionError)
+    async def database_connection_error_handler(request: Request, exc: DatabaseConnectionError):
+        """Handle database connection errors - return 404 Not Found (service unavailable)."""
+        logger.error(
+            "Database connection error",
+            path=str(request.url.path),
+            method=request.method,
+            error=str(exc)
+        )
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Resource",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
+    
+    @app.exception_handler(CCDIException)
+    async def ccdi_exception_handler(request: Request, exc: CCDIException):
+        """Handle CCDI custom exceptions - log full details but sanitize InvalidRoute responses."""
+        # If this is an InvalidRoute error, log the full details (including route)
+        if exc.kind == ErrorKind.INVALID_ROUTE:
+            logger.warning(
+                "Invalid route requested",
+                method=exc.method,
+                route=exc.route or str(request.url.path),
+                path=str(request.url.path)
+            )
+            # Return sanitized error detail (no route in response)
+            error_detail = exc.to_error_detail()
+        else:
+            error_detail = exc.to_error_detail()
+        
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
+    
+    @app.exception_handler(StarletteHTTPException)
+    async def starlette_http_exception_handler(request: Request, exc: StarletteHTTPException):
+        """Handle Starlette HTTP exceptions (including 404s for non-existent routes)."""
+        # If detail is already a structured error response, return it
+        if isinstance(exc.detail, dict) and "errors" in exc.detail:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content=exc.detail
+            )
+        
+        # Exclude documentation endpoints from 404 handling
+        path = str(request.url.path)
+        if path in ["/redoc", "/docs", "/docs-api", "/openapi.json"]:
+            # Let FastAPI handle these routes normally
+            raise exc
+        
+        # Handle 404 errors - all 404s are treated as InvalidRoute
+        if exc.status_code == 404:
+            # Log the full details (including the actual route)
+            logger.warning(
+                "Invalid route requested",
+                method=request.method,
+                route=str(request.url.path),
+                path=str(request.url.path)
+            )
+            
+            # Return error detail matching Error-InvalidRoute-404.json format
+            error_detail = ErrorDetail(
+                kind=ErrorKind.INVALID_ROUTE,
+                method=request.method,
+                route="Invalid route requested.",
+                message="Invalid route requested."  # Not in specification
+            )
+            
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+            )
+        
+        # For other status codes, convert to appropriate error format
+        if exc.status_code in (400, 422):
+            # Sanitize error message - don't expose internal details or user inputs
+            error_detail = ErrorDetail(
+                kind=ErrorKind.INVALID_PARAMETERS,
+                parameters=[],  # Empty array - don't expose parameter names
+                message="Invalid query parameter(s) provided.",
+                reason="Unknown query parameter(s)"
+            )
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,  # Always return 400 for InvalidParameters
+                content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+            )
+        
+        # Default NotFound for other 4xx errors
+        if 400 <= exc.status_code < 500:
+            error_detail = ErrorDetail(
+                kind=ErrorKind.NOT_FOUND,
+                entity="Resource",
+                message="Unable to find data for your request.",
+                reason="No data found."
+            )
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,  # Always return 404 for NotFound
+                content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+            )
+        
+        # For 500+ errors, convert to 404 NotFound (no 500 errors allowed)
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Resource",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
+    
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(request: Request, exc: HTTPException):
+        """Handle FastAPI HTTP exceptions - convert to structured error format."""
+        # If detail is already a structured error response, return it
+        if isinstance(exc.detail, dict) and "errors" in exc.detail:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content=exc.detail
+            )
+        
+        # Exclude documentation endpoints from 404 handling
+        path = str(request.url.path)
+        if path in ["/redoc", "/docs", "/docs-api", "/openapi.json"]:
+            # Let FastAPI handle these routes normally
+            raise exc
+        
+        # Handle 404 errors - check if invalid route or missing resource
+        if exc.status_code == 404:
+            # Log the full details (including the actual route) for debugging
+            logger.warning(
+                "Invalid route requested",
+                method=request.method,
+                route=str(request.url.path),
+                path=str(request.url.path)
+            )
+            
+            # Return error detail matching Error-InvalidRoute-404.json format
+            error_detail = ErrorDetail(
+                kind=ErrorKind.INVALID_ROUTE,
+                method=request.method,
+                route="Invalid route requested.",
+                message="Invalid route requested."  # Not in specification
+            )
+            
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+            )
+        
+        # Convert to InvalidParameters error for 400/422 errors
+        if exc.status_code in (400, 422):
+            # Check if this might be a path typo (e.g., /subject/by2/race2/count)
+            path = str(request.url.path)
+            suggested_path = _suggest_correct_path(path)
+            
+            # If we detected a typo pattern, treat as InvalidRoute
+            if suggested_path:
+                # Log the full details (including the actual route and suggestion) for debugging
+                logger.warning(
+                    "Invalid route requested (typo detected)",
+                    method=request.method,
+                    route=path,
+                    suggested_path=suggested_path
+                )
+                # Return error detail matching Error-InvalidRoute-404.json format
+                error_detail = ErrorDetail(
+                    kind=ErrorKind.INVALID_ROUTE,
+                    method=request.method,
+                    route="Invalid route requested.",
+                    message="Invalid route requested."  # Not in specification
+                )
+                return JSONResponse(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+                )
+            
+            # Check if error detail suggests organization/namespace validation (path typo pattern)
+            error_detail_dict = exc.detail if isinstance(exc.detail, dict) else {}
+            if isinstance(error_detail_dict, dict) and "errors" in error_detail_dict:
+                errors_list = error_detail_dict.get("errors", [])
+                # Check if any error mentions organization/namespace parameters
+                for err in errors_list:
+                    if isinstance(err, dict):
+                        params = err.get("parameters", [])
+                        if "organization" in params or "namespace" in params:
+                            # Check again with the path
+                            suggested_path = _suggest_correct_path(path)
+                            if suggested_path:
+                                # Log the full details (including the actual route and suggestion) for debugging
+                                logger.warning(
+                                    "Invalid route requested (typo detected)",
+                                    method=request.method,
+                                    route=path,
+                                    suggested_path=suggested_path
+                                )
+                                # Return error detail matching Error-InvalidRoute-404.json format
+                                error_detail = ErrorDetail(
+                                    kind=ErrorKind.INVALID_ROUTE,
+                                    method=request.method,
+                                    route="Invalid route requested.",
+                                    message="Invalid route requested."  # Not in specification
+                                )
+                                return JSONResponse(
+                                    status_code=status.HTTP_404_NOT_FOUND,
+                                    content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+                                )
+            
+            # Sanitize error message - don't expose internal details or user inputs
+            error_detail = ErrorDetail(
+                kind=ErrorKind.INVALID_PARAMETERS,
+                parameters=[],  # Empty array - don't expose parameter names
+                message="Invalid query parameter(s) provided.",
+                reason="Unknown query parameter(s)"
+            )
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,  # Always return 400 for InvalidParameters
+                content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+            )
+        
+        # Default NotFound for other 4xx errors
+        if 400 <= exc.status_code < 500:
+            error_detail = ErrorDetail(
+                kind=ErrorKind.NOT_FOUND,
+                entity="Resource",
+                message="Unable to find data for your request.",
+                reason="No data found."
+            )
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,  # Always return 404 for NotFound
+                content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+            )
+        
+        # For 500+ errors, convert to 404 NotFound (no 500 errors allowed)
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Resource",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
+    
+    @app.exception_handler(Exception)
+    async def generic_exception_handler(request: Request, exc: Exception):
+        """Handle all unhandled exceptions - return 404 NotFound (no 500 errors allowed)."""
+        logger.error(
+            "Unhandled exception",
+            path=str(request.url.path),
+            method=request.method,
+            error=str(exc),
+            exc_info=True
+        )
+        error_detail = ErrorDetail(
+            kind=ErrorKind.NOT_FOUND,
+            entity="Resource",
+            message="Unable to find data for your request.",
+            reason="No data found."
+        )
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
+        )
+    
+    logger.debug("Exception handlers configured")
 
 
 def setup_health_check(app: FastAPI) -> None:
@@ -122,17 +769,219 @@ def setup_health_check(app: FastAPI) -> None:
         """Health check endpoint."""
         return {"status": "healthy", "service": "ccdi-federation-service"}
     
-    @app.get("/", tags=["health"])
-    async def root():
-        """Root endpoint."""
-        return {
-            "service": "CCDI Federation Service",
-            "version": "1.0.0",
-            "status": "running",
-            "docs": "/docs"
-        }
+    @app.get("/ping", tags=["ping"])
+    async def health_check():
+        """Health check endpoint."""
+        return {"status": "pong"}
+
+    @app.get("/version", tags=["version"])
+    async def version(settings: Settings = Depends(get_settings)):
+        """Version endpoint."""
+        # Use API_VERSION environment variable if set, otherwise fall back to settings.app_version
+        api_version = os.getenv("API_VERSION", settings.app_version)
+        return {"version": api_version}
+
+    # Root endpoint is now handled by root_router (returns API root JSON)
+    # Available at both /api/v1/ and /
     
-    logger.info("Health check endpoints configured")
+    logger.debug("Health check endpoints configured")
+
+
+def setup_custom_docs_endpoint(app: FastAPI) -> None:
+    """Set up custom Swagger documentation endpoints.
+    
+    Provides two options:
+    1. /docs - Dynamic version that loads spec from server's /openapi.json
+    2. /docs-embedded - Static version with spec embedded inline (self-contained)
+    """
+    
+    # Paths to HTML files - from app/main.py, go up 1 level to project root, then docs/
+    docs_dir = Path(__file__).resolve().parents[1] / "docs"
+    index_html_path = docs_dir / "index.html"
+    embedded_html_path = docs_dir / "embedded.html"
+    
+    @app.get("/docs", response_class=HTMLResponse, include_in_schema=False)
+    async def serve_custom_docs(request: Request):
+        """
+        Serve the dynamic Swagger UI documentation page at /docs.
+        
+        This endpoint serves the index.html file which contains a Swagger UI
+        that loads the OpenAPI specification from the server's /openapi.json endpoint.
+        
+        Features:
+        - Custom styling and branding
+        - Dynamic OpenAPI spec loading from server (always up-to-date)
+        - Custom Swagger UI configuration
+        - Same format as GitHub Pages for consistency
+        
+        For a self-contained version with embedded spec, use /docs-embedded.
+        The default FastAPI Swagger UI is also available at /docs-api.
+        """
+        try:
+            with index_html_path.open("r", encoding="utf-8") as f:
+                html_content = f.read()
+            
+            # Use filtered OpenAPI endpoint for /docs (excludes certain endpoints)
+            # /docs-api will use the full /openapi.json
+            # Determine the correct scheme (http vs https) - check X-Forwarded-Proto header for reverse proxy
+            # Also check X-Forwarded-Host for the correct host if behind a proxy
+            scheme = request.headers.get("X-Forwarded-Proto", request.url.scheme)
+            # Normalize scheme to lowercase and ensure it's https if X-Forwarded-Proto indicates it
+            if scheme:
+                scheme = scheme.lower()
+            else:
+                scheme = request.url.scheme
+            
+            # Use X-Forwarded-Host if available (for reverse proxy), otherwise use request.url.netloc
+            host = request.headers.get("X-Forwarded-Host", request.url.netloc)
+            
+            # Build base URL with correct scheme and host
+            base_url = f"{scheme}://{host}".rstrip("/")
+            filtered_openapi_url = f"{base_url}/openapi-filtered.json"
+            
+            # Replace the hardcoded GitHub Pages URL with the filtered OpenAPI URL
+            html_content = html_content.replace(
+                "url: 'https://cbiit.github.io/ccdi-dcc-federation-service/docs/swagger.yml',",
+                f"url: '{filtered_openapi_url}',"
+            )
+            # Also handle the alternative local file reference
+            html_content = html_content.replace(
+                "// url: './swagger.yml',",
+                f"// url: '{filtered_openapi_url}',"
+            )
+            
+            return HTMLResponse(content=html_content)
+        except FileNotFoundError:
+            logger.error(f"Index HTML file not found at {index_html_path}")
+            raise HTTPException(
+                status_code=500,
+                detail="Documentation file not found"
+            )
+        except Exception as e:
+            logger.error(f"Error serving documentation: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail="Error loading documentation"
+            )
+    
+    @app.get("/docs-embedded", response_class=HTMLResponse, include_in_schema=False)
+    async def serve_embedded_docs():
+        """
+        Serve the self-contained Swagger UI documentation page at /docs-embedded.
+        
+        This endpoint serves the embedded.html file which contains a Swagger UI
+        with the OpenAPI specification embedded inline in the HTML.
+        
+        Features:
+        - Self-contained (no external spec file needed)
+        - Works offline and can be downloaded as a single file
+        - No CORS issues
+        - Faster initial load (no spec fetch required)
+        - Portable and distributable
+        
+        For a dynamic version that loads the live spec from the server, use /docs.
+        """
+        try:
+            with embedded_html_path.open("r", encoding="utf-8") as f:
+                html_content = f.read()
+            return HTMLResponse(content=html_content)
+        except FileNotFoundError:
+            logger.error(f"Embedded HTML file not found at {embedded_html_path}")
+            raise HTTPException(
+                status_code=500,
+                detail="Embedded documentation file not found"
+            )
+        except Exception as e:
+            logger.error(f"Error serving embedded documentation: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail="Error loading embedded documentation"
+            )
+    
+    # Custom ReDoc endpoint to ensure it works properly
+    @app.get("/redoc", include_in_schema=False)
+    async def serve_redoc(request: Request):
+        """
+        Serve ReDoc documentation page at /redoc.
+        
+        This is a custom implementation to ensure ReDoc works properly
+        with the OpenAPI 3.1.0 specification.
+        """
+        try:
+            # Build absolute OpenAPI URL from the request
+            openapi_url = app.openapi_url
+            if not openapi_url.startswith("http"):
+                # Make it absolute based on the request
+                base_url = str(request.base_url).rstrip("/")
+                openapi_url = f"{base_url}{openapi_url}"
+            
+            # Create custom ReDoc HTML with explicit configuration
+            # Using ReDoc latest version with JavaScript API for better OpenAPI 3.1.0 support
+            redoc_html = f"""<!DOCTYPE html>
+<html>
+  <head>
+    <title>{app.title} - ReDoc</title>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link href="https://fonts.googleapis.com/css?family=Montserrat:300,400,700|Roboto:300,400,700" rel="stylesheet">
+    <style>
+      body {{
+        margin: 0;
+        padding: 0;
+      }}
+    </style>
+  </head>
+  <body>
+    <div id="redoc-container"></div>
+    <script src="https://cdn.jsdelivr.net/npm/redoc@latest/bundles/redoc.standalone.js"></script>
+    <script>
+      // Initialize ReDoc with JavaScript API
+      window.addEventListener('load', function() {{
+        try {{
+          Redoc.init("{openapi_url}", {{
+            scrollYOffset: 0,
+            hideDownloadButton: false,
+            expandResponses: "200,201",
+            pathInMiddlePanel: true,
+            theme: {{
+              typography: {{
+                fontSize: "14px",
+                lineHeight: "1.5em",
+                code: {{
+                  fontSize: "13px"
+                }}
+              }},
+              colors: {{
+                primary: {{
+                  main: "#32329f"
+                }}
+              }}
+            }}
+          }}, document.getElementById("redoc-container"));
+          console.log("ReDoc initialized successfully");
+        }} catch (error) {{
+          console.error("Error initializing ReDoc:", error);
+          document.getElementById("redoc-container").innerHTML = 
+            '<div style="padding: 20px; color: red;">Error loading ReDoc documentation. Please check the console for details.</div>';
+        }}
+      }});
+      
+      // Error handling for ReDoc
+      window.addEventListener('error', function(e) {{
+        console.error('ReDoc error:', e);
+      }});
+    </script>
+  </body>
+</html>"""
+            return HTMLResponse(content=redoc_html)
+        except Exception as e:
+            logger.error(f"Error serving ReDoc: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail="Error loading ReDoc documentation"
+            )
+    
+    logger.debug("Documentation endpoints configured")
 
 
 # Create the application instance

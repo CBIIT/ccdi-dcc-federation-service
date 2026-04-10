@@ -17,12 +17,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     build-essential \
-    && apt-get upgrade -y --no-install-recommends openssl libssl3 openssl-provider-legacy \
+    && apt-get upgrade -y --no-install-recommends openssl libssl3t64 openssl-provider-legacy \
     && rm -rf /var/lib/apt/lists/*
 
 
 # Patch pip to fix security vulnerabilities
-RUN python -m pip install --no-cache-dir --upgrade "pip==25.3"
+RUN python -m pip install --no-cache-dir --upgrade "pip==26.0"
 
 WORKDIR /app
 
@@ -51,11 +51,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Minimal runtime deps (curl for HEALTHCHECK)
 # Update openssl packages to fix security vulnerabilities (CVE-2025-15467, CVE-2025-69419)
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
-    && apt-get upgrade -y --no-install-recommends openssl libssl3 openssl-provider-legacy \
+    && apt-get upgrade -y --no-install-recommends openssl libssl3t64 openssl-provider-legacy \
     && rm -rf /var/lib/apt/lists/*
 
 # Keep pip patched in builder image for security scans
-RUN python -m pip install --no-cache-dir --upgrade "pip==25.3"
+RUN python -m pip install --no-cache-dir --upgrade "pip==26.0"
 
 WORKDIR /app
 

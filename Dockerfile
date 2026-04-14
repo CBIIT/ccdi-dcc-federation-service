@@ -1,7 +1,8 @@
 ############################
 # Builder stage
 ############################
-FROM python:3.12-slim AS builder
+# Pin trixie: libssl3t64 / openssl-provider-legacy match this series (unpinned slim may switch Debian).
+FROM python:3.12-slim-trixie AS builder
 
 ARG POETRY_VERSION=1.6.1
 
@@ -17,7 +18,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     build-essential \
-    && apt-get upgrade -y --no-install-recommends openssl libssl3t64 openssl-provider-legacy \
+    && apt-get install -y --no-install-recommends --only-upgrade openssl libssl3t64 openssl-provider-legacy \
     && rm -rf /var/lib/apt/lists/*
 
 
@@ -42,7 +43,7 @@ RUN poetry install --only-root \
 ############################
 # Runtime stage
 ############################
-FROM python:3.12-slim AS runtime
+FROM python:3.12-slim-trixie AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -51,10 +52,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Minimal runtime deps (curl for HEALTHCHECK)
 # Update openssl packages to fix security vulnerabilities (CVE-2025-15467, CVE-2025-69419)
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
-    && apt-get upgrade -y --no-install-recommends openssl libssl3t64 openssl-provider-legacy \
+    && apt-get install -y --no-install-recommends --only-upgrade openssl libssl3t64 openssl-provider-legacy \
     && rm -rf /var/lib/apt/lists/*
 
-# Keep pip patched in builder image for security scans
+# Pin pip in the runtime image for security scans (base image may ship an older pip).
 RUN python -m pip install --no-cache-dir --upgrade "pip==26.0"
 
 WORKDIR /app
@@ -84,5 +85,5 @@ LABEL org.opencontainers.image.source="https://github.com/CBIIT/ccdi-dcc-federat
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -fsS http://localhost:8000/health || exit 1
 
-# Use uvicorn directly from the in-project Poetry venv for faster startup
+# Uvicorn is installed from requirements.txt and invoked on PATH (runtime does not use the builder Poetry venv).
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

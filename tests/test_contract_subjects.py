@@ -9,8 +9,6 @@ from app.models.dto import (
     NamespaceIdentifier,
     SubjectMetadata,
     MetadataField,
-    SummaryResponse,
-    SummaryCounts,
     CountResponse,
     CountResult,
 )
@@ -50,11 +48,9 @@ def test_subject_list_empty_returns_200(client, monkeypatch):
             offset: int = 0,
             limit: int = 20,
             base_url: str | None = None,
+            return_total: bool = False,
         ):
-            return []
-
-        async def get_subjects_summary(self, filters: Dict[str, Any]):
-            return SummaryResponse(counts=SummaryCounts(total=0))
+            return ([], 0)
 
     monkeypatch.setattr(subjects_ep, "SubjectService", FakeSubjectService)
 
@@ -77,11 +73,9 @@ def test_subject_list_includes_required_keys_even_when_null(client, monkeypatch)
             offset: int = 0,
             limit: int = 20,
             base_url: str | None = None,
+            return_total: bool = False,
         ):
-            return [_subject()]
-
-        async def get_subjects_summary(self, filters: Dict[str, Any]):
-            return SummaryResponse(counts=SummaryCounts(total=1))
+            return ([_subject()], 1)
 
     monkeypatch.setattr(subjects_ep, "SubjectService", FakeSubjectService)
 
@@ -111,12 +105,10 @@ def test_subject_list_sets_link_header_for_pagination(client, monkeypatch):
             offset: int = 0,
             limit: int = 20,
             base_url: str | None = None,
+            return_total: bool = False,
         ):
             # Return a full page -> has_next should be True -> Link header should include rel="next"
-            return [_subject(participant_id="P1"), _subject(participant_id="P2")]
-
-        async def get_subjects_summary(self, filters: Dict[str, Any]):
-            return SummaryResponse(counts=SummaryCounts(total=999))
+            return ([_subject(participant_id="P1"), _subject(participant_id="P2")], 999)
 
     monkeypatch.setattr(subjects_ep, "SubjectService", FakeSubjectService)
 

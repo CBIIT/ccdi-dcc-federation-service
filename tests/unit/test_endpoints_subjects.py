@@ -109,8 +109,6 @@ class TestSubjectEndpoints:
         self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
     ):
         """Test list_subjects returns subjects successfully."""
-        from app.models.dto import SummaryResponse, SummaryCounts
-        
         class MockSubject:
             def model_dump(self, exclude=None, exclude_none=False, exclude_unset=False):
                 return {
@@ -120,12 +118,10 @@ class TestSubjectEndpoints:
                 }
         
         mock_subjects = [MockSubject()]
-        mock_summary = SummaryResponse(counts=SummaryCounts(total=100))
-        
+
         with patch('app.api.v1.endpoints.subjects.SubjectService') as mock_service_class:
             mock_service = Mock()
-            mock_service.get_subjects = AsyncMock(return_value=mock_subjects)
-            mock_service.get_subjects_summary = AsyncMock(return_value=mock_summary)
+            mock_service.get_subjects = AsyncMock(return_value=(mock_subjects, 100))
             mock_service_class.return_value = mock_service
             
             with patch('app.api.v1.endpoints.subjects.get_cache_service', return_value=None):

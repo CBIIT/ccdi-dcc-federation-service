@@ -42,18 +42,20 @@ class SubjectService:
         filters: Dict[str, Any],
         offset: int = 0,
         limit: int = 20,
-        base_url: Optional[str] = None
-    ) -> List[Subject]:
+        base_url: Optional[str] = None,
+        return_total: bool = False,
+    ) -> "List[Subject] | tuple[list, int]":
         """
         Get paginated list of subjects with filtering.
-        
+
         Args:
             filters: Dictionary of field filters
             offset: Number of records to skip
             limit: Maximum number of records to return
-            
+            return_total: If True, returns a (subjects, total_count) tuple
+
         Returns:
-            List of Subject objects
+            List of Subject objects, or (list, int) tuple when return_total=True
         """
         logger.debug(
             "Getting subjects",
@@ -77,7 +79,7 @@ class SubjectService:
         
         for attempt in range(max_retries + 1):
             try:
-                subjects = await self.repository.get_subjects(filters, offset, limit, base_url=base_url)
+                result = await self.repository.get_subjects(filters, offset, limit, base_url=base_url, return_total=return_total)
                 break
             except DatabaseConnectionError as e:
                 # Database connection error - log clearly for AWS cloud monitoring
@@ -93,7 +95,9 @@ class SubjectService:
                     is_database_connection_error=True,
                     will_return_empty=True
                 )
-                # Return empty list instead of raising - API will return 404
+                # Return empty result instead of raising - API will return 404
+                if return_total:
+                    return ([], 0)
                 return []
             except Exception as e:
                 # Check if this is a transient error that might benefit from retry
@@ -117,13 +121,17 @@ class SubjectService:
                     # Not a transient error or max retries reached, re-raise
                     raise
         
-        logger.info(
-            "Retrieved subjects",
-            count=len(subjects),
-            offset=offset,
-            limit=limit
-        )
-        
+        if return_total:
+            if isinstance(result, tuple):
+                subjects, total_count = result
+            else:
+                subjects = result
+                total_count = 0
+            logger.info("Retrieved subjects", count=len(subjects), offset=offset, limit=limit)
+            return (subjects, total_count)
+
+        subjects = result if not isinstance(result, tuple) else result[0]
+        logger.info("Retrieved subjects", count=len(subjects), offset=offset, limit=limit)
         return subjects
     
     async def get_subject_by_identifier(

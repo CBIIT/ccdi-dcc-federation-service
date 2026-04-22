@@ -66,7 +66,9 @@ class SampleHelpers:
                 categorized["sequencing_file"][key] = value
             elif key in pathology_file_filters:
                 categorized["pathology_file"][key] = value
-        
+            else:
+                logger.warning(f"Unknown filter key '{key}' — not assigned to any category and will be ignored")
+
         return categorized
     
     @staticmethod

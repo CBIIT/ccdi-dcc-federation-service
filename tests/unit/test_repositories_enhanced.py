@@ -375,9 +375,10 @@ class TestSubjectRepositoryEnhanced:
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         # Test with API value that needs mapping
-        with patch("app.repositories.subject.reverse_map_field_value") as mock_reverse_map:
+        # Patch the module where get_subjects_summary lives (subject_summary mixin)
+        with patch("app.repositories.subject_summary.reverse_map_field_value") as mock_reverse_map:
             def reverse_map_side_effect(field, value):
                 if field == "race" and value == "Not allowed to collect":
                     return "Not Allowed to Collect"

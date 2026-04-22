@@ -138,6 +138,23 @@ paths:
           all participants that belong to the specified study. Example: `depositions=phs002431`
           will return all participants in study `phs002431`.'
         example: phs002431
+      - name: associated_diagnosis_categories
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'Filter by harmonized diagnosis category. Matches any subject
+            whose diagnosis nodes include the specified category value. Value must
+            be one of the 31 harmonized Permissible Values (e.g., `Neuroblastoma`,
+            `Renal Tumors`).'
+          title: Associated Diagnosis Categories
+        description: 'Filter by harmonized diagnosis category. Matches any subject
+          whose diagnosis nodes include the specified category value. Value must
+          be one of the 31 harmonized Permissible Values (e.g., `Neuroblastoma`,
+          `Renal Tumors`).'
+        example: Neuroblastoma
       - name: page
         in: query
         required: false
@@ -196,6 +213,9 @@ paths:
                       value: Alive
                     age_at_vital_status:
                       value: 45
+                    associated_diagnosis_categories:
+                    - value:
+                        - Neuroblastoma
                     depositions:
                     - kind: dbGaP
                       value: phs002430
@@ -251,6 +271,9 @@ paths:
             associated_diagnoses:
               value: associated_diagnoses
               summary: Count by associated diagnoses
+            associated_diagnosis_categories:
+              value: associated_diagnosis_categories
+              summary: Count by diagnosis category
           enum:
           - sex
           - race
@@ -258,6 +281,7 @@ paths:
           - vital_status
           - age_at_vital_status
           - associated_diagnoses
+          - associated_diagnosis_categories
           title: Field
         description: The field to group by and count with.
       responses:

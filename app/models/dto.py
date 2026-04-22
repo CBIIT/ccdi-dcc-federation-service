@@ -259,21 +259,6 @@ class SubjectIdentifier(BaseModel):
     name: str = Field(..., description="Subject name", examples=["SubjectName001"])
 
 
-class SubjectMetadata(CommonMetadata):
-    """Subject metadata model."""
-    sex: Optional[UnharmonizedField] = None
-    race: Optional[UnharmonizedField] = None
-    ethnicity: Optional[UnharmonizedField] = None
-    identifiers: Optional[List[UnharmonizedField]] = None
-    vital_status: Optional[UnharmonizedField] = None
-    age_at_vital_status: Optional[UnharmonizedField] = None
-    associated_diagnoses: Optional[UnharmonizedField] = None
-    unharmonized: Optional[Dict[str, UnharmonizedField]] = Field(
-        None,
-        description="Unharmonized metadata fields"
-    )
-
-
 class SampleIdentifier(BaseModel):
     """Sample identifier model."""
     namespace: NamespaceIdentifier = Field(..., description="Namespace identifier")
@@ -385,6 +370,12 @@ class AssociatedDiagnosisField(BaseModel):
     ancestors: Optional[Any] = Field(default=None, description="Ancestor entities", exclude=True)
     comment: Optional[str] = Field(default=None, description="Comment")
 
+
+class AssociatedDiagnosisCategoryField(BaseModel):
+    """Associated diagnosis categories field — one harmonized PV value."""
+    value: str = Field(..., description="Harmonized diagnosis category value")
+
+
 class SubjectMetadata(BaseModel):
     """Subject metadata with nested field structure."""
     sex: Optional[MetadataField] = None
@@ -392,10 +383,10 @@ class SubjectMetadata(BaseModel):
     ethnicity: Optional[MetadataField] = None
     identifiers: Optional[List[IdentifierField]] = None
     associated_diagnoses: Optional[List[AssociatedDiagnosisField]] = None
-    unharmonized: Optional[Any] = Field(
+    associated_diagnosis_categories: Optional[List[AssociatedDiagnosisCategoryField]] = None
+    unharmonized: Optional[Dict[str, Any]] = Field(
         default=None,
-        exclude=True,  # Exclude from serialization but keep as placeholder for future use
-        description="Unharmonized metadata fields (reserved for future use)"
+        description="Unharmonized metadata fields"
     )
     vital_status: Optional[MetadataField] = None
     age_at_vital_status: Optional[MetadataField] = None

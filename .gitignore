@@ -1,3 +1,9 @@
+# Local Claude Code overrides
+CLAUDE.local.md
+
+# Local planning / agent working docs (not part of published repo docs)
+docs/superpowers/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -12,6 +18,8 @@ build/
 develop-eggs/
 dist/
 downloads/
+data_models/
+scripts/
 eggs/
 .eggs/
 lib64/

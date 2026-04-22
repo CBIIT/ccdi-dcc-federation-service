@@ -77,29 +77,29 @@ def get_pagination_params(
 
 def get_subject_filters(
     sex: Optional[str] = Query(
-        None, 
+        None,
         description="Matches any subject where the `sex` field matches the string provided.",
         enum=["M", "F", "U"]
     ),
     race: Optional[str] = Query(
-        None, 
+        None,
         description="Matches any subject where any member of the `race` field matches any of the provided values. Multiple race values can be provided separated by `||` (double pipe). The race field in the database may contain semicolon-separated values (e.g., 'Asian;White'), and the filter will match if any of the provided values is found within those values. Only `||` is accepted as a delimiter; all other characters are treated as part of a single value.",
         enum=[r.value for r in Race]
     ),
     ethnicity: Optional[str] = Query(
-        None, 
+        None,
         description="Matches any subject where the `ethnicity` field matches the string provided. Ethnicity is derived from race values: if race contains 'Hispanic or Latino', ethnicity is 'Hispanic or Latino'; otherwise 'Not reported'. Only these two values are accepted.",
         enum=[e.value for e in Ethnicity]
     ),
     identifiers: Optional[str] = Query(None, description="Matches any subject where any member of the `identifiers` field matches the string provided. **Note:** a logical OR (`||`) is performed across the values when determining whether the subject should be included in the results."),
     vital_status: Optional[str] = Query(
-        None, 
+        None,
         description="Matches any subject where the `vital_status` field matches the string provided.",
         enum=[v.value for v in VitalStatus]
     ),
     age_at_vital_status: Optional[str] = Query(None, description="Matches any subject where the `age_at_vital_status` field matches the string provided."),
     depositions: Optional[str] = Query(
-        None, 
+        None,
         description="Filter by study_id. Matches any subject where the `depositions` field contains the specified study_id value (e.g., `phs002431`). Returns all participants that belong to the specified study. Example: `depositions=phs002431` will return all participants in study `phs002431`.",
         examples={
             "default": {
@@ -108,17 +108,27 @@ def get_subject_filters(
             }
         },
     ),
+    associated_diagnosis_categories: Optional[str] = Query(
+        None,
+        description=(
+            "Matches any subject where any diagnosis node has a `diagnosis_category` "
+            "matching the value provided. Accepts both harmonized (CDE 16607972) and "
+            "unharmonized DB values."
+        )
+    ),
     request: Request = None
 ) -> Dict[str, Any]:
     """Get subject filter parameters."""
     filters = {}
-    
+
     # Validate that no unknown query parameters are provided
     if request:
         # Define all allowed query parameter names
         allowed_params = {
-            "sex", "race", "ethnicity", "identifiers", "vital_status", 
-            "age_at_vital_status", "depositions", "page", "per_page", "search"
+            "sex", "race", "ethnicity", "identifiers", "vital_status",
+            "age_at_vital_status", "depositions",
+            "associated_diagnosis_categories",
+            "page", "per_page", "search"
         }
         
         # Check for unknown parameters (excluding unharmonized fields)
@@ -240,41 +250,46 @@ def get_subject_filters(
                 return filters
     if depositions is not None:
         filters["depositions"] = depositions
-    
+
+    if isinstance(associated_diagnosis_categories, str):
+        val = associated_diagnosis_categories.strip()
+        if val:
+            filters["associated_diagnosis_categories"] = val
+
     # Handle unharmonized fields from query parameters
     if request:
         for key, value in request.query_params.items():
             if key.startswith("metadata.unharmonized."):
                 filters[key] = value
-    
+
     return filters
 
 
 def get_subject_summary_filters(
     sex: Optional[str] = Query(
-        None, 
+        None,
         description="Matches any subject where the `sex` field matches the string provided.",
         enum=["M", "F", "U"]
     ),
     race: Optional[str] = Query(
-        None, 
+        None,
         description="Matches any subject where any member of the `race` field matches any of the provided values. Multiple race values can be provided separated by `||` (double pipe).",
         enum=[r.value for r in Race]
     ),
     ethnicity: Optional[str] = Query(
-        None, 
+        None,
         description="Matches any subject where the `ethnicity` field matches the string provided.",
         enum=[e.value for e in Ethnicity]
     ),
     identifiers: Optional[str] = Query(None, description="Matches any subject where any member of the `identifiers` field matches the string provided."),
     vital_status: Optional[str] = Query(
-        None, 
+        None,
         description="Matches any subject where the `vital_status` field matches the string provided.",
         enum=[v.value for v in VitalStatus]
     ),
     age_at_vital_status: Optional[str] = Query(None, description="Matches any subject where the `age_at_vital_status` field matches the string provided."),
     depositions: Optional[str] = Query(
-        None, 
+        None,
         description="Filter by study_id. Matches any subject where the `depositions` field contains the specified study_id value.",
         examples={
             "default": {
@@ -283,17 +298,26 @@ def get_subject_summary_filters(
             }
         },
     ),
+    associated_diagnosis_categories: Optional[str] = Query(
+        None,
+        description=(
+            "Matches any subject where any diagnosis node has a `diagnosis_category` "
+            "matching the value provided. Accepts both harmonized (CDE 16607972) and "
+            "unharmonized DB values."
+        )
+    ),
     request: Request = None
 ) -> Dict[str, Any]:
     """Get subject filter parameters for summary endpoint (excludes pagination and search)."""
     filters = {}
-    
+
     # Validate that no unknown query parameters are provided
     if request:
         # Summary endpoint only allows filter parameters, not pagination or search
         allowed_params = {
-            "sex", "race", "ethnicity", "identifiers", "vital_status", 
-            "age_at_vital_status", "depositions"
+            "sex", "race", "ethnicity", "identifiers", "vital_status",
+            "age_at_vital_status", "depositions",
+            "associated_diagnosis_categories",
         }
         
         # Check for unknown parameters (excluding unharmonized fields)
@@ -399,13 +423,18 @@ def get_subject_summary_filters(
         depositions_str = str(depositions).strip() if depositions else None
         if depositions_str:
             filters["depositions"] = depositions_str
-    
+
+    if isinstance(associated_diagnosis_categories, str):
+        val = associated_diagnosis_categories.strip()
+        if val:
+            filters["associated_diagnosis_categories"] = val
+
     # Handle unharmonized fields from query parameters
     if request:
         for key, value in request.query_params.items():
             if key.startswith("metadata.unharmonized."):
                 filters[key] = value
-    
+
     return filters
 
 

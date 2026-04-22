@@ -233,7 +233,8 @@ class Settings(BaseSettings):
     
     # Valid fields for subject count operations (case-sensitive)
     subject_count_fields: List[str] = Field(
-        default=["sex", "race", "ethnicity", "vital_status", "age_at_vital_status","associated_diagnoses"],
+        default=["sex", "race", "ethnicity", "vital_status", "age_at_vital_status",
+                 "associated_diagnoses", "associated_diagnosis_categories"],
         alias="SUBJECT_COUNT_FIELDS",
         description="Valid field names for /subject/by/{field}/count endpoint"
     )

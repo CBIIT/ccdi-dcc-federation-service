@@ -6,6 +6,7 @@ including listing, individual retrieval, counting, and summaries.
 """
 
 from typing import Dict, Any, List
+import copy
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status, Path
@@ -176,8 +177,10 @@ async def list_subjects(
     try:
         # Validate that no unknown query parameters are provided
         allowed_params = {
-            "sex", "race", "ethnicity", "identifiers", "vital_status", 
-            "age_at_vital_status", "depositions", "page", "per_page"
+            "sex", "race", "ethnicity", "identifiers", "vital_status",
+            "age_at_vital_status", "depositions",
+            "associated_diagnosis_categories",
+            "page", "per_page"
         }
         
         unknown_params = []
@@ -257,22 +260,20 @@ async def list_subjects(
         service = SubjectService(session, allowlist, settings, cache_service)
         
         # Make a copy of filters for get_subjects (it modifies the dict by popping race/identifiers)
-        filters_copy = filters.copy()
+        filters_copy = copy.deepcopy(filters)
         
         # Use configured identifier server URL for all identifier server values
         base_url = settings.identifier_server_url.rstrip("/")
         
-        # Get subjects
-        subjects = await service.get_subjects(
+        # Get subjects with total count in one round trip
+        result = await service.get_subjects(
             filters=filters_copy,
             offset=pagination.offset,
             limit=pagination.per_page,
-            base_url=base_url
+            base_url=base_url,
+            return_total=True,
         )
-        
-        # Get total count for summary (use original filters, not the modified copy)
-        summary_result = await service.get_subjects_summary(filters)
-        total_count = summary_result.counts.total
+        subjects, total_count = result
         
         # Build pagination info (match /sample behavior: do not require total_pages)
         pagination_info = PaginationInfo(
@@ -430,14 +431,16 @@ async def count_subjects_by_field(
     field: str = Path(
         ...,
         description="The field to group by and count with.",
-        enum=["sex", "race", "ethnicity", "vital_status", "age_at_vital_status", "associated_diagnoses"],
+        enum=["sex", "race", "ethnicity", "vital_status", "age_at_vital_status",
+              "associated_diagnoses", "associated_diagnosis_categories"],
         examples={
             "sex": {"value": "sex", "summary": "Count by sex"},
             "race": {"value": "race", "summary": "Count by race"},
             "ethnicity": {"value": "ethnicity", "summary": "Count by ethnicity"},
             "vital_status": {"value": "vital_status", "summary": "Count by vital status"},
             "age_at_vital_status": {"value": "age_at_vital_status", "summary": "Count by age at vital status"},
-            "associated_diagnoses": {"value": "associated_diagnoses", "summary": "Count by associated diagnoses"}
+            "associated_diagnoses": {"value": "associated_diagnoses", "summary": "Count by associated diagnoses"},
+            "associated_diagnosis_categories": {"value": "associated_diagnosis_categories", "summary": "Count by diagnosis category"}
         }
     ),
     session: AsyncSession = Depends(get_database_session),
@@ -658,7 +661,8 @@ async def get_subject(
             org_lower = organization.lower() if organization else ""
             if re.match(r'^b.*y.*$', org_lower) and org_lower != "by":
                 # Valid field names for count endpoint
-                valid_fields = {"sex", "race", "ethnicity", "vital_status", "age_at_vital_status", "associated_diagnoses"}
+                valid_fields = {"sex", "race", "ethnicity", "vital_status", "age_at_vital_status",
+                               "associated_diagnoses", "associated_diagnosis_categories"}
                 if namespace.lower() in valid_fields:
                     # This is likely a typo for /subject/by/{field}/count
                     suggested_path = f"/api/v1/subject/by/{namespace}/count"

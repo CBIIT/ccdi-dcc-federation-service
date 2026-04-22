@@ -25,11 +25,12 @@ HARMONIZED_FIELDS: Dict[EntityType, Set[str]] = {
     EntityType.SUBJECT: {
         "sex",
         "race",
-        "ethnicity", 
+        "ethnicity",
         "identifiers",
         "vital_status",
         "age_at_vital_status",
-        "depositions"
+        "depositions",
+        "associated_diagnosis_categories",
     },
     EntityType.SAMPLE: {
         "disease_phase",

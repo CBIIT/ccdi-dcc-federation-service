@@ -1966,8 +1966,28 @@ WITH {carry},
         subject = self._record_to_subject(records[0], base_url=base_url)
         
         logger.debug("Found subject", participant_id=name, namespace=namespace, subject_data=getattr(subject, 'name', str(subject)[:50]))
-        
+
         return subject
+
+    async def get_subjects_for_diagnosis_endpoint(
+        self,
+        filters: Dict[str, Any],
+        offset: int = 0,
+        limit: int = 20,
+        base_url: Optional[str] = None,
+    ) -> Tuple[List[Subject], int]:
+        """Dedicated data+total path for /subject-diagnosis. Delegates to get_subjects(return_total=True) — no new Cypher."""
+        result = await self.get_subjects(
+            filters=filters,
+            offset=offset,
+            limit=limit,
+            base_url=base_url,
+            return_total=True,
+        )
+        if isinstance(result, tuple):
+            subjects, total_count = result
+            return subjects, int(total_count or 0)
+        return result if isinstance(result, list) else [], 0
 
     def _validate_filters(self, filters: Dict[str, Any], entity_type: str) -> None:
         """

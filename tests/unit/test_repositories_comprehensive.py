@@ -467,6 +467,43 @@ class TestSubjectRepositoryInternal:
         )
 
     @pytest.mark.asyncio
+    async def test_get_subjects_for_diagnosis_endpoint_delegates_with_return_total(self, repository):
+        """get_subjects_for_diagnosis_endpoint must call get_subjects(return_total=True)."""
+        from unittest.mock import Mock
+        fake_subject = Mock()
+        repository.get_subjects = AsyncMock(return_value=([fake_subject], 7))
+
+        subjects, total = await repository.get_subjects_for_diagnosis_endpoint(
+            filters={"_diagnosis_search": "neuroblastoma"},
+            offset=0,
+            limit=10,
+            base_url="https://example.com",
+        )
+
+        repository.get_subjects.assert_called_once_with(
+            filters={"_diagnosis_search": "neuroblastoma"},
+            offset=0,
+            limit=10,
+            base_url="https://example.com",
+            return_total=True,
+        )
+        assert subjects == [fake_subject]
+        assert total == 7
+
+
+    @pytest.mark.asyncio
+    async def test_get_subjects_for_diagnosis_endpoint_defensive_fallback(self, repository):
+        """Returns ([], 0) when get_subjects returns a plain list instead of tuple."""
+        repository.get_subjects = AsyncMock(return_value=[])
+
+        subjects, total = await repository.get_subjects_for_diagnosis_endpoint(
+            filters={}, offset=0, limit=10,
+        )
+
+        assert subjects == []
+        assert total == 0
+
+    @pytest.mark.asyncio
     async def test_return_total_count_includes_survival_traversal_with_depositions(self, repository, mock_session):
         """return_total count Cypher (dep_param branch) must include survival traversal when vital_status is set."""
 

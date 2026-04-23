@@ -423,6 +423,7 @@ class SubjectRepository(SubjectCount, SubjectSummary):
         """
         carry = "p, study_ids" if has_dep_param else "p"
         return f"""
+WITH {carry}
 OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
 WITH {carry}, collect(s) AS survival_records
 WITH {carry},

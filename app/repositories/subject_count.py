@@ -22,6 +22,17 @@ from app.utils.cypher_builder import combine_where_clauses
 logger = get_logger(__name__)
 
 
+def _strip_remaining_internal_subject_count_keys(filters: Dict[str, Any]) -> None:
+    """
+    Remove underscore-prefixed keys not consumed by this count implementation.
+
+    Prevents generic loops from emitting invalid predicates like p._associated_diagnosis_categories_contains.
+    """
+    for key in list(filters.keys()):
+        if key.startswith("_"):
+            filters.pop(key, None)
+
+
 class SubjectCount:
     """Mixin providing count methods for SubjectRepository."""
 
@@ -817,6 +828,8 @@ WITH p, d, c, st,
             )""")
             params["diagnosis_search_term"] = search_term
 
+        _strip_remaining_internal_subject_count_keys(filters)
+
         # Add regular filters (excluding ethnicity since we're counting by ethnicity)
         for filter_field, value in filters.items():
             if filter_field == "ethnicity":
@@ -1046,6 +1059,8 @@ WITH p, d, c, st,
         # Handle diagnosis search - we skip this for diagnosis counting since we're counting by diagnosis
         if "_diagnosis_search" in filters:
             filters.pop("_diagnosis_search")  # Remove it to avoid circular filtering
+
+        _strip_remaining_internal_subject_count_keys(filters)
 
         # Add regular filters (excluding associated_diagnoses since we're counting by it)
         for filter_field, value in filters.items():

@@ -384,6 +384,121 @@ class TestSubjectRepositoryInternal:
         assert mock_session.run.call_count == 3
         assert mock_session.run.call_args_list[0][0][1] == {"param_1": "F"}
 
+    async def test_count_subjects_by_associated_diagnoses_strips_internal_category_contains(
+        self, repository, mock_session
+    ):
+        """Unsupported internal keys must not become p._... WHERE fragments."""
+        total_result = AsyncMock()
+        total_result.__aiter__.return_value = [{"total": 1}]
+        total_result.consume = AsyncMock()
+        missing_result = AsyncMock()
+        missing_result.__aiter__.return_value = [{"missing": 0}]
+        missing_result.consume = AsyncMock()
+        values_result = AsyncMock()
+        values_result.__aiter__.return_value = [{"value": "Neuroblastoma", "count": 1}]
+        values_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(side_effect=[total_result, missing_result, values_result])
+
+        await repository._count_subjects_by_associated_diagnoses(
+            {
+                "_associated_diagnosis_categories_contains": "brain",
+                "sex": "M",
+            }
+        )
+
+        for call in mock_session.run.call_args_list:
+            q = call[0][0]
+            assert "p._associated_diagnosis_categories_contains" not in q
+
+    async def test_count_subjects_by_ethnicity_strips_internal_category_contains(
+        self, repository, mock_session
+    ):
+        total_result = AsyncMock()
+        total_result.__aiter__.return_value = [{"total": 1}]
+        total_result.consume = AsyncMock()
+        missing_result = AsyncMock()
+        missing_result.__aiter__.return_value = [{"missing": 0}]
+        missing_result.consume = AsyncMock()
+        values_result = AsyncMock()
+        values_result.__aiter__.return_value = [{"value": "Not reported", "count": 1}]
+        values_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(side_effect=[total_result, missing_result, values_result])
+
+        await repository._count_subjects_by_ethnicity(
+            {"_associated_diagnosis_categories_contains": "glioma", "vital_status": "Alive"}
+        )
+
+        for call in mock_session.run.call_args_list:
+            q = call[0][0]
+            assert "p._associated_diagnosis_categories_contains" not in q
+
+    @pytest.mark.asyncio
+    async def test_return_total_count_includes_survival_traversal_no_depositions(self, repository, mock_session):
+        """return_total count Cypher must include survival traversal when vital_status filter is set."""
+
+        def make_data_result():
+            r = AsyncMock()
+            r.__aiter__.return_value = iter([])
+            r.consume = AsyncMock()
+            return r
+
+        count_result = AsyncMock()
+        count_result.__aiter__.return_value = iter([{"total_count": 5}])
+        count_result.consume = AsyncMock()
+
+        # First call = count query; subsequent calls = data query (up to 3 attempts due to retry logic)
+        mock_session.run = AsyncMock(
+            side_effect=[count_result, make_data_result(), make_data_result(), make_data_result()]
+        )
+
+        await repository.get_subjects(
+            filters={"vital_status": "Alive", "_diagnosis_search": "neuroblastoma"},
+            offset=0,
+            limit=10,
+            return_total=True,
+        )
+
+        count_cypher = mock_session.run.call_args_list[0][0][0]
+        assert "survival" in count_cypher.lower(), (
+            "Count Cypher must traverse survival nodes when vital_status filter is set"
+        )
+        assert "final_vital_status" in count_cypher, (
+            "Count Cypher must compute final_vital_status"
+        )
+
+    @pytest.mark.asyncio
+    async def test_return_total_count_includes_survival_traversal_with_depositions(self, repository, mock_session):
+        """return_total count Cypher (dep_param branch) must include survival traversal when vital_status is set."""
+
+        def make_data_result():
+            r = AsyncMock()
+            r.__aiter__.return_value = iter([])
+            r.consume = AsyncMock()
+            return r
+
+        count_result = AsyncMock()
+        count_result.__aiter__.return_value = iter([{"total_count": 5}])
+        count_result.consume = AsyncMock()
+
+        mock_session.run = AsyncMock(
+            side_effect=[count_result, make_data_result(), make_data_result(), make_data_result()]
+        )
+
+        await repository.get_subjects(
+            filters={"vital_status": "Alive", "_diagnosis_search": "neuroblastoma", "depositions": "phs002430"},
+            offset=0,
+            limit=10,
+            return_total=True,
+        )
+
+        count_cypher = mock_session.run.call_args_list[0][0][0]
+        assert "survival" in count_cypher.lower(), (
+            "Count Cypher (dep branch) must traverse survival nodes when vital_status filter is set"
+        )
+        assert "final_vital_status" in count_cypher, (
+            "Count Cypher (dep branch) must compute final_vital_status"
+        )
+
 
 @pytest.mark.unit
 class TestFileRepositoryInternal:

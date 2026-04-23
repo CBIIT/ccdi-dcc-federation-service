@@ -13,7 +13,7 @@ from neo4j import AsyncSession
 
 from app.core.logging import get_logger
 from app.core.constants import Race
-from app.core.diagnosis_category import HARMONIZED_DIAGNOSIS_CATEGORIES
+from app.core.diagnosis_category import canonical_diagnosis_category_token
 from app.core.field_mappings import map_field_value, reverse_map_field_value, is_database_only_value, build_case_mapping_statement
 from app.lib.field_allowlist import FieldAllowlist
 from app.lib.url_builder import build_identifier_server_url
@@ -22,6 +22,10 @@ from app.models.errors import UnsupportedFieldError
 from app.utils.cypher_builder import combine_where_clauses, append_where_conditions
 from app.repositories.subject_count import SubjectCount
 from app.repositories.subject_summary import SubjectSummary
+from app.repositories.subject_diagnosis_cypher import (
+    add_diagnosis_search_params,
+    diagnosis_nodes_match_size_predicate,
+)
 
 logger = get_logger(__name__)
 
@@ -42,6 +46,7 @@ class SubjectFilterState:
     depositions_list: Optional[list] = None
     diagnosis_search_term: Optional[str] = None
     diag_category_filter: Optional[str] = None
+    diagnosis_category_contains: Optional[str] = None
     early_participant_filters: list = dataclasses.field(default_factory=list)
     late_participant_filters: list = dataclasses.field(default_factory=list)
     where_clause: str = ""
@@ -90,21 +95,29 @@ class SubjectRepository(SubjectCount, SubjectSummary):
         return [s]
     
     @staticmethod
-    def _diagnosis_conditions(diagnosis_search_term: Optional[str], diag_category_filter: Optional[str]) -> list[str]:
-        conditions = []
-        if diagnosis_search_term:
-            conditions.append(
-                "size([node IN diagnosis_nodes WHERE node IS NOT NULL AND ANY(diag IN CASE WHEN valueType(node.diagnosis) = 'LIST' THEN node.diagnosis ELSE [node.diagnosis] END WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))]) > 0"
-            )
-        if diag_category_filter:
-            conditions.append(
-                "size([node IN diagnosis_nodes WHERE node IS NOT NULL AND any(token IN split(toString(coalesce(node.diagnosis_category, '')), ';') WHERE toLower(trim(token)) = toLower($diag_category_filter))]) > 0"
-            )
-        return conditions
+    def _diagnosis_conditions(
+        diagnosis_search_term: Optional[str],
+        diag_category_filter: Optional[str],
+        diagnosis_category_contains: Optional[str] = None,
+    ) -> list[str]:
+        pred = diagnosis_nodes_match_size_predicate(
+            list_var="diagnosis_nodes",
+            elem_var="node",
+            diagnosis_search_term=diagnosis_search_term,
+            diag_category_filter=diag_category_filter,
+            diagnosis_category_contains=diagnosis_category_contains,
+        )
+        return [pred] if pred else []
 
     @staticmethod
-    def _build_diagnosis_filter_where(diagnosis_search_term: Optional[str], diag_category_filter: Optional[str]) -> str:
-        conditions = SubjectRepository._diagnosis_conditions(diagnosis_search_term, diag_category_filter)
+    def _build_diagnosis_filter_where(
+        diagnosis_search_term: Optional[str],
+        diag_category_filter: Optional[str],
+        diagnosis_category_contains: Optional[str] = None,
+    ) -> str:
+        conditions = SubjectRepository._diagnosis_conditions(
+            diagnosis_search_term, diag_category_filter, diagnosis_category_contains
+        )
         return f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
     @staticmethod
@@ -113,8 +126,11 @@ class SubjectRepository(SubjectCount, SubjectSummary):
         dep_param: Optional[str],
         deposition_operator: Optional[str],
         diag_category_filter: Optional[str] = None,
+        diagnosis_category_contains: Optional[str] = None,
     ) -> str:
-        conditions = SubjectRepository._diagnosis_conditions(diagnosis_search_term, diag_category_filter)
+        conditions = SubjectRepository._diagnosis_conditions(
+            diagnosis_search_term, diag_category_filter, diagnosis_category_contains
+        )
         if dep_param:
             conditions.append(f"size([sid IN study_ids WHERE sid IS NOT NULL AND sid {deposition_operator} ${dep_param}]) > 0")
         return f"WHERE {' AND '.join(conditions)}" if conditions else ""
@@ -251,8 +267,17 @@ class SubjectRepository(SubjectCount, SubjectSummary):
         if "_diagnosis_search" in filters:
             diagnosis_search_term = filters.pop("_diagnosis_search")
             params["diagnosis_search_term"] = diagnosis_search_term
+            add_diagnosis_search_params(params, diagnosis_search_term)
 
-        # Handle associated_diagnosis_categories filter
+        # Experimental /subject-diagnosis: substring match on full diagnosis_category (not GET /subject token filter)
+        diagnosis_category_contains: Optional[str] = None
+        if "_associated_diagnosis_categories_contains" in filters:
+            raw_contains = filters.pop("_associated_diagnosis_categories_contains")
+            if raw_contains and str(raw_contains).strip():
+                diagnosis_category_contains = str(raw_contains).strip()
+                params["diag_category_contains_term"] = diagnosis_category_contains
+
+        # Handle associated_diagnosis_categories filter (GET /subject exact token)
         diag_category_filter: Optional[str] = None
         if "associated_diagnosis_categories" in filters:
             raw_cat = filters.pop("associated_diagnosis_categories")
@@ -358,7 +383,9 @@ class SubjectRepository(SubjectCount, SubjectSummary):
             derived_filters.get("vital_status")
             or derived_filters.get("age_at_vital_status")
         )
-        needs_diagnosis_processing = bool(diagnosis_search_term or diag_category_filter)
+        needs_diagnosis_processing = bool(
+            diagnosis_search_term or diag_category_filter or diagnosis_category_contains
+        )
         needs_race_processing = bool(race_condition)
 
         return SubjectFilterState(
@@ -375,6 +402,7 @@ class SubjectRepository(SubjectCount, SubjectSummary):
             depositions_list=depositions_list,
             diagnosis_search_term=diagnosis_search_term,
             diag_category_filter=diag_category_filter,
+            diagnosis_category_contains=diagnosis_category_contains,
             early_participant_filters=early_participant_filters,
             late_participant_filters=late_participant_filters,
             where_clause=where_clause,
@@ -385,6 +413,65 @@ class SubjectRepository(SubjectCount, SubjectSummary):
             needs_diagnosis_processing=needs_diagnosis_processing,
             needs_race_processing=needs_race_processing,
         )
+
+    def _build_survival_count_fragment(self, has_dep_param: bool, derived_where_clause: str) -> str:
+        """
+        Cypher fragment for the return_total count path when survival-derived
+        filters (vital_status, age_at_vital_status) are active.
+
+        has_dep_param: True when depositions branch is in use (study_ids in scope).
+        """
+        carry = "p, study_ids" if has_dep_param else "p"
+        return f"""
+OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
+WITH {carry}, collect(s) AS survival_records
+WITH {carry},
+     [sr IN survival_records WHERE sr.last_known_survival_status IS NOT NULL] AS survs
+WITH {carry}, survs,
+     any(sr IN survs WHERE sr.last_known_survival_status = 'Dead') AS has_dead,
+     reduce(dead_max_age = 0, sr IN survs |
+            CASE
+              WHEN sr.last_known_survival_status = 'Dead'
+                   AND sr.age_at_last_known_survival_status IS NOT NULL
+              THEN CASE
+                     WHEN toInteger(sr.age_at_last_known_survival_status) > dead_max_age
+                     THEN toInteger(sr.age_at_last_known_survival_status)
+                     ELSE dead_max_age
+                   END
+              ELSE dead_max_age
+            END) AS max_dead_age,
+     reduce(max_age = 0, sr IN survs |
+            CASE
+              WHEN sr.age_at_last_known_survival_status IS NOT NULL
+              THEN CASE
+                     WHEN toInteger(sr.age_at_last_known_survival_status) > max_age
+                     THEN toInteger(sr.age_at_last_known_survival_status)
+                     ELSE max_age
+                   END
+              ELSE max_age
+            END) AS max_age
+WITH {carry},
+     CASE
+       WHEN size(survs) = 0 THEN NULL
+       WHEN has_dead THEN 'Dead'
+       ELSE CASE
+         WHEN head([sr IN survs
+                    WHERE sr.age_at_last_known_survival_status IS NOT NULL
+                      AND toInteger(sr.age_at_last_known_survival_status) = max_age
+                    | sr.last_known_survival_status]) IS NOT NULL
+         THEN head([sr IN survs
+                    WHERE sr.age_at_last_known_survival_status IS NOT NULL
+                      AND toInteger(sr.age_at_last_known_survival_status) = max_age
+                    | sr.last_known_survival_status])
+         ELSE head([sr IN survs | sr.last_known_survival_status])
+       END
+     END AS final_vital_status,
+     toInteger(CASE
+       WHEN size(survs) = 0 THEN NULL
+       WHEN has_dead THEN max_dead_age
+       ELSE max_age
+     END) AS final_age_at_vital_status
+{derived_where_clause}"""
 
     async def get_subjects(
         self,
@@ -436,6 +523,7 @@ class SubjectRepository(SubjectCount, SubjectSummary):
         depositions_list = fs.depositions_list
         diagnosis_search_term = fs.diagnosis_search_term
         diag_category_filter = fs.diag_category_filter
+        diagnosis_category_contains = fs.diagnosis_category_contains
         early_participant_filters = fs.early_participant_filters
         late_participant_filters = fs.late_participant_filters
         where_clause = fs.where_clause
@@ -456,16 +544,58 @@ class SubjectRepository(SubjectCount, SubjectSummary):
                 main_conditions.append(fs.race_filter_condition)
             main_conditions.extend(c for c in fs.where_conditions if c)
 
-            # diag_category_filter requires OPTIONAL MATCH on diagnosis nodes
+            # Diagnosis-row filters require OPTIONAL MATCH on diagnosis nodes (search / category / contains).
+            # When depositions are in play, carry study_ids through the fragment so we can count (participant, study) pairs.
             diag_cat_fragment = ""
-            if fs.diag_category_filter:
-                diag_cat_fragment = (
-                    "\nWITH p"
-                    "\nOPTIONAL MATCH (p)<-[:of_diagnosis]-(diag_cat:diagnosis)"
-                    "\nWITH p, collect(DISTINCT diag_cat) AS diag_cat_nodes"
-                    "\nWHERE size([dn IN diag_cat_nodes WHERE dn IS NOT NULL AND "
-                    "any(token IN split(toString(coalesce(dn.diagnosis_category, '')), ';') "
-                    "WHERE toLower(trim(token)) = toLower($diag_category_filter))]) > 0"
+            if fs.diag_category_filter or fs.diagnosis_search_term or fs.diagnosis_category_contains:
+                pred_dn = diagnosis_nodes_match_size_predicate(
+                    list_var="diag_cat_nodes",
+                    elem_var="dn",
+                    diagnosis_search_term=fs.diagnosis_search_term,
+                    diag_category_filter=fs.diag_category_filter,
+                    diagnosis_category_contains=fs.diagnosis_category_contains,
+                )
+                if fs.dep_param:
+                    diag_cat_fragment = (
+                        "\nWITH p, study_ids"
+                        "\nOPTIONAL MATCH (p)<-[:of_diagnosis]-(diag_cat:diagnosis)"
+                        "\nWITH p, study_ids, collect(DISTINCT diag_cat) AS diag_cat_nodes"
+                        f"\nWHERE {pred_dn}"
+                    )
+                else:
+                    diag_cat_fragment = (
+                        "\nWITH p"
+                        "\nOPTIONAL MATCH (p)<-[:of_diagnosis]-(diag_cat:diagnosis)"
+                        "\nWITH p, collect(DISTINCT diag_cat) AS diag_cat_nodes"
+                        f"\nWHERE {pred_dn}"
+                    )
+
+            # Total must match list cardinality: distinct (participant_id, study_id) rows, not distinct p.
+            if fs.dep_param:
+                sid_filter = (
+                    f"sid = ${fs.dep_param}"
+                    if fs.deposition_operator == "="
+                    else f"sid IN ${fs.dep_param}"
+                )
+                pair_count_tail = (
+                    f"\nUNWIND [sid IN study_ids WHERE sid IS NOT NULL AND {sid_filter}] AS study_id\n"
+                    "WITH DISTINCT toString(p.participant_id) AS participant_id, study_id\n"
+                    "WHERE toString(study_id) <> ''\n"
+                    "RETURN count(*) AS total_count"
+                )
+            else:
+                pair_count_tail = (
+                    "\nMATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)\n"
+                    "WITH DISTINCT toString(p.participant_id) AS participant_id, st.study_id AS study_id\n"
+                    "WHERE study_id IS NOT NULL AND toString(study_id) <> ''\n"
+                    "RETURN count(*) AS total_count"
+                )
+
+            survival_count_fragment = ""
+            if fs.needs_survival_processing:
+                survival_count_fragment = self._build_survival_count_fragment(
+                    has_dep_param=bool(fs.dep_param),
+                    derived_where_clause=fs.derived_where_clause,
                 )
 
             if fs.dep_param:
@@ -481,8 +611,9 @@ class SubjectRepository(SubjectCount, SubjectSummary):
                     f"WITH p, collect(DISTINCT st.study_id) AS study_ids\n"
                     f"WITH p, study_ids{fs.race_condition}{fs.identifiers_condition}\n"
                     f"{count_where_clause}"
-                    f"{diag_cat_fragment}\n"
-                    f"RETURN count(DISTINCT p) AS total_count"
+                    f"{diag_cat_fragment}"
+                    f"{survival_count_fragment}"
+                    f"{pair_count_tail}"
                 )
             else:
                 count_where_clause = ("WHERE " + " AND ".join(main_conditions)) if main_conditions else ""
@@ -490,8 +621,9 @@ class SubjectRepository(SubjectCount, SubjectSummary):
                     f"MATCH (p:participant)\n"
                     f"WITH p{fs.race_condition}{fs.identifiers_condition}\n"
                     + (f"{count_where_clause}\n" if count_where_clause else "")
-                    + f"{diag_cat_fragment}\n"
-                    + "RETURN count(DISTINCT p) AS total_count"
+                    + f"{diag_cat_fragment}"
+                    + f"{survival_count_fragment}"
+                    + f"{pair_count_tail}"
                 )
 
             try:
@@ -837,7 +969,7 @@ class SubjectRepository(SubjectCount, SubjectSummary):
              head(collect(DISTINCT ethnicity_value)) AS ethnicity_value,
              // Collect all distinct study_ids for this participant (collect from study_id variable, not st.study_id since st is no longer in scope)
              collect(DISTINCT study_id) AS study_ids
-        {self._build_combined_where_clause_for_depositions_path(diagnosis_search_term, dep_param, deposition_operator, diag_category_filter)}
+        {self._build_combined_where_clause_for_depositions_path(diagnosis_search_term, dep_param, deposition_operator, diag_category_filter, diagnosis_category_contains)}
         WITH participant_id, study_id, p, final_vital_status, final_age_at_vital_status,
              ethnicity_value, study_ids, diagnosis_nodes,
              [node IN diagnosis_nodes WHERE node IS NOT NULL] AS non_null_nodes
@@ -984,7 +1116,7 @@ class SubjectRepository(SubjectCount, SubjectSummary):
         // Apply diagnosis search / category filter (only if present)
         // Note: Depositions filter is already applied in the MATCH clause (WHERE st.study_id = $param_1)
         // Since we're grouping by (participant_id, study_id), all rows already match the depositions filter
-        {self._build_diagnosis_filter_where(diagnosis_search_term, diag_category_filter)}
+        {self._build_diagnosis_filter_where(diagnosis_search_term, diag_category_filter, diagnosis_category_contains)}
         // Keep (participant_id, study_id) pairs - do NOT group by participant_id only
         WITH participant_id, study_id, p, diagnosis_nodes, final_vital_status, final_age_at_vital_status,
              ethnicity_value, study_ids_single{", race_tokens, pr_tokens" if race_condition else ""},
@@ -1121,7 +1253,7 @@ class SubjectRepository(SubjectCount, SubjectSummary):
                 # because we need to compute final_vital_status first, then filter, then paginate.
                 # Early pagination only works when we're filtering on direct participant properties (sex, identifiers, etc.)
                 # For diagnosis-search, paginate only after diagnosis/study filtering to keep count/page consistency.
-                use_early_pagination = (not needs_survival_processing) and (not diagnosis_search_term) and (not diag_category_filter)
+                use_early_pagination = (not needs_survival_processing) and (not needs_diagnosis_processing)
                 logger.debug(f"Non-depositions path - use_early_pagination: {use_early_pagination}")
                 
                 if use_early_pagination:
@@ -1196,7 +1328,7 @@ class SubjectRepository(SubjectCount, SubjectSummary):
         // which Memgraph can mis-handle and report as "Unbound variable".
         WITH p, participant_id{", race_tokens, pr_tokens" if race_condition else ""}, survival_records, diagnosis_nodes,
              st.study_id AS study_id
-        {self._build_diagnosis_filter_where(diagnosis_search_term, diag_category_filter)}
+        {self._build_diagnosis_filter_where(diagnosis_search_term, diag_category_filter, diagnosis_category_contains)}
         // Keep `participant_id` and `survival_records` in scope (Memgraph will error if we drop them and reference later)
         WITH p, participant_id{", race_tokens, pr_tokens" if race_condition else ""}, survival_records, diagnosis_nodes, study_id,
              // Keep only records with a status
@@ -1363,7 +1495,7 @@ class SubjectRepository(SubjectCount, SubjectSummary):
         // which Memgraph can mis-handle and report as "Unbound variable".
         WITH p{", race_tokens, pr_tokens" if race_condition else ""}, survival_records, diagnosis_nodes,
              st.study_id AS study_id
-        {self._build_diagnosis_filter_where(diagnosis_search_term, diag_category_filter)}
+        {self._build_diagnosis_filter_where(diagnosis_search_term, diag_category_filter, diagnosis_category_contains)}
         // Keep `participant_id` and `survival_records` in scope (Memgraph will error if we drop them and reference later)
         WITH p{", race_tokens, pr_tokens" if race_condition else ""}, survival_records, diagnosis_nodes, study_id,
              // Keep only records with a status
@@ -1973,8 +2105,9 @@ class SubjectRepository(SubjectCount, SubjectSummary):
                         token = token.strip()
                         if not token:
                             continue
-                        if token in HARMONIZED_DIAGNOSIS_CATEGORIES:
-                            harmonized_categories.append(token)
+                        canon = canonical_diagnosis_category_token(token)
+                        if canon is not None:
+                            harmonized_categories.append(canon)
                         else:
                             unharmonized_categories.append(token)
         if extracted_diagnoses:

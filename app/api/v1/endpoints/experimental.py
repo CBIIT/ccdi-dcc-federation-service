@@ -301,49 +301,15 @@ async def search_samples_by_diagnosis(
     "/subject-diagnosis",
     response_model=SubjectResponse,
     summary="Experimental: Filter the subjects known by this server by free-text diagnosis search.",
-    description="""Experimental: Filter the subjects known by this server by free-text diagnosis search.
+    description="""Experimental: filter subjects using diagnosis nodes (`diagnosis`, `diagnosis_category`)
+alongside the usual `GET /subject` query parameters. Supports harmonized and unharmonized
+diagnosis category values at the data node, in line with the
+[CCDI Federation API aggregation](https://cbiit.github.io/ccdi-federation-api-aggregation/) subject model (v1.3+).
 
-### Diagnosis Filtering
+`search`: case-insensitive substring on `diagnosis` (or `diagnosis_comment` when diagnosis is `see diagnosis_comment`).
+`associated_diagnosis_categories`: substring on the full `diagnosis_category` on diagnosis node. Both together apply as AND on one diagnosis node.
 
-This endpoint supports the experimental `search` parameter.
-For this parameter, the subject is included in the results if the value of its
-its `associated_diagnoses` field has at least one diagnosis which _contains_ the query string.
-Matches are case-insensitive.
-
-### Pagination
-
-This endpoint is paginated. Users may override the default pagination
-parameters by providing one or more of the pagination-related query
-parameters below.
-
-### Additional Filtering
-
-All harmonized (top-level) and unharmonized (nested under the
-`metadata.unharmonized` key) metadata fields are filterable. To achieve
-this, you can provide the field name as a [`String`]. Filtering follows the
-following rules:
-
-* For single-value metadata field, the subject is included in the results if
-its value _exactly_ matches the query string. Matches are case-sensitive.
-* For multiple-value metadata fields, the subject is included in the results
-if any of its values for the field _exactly_ match the query string (a
-logical OR [`||`]). Matches are case-sensitive.
-* When the metadata field is `null` (in the case of singular or
-multiple-valued metadata fields) or empty, the subject is not included.
-* When multiple fields are provided as filters, a logical AND (`&&`) strings
-together the predicates. In other words, all filters must match for a
-subject to be returned. Note that this means that servers do not natively
-support logical OR (`||`) across multiple fields: that must be done by
-calling this endpoint with each of your desired queries and performing a
-set union of those subjects out of band.
-
-### Ordering
-
-This endpoint has default ordering requirements—those details are documented
-in the `responses::Subjects` schema.
-
-Note: This API is experimental and is subject to change without being considered
-as a breaking change.""",
+Paginated. Experimental—may change.""",
     operation_id="subject_diagnosis_search",
     responses={
         200: {
@@ -445,7 +411,19 @@ async def search_subjects_by_diagnosis(
     
     try:
         # Validate query parameters - check for unknown parameters
-        allowed_params = {"search", "sex", "race", "ethnicity", "identifiers", "vital_status", "age_at_vital_status", "depositions", "page", "per_page"}
+        allowed_params = {
+            "search",
+            "associated_diagnosis_categories",
+            "sex",
+            "race",
+            "ethnicity",
+            "identifiers",
+            "vital_status",
+            "age_at_vital_status",
+            "depositions",
+            "page",
+            "per_page",
+        }
         
         unknown_params = []
         for key in request.query_params.keys():

@@ -1145,6 +1145,32 @@ class TestGetSubjectDiagnosisFilters:
         assert "_diagnosis_search" in result
         assert result["_diagnosis_search"] == "cancer"
 
+    def test_diagnosis_search_stripped(self, mock_request):
+        result = get_subject_diagnosis_filters(search="  cancer  ", request=mock_request)
+        assert result["_diagnosis_search"] == "cancer"
+
+    def test_diagnosis_search_whitespace_only_omitted(self, mock_request):
+        result = get_subject_diagnosis_filters(search="   \t  ", request=mock_request)
+        assert "_diagnosis_search" not in result
+
+    def test_associated_diagnosis_categories_contains_parameter(self, mock_request):
+        """Category filter uses internal contains key (not exact subject filter)."""
+        result = get_subject_diagnosis_filters(
+            associated_diagnosis_categories="  glioma  ",
+            request=mock_request,
+        )
+        assert result["_associated_diagnosis_categories_contains"] == "glioma"
+        assert "associated_diagnosis_categories" not in result
+
+    def test_combines_search_and_category_contains(self, mock_request):
+        result = get_subject_diagnosis_filters(
+            search="cancer",
+            associated_diagnosis_categories="brain",
+            request=mock_request,
+        )
+        assert result["_diagnosis_search"] == "cancer"
+        assert result["_associated_diagnosis_categories_contains"] == "brain"
+
     def test_combines_with_subject_filters(self, mock_request):
         """Test that it combines with regular subject filters."""
         mock_request.query_params.keys = Mock(return_value=[])

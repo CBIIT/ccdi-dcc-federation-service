@@ -473,6 +473,60 @@ class TestSubjectRepositoryEnhanced:
         assert result == {"total_count": 11}
         repository.get_subjects_summary.assert_called_once_with({"sex": "F", "_invalid_sex": True})
 
+    async def test_get_subjects_summary_for_diagnosis_category_contains_only_runs_query(
+        self, repository, mock_session
+    ):
+        """Substring category filter without search still uses diagnosis-first Cypher path."""
+        mock_result = AsyncMock()
+        mock_result.data = AsyncMock(return_value=[{"total_count": 7}])
+        mock_session.run = AsyncMock(return_value=mock_result)
+        repository.get_subjects_summary = AsyncMock()
+
+        result = await repository.get_subjects_summary_for_diagnosis_endpoint(
+            filters={"_associated_diagnosis_categories_contains": "brain"}
+        )
+
+        assert result == {"total_count": 7}
+        repository.get_subjects_summary.assert_not_called()
+        assert mock_session.run.called
+        cypher = mock_session.run.call_args.args[0]
+        run_params = mock_session.run.call_args.args[1]
+        assert "$diag_category_contains_term" in cypher
+        assert "diag_category_contains_term" in run_params
+
+    async def test_get_subjects_summary_for_diagnosis_ethnicity_hispanic_predicate(
+        self, repository, mock_session
+    ):
+        """Ethnicity filter must apply p.race predicates on diagnosis summary path."""
+        mock_result = AsyncMock()
+        mock_result.data = AsyncMock(return_value=[{"total_count": 2}])
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        await repository.get_subjects_summary_for_diagnosis_endpoint(
+            filters={"_diagnosis_search": "Neuro", "ethnicity": "Hispanic or Latino"}
+        )
+
+        cypher = mock_session.run.call_args.args[0]
+        run_params = mock_session.run.call_args.args[1]
+        assert "toString(p.race) CONTAINS" in cypher
+        assert any(v == "Hispanic or Latino" for v in run_params.values())
+
+    async def test_get_subjects_summary_for_diagnosis_ethnicity_not_reported_predicate(
+        self, repository, mock_session
+    ):
+        mock_result = AsyncMock()
+        mock_result.data = AsyncMock(return_value=[{"total_count": 1}])
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        await repository.get_subjects_summary_for_diagnosis_endpoint(
+            filters={"_diagnosis_search": "Glioma", "ethnicity": "Not reported"}
+        )
+
+        cypher = mock_session.run.call_args.args[0]
+        run_params = mock_session.run.call_args.args[1]
+        assert "NOT toString(p.race) CONTAINS" in cypher or "NOT toString(p.race)" in cypher
+        assert any(v == "Hispanic or Latino" for v in run_params.values())
+
     async def test_get_subjects_summary_for_diagnosis_maps_sex_values(self, repository, mock_session):
         """Test diagnosis-summary path maps API sex values (F -> Female)."""
         mock_result = AsyncMock()

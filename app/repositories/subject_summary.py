@@ -7,6 +7,11 @@ from typing import Any, Dict
 from app.core.logging import get_logger
 from app.core.field_mappings import reverse_map_field_value, is_database_only_value
 from app.utils.cypher_builder import combine_where_clauses
+from app.repositories.subject_diagnosis_cypher import (
+    add_diagnosis_search_params,
+    diagnosis_nodes_match_size_predicate,
+    single_diagnosis_node_predicate,
+)
 
 logger = get_logger(__name__)
 
@@ -152,19 +157,17 @@ class SubjectSummary:
         if "_diagnosis_search" in filters:
             diagnosis_search_term = filters.pop("_diagnosis_search")
             params["diagnosis_search_term"] = diagnosis_search_term
-            # Don't add to where_conditions yet - will be applied after diagnosis collection
+            add_diagnosis_search_params(params, diagnosis_search_term)
 
-        # Build diagnosis search fragment to be inserted before final count
-        # This fragment assumes 'p' (participant node), 'participant_id', and 'study_id' are in scope
-        diagnosis_search_fragment = ""
-        if diagnosis_search_term:
-            diagnosis_search_fragment = """
-        // Apply diagnosis search filter
-        OPTIONAL MATCH (p)<-[:of_diagnosis]-(diag_search:diagnosis)
-        WITH participant_id, study_id, collect(DISTINCT diag_search) AS diag_search_nodes
-        WHERE size([dn IN diag_search_nodes WHERE dn IS NOT NULL AND ANY(diag IN CASE WHEN valueType(dn.diagnosis) = 'LIST' THEN dn.diagnosis ELSE [dn.diagnosis] END WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))]) > 0"""
+        # Experimental /subject-diagnosis: substring on full diagnosis_category (distinct from GET /subject token filter)
+        diagnosis_category_contains = None
+        if "_associated_diagnosis_categories_contains" in filters:
+            raw_catc = filters.pop("_associated_diagnosis_categories_contains")
+            if raw_catc and str(raw_catc).strip():
+                diagnosis_category_contains = str(raw_catc).strip()
+                params["diag_category_contains_term"] = diagnosis_category_contains
 
-        # Handle associated_diagnosis_categories filter
+        # Handle associated_diagnosis_categories filter (GET /subject exact token)
         diag_category_filter = None
         if "associated_diagnosis_categories" in filters:
             raw_cat = filters.pop("associated_diagnosis_categories")
@@ -172,13 +175,37 @@ class SubjectSummary:
                 diag_category_filter = raw_cat.strip()
                 params["diag_category_filter"] = diag_category_filter
 
+        needs_diagnosis_node_filter = bool(
+            diagnosis_search_term or diag_category_filter or diagnosis_category_contains
+        )
+        diagnosis_nodes_predicate_main = ""
+        diagnosis_row_predicate = ""
+        if needs_diagnosis_node_filter:
+            diagnosis_nodes_predicate_main = diagnosis_nodes_match_size_predicate(
+                list_var="diagnosis_nodes",
+                elem_var="node",
+                diagnosis_search_term=diagnosis_search_term,
+                diag_category_filter=diag_category_filter,
+                diagnosis_category_contains=diagnosis_category_contains,
+            )
+            diagnosis_row_predicate = diagnosis_nodes_match_size_predicate(
+                list_var="diagnosis_row_nodes",
+                elem_var="dn",
+                diagnosis_search_term=diagnosis_search_term,
+                diag_category_filter=diag_category_filter,
+                diagnosis_category_contains=diagnosis_category_contains,
+            )
+
+        # Single OPTIONAL MATCH for any diagnosis-row filter (search + /subject category + experimental contains)
+        diagnosis_row_fragment = ""
+        if diagnosis_row_predicate:
+            diagnosis_row_fragment = f"""
+        OPTIONAL MATCH (p)<-[:of_diagnosis]-(diag_row:diagnosis)
+        WITH participant_id, study_id, collect(DISTINCT diag_row) AS diagnosis_row_nodes
+        WHERE {diagnosis_row_predicate}"""
+
+        diagnosis_search_fragment = diagnosis_row_fragment
         diag_category_fragment = ""
-        if diag_category_filter:
-            diag_category_fragment = """
-        // Apply diagnosis category filter (semicolon-delimited tokens matched individually)
-        OPTIONAL MATCH (p)<-[:of_diagnosis]-(diag_cat:diagnosis)
-        WITH participant_id, study_id, collect(DISTINCT diag_cat) AS diag_cat_nodes
-        WHERE size([dn IN diag_cat_nodes WHERE dn IS NOT NULL AND any(token IN split(toString(coalesce(dn.diagnosis_category, '')), ';') WHERE trim(token) = $diag_category_filter)]) > 0"""
 
         # Map API sex values to database values (M -> Male, F -> Female, U -> Not Reported)
         if "sex" in filters and filters["sex"]:
@@ -516,7 +543,7 @@ class SubjectSummary:
         {derived_where_clause}
         WITH participant_id, st.study_id AS study_id, diagnosis_nodes
         WHERE toString(study_id) <> ''
-        {"AND size([node IN diagnosis_nodes WHERE node IS NOT NULL AND ANY(diag IN CASE WHEN valueType(node.diagnosis) = 'LIST' THEN node.diagnosis ELSE [node.diagnosis] END WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))]) > 0" if diagnosis_search_term else ""}
+        {"AND " + diagnosis_nodes_predicate_main if needs_diagnosis_node_filter else ""}
         WITH DISTINCT participant_id, study_id
         RETURN count(*) as total_count
         """.strip()
@@ -531,13 +558,13 @@ class SubjectSummary:
         OPTIONAL MATCH (p)<-[:of_survival]-(s:survival)
         WITH participant_id, p, collect(s) AS survival_records
         // Collect diagnoses only when diagnosis search is requested
-        {"OPTIONAL MATCH (p)<-[:of_diagnosis]-(d:diagnosis)\n        WITH participant_id, p, survival_records, collect(DISTINCT d) AS diagnosis_nodes" if diagnosis_search_term else "WITH participant_id, p, survival_records, [] AS diagnosis_nodes"}
+        {"OPTIONAL MATCH (p)<-[:of_diagnosis]-(d:diagnosis)\n        WITH participant_id, p, survival_records, collect(DISTINCT d) AS diagnosis_nodes" if needs_diagnosis_node_filter else "WITH participant_id, p, survival_records, [] AS diagnosis_nodes"}
         // Bind studies and count per (participant_id, study_id) pair.
         // IMPORTANT: avoid carrying a LIST of study IDs through long WITH/aggregation chains
         // (Memgraph can drop list vars and report them as \"Unbound variable\").
         MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
         WITH participant_id, p, survival_records, diagnosis_nodes, st.study_id AS study_id
-        {"WHERE size([node IN diagnosis_nodes WHERE node IS NOT NULL AND ANY(diag IN CASE WHEN valueType(node.diagnosis) = 'LIST' THEN node.diagnosis ELSE [node.diagnosis] END WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))]) > 0" if diagnosis_search_term else ""}
+        {"WHERE " + diagnosis_nodes_predicate_main if needs_diagnosis_node_filter else ""}
         // Apply filters
         WITH participant_id, p, survival_records, diagnosis_nodes, study_id{race_condition}
         {where_clause_filtered}
@@ -661,7 +688,7 @@ class SubjectSummary:
         {derived_where_clause}
         WITH participant_id, st.study_id AS study_id, diagnosis_nodes
         WHERE toString(study_id) <> ''
-        {"AND size([node IN diagnosis_nodes WHERE node IS NOT NULL AND ANY(diag IN CASE WHEN valueType(node.diagnosis) = 'LIST' THEN node.diagnosis ELSE [node.diagnosis] END WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))]) > 0" if diagnosis_search_term else ""}
+        {"AND " + diagnosis_nodes_predicate_main if needs_diagnosis_node_filter else ""}
         WITH DISTINCT participant_id, study_id
         RETURN count(*) as total_count
         """.strip()
@@ -691,11 +718,12 @@ class SubjectSummary:
         WITH DISTINCT p
 
         // Apply diagnosis search via streamed rows, then dedupe
-        {"OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)\n"
-         "        WITH p, d\n"
-         "        WHERE d IS NOT NULL AND ANY(diag IN CASE WHEN valueType(d.diagnosis) = 'LIST' THEN d.diagnosis ELSE [d.diagnosis] END "
-         "WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))\n"
-         "        WITH DISTINCT p" if diagnosis_search_term else ""}
+        {(
+            "OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)\n"
+            "        WITH p, d\n"
+            f"        WHERE d IS NOT NULL AND ({single_diagnosis_node_predicate('d', diagnosis_search_term=diagnosis_search_term, diag_category_filter=diag_category_filter, diagnosis_category_contains=diagnosis_category_contains)})\n"
+            "        WITH DISTINCT p"
+        ) if needs_diagnosis_node_filter else ""}
         // Collect survival once per participant (avoid repeating per study row)
         OPTIONAL MATCH (s:survival)-[:of_survival]->(p)
         WITH p, collect(DISTINCT s) AS survival_records
@@ -1207,24 +1235,13 @@ class SubjectSummary:
         WITH DISTINCT p.participant_id AS participant_id, st.study_id AS study_id
         RETURN count(*) as total_count
         """.strip()
-                elif diagnosis_search_term:
-                    # Apply diagnosis search filter
+                elif needs_diagnosis_node_filter:
+                    # Apply combined diagnosis-row filters (search + category + experimental contains)
                     cypher = f"""
         MATCH (p:participant)
-        // Collect diagnoses separately (no cartesian product)
         OPTIONAL MATCH (p)<-[:of_diagnosis]-(d:diagnosis)
         WITH p, collect(DISTINCT d) AS diagnosis_nodes
-        WHERE size([node IN diagnosis_nodes WHERE node IS NOT NULL AND ANY(diag IN CASE WHEN valueType(node.diagnosis) = 'LIST' THEN node.diagnosis ELSE [node.diagnosis] END WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))]) > 0
-        {"MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)\n        WHERE st.study_id " + deposition_operator + " $" + dep_param if dep_param else "OPTIONAL MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)\n        WHERE st IS NOT NULL"}
-        WITH DISTINCT p.participant_id AS participant_id, st.study_id AS study_id
-        RETURN count(*) as total_count
-        """.strip()
-                elif diag_category_filter:
-                    cypher = f"""
-        MATCH (p:participant)
-        OPTIONAL MATCH (p)<-[:of_diagnosis]-(diag_cat:diagnosis)
-        WITH p, collect(DISTINCT diag_cat) AS diag_cat_nodes
-        WHERE size([dn IN diag_cat_nodes WHERE dn IS NOT NULL AND any(token IN split(toString(coalesce(dn.diagnosis_category, '')), ';') WHERE trim(token) = $diag_category_filter)]) > 0
+        WHERE {diagnosis_nodes_predicate_main}
         {"MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)\n        WHERE st.study_id " + deposition_operator + " $" + dep_param if dep_param else "OPTIONAL MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)\n        WHERE st IS NOT NULL"}
         WITH DISTINCT p.participant_id AS participant_id, st.study_id AS study_id
         RETURN count(*) as total_count
@@ -1310,7 +1327,8 @@ class SubjectSummary:
         Optimized to filter by diagnosis FIRST before collecting survival records.
 
         Args:
-            filters: Filters to apply (must include _diagnosis_search)
+            filters: Filters to apply; include `_diagnosis_search` and/or
+                `_associated_diagnosis_categories_contains` for diagnosis-first summary.
 
         Returns:
             Dictionary with summary statistics
@@ -1319,15 +1337,32 @@ class SubjectSummary:
         # Avoid mutating the caller's dict
         filters = dict(filters or {})
 
-        # Ensure diagnosis search is present and remove internal key from generic filter processing
         diagnosis_search_term = filters.pop("_diagnosis_search", None)
-        if not diagnosis_search_term:
-            logger.warning("get_subjects_summary_for_diagnosis_endpoint called without _diagnosis_search")
+        diagnosis_category_contains = None
+        if "_associated_diagnosis_categories_contains" in filters:
+            rawc = filters.pop("_associated_diagnosis_categories_contains")
+            if rawc and str(rawc).strip():
+                diagnosis_category_contains = str(rawc).strip()
+
+        if not diagnosis_search_term and not diagnosis_category_contains:
             return await self.get_subjects_summary(filters)
 
         # Build WHERE conditions and parameters (reuse logic from get_subjects_summary)
         where_conditions = []
-        params = {"diagnosis_search_term": diagnosis_search_term}
+        params: Dict[str, Any] = {}
+        if diagnosis_search_term:
+            params["diagnosis_search_term"] = diagnosis_search_term
+            add_diagnosis_search_params(params, diagnosis_search_term)
+        if diagnosis_category_contains:
+            params["diag_category_contains_term"] = diagnosis_category_contains
+
+        diag_endpoint_predicate = single_diagnosis_node_predicate(
+            "d",
+            diagnosis_search_term=diagnosis_search_term,
+            diag_category_filter=None,
+            diagnosis_category_contains=diagnosis_category_contains,
+        )
+
         param_counter = 0
 
         # Handle race parameter normalization
@@ -1420,8 +1455,28 @@ class SubjectSummary:
         # Handle other filters
         field_name_mapping = {"sex": "sex_at_birth"}
         for field, value in filters.items():
-            if field.startswith("_") or field in {"vital_status", "age_at_vital_status", "ethnicity"}:
-                continue  # Derived fields handled separately
+            if field.startswith("_"):
+                continue
+
+            # Ethnicity: same p.race predicates as get_subjects_summary (must not be skipped here).
+            if field == "ethnicity":
+                desired = str(value).strip() if value is not None else ""
+                desired_lower = desired.lower()
+                param_counter += 1
+                hisp_param = f"param_{param_counter}"
+                params[hisp_param] = "Hispanic or Latino"
+                if desired_lower == "hispanic or latino":
+                    where_conditions.append(
+                        f"(p.race IS NOT NULL AND toString(p.race) CONTAINS ${hisp_param})"
+                    )
+                else:
+                    where_conditions.append(
+                        f"(p.race IS NULL OR trim(toString(p.race)) = '' OR NOT toString(p.race) CONTAINS ${hisp_param})"
+                    )
+                continue
+
+            if field in {"vital_status", "age_at_vital_status"}:
+                continue  # Handled below as derived_filters from filters dict
 
             db_field = field_name_mapping.get(field, field)
             param_counter += 1
@@ -1499,10 +1554,10 @@ class SubjectSummary:
         WITH p, st{race_condition}{identifiers_condition}
         {combine_where_clauses(where_clause_clean_for_summary, race_filter_condition if race_filter_condition else "")}
 
-        // Apply diagnosis search filter EARLY (before collecting survival records)
+        // Apply diagnosis-row filter EARLY (before collecting survival records)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
         WITH p, st, d
-        WHERE d IS NOT NULL AND ANY(diag IN CASE WHEN valueType(d.diagnosis) = 'LIST' THEN d.diagnosis ELSE [d.diagnosis] END WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))
+        WHERE d IS NOT NULL AND ({diag_endpoint_predicate})
         WITH DISTINCT p, st
 
         // Now collect survival records only for filtered participants
@@ -1564,10 +1619,10 @@ class SubjectSummary:
         MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study)
         WITH DISTINCT p
 
-        // Apply diagnosis search filter EARLY (before collecting survival records)
+        // Apply diagnosis-row filter EARLY (before collecting survival records)
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
         WITH p, d
-        WHERE d IS NOT NULL AND ANY(diag IN CASE WHEN valueType(d.diagnosis) = 'LIST' THEN d.diagnosis ELSE [d.diagnosis] END WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))
+        WHERE d IS NOT NULL AND ({diag_endpoint_predicate})
         WITH DISTINCT p
 
         // Now collect survival records only for filtered participants

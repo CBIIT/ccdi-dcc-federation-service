@@ -9,7 +9,12 @@ paths:
       tags:
       - Subject
       summary: List subjects
-      description: Get a paginated list of subjects with optional filtering
+      description: |-
+        Get a paginated list of subjects with optional filtering. Optional
+        `associated_diagnosis_categories` filters on diagnosis nodes (harmonized or
+        unharmonized values), aligned with the CCDI Federation API aggregation subject
+        model (v1.3+). For substring match on full `diagnosis_category`, use
+        `GET /api/v1/subject-diagnosis`.
       operationId: list_subjects_api_v1_subject_get
       parameters:
       - name: sex
@@ -145,15 +150,17 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: 'Filter by harmonized diagnosis category. Matches any subject
-            whose diagnosis nodes include the specified category value. Value must
-            be one of the 31 harmonized Permissible Values (e.g., `Neuroblastoma`,
-            `Renal Tumors`).'
+          description: |-
+            Matches diagnosis `diagnosis_category` with case-insensitive token equality
+            after `;` split (harmonized CDE 16607972 or unharmonized values). Federation
+            API aggregation alignment (v1.3+). Not substring on full string—use
+            `GET /api/v1/subject-diagnosis` for that under the same parameter name.
           title: Associated Diagnosis Categories
-        description: 'Filter by harmonized diagnosis category. Matches any subject
-          whose diagnosis nodes include the specified category value. Value must
-          be one of the 31 harmonized Permissible Values (e.g., `Neuroblastoma`,
-          `Renal Tumors`).'
+        description: |-
+          Matches diagnosis `diagnosis_category` with case-insensitive token equality
+          after `;` split (harmonized CDE 16607972 or unharmonized values). Federation
+          API aggregation alignment (v1.3+). Not substring on full string—use
+          `GET /api/v1/subject-diagnosis` for that under the same parameter name.
         example: Neuroblastoma
       - name: page
         in: query
@@ -1204,8 +1211,14 @@ paths:
       tags:
       - Experimental
       summary: Search subjects by diagnosis (Experimental)
-      description: Search subjects with diagnosis filtering. This is an experimental
-        endpoint and may change.
+      description: |-
+        Experimental diagnosis-node filtering (`diagnosis`, `diagnosis_category`) with
+        the same subject filters as `GET /api/v1/subject`. Harmonized and unharmonized
+        category values at the node; aligned with
+        [CCDI Federation API aggregation](https://cbiit.github.io/ccdi-federation-api-aggregation/) (v1.3+).
+        `search` is substring on diagnosis text; `associated_diagnosis_categories` is
+        substring on full category (on `GET /api/v1/subject` that name is token match after `;`).
+        Both together = AND on one diagnosis node. Experimental—may change.
       operationId: subject_diagnosis_search
       parameters:
       - name: search
@@ -1215,9 +1228,31 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: Diagnosis search term
+          description: |-
+            Case-insensitive substring match on `diagnosis` from diagnosis nodes, or
+            on `diagnosis_comment` when diagnosis is `see diagnosis_comment`. Stripped
+            of leading/trailing whitespace; omitted if empty after strip.
           title: Search
-        description: Diagnosis search term
+        description: |-
+          Case-insensitive substring match on `diagnosis` from diagnosis nodes, or
+          on `diagnosis_comment` when diagnosis is `see diagnosis_comment`. Stripped
+          of leading/trailing whitespace; omitted if empty after strip.
+      - name: associated_diagnosis_categories
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: |-
+            Substring on full `diagnosis_category` (harmonized or unharmonized). With
+            `search`, AND on same diagnosis node. On `GET /api/v1/subject`, same name =
+            token match after `;`. Trimmed.
+          title: Associated Diagnosis Categories
+        description: |-
+          Substring on full `diagnosis_category` (harmonized or unharmonized). With
+          `search`, AND on same diagnosis node. On `GET /api/v1/subject`, same name =
+          token match after `;`. Trimmed.
       - name: sex
         in: query
         required: false
@@ -1247,9 +1282,16 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: Filter by ethnicity
+          description: 'Same as `GET /api/v1/subject`: derived from `race` (Hispanic
+            or Latino if race text contains that substring; otherwise Not reported).
+            Only `Hispanic or Latino` and `Not reported` are accepted.'
+          enum:
+          - Hispanic or Latino
+          - Not reported
           title: Ethnicity
-        description: Filter by ethnicity
+        description: 'Same as `GET /api/v1/subject`: derived from `race` (Hispanic
+          or Latino if race text contains that substring; otherwise Not reported).
+          Only `Hispanic or Latino` and `Not reported` are accepted.'
       - name: identifiers
         in: query
         required: false

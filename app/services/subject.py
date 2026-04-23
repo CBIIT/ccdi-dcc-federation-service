@@ -377,7 +377,8 @@ class SubjectService:
         Optimized to filter by diagnosis FIRST before collecting survival records.
         
         Args:
-            filters: Filters to apply (must include _diagnosis_search)
+            filters: Filters to apply; include `_diagnosis_search` and/or
+                `_associated_diagnosis_categories_contains` for diagnosis-first summary.
             
         Returns:
             SummaryResponse with summary statistics
@@ -387,8 +388,11 @@ class SubjectService:
             filters=filters
         )
 
-        # If no diagnosis search term, use standard subject summary behavior.
-        if not filters or not filters.get("_diagnosis_search"):
+        # If no diagnosis-related filters, use standard subject summary behavior.
+        if not filters or (
+            not filters.get("_diagnosis_search")
+            and not filters.get("_associated_diagnosis_categories_contains")
+        ):
             return await self.get_subjects_summary(filters or {})
         
         # Check cache first

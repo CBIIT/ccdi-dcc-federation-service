@@ -104,6 +104,23 @@ class TestSubjectServiceEnhanced:
         service.get_subjects_summary.assert_called_once_with({"sex": "F"})
         service.repository.get_subjects_summary_for_diagnosis_endpoint.assert_not_called()
 
+    async def test_get_subjects_summary_for_diagnosis_endpoint_category_contains_only(
+        self, service
+    ):
+        """Category substring filter alone uses diagnosis summary path (not generic summary)."""
+        service.get_subjects_summary = AsyncMock()
+        service.repository.get_subjects_summary_for_diagnosis_endpoint = AsyncMock(
+            return_value={"total_count": 3}
+        )
+
+        result = await service.get_subjects_summary_for_diagnosis_endpoint(
+            filters={"_associated_diagnosis_categories_contains": "glioma"}
+        )
+
+        assert result.counts.total == 3
+        service.get_subjects_summary.assert_not_called()
+        service.repository.get_subjects_summary_for_diagnosis_endpoint.assert_called_once()
+
     async def test_get_subjects_summary_for_diagnosis_endpoint_database_error(self, service):
         """Test get_subjects_summary_for_diagnosis_endpoint handles DatabaseConnectionError."""
         service.repository.get_subjects_summary_for_diagnosis_endpoint = AsyncMock(

@@ -111,10 +111,11 @@ def get_subject_filters(
     associated_diagnosis_categories: Optional[str] = Query(
         None,
         description=(
-            "Matches any subject where any diagnosis node has a `diagnosis_category` "
-            "matching the value provided. Accepts both harmonized (CDE 16607972) and "
-            "unharmonized DB values."
-        )
+            "Matches any subject where a diagnosis node's `diagnosis_category` matches "
+            "the value (case-insensitive token after `;` split). Harmonized (CDE 16607972) "
+            "or unharmonized values. Aligned with CCDI Federation API aggregation subject "
+            "filtering (v1.3+)."
+        ),
     ),
     request: Request = None
 ) -> Dict[str, Any]:
@@ -301,10 +302,11 @@ def get_subject_summary_filters(
     associated_diagnosis_categories: Optional[str] = Query(
         None,
         description=(
-            "Matches any subject where any diagnosis node has a `diagnosis_category` "
-            "matching the value provided. Accepts both harmonized (CDE 16607972) and "
-            "unharmonized DB values."
-        )
+            "Matches any subject where a diagnosis node's `diagnosis_category` matches "
+            "the value (case-insensitive token after `;` split). Harmonized (CDE 16607972) "
+            "or unharmonized values. Aligned with CCDI Federation API aggregation subject "
+            "filtering (v1.3+)."
+        ),
     ),
     request: Request = None
 ) -> Dict[str, Any]:
@@ -816,7 +818,19 @@ def get_diagnosis_search_params(
 def get_subject_diagnosis_filters(
     search: Optional[str] = Query(
         None,
-        description="Matches any subject where any member of the `associated_diagnoses` field contains the string provided, ignoring case.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the subject should be included in the results."
+        description=(
+            "Case-insensitive substring match on diagnosis text from diagnosis nodes (`diagnosis` property). "
+            "When `diagnosis` is the sentinel value `see diagnosis_comment`, the search is applied to "
+            "`diagnosis_comment` instead (same behavior as sample diagnosis search). "
+            "May be combined with `associated_diagnosis_categories` (AND on the same diagnosis node)."
+        ),
+    ),
+    associated_diagnosis_categories: Optional[str] = Query(
+        None,
+        description=(
+            "Case-insensitive substring on the full `diagnosis_category` on a diagnosis "
+            "node (harmonized or unharmonized text). With `search`, AND on the same node. "
+        ),
     ),
     sex: Optional[str] = Query(
         None,
@@ -864,9 +878,16 @@ def get_subject_diagnosis_filters(
         request=request
     )
     
-    if search:
-        filters["_diagnosis_search"] = search
-    
+    if isinstance(search, str):
+        search_stripped = search.strip()
+        if search_stripped:
+            filters["_diagnosis_search"] = search_stripped
+
+    if isinstance(associated_diagnosis_categories, str):
+        catv = associated_diagnosis_categories.strip()
+        if catv:
+            filters["_associated_diagnosis_categories_contains"] = catv
+
     return filters
 
 

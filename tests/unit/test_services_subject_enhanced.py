@@ -171,8 +171,44 @@ class TestSubjectServiceEnhanced:
         """Test get_subjects_summary_for_diagnosis_endpoint with None filters falls back."""
         mock_summary = SummaryResponse(counts=SummaryCounts(total=0))
         service.get_subjects_summary = AsyncMock(return_value=mock_summary)
-        
+
         result = await service.get_subjects_summary_for_diagnosis_endpoint(filters=None)
-        
+
         assert result.counts.total == 0
         service.get_subjects_summary.assert_called_once_with({})
+
+    @pytest.mark.asyncio
+    async def test_get_subjects_for_diagnosis_endpoint_returns_data_and_total(self, service):
+        """get_subjects_for_diagnosis_endpoint returns (subjects, total) from repository."""
+        from unittest.mock import Mock
+        from app.models.dto import Subject
+        fake_subject = Mock(spec=Subject)
+        service.repository.get_subjects_for_diagnosis_endpoint = AsyncMock(
+            return_value=([fake_subject], 42)
+        )
+
+        subjects, total = await service.get_subjects_for_diagnosis_endpoint(
+            filters={"_diagnosis_search": "neuroblastoma"},
+            offset=0,
+            limit=10,
+        )
+
+        assert subjects == [fake_subject]
+        assert total == 42
+        service.repository.get_subjects_for_diagnosis_endpoint.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_get_subjects_for_diagnosis_endpoint_database_error_returns_empty(self, service):
+        """Returns ([], 0) on DatabaseConnectionError."""
+        service.repository.get_subjects_for_diagnosis_endpoint = AsyncMock(
+            side_effect=DatabaseConnectionError("Connection failed")
+        )
+
+        subjects, total = await service.get_subjects_for_diagnosis_endpoint(
+            filters={"_diagnosis_search": "neuroblastoma"},
+            offset=0,
+            limit=10,
+        )
+
+        assert subjects == []
+        assert total == 0

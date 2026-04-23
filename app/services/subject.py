@@ -6,7 +6,7 @@ including caching, validation, and coordination between
 repositories and API endpoints.
 """
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import asyncio
 from neo4j import AsyncSession
 
@@ -454,10 +454,41 @@ class SubjectService:
             "Completed subjects summary for diagnosis endpoint",
             total_count=response.counts.total
         )
-        
+
         return response
-    
-    
+
+    async def get_subjects_for_diagnosis_endpoint(
+        self,
+        filters: Dict[str, Any],
+        offset: int = 0,
+        limit: int = 20,
+    ) -> Tuple[List[Subject], int]:
+        """Dedicated service path for /subject-diagnosis. Fetches data and total in one round trip."""
+        base_url = (
+            self.settings.identifier_server_url.rstrip("/")
+            if hasattr(self.settings, "identifier_server_url") and self.settings.identifier_server_url
+            else None
+        )
+        try:
+            subjects, total_count = await self.repository.get_subjects_for_diagnosis_endpoint(
+                filters=filters,
+                offset=offset,
+                limit=limit,
+                base_url=base_url,
+            )
+            return subjects, total_count
+        except DatabaseConnectionError as e:
+            logger.error(
+                "Database connection error while fetching diagnosis subjects",
+                error=str(e),
+                error_type=type(e).__name__,
+                filters=filters,
+                offset=offset,
+                limit=limit,
+                is_database_connection_error=True,
+            )
+            return [], 0
+
     def _validate_identifier_params(self, organization: str, namespace: Optional[str], name: str) -> None:
         """
         Validate identifier parameters.

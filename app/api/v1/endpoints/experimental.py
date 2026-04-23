@@ -492,64 +492,12 @@ async def search_subjects_by_diagnosis(
         cache_service = get_cache_service()
         service = SubjectService(session, allowlist, settings, cache_service)
         
-        # Make a copy of filters for get_subjects (it modifies the dict by popping race/identifiers)
-        filters_copy = filters.copy()
-        
-        # Use configured identifier server URL for all identifier server values
-        base_url = settings.identifier_server_url.rstrip("/")
-        
-        # Get subjects
-        subjects = await service.get_subjects(
-            filters=filters_copy,
+        # Single round-trip: data + total together
+        subjects, total_count = await service.get_subjects_for_diagnosis_endpoint(
+            filters=filters,
             offset=pagination.offset,
             limit=pagination.per_page,
-            base_url=base_url
         )
-        
-        # Get total count for summary (use original filters dict)
-        # Use dedicated diagnosis endpoint method for optimized query
-        try:
-            summary_result = await service.get_subjects_summary_for_diagnosis_endpoint(filters)
-            total_count = summary_result.counts.total
-        except DatabaseConnectionError as summary_error:
-            # Database connection error - log clearly for AWS cloud monitoring
-            logger.error(
-                "Database connection error while getting subjects summary in subject-diagnosis endpoint - using 0 as total",
-                error=str(summary_error),
-                error_type=type(summary_error).__name__,
-                filters=filters,
-                is_database_connection_error=True,
-                will_use_zero_total=True,
-                aws_cloudwatch_alert=True
-            )
-            total_count = 0
-        except Exception as summary_error:
-            # Check if this is a connection-related error
-            error_str = str(summary_error).lower()
-            is_connection_error = any(keyword in error_str for keyword in [
-                'connection', 'database', 'unavailable', 'timeout', 'network',
-                'service unavailable', 'broken pipe', 'connection reset', 'connection closed'
-            ])
-            
-            if is_connection_error:
-                # Connection-related error - log clearly for AWS cloud monitoring
-                logger.error(
-                    "Database connection issue while getting subjects summary in subject-diagnosis endpoint - using 0 as total",
-                    error=str(summary_error),
-                    error_type=type(summary_error).__name__,
-                    filters=filters,
-                    is_connection_related=True,
-                    will_use_zero_total=True,
-                    aws_cloudwatch_alert=True,
-                    exc_info=True
-                )
-            else:
-                logger.warning(
-                    "Error getting subjects summary, using 0 as total",
-                    error=str(summary_error),
-                    exc_info=True
-                )
-            total_count = 0
 
         # Build pagination info
         # NOTE: total_count is the number of unique subjects matching filters (not just the current page size)

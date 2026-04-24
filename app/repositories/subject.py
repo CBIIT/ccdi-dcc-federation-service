@@ -8,7 +8,7 @@ using Cypher queries to Memgraph.
 import asyncio
 import dataclasses
 import re
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union, Literal, overload
 from neo4j import AsyncSession
 
 from app.core.logging import get_logger
@@ -474,6 +474,27 @@ WITH {carry},
      END) AS final_age_at_vital_status
 {derived_where_clause}"""
 
+    @overload
+    async def get_subjects(
+        self,
+        filters: Dict[str, Any],
+        offset: int = ...,
+        limit: int = ...,
+        base_url: Optional[str] = ...,
+        *,
+        return_total: Literal[True],
+    ) -> Tuple[List[Subject], int]: ...
+
+    @overload
+    async def get_subjects(
+        self,
+        filters: Dict[str, Any],
+        offset: int = ...,
+        limit: int = ...,
+        base_url: Optional[str] = ...,
+        return_total: Literal[False] = ...,
+    ) -> List[Subject]: ...
+
     async def get_subjects(
         self,
         filters: Dict[str, Any],
@@ -481,7 +502,7 @@ WITH {carry},
         limit: int = 20,
         base_url: Optional[str] = None,
         return_total: bool = False,
-    ) -> "List[Subject] | tuple[list, int]":
+    ) -> Union[List[Subject], Tuple[List[Subject], int]]:
         """
         Get paginated list of subjects with filtering.
 
@@ -544,6 +565,10 @@ WITH {carry},
             if fs.race_filter_condition:
                 main_conditions.append(fs.race_filter_condition)
             main_conditions.extend(c for c in fs.where_conditions if c)
+            # sex and ethnicity go into early_participant_filters (not where_conditions) in _build_subject_where;
+            # include them here so the count honours the same filters as the data path
+            if fs.early_participant_filters:
+                main_conditions.extend(c for c in fs.early_participant_filters if c)
 
             # Diagnosis-row filters require OPTIONAL MATCH on diagnosis nodes (search / category / contains).
             # When depositions are in play, carry study_ids through the fragment so we can count (participant, study) pairs.
@@ -1984,10 +2009,8 @@ WITH {carry},
             base_url=base_url,
             return_total=True,
         )
-        if isinstance(result, tuple):
-            subjects, total_count = result
-            return subjects, int(total_count or 0)
-        return result if isinstance(result, list) else [], 0
+        subjects, total_count = result
+        return subjects, total_count
 
     def _validate_filters(self, filters: Dict[str, Any], entity_type: str) -> None:
         """

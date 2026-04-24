@@ -490,19 +490,6 @@ class TestSubjectRepositoryInternal:
         assert subjects == [fake_subject]
         assert total == 7
 
-
-    @pytest.mark.asyncio
-    async def test_get_subjects_for_diagnosis_endpoint_defensive_fallback(self, repository):
-        """Returns ([], 0) when get_subjects returns a plain list instead of tuple."""
-        repository.get_subjects = AsyncMock(return_value=[])
-
-        subjects, total = await repository.get_subjects_for_diagnosis_endpoint(
-            filters={}, offset=0, limit=10,
-        )
-
-        assert subjects == []
-        assert total == 0
-
     @pytest.mark.asyncio
     async def test_return_total_count_includes_survival_traversal_with_depositions(self, repository, mock_session):
         """return_total count Cypher (dep_param branch) must include survival traversal when vital_status is set."""

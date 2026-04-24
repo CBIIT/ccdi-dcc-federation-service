@@ -6,7 +6,7 @@ including caching, validation, and coordination between
 repositories and API endpoints.
 """
 
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union, Literal, overload
 import asyncio
 from neo4j import AsyncSession
 
@@ -37,6 +37,27 @@ class SubjectService:
         self.settings = settings
         self.cache_service = cache_service
         
+    @overload
+    async def get_subjects(
+        self,
+        filters: Dict[str, Any],
+        offset: int = ...,
+        limit: int = ...,
+        base_url: Optional[str] = ...,
+        *,
+        return_total: Literal[True],
+    ) -> Tuple[List[Subject], int]: ...
+
+    @overload
+    async def get_subjects(
+        self,
+        filters: Dict[str, Any],
+        offset: int = ...,
+        limit: int = ...,
+        base_url: Optional[str] = ...,
+        return_total: Literal[False] = ...,
+    ) -> List[Subject]: ...
+
     async def get_subjects(
         self,
         filters: Dict[str, Any],
@@ -44,7 +65,7 @@ class SubjectService:
         limit: int = 20,
         base_url: Optional[str] = None,
         return_total: bool = False,
-    ) -> "List[Subject] | tuple[list, int]":
+    ) -> Union[List[Subject], Tuple[List[Subject], int]]:
         """
         Get paginated list of subjects with filtering.
 
@@ -122,17 +143,12 @@ class SubjectService:
                     raise
         
         if return_total:
-            if isinstance(result, tuple):
-                subjects, total_count = result
-            else:
-                subjects = result
-                total_count = 0
+            subjects, total_count = result
             logger.info("Retrieved subjects", count=len(subjects), offset=offset, limit=limit)
-            return (subjects, total_count)
+            return subjects, total_count
 
-        subjects = result if not isinstance(result, tuple) else result[0]
-        logger.info("Retrieved subjects", count=len(subjects), offset=offset, limit=limit)
-        return subjects
+        logger.info("Retrieved subjects", count=len(result), offset=offset, limit=limit)
+        return result
     
     async def get_subject_by_identifier(
         self,

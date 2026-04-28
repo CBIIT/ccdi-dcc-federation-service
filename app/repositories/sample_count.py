@@ -5,9 +5,10 @@ This module contains methods for counting samples by field values.
 """
 
 import asyncio
-from typing import Dict, Any
+from typing import Dict, Any, List
 from app.core.logging import get_logger
 from app.models.errors import UnsupportedFieldError
+from app.core.diagnosis_category import HARMONIZED_DIAGNOSIS_CATEGORIES
 from app.core.field_mappings import (
     map_field_value,
     reverse_map_field_value,
@@ -23,6 +24,9 @@ from app.core.field_mappings import (
 )
 
 logger = get_logger(__name__)
+
+_HARMONIZED_PVS_SORTED: List[str] = sorted(HARMONIZED_DIAGNOSIS_CATEGORIES)
+_HARMONIZED_PVS_LOWER: List[str] = [pv.lower() for pv in _HARMONIZED_PVS_SORTED]
 
 
 class SampleCount:
@@ -55,14 +59,18 @@ class SampleCount:
         # Special handling for diagnosis field - use dedicated method with conversion logic
         if field == "diagnosis":
             return await self._count_samples_by_associated_diagnoses(filters)
-        
+
+        # Special handling for diagnosis_category — harmonized PV count
+        if field == "diagnosis_category":
+            return await self._count_samples_by_diagnosis_category(filters)
+
         # Validate field is allowed for count operations
         # Only sample-specific metadata fields are allowed (participant fields are not supported for samples)
         sample_metadata_fields = {
             "disease_phase", "anatomical_sites", "library_selection_method", "library_strategy",
             "library_source_material", "preservation_method", "tumor_grade", "specimen_molecular_analyte_type",
             "tissue_type", "tumor_classification", "age_at_diagnosis", "age_at_collection",
-            "tumor_tissue_morphology", "diagnosis"
+            "tumor_tissue_morphology", "diagnosis", "diagnosis_category"
         }
         allowed_fields = sample_metadata_fields
         if field not in allowed_fields:
@@ -2574,4 +2582,140 @@ class SampleCount:
             "missing": missing_count,
             "values": counts
         }
-    
+
+    async def _count_samples_by_diagnosis_category(
+        self,
+        filters: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Count distinct (sample, study) combinations by harmonized diagnosis_category.
+
+        Graph path: (d:diagnosis)-[:of_diagnosis]->(sa:sample),
+        then (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)
+                   -[:of_consent_group]->(st:study)
+        OR         (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st:study)
+        """
+        logger.debug("Counting samples by diagnosis_category", filters=filters)
+
+        params: Dict[str, Any] = {
+            "harmonized_pvs": _HARMONIZED_PVS_SORTED,
+            "harmonized_pvs_lower": _HARMONIZED_PVS_LOWER,
+        }
+
+        total_cypher = """
+MATCH (sa:sample)
+WHERE sa.sample_id IS NOT NULL AND trim(toString(sa.sample_id)) <> ''
+OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+WITH sa, collect(DISTINCT st1.study_id) AS st1_ids
+OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+WITH sa, st1_ids, collect(DISTINCT st2.study_id) AS st2_ids
+WITH sa, [sid IN (st1_ids + st2_ids) WHERE sid IS NOT NULL] AS study_ids
+UNWIND study_ids AS study_id
+RETURN count(*) AS total
+""".strip()
+
+        missing_cypher = """
+MATCH (sa:sample)
+WHERE sa.sample_id IS NOT NULL AND trim(toString(sa.sample_id)) <> ''
+OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+WITH sa, collect(DISTINCT st1.study_id) AS st1_ids
+OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+WITH sa, st1_ids, collect(DISTINCT st2.study_id) AS st2_ids
+WITH sa, [sid IN (st1_ids + st2_ids) WHERE sid IS NOT NULL] AS study_ids
+UNWIND study_ids AS study_id
+OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
+WITH sa.sample_id AS sample_id, study_id, collect(d) AS diagnoses
+WHERE size([
+    d IN diagnoses WHERE d IS NOT NULL
+    AND d.diagnosis_category IS NOT NULL
+    AND toString(d.diagnosis_category) <> ''
+    AND any(tok IN split(toString(d.diagnosis_category), ';')
+            WHERE toLower(trim(tok)) IN $harmonized_pvs_lower)
+]) = 0
+RETURN count(*) AS missing
+""".strip()
+
+        values_cypher = """
+MATCH (d:diagnosis)-[:of_diagnosis]->(sa:sample)
+WHERE d.diagnosis_category IS NOT NULL AND toString(d.diagnosis_category) <> ''
+WITH sa, d
+OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+WITH sa, d, collect(DISTINCT st1.study_id) AS st1_ids
+OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+WITH sa, d, st1_ids, collect(DISTINCT st2.study_id) AS st2_ids
+WITH sa.sample_id AS sample_id,
+     [sid IN (st1_ids + st2_ids) WHERE sid IS NOT NULL] AS study_ids,
+     [tok IN split(toString(d.diagnosis_category), ';') WHERE trim(tok) <> ''] AS tokens
+UNWIND study_ids AS study_id
+UNWIND tokens AS raw_token
+WITH sample_id, study_id, trim(raw_token) AS token
+WITH sample_id, study_id, token,
+     [pv IN $harmonized_pvs WHERE toLower(pv) = toLower(token)][0] AS matched_pv
+WHERE matched_pv IS NOT NULL
+WITH DISTINCT sample_id, study_id, matched_pv
+RETURN matched_pv AS value, count(*) AS count
+ORDER BY count DESC, value ASC
+""".strip()
+
+        max_retries = 2
+        retry_count = 0
+        total_count = 0
+        missing_count = 0
+        values_records: List[Dict[str, Any]] = []
+
+        while retry_count <= max_retries:
+            try:
+                total_result = await self.session.run(total_cypher, params)
+                total_records = []
+                async for record in total_result:
+                    total_records.append(dict(record))
+                await total_result.consume()
+                total_count = total_records[0].get("total", 0) if total_records else 0
+
+                missing_result = await self.session.run(missing_cypher, params)
+                missing_records = []
+                async for record in missing_result:
+                    missing_records.append(dict(record))
+                await missing_result.consume()
+                missing_count = missing_records[0].get("missing", 0) if missing_records else 0
+
+                values_result = await self.session.run(values_cypher, params)
+                values_records = []
+                async for record in values_result:
+                    values_records.append(dict(record))
+                await values_result.consume()
+
+                if (total_count > 0 or len(values_records) > 0) or retry_count >= max_retries:
+                    break
+
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))
+                    retry_count += 1
+            except Exception as e:
+                if retry_count < max_retries:
+                    await asyncio.sleep(0.1 * (retry_count + 1))
+                    retry_count += 1
+                    logger.warning("Error in count_samples_by_diagnosis_category, retrying", error=str(e))
+                else:
+                    logger.error("Error in count_samples_by_diagnosis_category after retries",
+                                 error=str(e), exc_info=True)
+                    raise
+
+        counts = [
+            {"value": r.get("value"), "count": r.get("count", 0)}
+            for r in values_records
+        ]
+
+        logger.info(
+            "Completed sample count by diagnosis_category",
+            total=total_count,
+            missing=missing_count,
+            values_count=len(counts)
+        )
+
+        return {
+            "total": total_count,
+            "missing": missing_count,
+            "values": counts
+        }
+

@@ -476,6 +476,12 @@ class SampleQueryCases:
                         (toLower(trim(toString(d.diagnosis))) = 'see diagnosis_comment' AND
                          d.diagnosis_comment IS NOT NULL AND
                          trim(toString(d.diagnosis_comment)) = ${param_name}))""")
+                elif field == "diagnosis_category":
+                    params[param_name] = value
+                    diagnosis_conditions.append(
+                        f"any(token IN split(toString(coalesce(d.diagnosis_category, '')), ';') "
+                        f"WHERE toLower(trim(token)) = toLower(${param_name}))"
+                    )
             
             if diagnosis_conditions:
                 combined_diagnosis_condition = " AND ".join([f"({cond})" for cond in diagnosis_conditions])

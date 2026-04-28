@@ -498,12 +498,19 @@ def get_sample_filters(
         description="Matches any sample where any member of the `depositions` fields match the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the sample should be included in the results."
     ),
     diagnosis: Optional[str] = Query(
-        None, 
+        None,
         description="Matches any sample where the `diagnosis` field matches the string provided."
     ),
     identifiers: Optional[str] = Query(
         None,
         description="Matches any sample where the `sample_id` field matches the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the sample should be included in the results."
+    ),
+    diagnosis_category: Optional[str] = Query(
+        None,
+        description=(
+            "Matches any sample where a diagnosis node's `diagnosis_category` matches the value "
+            "(case-insensitive token after `;` split). Harmonized (CDE 16607972) or unharmonized values."
+        ),
     ),
     request: Request = None
 ) -> Dict[str, Any]:
@@ -593,7 +600,11 @@ def get_sample_filters(
         filters["depositions"] = str(depositions).strip()
     if diagnosis is not None and str(diagnosis).strip():
         filters["diagnosis"] = str(diagnosis).strip()
-    
+    if isinstance(diagnosis_category, str):
+        val = diagnosis_category.strip()
+        if val:
+            filters["diagnosis_category"] = val
+
     # Handle unharmonized fields from query parameters
     if request:
         for key, value in request.query_params.items():
@@ -626,6 +637,7 @@ def get_sample_filters_no_descriptions(
     depositions: Optional[str] = Query(None, include_in_schema=False),
     diagnosis: Optional[str] = Query(None, include_in_schema=False),
     identifiers: Optional[str] = Query(None, include_in_schema=False),
+    diagnosis_category: Optional[str] = Query(None, include_in_schema=False),
     request: Request = None
 ) -> Dict[str, Any]:
     """Get sample filter parameters without descriptions (for count endpoint)."""
@@ -692,7 +704,11 @@ def get_sample_filters_no_descriptions(
         filters["depositions"] = depositions
     if diagnosis is not None:
         filters["diagnosis"] = diagnosis
-    
+    if isinstance(diagnosis_category, str):
+        val = diagnosis_category.strip()
+        if val:
+            filters["diagnosis_category"] = val
+
     # Handle unharmonized fields from query parameters
     if request:
         for key, value in request.query_params.items():
@@ -704,7 +720,7 @@ def get_sample_filters_no_descriptions(
                 raise InvalidParametersError(
                     parameters=[]
                 )
-    
+
     return filters
 
 
@@ -956,6 +972,13 @@ def get_sample_diagnosis_filters(
         None,
         description="Matches any sample where the `sample_id` field matches the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the sample should be included in the results."
     ),
+    diagnosis_category: Optional[str] = Query(
+        None,
+        description=(
+            "Matches any sample where a diagnosis node's `diagnosis_category` matches the value "
+            "(case-insensitive token after `;` split). Harmonized (CDE 16607972) or unharmonized values."
+        ),
+    ),
     request: Request = None
 ) -> Dict[str, Any]:
     """Get sample diagnosis search filters.
@@ -999,6 +1022,7 @@ def get_sample_diagnosis_filters(
         depositions=depositions,
         diagnosis=None,  # Explicitly disable diagnosis param on /sample-diagnosis
         identifiers=identifiers,
+        diagnosis_category=diagnosis_category,
         request=request
     )
     

@@ -187,11 +187,11 @@ async def list_samples(
     
     try:
         # Validate query parameters - check for unknown parameters (especially "search" which is only for /sample-diagnosis)
-        allowed_params = {"disease_phase", "anatomical_sites", "library_selection_method", 
+        allowed_params = {"disease_phase", "anatomical_sites", "library_selection_method",
                          "library_strategy", "library_source_material", "preservation_method", "tumor_grade",
-                         "specimen_molecular_analyte_type", "tissue_type", "tumor_classification", 
-                         "age_at_diagnosis", "age_at_collection", "tumor_tissue_morphology", 
-                         "depositions", "diagnosis", "identifiers", "page", "per_page"}
+                         "specimen_molecular_analyte_type", "tissue_type", "tumor_classification",
+                         "age_at_diagnosis", "age_at_collection", "tumor_tissue_morphology",
+                         "depositions", "diagnosis", "identifiers", "diagnosis_category", "page", "per_page"}
         # Add support for metadata.unharmonized.* fields
         allowed_params.update({k for k in request.query_params.keys() if k.startswith("metadata.unharmonized.")})
         
@@ -429,7 +429,7 @@ async def count_samples_by_field(
             "disease_phase", "anatomical_sites", "library_selection_method", "library_strategy",
             "library_source_material", "preservation_method", "tumor_grade", "specimen_molecular_analyte_type",
             "tissue_type", "tumor_classification", "age_at_diagnosis", "age_at_collection",
-            "tumor_tissue_morphology", "diagnosis"
+            "tumor_tissue_morphology", "diagnosis", "diagnosis_category"
         ],
     ),
     session: AsyncSession = Depends(get_database_session),

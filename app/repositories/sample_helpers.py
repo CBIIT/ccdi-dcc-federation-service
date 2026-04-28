@@ -43,7 +43,7 @@ class SampleHelpers:
         # Define filter categories
         sample_filters = {"tissue_type", "anatomical_sites", "age_at_collection", "identifiers"}
         study_filters = {"depositions"}
-        diagnosis_filters = {"disease_phase", "tumor_classification", "tumor_grade", "tumor_tissue_morphology", "age_at_diagnosis", "diagnosis", "_diagnosis_search"}
+        diagnosis_filters = {"disease_phase", "tumor_classification", "tumor_grade", "tumor_tissue_morphology", "age_at_diagnosis", "diagnosis", "_diagnosis_search", "diagnosis_category"}
         sequencing_file_filters = {"library_selection_method", "library_strategy", "library_source_material", "specimen_molecular_analyte_type"}
         pathology_file_filters = {"preservation_method"}
         

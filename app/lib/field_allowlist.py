@@ -47,7 +47,8 @@ HARMONIZED_FIELDS: Dict[EntityType, Set[str]] = {
         "age_at_collection",
         "tumor_tissue_morphology",
         "depositions",
-        "diagnosis"
+        "diagnosis",
+        "diagnosis_category",
     },
     EntityType.FILE: {
         "type",

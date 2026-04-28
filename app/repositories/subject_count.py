@@ -5,7 +5,7 @@ This module contains methods for counting subjects by field values.
 """
 
 import asyncio
-from typing import Dict, Any
+from typing import Dict, Any, List
 from app.core.logging import get_logger
 from app.core.constants import Race
 from app.core.field_mappings import (
@@ -15,8 +15,8 @@ from app.core.field_mappings import (
 from app.core.diagnosis_category import HARMONIZED_DIAGNOSIS_CATEGORIES
 from app.models.errors import UnsupportedFieldError
 
-_HARMONIZED_PVS: list = list(HARMONIZED_DIAGNOSIS_CATEGORIES)
-_HARMONIZED_PVS_LOWER: list = [pv.lower() for pv in _HARMONIZED_PVS]
+_HARMONIZED_PVS_SORTED: List[str] = sorted(HARMONIZED_DIAGNOSIS_CATEGORIES)
+_HARMONIZED_PVS_LOWER: List[str] = [pv.lower() for pv in _HARMONIZED_PVS_SORTED]
 from app.utils.cypher_builder import combine_where_clauses
 
 logger = get_logger(__name__)
@@ -1265,7 +1265,7 @@ WITH p, d, c, st,
         """
         logger.debug("Counting subjects by diagnosis_category", filters=filters)
 
-        params: Dict[str, Any] = {"harmonized_pvs": _HARMONIZED_PVS, "harmonized_pvs_lower": _HARMONIZED_PVS_LOWER}
+        params: Dict[str, Any] = {"harmonized_pvs": _HARMONIZED_PVS_SORTED, "harmonized_pvs_lower": _HARMONIZED_PVS_LOWER}
 
         total_cypher = """
 MATCH (p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)

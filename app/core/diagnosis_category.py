@@ -22,3 +22,24 @@ def canonical_diagnosis_category_token(token: str) -> str | None:
     if not t:
         return None
     return _CANONICAL_BY_LOWER.get(t.lower())
+
+
+def split_diagnosis_category_tokens(raw: str) -> tuple[list[str], list[str]]:
+    """
+    Split a semicolon-delimited diagnosis_category string into (harmonized, unharmonized) lists.
+
+    Returns deduplicated lists preserving insertion order.
+    diagnosis_category is stored as a semicolon-delimited string in the graph.
+    """
+    harmonized: list[str] = []
+    unharmonized: list[str] = []
+    for token in str(raw).split(";"):
+        token = token.strip()
+        if not token:
+            continue
+        canon = canonical_diagnosis_category_token(token)
+        if canon is not None:
+            harmonized.append(canon)
+        else:
+            unharmonized.append(token)
+    return list(dict.fromkeys(harmonized)), list(dict.fromkeys(unharmonized))

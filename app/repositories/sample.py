@@ -10,8 +10,9 @@ from typing import List, Dict, Any, Optional, Tuple, Union
 from neo4j import AsyncSession
 
 from app.core.logging import get_logger
+from app.core.diagnosis_category import canonical_diagnosis_category_token, split_diagnosis_category_tokens
 from app.lib.field_allowlist import FieldAllowlist
-from app.models.dto import Sample
+from app.models.dto import Sample, AssociatedDiagnosisCategoryField
 from app.models.errors import UnsupportedFieldError
 from app.core.config import Settings
 from app.core.field_mappings import map_field_value, reverse_map_field_value, is_null_mapped_value, is_database_only_value, build_invalid_value_filter, build_invalid_value_list_filter, build_invalid_value_all_clause, build_case_mapping_statement, get_mapped_db_values, load_sequencing_file_enum, load_sample_enum, get_null_mappings
@@ -2587,6 +2588,23 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         # tissue_type: sa.sample_tumor_status (mapped from sample_tumor_status field)
         tissue_type_value = sa.get("sample_tumor_status") if sa else None
         
+        # diagnoses is a single dict from head(collect(DISTINCT d)); guard against Node objects in other query paths
+        harmonized_cats: List[str] = []
+        unharmonized_cats: List[str] = []
+        if diagnoses and isinstance(diagnoses, dict):
+            raw_cat = diagnoses.get("diagnosis_category")
+            if raw_cat is not None and str(raw_cat).strip():
+                harmonized_cats, unharmonized_cats = split_diagnosis_category_tokens(str(raw_cat))
+
+        diagnosis_category_field = (
+            [AssociatedDiagnosisCategoryField(value=c) for c in harmonized_cats]
+            if harmonized_cats else None
+        )
+        unharmonized_field = (
+            {"diagnosis_category": [{"value": c} for c in unharmonized_cats]}
+            if unharmonized_cats else None
+        )
+
         # Build metadata with field mappings applied
         metadata = SampleMetadata(
             disease_phase=_wrap_value(map_field_value("disease_phase", _null_if_invalid(disease_phase_value))),
@@ -2604,7 +2622,9 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
             tumor_tissue_morphology=None,  # Not in the provided mapping
             depositions=depositions,
             diagnosis=diagnosis_field,
-            identifiers=identifiers
+            identifiers=identifiers,
+            diagnosis_category=diagnosis_category_field,
+            unharmonized=unharmonized_field,
         )
         
         # Create Sample object

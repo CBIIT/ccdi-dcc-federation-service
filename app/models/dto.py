@@ -293,6 +293,11 @@ class IdentifierField(BaseModel):
     ancestors: Optional[Any] = Field(default=None, description="Ancestor entities", exclude=True)
 
 
+class AssociatedDiagnosisCategoryField(BaseModel):
+    """Associated diagnosis categories field — one harmonized PV value."""
+    value: str = Field(..., description="Harmonized diagnosis category value")
+
+
 class SampleMetadata(CommonMetadata):
     """Sample metadata model."""
     disease_phase: Optional[ValueField] = None
@@ -311,9 +316,9 @@ class SampleMetadata(CommonMetadata):
     depositions: Optional[List[DepositionAccession]] = None
     diagnosis: Optional[DiagnosisField] = None
     identifiers: Optional[List[IdentifierField]] = None
-    unharmonized: Optional[Dict[str, UnharmonizedField]] = Field(
+    diagnosis_category: Optional[List[AssociatedDiagnosisCategoryField]] = None
+    unharmonized: Optional[Dict[str, Any]] = Field(
         None,
-        exclude=True,  # Exclude from serialization
         description="Unharmonized metadata fields"
     )
 
@@ -369,11 +374,6 @@ class AssociatedDiagnosisField(BaseModel):
     value: str = Field(..., description="Diagnosis ID")
     ancestors: Optional[Any] = Field(default=None, description="Ancestor entities", exclude=True)
     comment: Optional[str] = Field(default=None, description="Comment")
-
-
-class AssociatedDiagnosisCategoryField(BaseModel):
-    """Associated diagnosis categories field — one harmonized PV value."""
-    value: str = Field(..., description="Harmonized diagnosis category value")
 
 
 class SubjectMetadata(BaseModel):

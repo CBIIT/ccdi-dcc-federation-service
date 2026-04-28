@@ -13,7 +13,7 @@ from neo4j import AsyncSession
 
 from app.core.logging import get_logger
 from app.core.constants import Race
-from app.core.diagnosis_category import canonical_diagnosis_category_token
+from app.core.diagnosis_category import canonical_diagnosis_category_token, split_diagnosis_category_tokens
 from app.core.field_mappings import map_field_value, reverse_map_field_value, is_database_only_value, build_case_mapping_statement
 from app.lib.field_allowlist import FieldAllowlist
 from app.lib.url_builder import build_identifier_server_url
@@ -2145,15 +2145,9 @@ WITH {carry},
                             extracted_diagnoses.append(diag_val)
                 cat = _get_prop(node, "diagnosis_category")
                 if cat is not None and str(cat).strip():
-                    for token in str(cat).split(";"):
-                        token = token.strip()
-                        if not token:
-                            continue
-                        canon = canonical_diagnosis_category_token(token)
-                        if canon is not None:
-                            harmonized_categories.append(canon)
-                        else:
-                            unharmonized_categories.append(token)
+                    h, u = split_diagnosis_category_tokens(str(cat))
+                    harmonized_categories.extend(h)
+                    unharmonized_categories.extend(u)
         if extracted_diagnoses:
             associated_diagnoses_raw = extracted_diagnoses
         harmonized_categories = list(dict.fromkeys(harmonized_categories))

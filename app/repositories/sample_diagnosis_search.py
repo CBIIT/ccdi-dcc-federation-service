@@ -135,7 +135,19 @@ class SampleDiagnosisSearch:
             aad_param = f"param_{param_counter}"
             params[aad_param] = age_int
             additional_diagnosis_filters.append(f"toInteger(d.age_at_diagnosis) = ${aad_param}")
-        
+
+        # Handle diagnosis_category filter (AND on same diagnosis node as search)
+        if "diagnosis_category" in filters:
+            diag_cat_value = filters["diagnosis_category"]
+            if isinstance(diag_cat_value, str) and diag_cat_value.strip():
+                param_counter += 1
+                dc_param = f"param_{param_counter}"
+                params[dc_param] = diag_cat_value.strip()
+                additional_diagnosis_filters.append(
+                    f"any(token IN split(toString(coalesce(d.diagnosis_category, '')), ';') "
+                    f"WHERE toLower(trim(token)) = toLower(${dc_param}))"
+                )
+
         # Handle identifiers filter if present
         identifiers_early_filter = None
         if "identifiers" in filters:
@@ -492,6 +504,18 @@ class SampleDiagnosisSearch:
             aad_param = f"param_{param_counter}"
             params[aad_param] = age_int
             additional_diagnosis_filters.append(f"toInteger(dx.age_at_diagnosis) = ${aad_param}")
+
+        # Handle diagnosis_category filter (AND on same diagnosis node as search)
+        if "diagnosis_category" in filters:
+            diag_cat_value = filters["diagnosis_category"]
+            if isinstance(diag_cat_value, str) and diag_cat_value.strip():
+                param_counter += 1
+                dc_param = f"param_{param_counter}"
+                params[dc_param] = diag_cat_value.strip()
+                additional_diagnosis_filters.append(
+                    f"any(token IN split(toString(coalesce(dx.diagnosis_category, '')), ';') "
+                    f"WHERE toLower(trim(token)) = toLower(${dc_param}))"
+                )
 
         # Handle identifiers filter if present
         identifiers_early_filter = None

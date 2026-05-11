@@ -185,7 +185,7 @@ async def list_subjects(
         
         unknown_params = []
         for key in request.query_params.keys():
-            if not key.startswith("metadata.unharmonized.") and key not in allowed_params:
+            if key not in allowed_params:
                 unknown_params.append(key)
         
         if unknown_params:

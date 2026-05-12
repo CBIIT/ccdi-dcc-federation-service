@@ -76,6 +76,7 @@
       {
         "path": "unharmonized.associated_diagnosis_categories",
         "harmonized": false,
+        "wiki_url": null,
         "standard": {
           "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=6161017%20and%20ver_nr=1",
           "name": "caDSR CDE 6161017 disease_type"
@@ -210,6 +211,7 @@
       {
         "harmonized": false,
         "path": "unharmonized.diagnosis_category",
+        "wiki_url": null,
         "standard": {
           "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=6161017%20and%20ver_nr=1",
           "name": "caDSR CDE 6161017 disease_type"

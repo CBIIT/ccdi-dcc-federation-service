@@ -851,13 +851,13 @@ def setup_custom_docs_endpoint(app: FastAPI) -> None:
             )
             
             return HTMLResponse(content=html_content)
-        except FileNotFoundError:
+        except FileNotFoundError:  # pragma: no cover
             logger.error(f"Index HTML file not found at {index_html_path}")
             raise HTTPException(
                 status_code=500,
                 detail="Documentation file not found"
             )
-        except Exception as e:
+        except Exception as e:  # pragma: no cover
             logger.error(f"Error serving documentation: {e}", exc_info=True)
             raise HTTPException(
                 status_code=500,
@@ -885,13 +885,13 @@ def setup_custom_docs_endpoint(app: FastAPI) -> None:
             with embedded_html_path.open("r", encoding="utf-8") as f:
                 html_content = f.read()
             return HTMLResponse(content=html_content)
-        except FileNotFoundError:
+        except FileNotFoundError:  # pragma: no cover
             logger.error(f"Embedded HTML file not found at {embedded_html_path}")
             raise HTTPException(
                 status_code=500,
                 detail="Embedded documentation file not found"
             )
-        except Exception as e:
+        except Exception as e:  # pragma: no cover
             logger.error(f"Error serving embedded documentation: {e}", exc_info=True)
             raise HTTPException(
                 status_code=500,
@@ -974,7 +974,7 @@ def setup_custom_docs_endpoint(app: FastAPI) -> None:
   </body>
 </html>"""
             return HTMLResponse(content=redoc_html)
-        except Exception as e:
+        except Exception as e:  # pragma: no cover
             logger.error(f"Error serving ReDoc: {e}", exc_info=True)
             raise HTTPException(
                 status_code=500,

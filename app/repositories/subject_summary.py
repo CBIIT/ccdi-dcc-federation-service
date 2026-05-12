@@ -312,32 +312,8 @@ class SubjectSummary:
             if filtered_derived:
                 derived_where_clause = "WHERE " + " AND ".join(filtered_derived)
 
-        # Helper function to build identifiers_with_clause
-        def build_identifiers_with_clause(identifiers_condition):
-            """Build the WITH clause for identifiers condition."""
-            if not identifiers_condition:
-                return ""
-            if identifiers_condition.startswith(","):
-                case_statement = identifiers_condition[1:].strip()
-                return f"""
-        WITH {case_statement}"""
-            return identifiers_condition
-
-        # Helper function to build filtered where clause (without identifiers)
-        def build_filtered_where_clause(where_clause):
-            """Build WHERE clause without identifiers condition."""
-            if not where_clause:
-                return ""
-            filtered = where_clause.replace("WHERE p.participant_id IN id_list", "").replace("AND p.participant_id IN id_list", "").strip()
-            if not filtered:
-                return ""
-            if not filtered.startswith("WHERE"):
-                filtered = "WHERE " + filtered
-            return filtered
-
         # Determine if we need survival processing
         needs_survival_processing = derived_filters and ("vital_status" in derived_filters or "age_at_vital_status" in derived_filters)
-        needs_ethnicity_processing = derived_filters and "ethnicity" in derived_filters
 
         # Build survival processing logic if needed
         survival_processing = ""
@@ -787,345 +763,95 @@ class SubjectSummary:
             # Simple query without survival processing
             # Deduplicate by participant_id only to avoid duplicates from OPTIONAL MATCH relationships
             if where_clause or race_condition or identifiers_condition or derived_where_clause:
-                # If we have ethnicity filter, we need to calculate it first
-                if "ethnicity" in derived_filters:
-                    # When identifiers are used, ensure we count unique participants
-                    # Deduplicate early to avoid counting the same participant multiple times
-                    if identifiers_condition:
-                        # Build WHERE clause without identifiers condition (already applied)
-                        where_clause_filtered = where_clause.replace("WHERE p.participant_id IN id_list", "").replace("AND p.participant_id IN id_list", "").replace("p.participant_id IN id_list AND", "").replace("p.participant_id IN id_list", "").strip() if where_clause else ""
-                        # Clean up any "WHERE AND" or "AND AND" issues - do this multiple times to catch all cases
-                        while "WHERE AND" in where_clause_filtered or "AND AND" in where_clause_filtered:
-                            where_clause_filtered = where_clause_filtered.replace("WHERE AND", "WHERE").replace("AND AND", "AND").replace("WHERE WHERE", "WHERE").strip()
-                        # Remove leading AND
-                        while where_clause_filtered.startswith("AND "):
-                            where_clause_filtered = where_clause_filtered[4:].strip()
-                        # Remove trailing AND
-                        while where_clause_filtered.endswith(" AND"):
-                            where_clause_filtered = where_clause_filtered[:-4].strip()
-                        # Ensure it starts with WHERE if it has content (but only if it's not empty)
-                        if where_clause_filtered and where_clause_filtered.strip() and where_clause_filtered != "WHERE" and where_clause_filtered != "AND":
-                            if not where_clause_filtered.startswith("WHERE"):
-                                where_clause_filtered = "WHERE " + where_clause_filtered
-                        elif not where_clause_filtered or where_clause_filtered == "WHERE" or where_clause_filtered == "AND":
-                            where_clause_filtered = ""
+                # When identifiers are used, ensure we count unique participants
+                # The OPTIONAL MATCH for study can create duplicates if participant belongs to multiple studies
+                # So we need to deduplicate early by participant_id
+                if identifiers_condition:
+                    # Build WHERE clause without identifiers condition (already applied)
+                    where_clause_filtered = where_clause.replace("WHERE p.participant_id IN id_list", "").replace("AND p.participant_id IN id_list", "").replace("p.participant_id IN id_list AND", "").replace("p.participant_id IN id_list", "").strip() if where_clause else ""
+                    # Clean up any "WHERE AND" or "AND AND" issues
+                    while "WHERE AND" in where_clause_filtered or "AND AND" in where_clause_filtered:
+                        where_clause_filtered = where_clause_filtered.replace("WHERE AND", "WHERE").replace("AND AND", "AND").replace("WHERE WHERE", "WHERE").strip()
+                    # Remove leading AND
+                    while where_clause_filtered.startswith("AND "):
+                        where_clause_filtered = where_clause_filtered[4:].strip()
+                    # Remove trailing AND
+                    while where_clause_filtered.endswith(" AND"):
+                        where_clause_filtered = where_clause_filtered[:-4].strip()
+                    # Ensure it starts with WHERE if it has content (but only if it's not empty)
+                    if where_clause_filtered and where_clause_filtered.strip() and where_clause_filtered != "WHERE" and where_clause_filtered != "AND":
+                        if not where_clause_filtered.startswith("WHERE"):
+                            where_clause_filtered = "WHERE " + where_clause_filtered
+                    elif not where_clause_filtered or where_clause_filtered == "WHERE" or where_clause_filtered == "AND":
+                        where_clause_filtered = ""
 
-                        # Create a WITH clause version of identifiers_condition for this query
-                        # Extract the CASE statement from identifiers_condition and format it properly
-                        if identifiers_condition.startswith(","):
-                            # Remove leading comma and create proper WITH clause
-                            case_statement = identifiers_condition[1:].strip()  # Remove comma and whitespace
-                            # First compute id_list, then match participants
-                            identifiers_with_clause = f"""
+                    # Create a WITH clause version of identifiers_condition for this query
+                    # Extract the CASE statement from identifiers_condition and format it properly
+                    if identifiers_condition.startswith(","):
+                        # Remove leading comma and create proper WITH clause
+                        case_statement = identifiers_condition[1:].strip()  # Remove comma and whitespace
+                        # First compute id_list, then match participants
+                        identifiers_with_clause = f"""
         WITH {case_statement}"""
-                        else:
-                            identifiers_with_clause = identifiers_condition
+                    else:
+                        identifiers_with_clause = identifiers_condition
 
-                        # Handle depositions filter if present
-                        if dep_param:
-                            # Remove depositions filter from where_clause_filtered since we'll use required MATCH
-                            other_filters = where_clause_filtered.replace(f"st.study_id {deposition_operator} ${dep_param}", "").replace(f"AND st.study_id {deposition_operator} ${dep_param}", "").replace(f"st.study_id {deposition_operator} ${dep_param} AND", "").strip() if where_clause_filtered else ""
-                            # Clean up any double WHERE or AND issues
-                            if other_filters:
-                                other_filters = other_filters.replace("WHERE WHERE", "WHERE").replace("AND AND", "AND").replace("  ", " ").strip()
-                                # Remove WHERE prefix
-                                if other_filters.startswith("WHERE"):
-                                    other_filters = other_filters[6:].strip()  # Remove "WHERE " prefix
-                                # Remove leading AND
-                                while other_filters.startswith("AND "):
-                                    other_filters = other_filters[4:].strip()
-                                # Remove trailing AND
-                                while other_filters.endswith(" AND"):
-                                    other_filters = other_filters[:-4].strip()
-                                # Final check - if empty after cleanup, set to empty string
-                                if not other_filters or other_filters == "AND":
-                                    other_filters = ""
+                    # Handle depositions filter if present
+                    if dep_param:
+                        dep_filter_str = f"st.study_id {deposition_operator} ${dep_param}"
+                        # Remove depositions filter from where_clause_filtered since it's already in the MATCH WHERE
+                        other_filters = where_clause_filtered.replace(f"WHERE {dep_filter_str}", "").replace(f"AND {dep_filter_str}", "").replace(f"{dep_filter_str} AND", "").replace(dep_filter_str, "").strip() if where_clause_filtered else ""
+                        # Clean up any double WHERE or AND issues - do this multiple times to catch all cases
+                        while "WHERE AND" in other_filters or "AND AND" in other_filters:
+                            other_filters = other_filters.replace("WHERE AND", "WHERE").replace("AND AND", "AND").replace("WHERE WHERE", "WHERE").strip()
+                        # Remove leading AND
+                        while other_filters.startswith("AND "):
+                            other_filters = other_filters[4:].strip()
+                        # Remove trailing AND
+                        while other_filters.endswith(" AND"):
+                            other_filters = other_filters[:-4].strip()
+                        # Remove WHERE prefix if present
+                        if other_filters.startswith("WHERE"):
+                            other_filters = other_filters[6:].strip()
+                        # If it's just "WHERE" or empty or "AND", make it empty
+                        if other_filters == "WHERE" or other_filters == "AND" or not other_filters.strip():
+                            other_filters = ""
 
-                            # Build WITH clause with optional WHERE
-                            with_clause = f"WITH DISTINCT p.participant_id AS participant_id, p, st.study_id AS study_id{race_condition}"
-                            if other_filters:
-                                with_clause += f"\n        WHERE {other_filters}"
+                        # Build WITH clause with optional WHERE
+                        with_clause = f"WITH DISTINCT participant_id, p, st.study_id AS study_id{race_condition}"
+                        if other_filters and other_filters.strip():
+                            with_clause += f"\n        WHERE {other_filters}"
 
-                            cypher = f"""
+                        cypher = f"""
         {identifiers_with_clause}
         MATCH (p:participant)
         WHERE p.participant_id IN id_list
         WITH DISTINCT p.participant_id AS participant_id, p
         MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         WHERE st.study_id {deposition_operator} ${dep_param}
-        {with_clause}
-        WITH participant_id, p, study_id,
-             CASE
-               WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
-               ELSE 'Not reported'
-             END AS ethnicity_value
-        {derived_where_clause}{diagnosis_search_fragment}{diag_category_fragment}
-        WITH DISTINCT participant_id, study_id
-        RETURN count(*) as total_count
-        """.strip()
-                        else:
-                            # No depositions filter - use OPTIONAL MATCH for studies
-                            # Build WITH clause with optional WHERE
-                            # Note: st comes from OPTIONAL MATCH, so we need to handle NULL case
-                            # Remove any st.study_id conditions from where_clause_filtered since st might be NULL
-                            where_clause_clean = where_clause_filtered
-                            if where_clause_clean:
-                                # Remove st.study_id conditions (depositions filter) - not applicable with OPTIONAL MATCH
-                                where_clause_clean = where_clause_clean.replace("st.study_id =", "").replace("st.study_id IN", "").replace("st.study_id=", "").replace("st.study_idIN", "")
-                                # Clean up any resulting "AND AND" or trailing/leading AND
-                                where_clause_clean = where_clause_clean.replace("AND AND", "AND").strip()
-                                while where_clause_clean.startswith("AND "):
-                                    where_clause_clean = where_clause_clean[4:].strip()
-                                while where_clause_clean.endswith(" AND"):
-                                    where_clause_clean = where_clause_clean[:-4].strip()
-                                if where_clause_clean == "WHERE" or where_clause_clean == "AND" or not where_clause_clean.strip():
-                                    where_clause_clean = ""
-
-                            with_clause = f"WITH DISTINCT p.participant_id AS participant_id, p, st.study_id AS study_id{race_condition}"
-                            if where_clause_clean:
-                                # Remove "WHERE " prefix if present
-                                where_conditions = where_clause_clean.replace("WHERE ", "").strip()
-                                # Remove any references to study_id (the variable) since it's being defined in this WITH clause
-                                # and WHERE clause is evaluated after variable assignments, but we want to be safe
-                                where_conditions = where_conditions.replace("study_id =", "").replace("study_id IN", "").replace("study_id=", "").replace("study_idIN", "")
-                                # Clean up any resulting "AND AND" or trailing/leading AND
-                                where_conditions = where_conditions.replace("AND AND", "AND").strip()
-                                while where_conditions.startswith("AND "):
-                                    where_conditions = where_conditions[4:].strip()
-                                while where_conditions.endswith(" AND"):
-                                    where_conditions = where_conditions[:-4].strip()
-                                if where_conditions and where_conditions.strip() and where_conditions != "AND":
-                                    with_clause += f"\n        WHERE {where_conditions}"
-
-                            cypher = f"""
-        {identifiers_with_clause}
-        MATCH (p:participant)
-        WHERE p.participant_id IN id_list
-        WITH DISTINCT p.participant_id AS participant_id, p
-        OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
-        WHERE st IS NOT NULL
-        {with_clause}
-        WITH participant_id, p, study_id,
-             CASE
-               WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
-               ELSE 'Not reported'
-             END AS ethnicity_value
-        {derived_where_clause}{diagnosis_search_fragment}{diag_category_fragment}
+        {with_clause}{diagnosis_search_fragment}{diag_category_fragment}
         WITH DISTINCT participant_id, study_id
         RETURN count(*) as total_count
         """.strip()
                     else:
-                        # No identifiers - handle depositions filter if present
-                        if dep_param:
-                            # Remove depositions filter from where_clause since it's already in the MATCH WHERE
-                            dep_filter_str = f"st.study_id {deposition_operator} ${dep_param}"
-                            other_filters = where_clause.replace(f"WHERE {dep_filter_str}", "").replace(f"AND {dep_filter_str}", "").replace(f"{dep_filter_str} AND", "").replace(dep_filter_str, "").strip() if where_clause else ""
-                            # Clean up any double WHERE or AND issues - do this multiple times to catch all cases
-                            while "WHERE AND" in other_filters or "AND AND" in other_filters:
-                                other_filters = other_filters.replace("WHERE AND", "WHERE").replace("AND AND", "AND").replace("WHERE WHERE", "WHERE").strip()
-                            # Remove leading AND
-                            while other_filters.startswith("AND "):
-                                other_filters = other_filters[4:].strip()
-                            # Remove trailing AND
-                            while other_filters.endswith(" AND"):
-                                other_filters = other_filters[:-4].strip()
-                            # Remove WHERE prefix if present
-                            if other_filters.startswith("WHERE"):
-                                other_filters = other_filters[6:].strip()
-                            # If it's just "WHERE" or empty or "AND", make it empty
-                            if other_filters == "WHERE" or other_filters == "AND" or not other_filters.strip():
-                                other_filters = ""
+                        # Build WITH clause with optional WHERE
+                        # Need to include st.study_id AS study_id after OPTIONAL MATCH
+                        with_clause = f"WITH DISTINCT participant_id, p, st.study_id AS study_id{race_condition}"
+                        if where_clause_filtered:
+                            # Remove "WHERE " prefix if present
+                            where_conditions = where_clause_filtered.replace("WHERE ", "").strip()
+                            # Remove any references to study_id (the variable) since it's being defined in this WITH clause
+                            where_conditions = where_conditions.replace("study_id =", "").replace("study_id IN", "").replace("study_id=", "").replace("study_idIN", "")
+                            # Clean up any resulting "AND AND" or trailing/leading AND
+                            where_conditions = where_conditions.replace("AND AND", "AND").strip()
+                            while where_conditions.startswith("AND "):
+                                where_conditions = where_conditions[4:].strip()
+                            while where_conditions.endswith(" AND"):
+                                where_conditions = where_conditions[:-4].strip()
+                            if where_conditions and where_conditions.strip() and where_conditions != "AND":
+                                with_clause += f"\n        WHERE {where_conditions}"
 
-                            # Build WITH clause with optional WHERE
-                            with_clause = f"WITH DISTINCT p.participant_id AS participant_id, p, st.study_id AS study_id{race_condition}"
-                            if other_filters and other_filters.strip():
-                                with_clause += f"\n        WHERE {other_filters}"
-
-                            cypher = f"""
-        MATCH (p:participant)
-        MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
-        WHERE st.study_id {deposition_operator} ${dep_param}
-        {with_clause}
-        WITH participant_id, p, study_id,
-             CASE
-               WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
-               ELSE 'Not reported'
-             END AS ethnicity_value
-        {derived_where_clause}{diagnosis_search_fragment}{diag_category_fragment}
-        WITH DISTINCT participant_id, study_id
-        RETURN count(*) as total_count
-        """.strip()
-                        else:
-                            # Handle depositions filter if present
-                            if dep_param:
-                                # Remove depositions filter from where_clause since we'll use required MATCH
-                                other_filters = where_clause.replace(f"st.study_id {deposition_operator} ${dep_param}", "").replace(f"AND st.study_id {deposition_operator} ${dep_param}", "").replace(f"st.study_id {deposition_operator} ${dep_param} AND", "").strip() if where_clause else ""
-                                # Clean up any double WHERE or AND issues
-                                if other_filters:
-                                    other_filters = other_filters.replace("WHERE WHERE", "WHERE").replace("AND AND", "AND").replace("  ", " ").strip()
-                                    # Remove WHERE prefix
-                                    if other_filters.startswith("WHERE"):
-                                        other_filters = other_filters[6:].strip()  # Remove "WHERE " prefix
-                                    # Remove leading AND
-                                    while other_filters.startswith("AND "):
-                                        other_filters = other_filters[4:].strip()
-                                    # Remove trailing AND
-                                    while other_filters.endswith(" AND"):
-                                        other_filters = other_filters[:-4:].strip()
-                                    # Final check - if empty after cleanup, set to empty string
-                                    if not other_filters or other_filters == "AND":
-                                        other_filters = ""
-
-                                # Build WITH clause with optional WHERE
-                                with_clause = f"WITH DISTINCT p.participant_id AS participant_id, p, st.study_id AS study_id{race_condition}{identifiers_condition}"
-                                if other_filters:
-                                    with_clause += f"\n        WHERE {other_filters}"
-
-                                cypher = f"""
-        MATCH (p:participant)
-        MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
-        WHERE st.study_id {deposition_operator} ${dep_param}
-        {with_clause}
-        WITH participant_id, p, study_id,
-             CASE
-               WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
-               ELSE 'Not reported'
-             END AS ethnicity_value
-        {derived_where_clause}{diagnosis_search_fragment}{diag_category_fragment}
-        WITH DISTINCT participant_id, study_id
-        RETURN count(*) as total_count
-        """.strip()
-                            else:
-                                # Build WITH clause with optional WHERE
-                                # Note: st comes from OPTIONAL MATCH, so we need to handle NULL case
-                                # Remove any st.study_id conditions from where_clause since st might be NULL
-                                where_clause_clean = where_clause
-                                if where_clause_clean:
-                                    # Remove st.study_id conditions (depositions filter) - not applicable with OPTIONAL MATCH
-                                    where_clause_clean = where_clause_clean.replace("st.study_id =", "").replace("st.study_id IN", "").replace("st.study_id=", "").replace("st.study_idIN", "")
-                                    # Clean up any resulting "AND AND" or trailing/leading AND
-                                    where_clause_clean = where_clause_clean.replace("AND AND", "AND").strip()
-                                    while where_clause_clean.startswith("AND "):
-                                        where_clause_clean = where_clause_clean[4:].strip()
-                                    while where_clause_clean.endswith(" AND"):
-                                        where_clause_clean = where_clause_clean[:-4].strip()
-                                    if where_clause_clean == "WHERE" or where_clause_clean == "AND" or not where_clause_clean.strip():
-                                        where_clause_clean = ""
-
-                                with_clause = f"WITH DISTINCT p.participant_id AS participant_id, p, st.study_id AS study_id{race_condition}{identifiers_condition}"
-                                if where_clause_clean:
-                                    # Remove "WHERE " prefix if present
-                                    where_conditions = where_clause_clean.replace("WHERE ", "").strip()
-                                    # Remove any references to study_id (the variable) since it's being defined in this WITH clause
-                                    # and WHERE clause is evaluated after variable assignments, but we want to be safe
-                                    where_conditions = where_conditions.replace("study_id =", "").replace("study_id IN", "").replace("study_id=", "").replace("study_idIN", "")
-                                    # Clean up any resulting "AND AND" or trailing/leading AND
-                                    where_conditions = where_conditions.replace("AND AND", "AND").strip()
-                                    while where_conditions.startswith("AND "):
-                                        where_conditions = where_conditions[4:].strip()
-                                    while where_conditions.endswith(" AND"):
-                                        where_conditions = where_conditions[:-4].strip()
-                                    if where_conditions and where_conditions.strip() and where_conditions != "AND":
-                                        with_clause += f"\n        WHERE {where_conditions}"
-
-                                cypher = f"""
-        MATCH (p:participant)
-        // Use participant -> consent_group -> study relationship to match the main query's relationship path
-        {"MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)\n        WHERE st.study_id " + deposition_operator + " $" + dep_param if dep_param else "OPTIONAL MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)\n        WHERE st IS NOT NULL"}
-        {with_clause}{diagnosis_search_fragment}{diag_category_fragment}
-        WITH DISTINCT participant_id, study_id
-        RETURN count(*) as total_count
-        """.strip()
-                else:
-                    # When identifiers are used, ensure we count unique participants
-                    # The OPTIONAL MATCH for study can create duplicates if participant belongs to multiple studies
-                    # So we need to deduplicate early by participant_id
-                    if identifiers_condition:
-                        # Build WHERE clause without identifiers condition (already applied)
-                        where_clause_filtered = where_clause.replace("WHERE p.participant_id IN id_list", "").replace("AND p.participant_id IN id_list", "").replace("p.participant_id IN id_list AND", "").replace("p.participant_id IN id_list", "").strip() if where_clause else ""
-                        # Clean up any "WHERE AND" or "AND AND" issues
-                        while "WHERE AND" in where_clause_filtered or "AND AND" in where_clause_filtered:
-                            where_clause_filtered = where_clause_filtered.replace("WHERE AND", "WHERE").replace("AND AND", "AND").replace("WHERE WHERE", "WHERE").strip()
-                        # Remove leading AND
-                        while where_clause_filtered.startswith("AND "):
-                            where_clause_filtered = where_clause_filtered[4:].strip()
-                        # Remove trailing AND
-                        while where_clause_filtered.endswith(" AND"):
-                            where_clause_filtered = where_clause_filtered[:-4].strip()
-                        # Ensure it starts with WHERE if it has content (but only if it's not empty)
-                        if where_clause_filtered and where_clause_filtered.strip() and where_clause_filtered != "WHERE" and where_clause_filtered != "AND":
-                            if not where_clause_filtered.startswith("WHERE"):
-                                where_clause_filtered = "WHERE " + where_clause_filtered
-                        elif not where_clause_filtered or where_clause_filtered == "WHERE" or where_clause_filtered == "AND":
-                            where_clause_filtered = ""
-
-                        # Create a WITH clause version of identifiers_condition for this query
-                        # Extract the CASE statement from identifiers_condition and format it properly
-                        if identifiers_condition.startswith(","):
-                            # Remove leading comma and create proper WITH clause
-                            case_statement = identifiers_condition[1:].strip()  # Remove comma and whitespace
-                            # First compute id_list, then match participants
-                            identifiers_with_clause = f"""
-        WITH {case_statement}"""
-                        else:
-                            identifiers_with_clause = identifiers_condition
-
-                        # Handle depositions filter if present
-                        if dep_param:
-                            dep_filter_str = f"st.study_id {deposition_operator} ${dep_param}"
-                            # Remove depositions filter from where_clause_filtered since it's already in the MATCH WHERE
-                            other_filters = where_clause_filtered.replace(f"WHERE {dep_filter_str}", "").replace(f"AND {dep_filter_str}", "").replace(f"{dep_filter_str} AND", "").replace(dep_filter_str, "").strip() if where_clause_filtered else ""
-                            # Clean up any double WHERE or AND issues - do this multiple times to catch all cases
-                            while "WHERE AND" in other_filters or "AND AND" in other_filters:
-                                other_filters = other_filters.replace("WHERE AND", "WHERE").replace("AND AND", "AND").replace("WHERE WHERE", "WHERE").strip()
-                            # Remove leading AND
-                            while other_filters.startswith("AND "):
-                                other_filters = other_filters[4:].strip()
-                            # Remove trailing AND
-                            while other_filters.endswith(" AND"):
-                                other_filters = other_filters[:-4].strip()
-                            # Remove WHERE prefix if present
-                            if other_filters.startswith("WHERE"):
-                                other_filters = other_filters[6:].strip()
-                            # If it's just "WHERE" or empty or "AND", make it empty
-                            if other_filters == "WHERE" or other_filters == "AND" or not other_filters.strip():
-                                other_filters = ""
-
-                            # Build WITH clause with optional WHERE
-                            with_clause = f"WITH DISTINCT participant_id, p, st.study_id AS study_id{race_condition}"
-                            if other_filters and other_filters.strip():
-                                with_clause += f"\n        WHERE {other_filters}"
-
-                            cypher = f"""
-        {identifiers_with_clause}
-        MATCH (p:participant)
-        WHERE p.participant_id IN id_list
-        WITH DISTINCT p.participant_id AS participant_id, p
-        MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
-        WHERE st.study_id {deposition_operator} ${dep_param}
-        {with_clause}{diagnosis_search_fragment}{diag_category_fragment}
-        WITH DISTINCT participant_id, study_id
-        RETURN count(*) as total_count
-        """.strip()
-                        else:
-                            # Build WITH clause with optional WHERE
-                            # Need to include st.study_id AS study_id after OPTIONAL MATCH
-                            with_clause = f"WITH DISTINCT participant_id, p, st.study_id AS study_id{race_condition}"
-                            if where_clause_filtered:
-                                # Remove "WHERE " prefix if present
-                                where_conditions = where_clause_filtered.replace("WHERE ", "").strip()
-                                # Remove any references to study_id (the variable) since it's being defined in this WITH clause
-                                where_conditions = where_conditions.replace("study_id =", "").replace("study_id IN", "").replace("study_id=", "").replace("study_idIN", "")
-                                # Clean up any resulting "AND AND" or trailing/leading AND
-                                where_conditions = where_conditions.replace("AND AND", "AND").strip()
-                                while where_conditions.startswith("AND "):
-                                    where_conditions = where_conditions[4:].strip()
-                                while where_conditions.endswith(" AND"):
-                                    where_conditions = where_conditions[:-4].strip()
-                                if where_conditions and where_conditions.strip() and where_conditions != "AND":
-                                    with_clause += f"\n        WHERE {where_conditions}"
-
-                            cypher = f"""
+                        cypher = f"""
         {identifiers_with_clause}
         MATCH (p:participant)
         WHERE p.participant_id IN id_list
@@ -1136,52 +862,52 @@ class SubjectSummary:
         WITH DISTINCT participant_id, study_id
         RETURN count(*) as total_count
         """.strip()
-                    else:
-                        # No identifiers - handle depositions filter if present
-                        if dep_param:
-                            # Remove depositions filter from where_clause since it's already in the MATCH WHERE
-                            dep_filter_str = f"st.study_id {deposition_operator} ${dep_param}"
-                            other_filters = where_clause.replace(f"WHERE {dep_filter_str}", "").replace(f"AND {dep_filter_str}", "").replace(f"{dep_filter_str} AND", "").replace(dep_filter_str, "").strip() if where_clause else ""
-                            # Clean up any double WHERE or AND issues - do this multiple times to catch all cases
-                            while "WHERE AND" in other_filters or "AND AND" in other_filters:
-                                other_filters = other_filters.replace("WHERE AND", "WHERE").replace("AND AND", "AND").replace("WHERE WHERE", "WHERE").strip()
-                            # Remove leading AND
-                            while other_filters.startswith("AND "):
-                                other_filters = other_filters[4:].strip()
-                            # Remove trailing AND
-                            while other_filters.endswith(" AND"):
-                                other_filters = other_filters[:-4].strip()
-                            # Remove WHERE prefix if present
-                            if other_filters.startswith("WHERE"):
-                                other_filters = other_filters[6:].strip()
-                            # If it's just "WHERE" or empty or "AND", make it empty
-                            if other_filters == "WHERE" or other_filters == "AND" or not other_filters.strip():
-                                other_filters = ""
+                else:
+                    # No identifiers - handle depositions filter if present
+                    if dep_param:
+                        # Remove depositions filter from where_clause since it's already in the MATCH WHERE
+                        dep_filter_str = f"st.study_id {deposition_operator} ${dep_param}"
+                        other_filters = where_clause.replace(f"WHERE {dep_filter_str}", "").replace(f"AND {dep_filter_str}", "").replace(f"{dep_filter_str} AND", "").replace(dep_filter_str, "").strip() if where_clause else ""
+                        # Clean up any double WHERE or AND issues - do this multiple times to catch all cases
+                        while "WHERE AND" in other_filters or "AND AND" in other_filters:
+                            other_filters = other_filters.replace("WHERE AND", "WHERE").replace("AND AND", "AND").replace("WHERE WHERE", "WHERE").strip()
+                        # Remove leading AND
+                        while other_filters.startswith("AND "):
+                            other_filters = other_filters[4:].strip()
+                        # Remove trailing AND
+                        while other_filters.endswith(" AND"):
+                            other_filters = other_filters[:-4].strip()
+                        # Remove WHERE prefix if present
+                        if other_filters.startswith("WHERE"):
+                            other_filters = other_filters[6:].strip()
+                        # If it's just "WHERE" or empty or "AND", make it empty
+                        if other_filters == "WHERE" or other_filters == "AND" or not other_filters.strip():
+                            other_filters = ""
 
-                            # Build WITH clause with optional WHERE
-                            with_clause = f"WITH DISTINCT p.participant_id AS participant_id, p, st.study_id AS study_id{race_condition}"
-                            # Combine normal filters (if any) + race token filter (if any) into a single WHERE,
-                            # evaluated while race_tokens/pr_tokens are in scope (same WITH clause).
-                            other_filters_clean = ""
-                            if other_filters and other_filters.strip():
-                                # Remove any references to study_id (the variable) since it's being defined in this WITH clause
-                                other_filters_clean = other_filters.replace("study_id =", "").replace("study_id IN", "").replace("study_id=", "").replace("study_idIN", "")
-                                # Clean up any resulting "AND AND" or trailing/leading AND
-                                other_filters_clean = other_filters_clean.replace("AND AND", "AND").strip()
-                                while other_filters_clean.startswith("AND "):
-                                    other_filters_clean = other_filters_clean[4:].strip()
-                                while other_filters_clean.endswith(" AND"):
-                                    other_filters_clean = other_filters_clean[:-4].strip()
-                                if other_filters_clean == "AND" or not other_filters_clean.strip():
-                                    other_filters_clean = ""
-                            combined_with_where = combine_where_clauses(
-                                f"WHERE {other_filters_clean}" if other_filters_clean else "",
-                                race_filter_condition,
-                            )
-                            if combined_with_where:
-                                with_clause += f"\n        {combined_with_where}"
+                        # Build WITH clause with optional WHERE
+                        with_clause = f"WITH DISTINCT p.participant_id AS participant_id, p, st.study_id AS study_id{race_condition}"
+                        # Combine normal filters (if any) + race token filter (if any) into a single WHERE,
+                        # evaluated while race_tokens/pr_tokens are in scope (same WITH clause).
+                        other_filters_clean = ""
+                        if other_filters and other_filters.strip():
+                            # Remove any references to study_id (the variable) since it's being defined in this WITH clause
+                            other_filters_clean = other_filters.replace("study_id =", "").replace("study_id IN", "").replace("study_id=", "").replace("study_idIN", "")
+                            # Clean up any resulting "AND AND" or trailing/leading AND
+                            other_filters_clean = other_filters_clean.replace("AND AND", "AND").strip()
+                            while other_filters_clean.startswith("AND "):
+                                other_filters_clean = other_filters_clean[4:].strip()
+                            while other_filters_clean.endswith(" AND"):
+                                other_filters_clean = other_filters_clean[:-4].strip()
+                            if other_filters_clean == "AND" or not other_filters_clean.strip():
+                                other_filters_clean = ""
+                        combined_with_where = combine_where_clauses(
+                            f"WHERE {other_filters_clean}" if other_filters_clean else "",
+                            race_filter_condition,
+                        )
+                        if combined_with_where:
+                            with_clause += f"\n        {combined_with_where}"
 
-                            cypher = f"""
+                        cypher = f"""
         MATCH (p:participant)
         MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         WHERE st.study_id {deposition_operator} ${dep_param}
@@ -1189,32 +915,32 @@ class SubjectSummary:
         WITH DISTINCT participant_id, study_id
         RETURN count(*) as total_count
         """.strip()
-                        else:
-                            # Build WITH clause with optional WHERE
-                            # Note: st comes from OPTIONAL MATCH, so we need to handle NULL case
-                            with_clause = f"WITH DISTINCT p.participant_id AS participant_id, p, st.study_id AS study_id{race_condition}{identifiers_condition}"
-                            where_conditions_clean = ""
-                            if where_clause:
-                                # Remove "WHERE " prefix if present
-                                where_conditions_clean = where_clause.replace("WHERE ", "").strip()
-                                # Remove any references to study_id (the variable) since it's being defined in this WITH clause
-                                where_conditions_clean = where_conditions_clean.replace("study_id =", "").replace("study_id IN", "").replace("study_id=", "").replace("study_idIN", "")
-                                # Clean up any resulting "AND AND" or trailing/leading AND
-                                where_conditions_clean = where_conditions_clean.replace("AND AND", "AND").strip()
-                                while where_conditions_clean.startswith("AND "):
-                                    where_conditions_clean = where_conditions_clean[4:].strip()
-                                while where_conditions_clean.endswith(" AND"):
-                                    where_conditions_clean = where_conditions_clean[:-4].strip()
-                                if where_conditions_clean == "AND" or not where_conditions_clean.strip():
-                                    where_conditions_clean = ""
-                            combined_with_where = combine_where_clauses(
-                                f"WHERE {where_conditions_clean}" if where_conditions_clean else "",
-                                race_filter_condition,
-                            )
-                            if combined_with_where:
-                                with_clause += f"\n        {combined_with_where}"
+                    else:
+                        # Build WITH clause with optional WHERE
+                        # Note: st comes from OPTIONAL MATCH, so we need to handle NULL case
+                        with_clause = f"WITH DISTINCT p.participant_id AS participant_id, p, st.study_id AS study_id{race_condition}{identifiers_condition}"
+                        where_conditions_clean = ""
+                        if where_clause:
+                            # Remove "WHERE " prefix if present
+                            where_conditions_clean = where_clause.replace("WHERE ", "").strip()
+                            # Remove any references to study_id (the variable) since it's being defined in this WITH clause
+                            where_conditions_clean = where_conditions_clean.replace("study_id =", "").replace("study_id IN", "").replace("study_id=", "").replace("study_idIN", "")
+                            # Clean up any resulting "AND AND" or trailing/leading AND
+                            where_conditions_clean = where_conditions_clean.replace("AND AND", "AND").strip()
+                            while where_conditions_clean.startswith("AND "):
+                                where_conditions_clean = where_conditions_clean[4:].strip()
+                            while where_conditions_clean.endswith(" AND"):
+                                where_conditions_clean = where_conditions_clean[:-4].strip()
+                            if where_conditions_clean == "AND" or not where_conditions_clean.strip():
+                                where_conditions_clean = ""
+                        combined_with_where = combine_where_clauses(
+                            f"WHERE {where_conditions_clean}" if where_conditions_clean else "",
+                            race_filter_condition,
+                        )
+                        if combined_with_where:
+                            with_clause += f"\n        {combined_with_where}"
 
-                            cypher = f"""
+                        cypher = f"""
         MATCH (p:participant)
         // Use participant -> consent_group -> study relationship to match the main query's relationship path
         {"MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)\n        WHERE st.study_id " + deposition_operator + " $" + dep_param if dep_param else "OPTIONAL MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)\n        WHERE st IS NOT NULL"}

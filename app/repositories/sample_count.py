@@ -79,22 +79,6 @@ class SampleCount:
                 entity_type="sample"
             )
         
-        # Note: Participant fields (race, ethnicity, associated_diagnoses, sex, vital_status, age_at_vital_status)
-        # are not supported for sample count endpoints - only sample metadata fields are allowed
-        
-        # Build WHERE conditions and parameters with relationships
-        # Map field to correct node based on field type
-        # Participant fields come from participant node
-        # Sample metadata fields come from sample, sequencing_file, pathology_file, diagnosis, or study nodes
-        participant_field_mapping = {
-            "sex": "p.sex_at_birth",
-            "race": "p.race",
-            "ethnicity": "p.ethnicity",
-            "vital_status": "p.vital_status",
-            "age_at_vital_status": "p.age_at_vital_status",
-            "associated_diagnoses": "d.diagnosis"  # Special case - from diagnosis nodes
-        }
-        
         # Sample metadata field mapping - maps to the actual node and property
         sample_metadata_field_mapping = {
             "disease_phase": ("d", "disease_phase"),  # From diagnosis node
@@ -114,22 +98,14 @@ class SampleCount:
             "diagnosis": ("d", "diagnosis")  # From diagnosis node
         }
         
-        # Determine if this is a participant field or sample metadata field
-        is_participant_field = field in participant_field_mapping
         is_sample_metadata_field = field in sample_metadata_field_mapping
-        
+
         # Flag to track if we're using a combined query (total + missing + values in one query)
         # Currently only used for library_source_material when no filters
         is_combined_query = False
-        
-        if is_participant_field:
-            node_field = participant_field_mapping[field]
-        elif is_sample_metadata_field:
-            node_alias, property_name = sample_metadata_field_mapping[field]
-            node_field = f"{node_alias}.{property_name}"
-        else:
-            # Fallback (should not reach here due to validation above)
-            node_field = f"p.{field}"
+
+        node_alias, property_name = sample_metadata_field_mapping[field]
+        node_field = f"{node_alias}.{property_name}"
         
         # Build base WHERE conditions for filtering
         base_where_conditions = []
@@ -1021,30 +997,7 @@ class SampleCount:
                 RETURN toString(value) as value, count(DISTINCT sa) AS count
                 ORDER BY count DESC, value ASC
                 """.strip()
-            else:
-                # Participant fields - use existing pattern but ensure study paths
-                # Only include samples that have a path to a study
-                # Path 1: sample -> cell_line -> study
-                # Path 2: sample -> participant -> consent_group -> study
-                cypher = f"""
-                MATCH (sa:sample)-[:of_sample]->(p:participant)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                WITH sa, p,
-                     size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
-                     size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
-                WHERE has_study1 > 0 OR has_study2 > 0
-                {field_where_clause}
-                WITH DISTINCT sa, 
-                     head(collect(DISTINCT {node_field})) as value
-                WHERE value IS NOT NULL
-                  AND toString(value) <> ''
-                  AND trim(toString(value)) <> ''
-                  AND toString(value) <> '-999'
-                  AND trim(toString(value)) <> '-999'
-                RETURN toString(value) as value, count(DISTINCT sa) AS count
-                ORDER BY count DESC, value ASC
-                """.strip()
-        
+
         logger.info(
             "Executing count_samples_by_field Cypher query",
             cypher=cypher[:200] if isinstance(cypher, str) else "multiple queries",
@@ -1735,20 +1688,7 @@ class SampleCount:
                 WITH DISTINCT sa.sample_id as sample_id, sid as study_id
                 RETURN count(*) as total
                 """.strip()
-                else:
-                    # Participant fields - need to include study paths and require st IS NOT NULL
-                    total_cypher = f"""
-                MATCH (sa:sample)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                WITH sa, p,
-                     size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
-                     size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
-                WHERE has_study1 > 0 OR has_study2 > 0
-                {base_where_clause.replace('WHERE ', 'AND ') if base_where_clause else ''}
-                RETURN count(DISTINCT sa.sample_id) as total
-                """.strip()
-            
+
             # Missing: samples without the field value (NULL or missing relationship)
             if not base_where_clause:
                 # No filters - count samples with NULL field

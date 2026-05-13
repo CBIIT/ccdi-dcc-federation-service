@@ -2,6 +2,8 @@
 Shared Cypher fragments for subject diagnosis filtering.
 
 Used by SubjectRepository list queries and SubjectSummary (diagnosis endpoint).
+Sample diagnosis search reuses `diagnosis_category_contains_predicate` for `/sample-diagnosis`
+`diagnosis_category` (substring on full field, same as this module's subject-diagnosis category filter).
 Aligned with sample diagnosis search: `see diagnosis_comment` sentinel handling.
 """
 

@@ -112,6 +112,9 @@ in the `responses::Samples` schema.""",
                                 "metadata": {
                                     "disease_phase": {"value": "Initial Diagnosis"},
                                     "diagnosis": {"value": "Neuroblastoma","comment": "null" },
+                                    "diagnosis_category": [
+                                        {"value": "Brain and Spinal Cord Tumors"}
+                                    ],
                                     "age_at_diagnosis": {"value": 10},
                                     "anatomical_sites": [
                                         {"value": "C71.9 : Brain, NOS"}
@@ -580,6 +583,9 @@ async def count_samples_by_field(
                         "metadata": {
                             "disease_phase": {"value": "Initial Diagnosis"},
                             "diagnosis": {"value": "Neuroblastoma","comment": "null" },
+                            "diagnosis_category": [
+                                {"value": "Brain and Spinal Cord Tumors"}
+                            ],
                             "age_at_diagnosis": {"value": 10},
                             "anatomical_sites": [
                                 {"value": "C71.9 : Brain, NOS"}

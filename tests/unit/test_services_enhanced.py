@@ -446,6 +446,30 @@ class TestSampleServiceEnhanced:
         assert total_count == 42
         service.repository.get_samples_for_diagnosis_endpoint.assert_awaited_once()
 
+    async def test_get_samples_for_diagnosis_endpoint_diagnosis_category_only_forwards_filters(
+        self, service
+    ):
+        """Test diagnosis_category-only requests are forwarded unchanged to repository path."""
+        mock_samples = [Mock()]
+        service.repository.get_samples_for_diagnosis_endpoint = AsyncMock(return_value=(mock_samples, 7))
+
+        samples, total_count = await service.get_samples_for_diagnosis_endpoint(
+            filters={
+                "diagnosis_category": "Glioma",
+                "_sample_diagnosis_category_substring": True,
+            },
+            offset=0,
+            limit=15,
+        )
+
+        assert samples == mock_samples
+        assert total_count == 7
+        call_kwargs = service.repository.get_samples_for_diagnosis_endpoint.await_args.kwargs
+        assert call_kwargs["filters"]["diagnosis_category"] == "Glioma"
+        assert call_kwargs["filters"]["_sample_diagnosis_category_substring"] is True
+        assert call_kwargs["offset"] == 0
+        assert call_kwargs["limit"] == 15
+
     async def test_get_samples_for_diagnosis_endpoint_database_error(self, service):
         """Test dedicated diagnosis endpoint path maps DB errors to NotFoundError."""
         service.repository.get_samples_for_diagnosis_endpoint = AsyncMock(

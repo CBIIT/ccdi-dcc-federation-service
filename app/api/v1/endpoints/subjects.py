@@ -119,8 +119,11 @@ def prepare_subjects_for_response(subjects: List[Subject]) -> List[Dict[str, Any
                                     "age_at_vital_status": {"value": 45},
                                     "associated_diagnoses": [
                                         {
-                                            "value": "Neuroblastoma","comment": "null" 
+                                            "value": "Neuroblastoma","comment": "null"
                                         }
+                                    ],
+                                    "associated_diagnosis_categories": [
+                                        {"value": "Brain and Spinal Cord Tumors"}
                                     ],
                                     "depositions": [
                                         {
@@ -594,8 +597,11 @@ async def count_subjects_by_field(
                             "age_at_vital_status": {"value": 15},
                             "associated_diagnoses": [
                                 {
-                                    "value": "Neuroblastoma","comment": "null" 
+                                    "value": "Neuroblastoma","comment": "null"
                                 }
+                            ],
+                            "associated_diagnosis_categories": [
+                                {"value": "Brain and Spinal Cord Tumors"}
                             ],
                             "depositions": [
                                 {

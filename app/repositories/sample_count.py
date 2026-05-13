@@ -184,7 +184,9 @@ class SampleCount:
                        AND toLower(toString(p.metadata.unharmonized[key])) CONTAINS toLower($diagnosis_search_term))
             )""")
             params["diagnosis_search_term"] = search_term
-        
+
+        filters.pop("_sample_diagnosis_category_substring", None)
+
         # Handle anatomical_sites filter (sample field, not participant field)
         if "anatomical_sites" in filters:
             anatomical_sites_value = filters.pop("anatomical_sites")

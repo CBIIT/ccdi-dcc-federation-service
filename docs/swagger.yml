@@ -647,6 +647,9 @@ paths:
                       value: Primary
                     anatomical_sites:
                       value: Brain
+                    diagnosis_category:
+                    - value: Brain and Spinal Cord Tumors
+                    unharmonized: {}
                     identifiers:
                     - value:
                         namespace:
@@ -768,6 +771,9 @@ paths:
                     value: Primary
                   anatomical_sites:
                     value: Brain
+                  diagnosis_category:
+                  - value: Brain and Spinal Cord Tumors
+                  unharmonized: {}
                   identifiers:
                   - value:
                       namespace:
@@ -1016,8 +1022,17 @@ paths:
       tags:
       - Experimental
       summary: Search samples by diagnosis (Experimental)
-      description: Search samples with diagnosis filtering. This is an experimental
-        endpoint and may change.
+      description: |-
+        Experimental diagnosis-node filtering (`search`, `diagnosis_category`) with
+        the same sample filters as `GET /api/v1/sample`. Harmonized and unharmonized
+        category values at the diagnosis node; aligned with
+        [CCDI Federation API aggregation](https://cbiit.github.io/ccdi-federation-api-aggregation/) (v1.3+).
+        `search` is substring on diagnosis text (or `diagnosis_comment` when diagnosis is
+        `see diagnosis_comment`); `diagnosis_category` is a case-insensitive substring on the
+        full `diagnosis_category` field—the same rule as `associated_diagnosis_categories` on
+        `GET /api/v1/subject-diagnosis` (distinct from token-after-`;` matching on list
+        `GET /api/v1/subject` / `GET /api/v1/sample`). Both together = AND on one diagnosis node.
+        Experimental—may change.
       operationId: sample_diagnosis_search
       parameters:
       - name: search
@@ -1027,9 +1042,36 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: Diagnosis search term
+          description: |-
+            Case-insensitive substring match on `diagnosis` from diagnosis nodes, or
+            on `diagnosis_comment` when diagnosis is `see diagnosis_comment`. Stripped
+            of leading/trailing whitespace; omitted if empty after strip.
           title: Search
-        description: Diagnosis search term
+        description: |-
+          Case-insensitive substring match on `diagnosis` from diagnosis nodes, or
+          on `diagnosis_comment` when diagnosis is `see diagnosis_comment`. Stripped
+          of leading/trailing whitespace; omitted if empty after strip.
+      - name: diagnosis_category
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: |-
+            Substring on full `diagnosis_category` (harmonized or unharmonized). With
+            `search`, AND on same diagnosis node. Same semantics as
+            `associated_diagnosis_categories` on `GET /api/v1/subject-diagnosis`. On list
+            `GET /api/v1/subject` and `GET /api/v1/sample`, that parameter name instead uses
+            token match after `;`. Trimmed.
+          title: Diagnosis Category
+        description: |-
+          Substring on full `diagnosis_category` (harmonized or unharmonized). With
+          `search`, AND on same diagnosis node. Same semantics as
+          `associated_diagnosis_categories` on `GET /api/v1/subject-diagnosis`. On list
+          `GET /api/v1/subject` and `GET /api/v1/sample`, that parameter name instead uses
+          token match after `;`. Trimmed.
+        example: Neuroblastoma
       - name: disease_phase
         in: query
         required: false
@@ -2603,6 +2645,25 @@ components:
           anyOf:
           - $ref: '#/components/schemas/DiagnosisField'
           - type: 'null'
+        diagnosis_category:
+          anyOf:
+          - items:
+              properties:
+                value:
+                  type: string
+                  title: Value
+              required:
+              - value
+              type: object
+            type: array
+          - type: 'null'
+          title: Diagnosis Category
+        unharmonized:
+          anyOf:
+          - type: object
+            additionalProperties: true
+          - type: 'null'
+          title: Unharmonized
         identifiers:
           anyOf:
           - items:

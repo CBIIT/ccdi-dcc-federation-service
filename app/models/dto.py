@@ -319,12 +319,12 @@ class SampleMetadata(CommonMetadata):
     tumor_tissue_morphology: Optional[ValueField] = None
     depositions: Optional[List[DepositionAccession]] = None
     diagnosis: Optional[DiagnosisField] = None
-    identifiers: Optional[List[IdentifierField]] = None
     diagnosis_category: Optional[List[AssociatedDiagnosisCategoryField]] = None
     unharmonized: Optional[Dict[str, Any]] = Field(
         None,
         description="Unharmonized metadata fields"
     )
+    identifiers: Optional[List[IdentifierField]] = None
 
 
 class FileIdentifier(BaseModel):
@@ -577,7 +577,7 @@ class SubjectResponse(BaseModel):
     
     # Top-level response structure
     summary: Optional[Dict[str, Any]] = Field(None, description="Summary statistics")
-    data: List[Any] = Field(..., description="List of subjects with nested structure")
+    data: List[Subject] = Field(..., description="List of subjects with nested structure")
     # gateways field kept as placeholder in code but excluded from responses
     gateways: List[Any] = Field(
         default_factory=list,

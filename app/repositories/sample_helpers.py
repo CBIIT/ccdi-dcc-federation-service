@@ -16,6 +16,22 @@ from app.core.field_mappings import (
 
 logger = get_logger(__name__)
 
+# Marker injected by deps.py for /sample-diagnosis requests so that
+# Case 3 uses CONTAINS semantics for diagnosis_category instead of exact-token.
+# Routing guards must check this marker — not bare "diagnosis_category" — to
+# preserve /sample token semantics on non-diagnosis endpoints.
+SD_CAT_MARKER = "_sample_diagnosis_category_substring"
+
+# Filters compatible with the optimised WHERE push-down path in
+# _get_samples_by_diagnosis_search / _get_samples_summary_diagnosis_search.
+DIAGNOSIS_SEARCH_COMPATIBLE_FILTERS = frozenset({
+    "identifiers", "depositions",
+    "_diagnosis_search", "disease_phase",
+    "tumor_grade", "tumor_classification",
+    "tumor_tissue_morphology", "age_at_diagnosis",
+    "diagnosis_category", SD_CAT_MARKER,
+})
+
 
 class SampleHelpers:
     """Mixin class providing helper methods for SampleRepository."""
@@ -43,7 +59,17 @@ class SampleHelpers:
         # Define filter categories
         sample_filters = {"tissue_type", "anatomical_sites", "age_at_collection", "identifiers"}
         study_filters = {"depositions"}
-        diagnosis_filters = {"disease_phase", "tumor_classification", "tumor_grade", "tumor_tissue_morphology", "age_at_diagnosis", "diagnosis", "_diagnosis_search", "diagnosis_category"}
+        diagnosis_filters = {
+            "disease_phase",
+            "tumor_classification",
+            "tumor_grade",
+            "tumor_tissue_morphology",
+            "age_at_diagnosis",
+            "diagnosis",
+            "_diagnosis_search",
+            "diagnosis_category",
+            SD_CAT_MARKER,
+        }
         sequencing_file_filters = {"library_selection_method", "library_strategy", "library_source_material", "specimen_molecular_analyte_type"}
         pathology_file_filters = {"preservation_method"}
         

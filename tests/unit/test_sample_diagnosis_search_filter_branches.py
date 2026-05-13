@@ -311,7 +311,8 @@ class TestSummaryDiagnosisCategoryFilter:
         params: dict = call_args[0][1]
 
         assert "dx.diagnosis_category" in query
-        assert "Leukemia" in params.values()
+        assert "CONTAINS" in query
+        assert params.get("diag_category_contains_term") == "Leukemia"
         assert result["counts"]["total"] == 8
 
     async def test_summary_search_with_empty_diagnosis_category_skipped(
@@ -498,6 +499,7 @@ class TestSummaryAllFiltersCombined:
         assert "9590/3" in params.values()
         assert 10 in params.values()
         assert "Leukemia" in params.values()
+        assert params.get("diag_category_contains_term") == "Leukemia"
 
         assert result["counts"]["total"] == 99
 
@@ -768,3 +770,30 @@ class TestListNoSearchTermEarlyExit:
         )
         assert result == ([], 0)
         mock_session.run.assert_not_called()
+
+    async def test_list_diagnosis_category_only_runs_query(self, repository, mock_session):
+        """Category-only (no search) uses substring path and hits the DB."""
+        mock_session.run.return_value = make_async_result([_sample_record()])
+
+        await repository._get_samples_by_diagnosis_search(
+            {"diagnosis_category": "Glioma"}, offset=0, limit=20
+        )
+
+        mock_session.run.assert_called()
+        query = mock_session.run.call_args[0][0]
+        assert "CONTAINS" in query
+        assert "diag_category_contains_term" in mock_session.run.call_args[0][1]
+
+    async def test_summary_diagnosis_category_only_runs_query(self, repository, mock_session):
+        mock_session.run.return_value = make_async_result([{"total_count": 3}])
+
+        result = await repository._get_samples_summary_diagnosis_search(
+            {"diagnosis_category": "Glioma"}
+        )
+
+        mock_session.run.assert_called_once()
+        query = mock_session.run.call_args[0][0]
+        params = mock_session.run.call_args[0][1]
+        assert "CONTAINS" in query
+        assert params.get("diag_category_contains_term") == "Glioma"
+        assert result["counts"]["total"] == 3

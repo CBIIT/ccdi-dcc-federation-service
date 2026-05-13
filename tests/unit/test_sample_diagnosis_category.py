@@ -1,7 +1,9 @@
 """
 Tests for diagnosis_category field on /sample and /sample-diagnosis endpoints.
-Mirrors test_subject_diagnosis_category.py — same DB property (d.diagnosis_category),
-different API field name ('diagnosis_category' on sample vs 'associated_diagnosis_categories' on subject).
+Mirrors test_subject_diagnosis_category.py — same DB property (`d.diagnosis_category`),
+different API field name (`diagnosis_category` on sample vs `associated_diagnosis_categories` on subject).
+On `/sample-diagnosis`, category filtering uses substring on the full field (same as
+`/subject-diagnosis`); list `/sample` uses token-after-`;` matching.
 """
 
 # ---------------------------------------------------------------------------

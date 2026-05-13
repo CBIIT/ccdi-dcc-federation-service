@@ -17,8 +17,13 @@ from app.core.field_mappings import (
     reverse_map_field_value,
     is_null_mapped_value,
     is_database_only_value,
-    load_sequencing_file_enum
+    load_sequencing_file_enum,
 )
+from app.repositories.subject_diagnosis_cypher import (
+    diagnosis_category_contains_predicate,
+    diagnosis_category_exact_token_predicate,
+)
+from app.repositories.sample_helpers import SD_CAT_MARKER
 
 logger = get_logger(__name__)
 
@@ -388,9 +393,14 @@ class SampleQueryCases:
         
         # Step 3: Build diagnosis filters for OPTIONAL MATCH WHERE clause
         diagnosis_optional_match_where = None
-        has_diagnosis_filters = len(categorized["diagnosis"]) > 0
+        has_diagnosis_filters = bool(
+            set(categorized["diagnosis"].keys()) - {SD_CAT_MARKER}
+        )
         diagnosis_search_term = categorized["diagnosis"].get("_diagnosis_search")
         needs_diagnosis_search = diagnosis_search_term is not None
+        use_substring_diagnosis_category = bool(
+            categorized["diagnosis"].get("_sample_diagnosis_category_substring")
+        )
         
         # Handle diagnosis search - needs special collection filter
         diagnosis_search_filter = None
@@ -423,7 +433,9 @@ class SampleQueryCases:
                 if field == "_diagnosis_search":
                     # Already handled above
                     continue
-                
+                if field == SD_CAT_MARKER:
+                    continue
+
                 param_counter += 1
                 param_name = f"param_{param_counter}"
                 
@@ -477,11 +489,12 @@ class SampleQueryCases:
                          d.diagnosis_comment IS NOT NULL AND
                          trim(toString(d.diagnosis_comment)) = ${param_name}))""")
                 elif field == "diagnosis_category":
-                    params[param_name] = value
-                    diagnosis_conditions.append(
-                        f"any(token IN split(toString(coalesce(d.diagnosis_category, '')), ';') "
-                        f"WHERE toLower(trim(token)) = toLower(${param_name}))"
-                    )
+                    if use_substring_diagnosis_category and isinstance(value, str) and value.strip():
+                        params["diag_category_contains_term"] = value.strip()
+                        diagnosis_conditions.append(diagnosis_category_contains_predicate("d"))
+                    else:
+                        params["diag_category_filter"] = value
+                        diagnosis_conditions.append(diagnosis_category_exact_token_predicate("d"))
             
             if diagnosis_conditions:
                 combined_diagnosis_condition = " AND ".join([f"({cond})" for cond in diagnosis_conditions])

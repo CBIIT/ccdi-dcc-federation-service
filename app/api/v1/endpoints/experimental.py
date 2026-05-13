@@ -53,11 +53,13 @@ router = APIRouter(tags=["Experimental"],  include_in_schema=True)
 
 ### Diagnosis Filtering
 
-This endpoint supports the experimental `search` parameter.
-For this parameter, the sample is included in the results if the value of its
-its `diagnosis` field _contains_ the query string, or if an unharmonized field
-treated by the implementer as a diagnosis field contains that query string.
-Matches are case-insensitive.
+This endpoint supports the experimental `search` parameter: case-insensitive substring on
+`diagnosis` from diagnosis nodes, or on `diagnosis_comment` when `diagnosis` is
+`see diagnosis_comment`.
+
+The `diagnosis_category` query parameter matches the **full** `diagnosis_category` string
+with a case-insensitive **substring**. With `search`, both apply as **AND** on the same
+diagnosis node.
 
 ### Pagination
 
@@ -120,6 +122,9 @@ as a breaking change.""",
                                 "metadata": {
                                     "disease_phase": {"value": "Initial Diagnosis"},
                                     "diagnosis": {"value": "Neuroblastoma","comment": "null" },
+                                    "diagnosis_category": [
+                                        {"value": "Brain and Spinal Cord Tumors"}
+                                    ],
                                     "age_at_diagnosis": {"value": 10},
                                     "age_at_collection": {"value": 10},
                                     "anatomical_sites": [

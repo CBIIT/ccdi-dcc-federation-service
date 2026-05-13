@@ -608,12 +608,12 @@ class TestSampleRepositoryGetSamples:
         assert mock_session.run.called
 
     async def test_get_samples_for_diagnosis_endpoint_returns_tuple(self, repository):
-        """Dedicated diagnosis endpoint path returns tuple from get_samples(return_total=True)."""
+        """Non-diagnosis filters delegate to get_samples and unwrap the tuple correctly."""
         with patch.object(repository, "get_samples", new_callable=AsyncMock) as mock_get_samples:
             mock_get_samples.return_value = ([Mock()], 8)
 
             samples, total_count = await repository.get_samples_for_diagnosis_endpoint(
-                filters={"_diagnosis_search": "glioma"},
+                filters={"tissue_type": "Tumor"},
                 offset=0,
                 limit=20,
                 base_url="https://example.org",
@@ -622,7 +622,7 @@ class TestSampleRepositoryGetSamples:
             assert isinstance(samples, list)
             assert total_count == 8
             mock_get_samples.assert_awaited_once_with(
-                filters={"_diagnosis_search": "glioma"},
+                filters={"tissue_type": "Tumor"},
                 offset=0,
                 limit=20,
                 base_url="https://example.org",
@@ -630,12 +630,12 @@ class TestSampleRepositoryGetSamples:
             )
 
     async def test_get_samples_for_diagnosis_endpoint_fallback_list(self, repository):
-        """Dedicated diagnosis endpoint path returns zero total if get_samples omits count."""
+        """Returns zero total when get_samples returns a plain list (no count)."""
         with patch.object(repository, "get_samples", new_callable=AsyncMock) as mock_get_samples:
             mock_get_samples.return_value = [Mock()]
 
             samples, total_count = await repository.get_samples_for_diagnosis_endpoint(
-                filters={"_diagnosis_search": "glioma"},
+                filters={"tissue_type": "Tumor"},
                 offset=0,
                 limit=20,
             )

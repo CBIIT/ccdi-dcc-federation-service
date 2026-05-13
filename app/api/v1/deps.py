@@ -17,6 +17,7 @@ from app.core.constants import Race, Ethnicity, VitalStatus
 from app.db.memgraph import get_session
 from app.lib.field_allowlist import get_field_allowlist, FieldAllowlist
 from app.models.errors import create_pagination_error, InvalidParametersError
+from app.repositories.sample_helpers import SD_CAT_MARKER
 
 logger = get_logger(__name__)
 
@@ -501,16 +502,16 @@ def get_sample_filters(
         None,
         description="Matches any sample where the `diagnosis` field matches the string provided."
     ),
-    identifiers: Optional[str] = Query(
-        None,
-        description="Matches any sample where the `sample_id` field matches the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the sample should be included in the results."
-    ),
     diagnosis_category: Optional[str] = Query(
         None,
         description=(
             "Matches any sample where a diagnosis node's `diagnosis_category` matches the value "
             "(case-insensitive token after `;` split). Harmonized (CDE 16607972) or unharmonized values."
         ),
+    ),
+    identifiers: Optional[str] = Query(
+        None,
+        description="Matches any sample where the `sample_id` field matches the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the sample should be included in the results."
     ),
     request: Request = None
 ) -> Dict[str, Any]:
@@ -910,7 +911,20 @@ def get_subject_diagnosis_filters(
 def get_sample_diagnosis_filters(
     search: Optional[str] = Query(
         None,
-        description="Matches any sample where the `diagnosis` field contains the string provided, ignoring case. When provided, this enables experimental case-insensitive partial matching. When not provided, the endpoint behaves exactly like `/sample` endpoint."
+        description=(
+            "Case-insensitive substring match on diagnosis text from diagnosis nodes (`diagnosis` property). "
+            "When `diagnosis` is the sentinel value `see diagnosis_comment`, the search is applied to "
+            "`diagnosis_comment` instead. "
+            "May be combined with `diagnosis_category` (AND on the same diagnosis node)."
+        ),
+    ),
+    diagnosis_category: Optional[str] = Query(
+        None,
+        description=(
+            "Case-insensitive substring on the full `diagnosis_category` on a diagnosis "
+            "node (harmonized or unharmonized text). "
+            "With `search`, AND on the same diagnosis node. "
+        ),
     ),
     disease_phase: Optional[str] = Query(
         None,
@@ -972,19 +986,14 @@ def get_sample_diagnosis_filters(
         None,
         description="Matches any sample where the `sample_id` field matches the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the sample should be included in the results."
     ),
-    diagnosis_category: Optional[str] = Query(
-        None,
-        description=(
-            "Matches any sample where a diagnosis node's `diagnosis_category` matches the value "
-            "(case-insensitive token after `;` split). Harmonized (CDE 16607972) or unharmonized values."
-        ),
-    ),
     request: Request = None
 ) -> Dict[str, Any]:
     """Get sample diagnosis search filters.
-    
+
     When `search` is provided: Uses experimental case-insensitive partial matching.
-    When `search` is NOT provided: Behaves exactly like `/sample` endpoint (for all parameters including diagnosis).
+    When `search` is NOT provided: Behaves like `/sample` for other parameters, except
+    `diagnosis_category` uses substring on the full field (via internal routing), not
+    the list endpoint's token-after-`;` match.
     Note: When search is not provided, diagnosis parameter from query_params is extracted and passed to get_sample_filters.
     """
     # Strip whitespace from search parameter
@@ -1029,7 +1038,10 @@ def get_sample_diagnosis_filters(
     # Only add _diagnosis_search when search parameter is provided and not empty
     if search_stripped:
         filters["_diagnosis_search"] = search_stripped
-    
+
+    if "diagnosis_category" in filters:
+        filters[SD_CAT_MARKER] = True
+
     return filters
 
 

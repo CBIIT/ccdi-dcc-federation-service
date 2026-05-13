@@ -259,6 +259,68 @@ class TestExperimentalEndpoints:
         assert call_kwargs["offset"] == 0
         assert call_kwargs["limit"] == 50
 
+    async def test_search_samples_by_diagnosis_diagnosis_category_only_sets_substring_marker(
+        self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response
+    ):
+        """Test /sample-diagnosis forwards diagnosis_category-only requests with substring routing marker."""
+        from app.core.pagination import PaginationParams
+
+        mock_samples = [{
+            "id": {"namespace": {"organization": "CCDI-DCC", "name": "phs002430"}, "name": "sample1"},
+            "metadata": {"diagnosis_category": [{"value": "Brain and Spinal Cord Tumors"}]},
+        }]
+        pagination = PaginationParams(page=1, per_page=25)
+
+        class QueryParams:
+            def __init__(self, params):
+                self._params = params
+
+            def keys(self):
+                return self._params.keys()
+
+            def __iter__(self):
+                return iter(self._params.items())
+
+            def __getitem__(self, key):
+                return self._params[key]
+
+        mock_request.query_params = QueryParams({
+            "diagnosis_category": "Glioma",
+            "page": "1",
+            "per_page": "25",
+        })
+
+        with patch("app.api.v1.endpoints.experimental.SampleService") as mock_service_class:
+            mock_service = Mock()
+            mock_service.get_samples_for_diagnosis_endpoint = AsyncMock(return_value=(mock_samples, 1))
+            mock_service_class.return_value = mock_service
+
+            with patch("app.api.v1.endpoints.experimental.get_cache_service", return_value=None):
+                with patch("app.api.v1.endpoints.experimental.check_rate_limit", return_value=None):
+                    result = await search_samples_by_diagnosis(
+                        request=mock_request,
+                        response=mock_response,
+                        filters={
+                            "diagnosis_category": "Glioma",
+                            "_sample_diagnosis_category_substring": True,
+                        },
+                        pagination=pagination,
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None,
+                    )
+
+        assert isinstance(result, SamplesResponse)
+        assert result.summary["counts"]["all"] == 1
+        assert result.summary["counts"]["current"] == 1
+        call_kwargs = mock_service.get_samples_for_diagnosis_endpoint.await_args.kwargs
+        assert "_diagnosis_search" not in call_kwargs["filters"]
+        assert call_kwargs["filters"]["diagnosis_category"] == "Glioma"
+        assert call_kwargs["filters"]["_sample_diagnosis_category_substring"] is True
+        assert call_kwargs["offset"] == 0
+        assert call_kwargs["limit"] == 25
+
     async def test_search_samples_by_diagnosis_sets_link_header(
         self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
     ):

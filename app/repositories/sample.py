@@ -10,7 +10,6 @@ from typing import List, Dict, Any, Optional, Tuple, Union
 from neo4j import AsyncSession
 
 from app.core.logging import get_logger
-from app.core.diagnosis_category import canonical_diagnosis_category_token, split_diagnosis_category_tokens
 from app.lib.field_allowlist import FieldAllowlist
 from app.models.dto import Sample, AssociatedDiagnosisCategoryField
 from app.models.errors import UnsupportedFieldError
@@ -18,7 +17,8 @@ from app.core.config import Settings
 from app.core.field_mappings import map_field_value, reverse_map_field_value, is_null_mapped_value, is_database_only_value, build_invalid_value_filter, build_invalid_value_list_filter, build_invalid_value_all_clause, build_case_mapping_statement, get_mapped_db_values, load_sequencing_file_enum, load_sample_enum, get_null_mappings
 from app.repositories.sample_diagnosis_search import SampleDiagnosisSearch
 from app.repositories.sample_query_cases import SampleQueryCases
-from app.repositories.sample_helpers import SampleHelpers
+from app.repositories.sample_helpers import SampleHelpers, SD_CAT_MARKER, DIAGNOSIS_SEARCH_COMPATIBLE_FILTERS
+from app.core.diagnosis_category import split_diagnosis_category_tokens
 from app.repositories.sample_count import SampleCount
 from app.repositories.sample_summary import SampleSummary
 
@@ -341,7 +341,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         categorized = self._categorize_filters(filters)
         has_sample_filters = len(categorized["sample"]) > 0
         has_study_filters = len(categorized["study"]) > 0
-        has_diagnosis_filters = len(categorized["diagnosis"]) > 0
+        has_diagnosis_filters = bool(set(categorized["diagnosis"].keys()) - {SD_CAT_MARKER})
         has_sf_filters = len(categorized["sequencing_file"]) > 0
         has_pf_filters = len(categorized["pathology_file"]) > 0
         
@@ -2647,6 +2647,18 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         Dedicated data+total path for /sample-diagnosis endpoint.
         Keeps /sample endpoint behavior untouched.
         """
+        # When filters are diagnosis-centric, use the optimised WHERE push-down
+        # path instead of Case 3's collect-then-filter approach.  Mirror the
+        # same routing guard used by the summary path in sample_summary.py.
+        if (
+            ("_diagnosis_search" in filters or SD_CAT_MARKER in filters)
+            and all(k in DIAGNOSIS_SEARCH_COMPATIBLE_FILTERS for k in filters)
+        ):
+            return await self._get_samples_by_diagnosis_search(
+                filters=filters, offset=offset, limit=limit,
+                base_url=base_url, return_total=True,
+            )
+
         result = await self.get_samples(
             filters=filters,
             offset=offset,

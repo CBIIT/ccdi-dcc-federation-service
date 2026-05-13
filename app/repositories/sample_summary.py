@@ -13,6 +13,7 @@ from app.core.field_mappings import (
     is_database_only_value,
     map_field_value
 )
+from app.repositories.sample_helpers import DIAGNOSIS_SEARCH_COMPATIBLE_FILTERS, SD_CAT_MARKER
 from app.models.errors import UnsupportedFieldError
 
 logger = get_logger(__name__)
@@ -54,25 +55,19 @@ class SampleSummary:
         
         # OPTIMIZATION: Specialized summary query for diagnosis search-only filters
         has_diagnosis_search = "_diagnosis_search" in original_filters_keys
-        allowed_with_diagnosis_search = {
-            "identifiers", "depositions", "_diagnosis_search",
-            "disease_phase", "tumor_grade", "tumor_classification",
-            "tumor_tissue_morphology", "age_at_diagnosis"
-        }
-        # Debug: Log which keys are causing routing to fail
         if has_diagnosis_search:
-            disallowed_keys = original_filters_keys - allowed_with_diagnosis_search
+            disallowed_keys = original_filters_keys - DIAGNOSIS_SEARCH_COMPATIBLE_FILTERS
             if disallowed_keys:
                 logger.debug(
                     "Diagnosis search routing check failed - disallowed keys present",
                     disallowed_keys=disallowed_keys,
                     original_filters_keys=original_filters_keys,
-                    allowed_keys=allowed_with_diagnosis_search
+                    allowed_keys=DIAGNOSIS_SEARCH_COMPATIBLE_FILTERS
                 )
 
         diagnosis_search_only_summary = (
-            has_diagnosis_search and
-            all(k in allowed_with_diagnosis_search for k in original_filters_keys)
+            (has_diagnosis_search or SD_CAT_MARKER in original_filters_keys)
+            and all(k in DIAGNOSIS_SEARCH_COMPATIBLE_FILTERS for k in original_filters_keys)
         )
 
         if diagnosis_search_only_summary:

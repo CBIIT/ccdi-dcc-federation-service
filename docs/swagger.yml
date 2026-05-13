@@ -2340,9 +2340,11 @@ components:
           title: Harmonized
           description: Whether the field is harmonized
         wiki_url:
-          type: string
+          anyOf:
+          - type: string
+          - type: 'null'
           title: Wiki Url
-          description: Wiki URL for field documentation
+          description: Wiki URL for field documentation; null when not available
         standard:
           allOf:
           - $ref: '#/components/schemas/HarmonizedStandard'

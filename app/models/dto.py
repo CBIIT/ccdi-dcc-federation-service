@@ -63,7 +63,9 @@ class HarmonizedFieldDescription(BaseModel):
     """Harmonized metadata field description."""
     harmonized: bool = Field(True, description="Always true for harmonized fields")
     path: str = Field(..., description="Dot-delimited path to field location")
-    wiki_url: str = Field(..., description="Wiki URL for field documentation")
+    wiki_url: Optional[str] = Field(
+        None, description="Wiki URL for field documentation; null when not available"
+    )
     standard: Optional[HarmonizedStandard] = None
 
 
@@ -71,7 +73,9 @@ class MetadataFieldInfo(BaseModel):
     """Metadata field information for /metadata/fields endpoint."""
     path: str = Field(..., description="Field path")
     harmonized: bool = Field(..., description="Whether the field is harmonized")
-    wiki_url: str = Field(..., description="Wiki URL for field documentation")
+    wiki_url: Optional[str] = Field(
+        None, description="Wiki URL for field documentation; null when not available"
+    )
     standard: HarmonizedStandard = Field(..., description="Standard information")
 
 

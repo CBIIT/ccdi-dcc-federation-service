@@ -115,6 +115,11 @@ in the `responses::Samples` schema.""",
                                     "diagnosis_category": [
                                         {"value": "Brain and Spinal Cord Tumors"}
                                     ],
+                                    "unharmonized": {
+                                        "diagnosis_category": [
+                                            {"value": "Gliomas"}
+                                        ]
+                                    },
                                     "age_at_diagnosis": {"value": 10},
                                     "anatomical_sites": [
                                         {"value": "C71.9 : Brain, NOS"}

@@ -125,6 +125,11 @@ def prepare_subjects_for_response(subjects: List[Subject]) -> List[Dict[str, Any
                                     "associated_diagnosis_categories": [
                                         {"value": "Brain and Spinal Cord Tumors"}
                                     ],
+                                    "unharmonized": {
+                                        "associated_diagnosis_categories": [
+                                            {"value": "Gliomas"}
+                                        ]
+                                    },
                                     "depositions": [
                                         {
                                             "kind": "dbGaP",

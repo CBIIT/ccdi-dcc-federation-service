@@ -259,6 +259,24 @@
                         "age_at_vital_status": {
                           "value": 45
                         },
+                        "associated_diagnoses": [
+                          {
+                            "value": "Neuroblastoma",
+                            "comment": "null"
+                          }
+                        ],
+                        "associated_diagnosis_categories": [
+                          {
+                            "value": "Brain and Spinal Cord Tumors"
+                          }
+                        ],
+                        "unharmonized": {
+                          "associated_diagnosis_categories": [
+                            {
+                              "value": "Gliomas"
+                            }
+                          ]
+                        },
                         "depositions": [
                           {
                             "kind": "dbGaP",
@@ -845,6 +863,18 @@
                         },
                         "anatomical_sites": {
                           "value": "Brain"
+                        },
+                        "diagnosis_category": [
+                          {
+                            "value": "Brain and Spinal Cord Tumors"
+                          }
+                        ],
+                        "unharmonized": {
+                          "diagnosis_category": [
+                            {
+                              "value": "Gliomas"
+                            }
+                          ]
                         },
                         "identifiers": [
                           {

@@ -223,6 +223,9 @@ paths:
                     associated_diagnosis_categories:
                     - value:
                         - Neuroblastoma
+                    unharmonized:
+                      associated_diagnosis_categories:
+                      - value: Gliomas
                     depositions:
                     - kind: dbGaP
                       value: phs002430
@@ -649,7 +652,9 @@ paths:
                       value: Brain
                     diagnosis_category:
                     - value: Brain and Spinal Cord Tumors
-                    unharmonized: {}
+                    unharmonized:
+                      diagnosis_category:
+                      - value: Gliomas
                     identifiers:
                     - value:
                         namespace:

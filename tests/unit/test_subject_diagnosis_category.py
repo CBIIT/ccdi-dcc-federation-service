@@ -13,18 +13,18 @@ def test_harmonized_categories_is_frozenset():
 
 
 def test_associated_diagnosis_category_field_model():
-    field = AssociatedDiagnosisCategoryField(value="Neuroblastoma")
-    assert field.value == "Neuroblastoma"
+    field = AssociatedDiagnosisCategoryField(value="Medulloblastoma")
+    assert field.value == "Medulloblastoma"
 
 
 def test_subject_metadata_has_associated_diagnosis_categories():
     meta = SubjectMetadata(
         associated_diagnosis_categories=[
-            AssociatedDiagnosisCategoryField(value="Neuroblastoma"),
+            AssociatedDiagnosisCategoryField(value="Medulloblastoma"),
             AssociatedDiagnosisCategoryField(value="Renal Tumors"),
         ]
     )
-    assert meta.associated_diagnosis_categories[0].value == "Neuroblastoma"
+    assert meta.associated_diagnosis_categories[0].value == "Medulloblastoma"
 
 
 def test_subject_metadata_unharmonized_is_serialized():
@@ -81,11 +81,11 @@ def _base_record(diagnosis_nodes=None):
 
 def test_harmonized_value_goes_to_associated_diagnosis_categories():
     repo = _make_repo()
-    record = _base_record([_make_diag_node(diagnosis_category="Neuroblastoma")])
+    record = _base_record([_make_diag_node(diagnosis_category="Medulloblastoma")])
     subject = repo._record_to_subject(record)
     assert subject.metadata.associated_diagnosis_categories is not None
     harmonized_vals = [item.value for item in subject.metadata.associated_diagnosis_categories]
-    assert "Neuroblastoma" in harmonized_vals
+    assert "Medulloblastoma" in harmonized_vals
     assert subject.metadata.unharmonized is None or \
            "associated_diagnosis_categories" not in (subject.metadata.unharmonized or {})
 
@@ -104,7 +104,7 @@ def test_out_of_spec_value_goes_to_unharmonized():
 def test_mixed_values_split_correctly():
     repo = _make_repo()
     nodes = [
-        _make_diag_node(diagnosis_category="Neuroblastoma"),
+        _make_diag_node(diagnosis_category="Medulloblastoma"),
         _make_diag_node(diagnosis_category="Adenomas and adenocarcinomas"),
     ]
     record = _base_record(nodes)
@@ -112,7 +112,7 @@ def test_mixed_values_split_correctly():
     harmonized_vals = [item.value for item in subject.metadata.associated_diagnosis_categories]
     unharmonized_items = subject.metadata.unharmonized["associated_diagnosis_categories"]
     unharmonized_vals = [item["value"] for item in unharmonized_items]
-    assert "Neuroblastoma" in harmonized_vals
+    assert "Medulloblastoma" in harmonized_vals
     assert "Adenomas and adenocarcinomas" not in harmonized_vals
     assert "Adenomas and adenocarcinomas" in unharmonized_vals
 
@@ -127,23 +127,23 @@ def test_no_diagnosis_nodes_leaves_fields_none():
 def test_deduplication_of_same_category():
     repo = _make_repo()
     nodes = [
-        _make_diag_node(diagnosis_category="Neuroblastoma"),
-        _make_diag_node(diagnosis_category="Neuroblastoma"),
+        _make_diag_node(diagnosis_category="Medulloblastoma"),
+        _make_diag_node(diagnosis_category="Medulloblastoma"),
     ]
     record = _base_record(nodes)
     subject = repo._record_to_subject(record)
     harmonized_vals = [item.value for item in subject.metadata.associated_diagnosis_categories]
-    assert harmonized_vals.count("Neuroblastoma") == 1
+    assert harmonized_vals.count("Medulloblastoma") == 1
 
 
 def test_semicolon_delimited_single_node_splits_correctly():
     repo = _make_repo()
-    record = _base_record([_make_diag_node(diagnosis_category="Neuroblastoma;Adenomas and adenocarcinomas")])
+    record = _base_record([_make_diag_node(diagnosis_category="Medulloblastoma;Adenomas and adenocarcinomas")])
     subject = repo._record_to_subject(record)
     harmonized_vals = [item.value for item in subject.metadata.associated_diagnosis_categories]
     unharmonized_items = subject.metadata.unharmonized["associated_diagnosis_categories"]
     unharmonized_vals = [item["value"] for item in unharmonized_items]
-    assert "Neuroblastoma" in harmonized_vals
+    assert "Medulloblastoma" in harmonized_vals
     assert "Adenomas and adenocarcinomas" in unharmonized_vals
     assert "Adenomas and adenocarcinomas" not in harmonized_vals
 
@@ -164,14 +164,14 @@ def _mock_request(params: dict) -> MagicMock:
 
 
 def test_get_subject_filters_accepts_associated_diagnosis_categories():
-    req = _mock_request({"associated_diagnosis_categories": "Neuroblastoma"})
+    req = _mock_request({"associated_diagnosis_categories": "Medulloblastoma"})
     result = get_subject_filters(
         sex=None, race=None, ethnicity=None, identifiers=None,
         vital_status=None, age_at_vital_status=None, depositions=None,
-        associated_diagnosis_categories="Neuroblastoma",
+        associated_diagnosis_categories="Medulloblastoma",
         request=req,
     )
-    assert result.get("associated_diagnosis_categories") == "Neuroblastoma"
+    assert result.get("associated_diagnosis_categories") == "Medulloblastoma"
     assert "_unknown_parameters" not in result
 
 
@@ -197,7 +197,7 @@ from unittest.mock import AsyncMock
 async def test_count_subjects_by_associated_diagnosis_categories_dispatches():
     repo = _make_repo()
     repo._count_subjects_by_diagnosis_category = AsyncMock(
-        return_value={"total": 10, "missing": 2, "values": [{"value": "Neuroblastoma", "count": 5}]}
+        return_value={"total": 10, "missing": 2, "values": [{"value": "Medulloblastoma", "count": 5}]}
     )
     result = await repo.count_subjects_by_field("associated_diagnosis_categories", {})
     repo._count_subjects_by_diagnosis_category.assert_called_once()

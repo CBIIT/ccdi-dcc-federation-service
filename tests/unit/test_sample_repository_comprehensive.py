@@ -1025,6 +1025,41 @@ class TestSampleRepositoryRecordToSample:
             sample = repository._record_to_sample(sa, p, st, {}, {}, diagnoses)
             assert sample.metadata.diagnosis is None
 
+    def test_record_to_sample_with_multiple_diagnoses_aggregates_categories(self, repository):
+        """Test repository _record_to_sample preserves all diagnosis entries and category tokens."""
+        sa = {
+            "sample_id": "SAMP001",
+            "participant_age_at_collection": "12.0",
+            "sample_tumor_status": "Tumor",
+        }
+        p = {"participant_id": "PART001"}
+        st = {"study_id": "phs002431"}
+        diagnoses = [
+            {
+                "diagnosis": "Neuroblastoma",
+                "tumor_grade": "G1",
+                "age_at_diagnosis": 10,
+                "diagnosis_category": "Medulloblastoma;Gliomas",
+            },
+            {
+                "diagnosis": "Leukemia",
+                "tumor_grade": "G3",
+                "age_at_diagnosis": 20,
+                "diagnosis_category": "Medulloblastoma;Custom Category",
+            },
+        ]
+
+        sample = repository._record_to_sample(sa, p, st, {}, {}, diagnoses)
+
+        assert [item.value for item in sample.metadata.diagnosis] == ["Neuroblastoma", "Leukemia"]
+        assert sample.metadata.tumor_grade.value == "G1"
+        assert sample.metadata.age_at_diagnosis.value == 10
+        assert [item.value for item in sample.metadata.diagnosis_category] == ["Medulloblastoma"]
+        assert [item["value"] for item in sample.metadata.unharmonized["diagnosis_category"]] == [
+            "Gliomas",
+            "Custom Category",
+        ]
+
 
 @pytest.mark.unit
 class TestSampleRepositoryGetSamplesBySequencingFileFilters:

@@ -13,7 +13,11 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from app.repositories.sample_converters import node_to_dict, SampleConverters
+from app.repositories.sample_converters import (
+    node_to_dict,
+    SampleConverters,
+    _build_diagnosis_result,
+)
 from app.models.dto import Sample
 
 
@@ -198,6 +202,65 @@ class TestSampleConverters:
         
         sample = converter._record_to_sample(sa, p, st, {}, {}, diagnoses)
         assert sample.metadata.diagnosis is None
+
+    def test_build_diagnosis_result_dedupes_categories_and_preserves_order(self):
+        """Test _build_diagnosis_result aggregates diagnosis fields and dedupes categories."""
+        diagnoses = [
+            {
+                "diagnosis": " Neuroblastoma ",
+                "diagnosis_comment": " first note ",
+                "diagnosis_category": "Medulloblastoma;Gliomas",
+            },
+            {
+                "diagnosis": "Leukemia",
+                "diagnosis_comment": "",
+                "diagnosis_category": "Medulloblastoma;Gliomas;Custom Category",
+            },
+        ]
+
+        diagnosis_field, head_d, harmonized, unharmonized = _build_diagnosis_result(diagnoses)
+
+        assert [item.value for item in diagnosis_field] == ["Neuroblastoma", "Leukemia"]
+        assert diagnosis_field[0].comment == "first note"
+        assert diagnosis_field[1].comment is None
+        assert head_d == diagnoses[0]
+        assert harmonized == ["Medulloblastoma"]
+        assert unharmonized == ["Gliomas", "Custom Category"]
+
+    def test_record_to_sample_with_multiple_diagnoses_aggregates_categories(self, converter):
+        """Test _record_to_sample keeps all diagnosis entries and category tokens."""
+        sa = {
+            "sample_id": "SAMP001",
+            "participant_age_at_collection": "12.0",
+            "sample_tumor_status": "Tumor",
+        }
+        p = {"participant_id": "PART001"}
+        st = {"study_id": "phs002431"}
+        diagnoses = [
+            {
+                "diagnosis": "Neuroblastoma",
+                "tumor_grade": "G1",
+                "age_at_diagnosis": 10,
+                "diagnosis_category": "Medulloblastoma;Gliomas",
+            },
+            {
+                "diagnosis": "Leukemia",
+                "tumor_grade": "G3",
+                "age_at_diagnosis": 20,
+                "diagnosis_category": "Medulloblastoma;Custom Category",
+            },
+        ]
+
+        sample = converter._record_to_sample(sa, p, st, {}, {}, diagnoses)
+
+        assert [item.value for item in sample.metadata.diagnosis] == ["Neuroblastoma", "Leukemia"]
+        assert sample.metadata.tumor_grade.value == "G1"
+        assert sample.metadata.age_at_diagnosis.value == 10
+        assert [item.value for item in sample.metadata.diagnosis_category] == ["Medulloblastoma"]
+        assert [item["value"] for item in sample.metadata.unharmonized["diagnosis_category"]] == [
+            "Gliomas",
+            "Custom Category",
+        ]
     
     def test_record_to_sample_with_sequencing_file_data(self, converter):
         """Test _record_to_sample with sequencing file data."""

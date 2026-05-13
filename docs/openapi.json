@@ -3838,12 +3838,16 @@
           "diagnosis": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/DiagnosisField"
+                "items": {
+                  "$ref": "#/components/schemas/DiagnosisField"
+                },
+                "type": "array"
               },
               {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Diagnosis"
           },
           "identifiers": {
             "anyOf": [

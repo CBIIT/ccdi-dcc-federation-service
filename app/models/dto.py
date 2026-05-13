@@ -318,7 +318,7 @@ class SampleMetadata(CommonMetadata):
     age_at_collection: Optional[IntegerValueField] = None
     tumor_tissue_morphology: Optional[ValueField] = None
     depositions: Optional[List[DepositionAccession]] = None
-    diagnosis: Optional[DiagnosisField] = None
+    diagnosis: Optional[List[DiagnosisField]] = None
     diagnosis_category: Optional[List[AssociatedDiagnosisCategoryField]] = None
     unharmonized: Optional[Dict[str, Any]] = Field(
         None,

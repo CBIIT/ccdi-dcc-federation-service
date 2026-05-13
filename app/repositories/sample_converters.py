@@ -5,11 +5,12 @@ This module contains methods for converting database records to Sample objects.
 These methods are provided as a mixin class that can be inherited by SampleRepository.
 """
 
-from typing import Dict, Any, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from app.core.logging import get_logger
-from app.models.dto import Sample
+from app.core.diagnosis_category import split_diagnosis_category_tokens
 from app.core.field_mappings import map_field_value, reverse_map_field_value
 from app.core.serialization import convert_date_time_to_string
+from app.models.dto import AssociatedDiagnosisCategoryField, DiagnosisField, Sample
 
 logger = get_logger(__name__)
 
@@ -53,6 +54,49 @@ def node_to_dict(node):
             return {}
 
 
+def _build_diagnosis_result(
+    diagnoses: Any,
+) -> Tuple[Optional[List[DiagnosisField]], Optional[Dict[str, Any]], List[str], List[str]]:
+    """Process diagnoses into Sample field structures.
+
+    Accepts a single dict, a list of dicts, or None.
+    Returns (diagnosis_field, head_d, harmonized_cats, unharmonized_cats).
+    head_d is the first valid diagnosis dict — scalar fields (disease_phase, tumor_grade,
+    age_at_diagnosis, tumor_classification) are read from it by the caller.
+    """
+    if isinstance(diagnoses, dict):
+        diagnoses = [diagnoses]
+    diagnoses_list: List[Dict[str, Any]] = diagnoses if diagnoses else []
+    head_d: Optional[Dict[str, Any]] = diagnoses_list[0] if diagnoses_list else None
+
+    diag_entries: List[DiagnosisField] = []
+    all_harmonized: List[str] = []
+    all_unharmonized: List[str] = []
+
+    for d in diagnoses_list:
+        if not isinstance(d, dict):
+            continue
+        val = d.get("diagnosis")
+        comment = d.get("diagnosis_comment")
+        if val and str(val).strip():
+            diag_entries.append(DiagnosisField(
+                value=str(val).strip(),
+                comment=str(comment).strip() if comment and str(comment).strip() else None,
+            ))
+        raw_cat = d.get("diagnosis_category")
+        if raw_cat is not None and str(raw_cat).strip():
+            h, u = split_diagnosis_category_tokens(str(raw_cat))
+            all_harmonized.extend(h)
+            all_unharmonized.extend(u)
+
+    return (
+        diag_entries if diag_entries else None,
+        head_d,
+        list(dict.fromkeys(all_harmonized)),
+        list(dict.fromkeys(all_unharmonized)),
+    )
+
+
 class SampleConverters:
     """Mixin class providing data conversion methods for SampleRepository."""
     
@@ -63,26 +107,26 @@ class SampleConverters:
         st: Dict[str, Any], 
         sf: Dict[str, Any], 
         pf: Dict[str, Any], 
-        diagnoses: Optional[Dict[str, Any]],
+        diagnoses: Optional[Any],
         base_url: Optional[str] = None
     ) -> Sample:
         """
         Convert database records to a Sample object with proper field mappings.
-        
+
         Args:
             sa: Sample node dictionary
             p: Participant node dictionary
             st: Study node dictionary
             sf: Sequencing file node dictionary
             pf: Pathology file node dictionary
-            diagnoses: Single diagnosis node dictionary (or None)
-            
+            diagnoses: Diagnosis node dict, list of dicts, or None
+
         Returns:
             Sample object with proper structure
         """
         from app.models.dto import (
             Sample, SampleIdentifier, NamespaceIdentifier, SubjectId,
-            SampleMetadata, DiagnosisField
+            SampleMetadata,
         )
         
         # Build sample ID: namespace from study, name from sample_id
@@ -188,22 +232,7 @@ class SampleConverters:
             if study_id:
                 depositions = [{"kind": "dbGaP", "value": study_id}]
         
-        # Build diagnosis field
-        # If empty data, return null; otherwise return {value: diagnosis, comment: diagnosis_comment}
-        diagnosis_field = None
-        if diagnoses and isinstance(diagnoses, dict):
-            # diagnoses is now a single node (or None)
-            diagnosis_value = diagnoses.get("diagnosis")
-            diagnosis_comment = diagnoses.get("diagnosis_comment")
-            
-            # Check if diagnosis_value is empty/null/whitespace
-            if diagnosis_value and str(diagnosis_value).strip():
-                # Has diagnosis value - return object with value and comment
-                diagnosis_field = DiagnosisField(
-                    value=str(diagnosis_value).strip(),
-                    comment=str(diagnosis_comment).strip() if diagnosis_comment and str(diagnosis_comment).strip() else None
-                )
-            # If diagnosis_value is empty/null/whitespace, diagnosis_field remains None (returns null)
+        diagnosis_field, _head_d, harmonized_cats, unharmonized_cats = _build_diagnosis_result(diagnoses)
         
         # Helper function to wrap value in ValueField if not None and not empty
         def _wrap_value(value):
@@ -338,52 +367,28 @@ class SampleConverters:
                 sample_id=sample_id
             )
         
-        # Build metadata with updated field mappings
-        # disease_phase: d.disease_phase (from diagnoses, not sa)
-        disease_phase_value = None
-        if diagnoses and isinstance(diagnoses, dict):
-            disease_phase_value = diagnoses.get("disease_phase")
-        
-        # anatomical_sites: sa.anatomic_site - "Invalid value" to be replaced with null (already handled in _process_anatomical_sites)
+        disease_phase_value = _head_d.get("disease_phase") if _head_d else None
         anatomical_sites_value = sa.get("anatomic_site") if sa else None
-        
-        # library_selection_method: sf.library_selection
         library_selection_value = sf.get("library_selection") if sf else None
-        
-        # library_strategy: sf.library_strategy
         library_strategy_value = sf.get("library_strategy") if sf else None
-        
-        # library_source_material: sf.library_source_material
         library_source_material_value = sf.get("library_source_material") if sf else None
-        
-        # specimen_molecular_analyte_type: sf.library_source_molecule
         specimen_molecular_analyte_type_value = sf.get("library_source_molecule") if sf else None
-        
-        # preservation_method: pf.fixation_embedding_method
         preservation_method_value = pf.get("fixation_embedding_method") if pf else None
-        
-        # tumor_grade: d.tumor_grade
-        tumor_grade_value = None
-        if diagnoses and isinstance(diagnoses, dict):
-            tumor_grade_value = diagnoses.get("tumor_grade")
-        
-        # age_at_diagnosis: d.age_at_diagnosis or null if -999
-        age_at_diagnosis_value = None
-        if diagnoses and isinstance(diagnoses, dict):
-            age_at_diagnosis_value = diagnoses.get("age_at_diagnosis")
-        
-        # age_at_collection: sa.participant_age_at_collection or null if -999
+        tumor_grade_value = _head_d.get("tumor_grade") if _head_d else None
+        age_at_diagnosis_value = _head_d.get("age_at_diagnosis") if _head_d else None
         age_at_collection_value = sa.get("participant_age_at_collection") if sa else None
-        
-        # tumor_classification: d.tumor_classification
-        tumor_classification_value = None
-        if diagnoses and isinstance(diagnoses, dict):
-            tumor_classification_value = diagnoses.get("tumor_classification")
-        
-        # tissue_type: sa.sample_tumor_status (mapped from sample_tumor_status field)
+        tumor_classification_value = _head_d.get("tumor_classification") if _head_d else None
         tissue_type_value = sa.get("sample_tumor_status") if sa else None
-        
-        # Build metadata with field mappings applied
+
+        diagnosis_category_field = (
+            [AssociatedDiagnosisCategoryField(value=c) for c in harmonized_cats]
+            if harmonized_cats else None
+        )
+        unharmonized_field = (
+            {"diagnosis_category": [{"value": c} for c in unharmonized_cats]}
+            if unharmonized_cats else None
+        )
+
         metadata = SampleMetadata(
             disease_phase=_wrap_value(map_field_value("disease_phase", _null_if_invalid(disease_phase_value))),
             anatomical_sites=_wrap_list_value(_process_anatomical_sites(anatomical_sites_value)),
@@ -397,10 +402,12 @@ class SampleConverters:
             tumor_classification=_wrap_value(map_field_value("tumor_classification", _null_if_invalid(tumor_classification_value))),
             age_at_diagnosis=_wrap_integer_value(_null_if_neg999(age_at_diagnosis_value)),
             age_at_collection=_wrap_integer_value(_null_if_neg999(age_at_collection_value)),
-            tumor_tissue_morphology=None,  # Not in the provided mapping
+            tumor_tissue_morphology=None,
             depositions=depositions,
             diagnosis=diagnosis_field,
-            identifiers=identifiers
+            identifiers=identifiers,
+            diagnosis_category=diagnosis_category_field,
+            unharmonized=unharmonized_field,
         )
         
         # Create Sample object

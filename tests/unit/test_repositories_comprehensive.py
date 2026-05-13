@@ -1545,7 +1545,7 @@ class TestSampleRepositoryInternal:
         assert [value.value for value in sample.metadata.anatomical_sites] == ["Brain", "Spinal cord"]
         assert sample.metadata.age_at_collection.value == 10
         assert sample.metadata.age_at_diagnosis.value == 5
-        assert sample.metadata.diagnosis.value == "Neuroblastoma"
+        assert sample.metadata.diagnosis[0].value == "Neuroblastoma"
 
     def test_record_to_sample_study_id_from_sample_node(self, repository):
         """Test _record_to_sample uses study_id from sample when st missing."""
@@ -1596,8 +1596,8 @@ class TestSampleRepositoryInternal:
 
         sample = repository._record_to_sample(sa, {}, st, {}, {}, diagnoses)
 
-        assert sample.metadata.diagnosis.value == "Leukemia"
-        assert sample.metadata.diagnosis.comment == "note"
+        assert sample.metadata.diagnosis[0].value == "Leukemia"
+        assert sample.metadata.diagnosis[0].comment == "note"
 
 @pytest.mark.unit
 class TestRepositoryHelperMethods:

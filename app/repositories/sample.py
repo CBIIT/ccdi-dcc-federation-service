@@ -15,10 +15,10 @@ from app.models.dto import Sample, AssociatedDiagnosisCategoryField
 from app.models.errors import UnsupportedFieldError
 from app.core.config import Settings
 from app.core.field_mappings import map_field_value, reverse_map_field_value, is_null_mapped_value, is_database_only_value, build_invalid_value_filter, build_invalid_value_list_filter, build_invalid_value_all_clause, build_case_mapping_statement, get_mapped_db_values, load_sequencing_file_enum, load_sample_enum, get_null_mappings
+from app.repositories.sample_converters import _build_diagnosis_result
 from app.repositories.sample_diagnosis_search import SampleDiagnosisSearch
 from app.repositories.sample_query_cases import SampleQueryCases
-from app.repositories.sample_helpers import SampleHelpers, SD_CAT_MARKER, DIAGNOSIS_SEARCH_COMPATIBLE_FILTERS
-from app.core.diagnosis_category import split_diagnosis_category_tokens
+from app.repositories.sample_helpers import SampleHelpers, SD_CAT_MARKER
 from app.repositories.sample_count import SampleCount
 from app.repositories.sample_summary import SampleSummary
 
@@ -2267,26 +2267,26 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         st: Dict[str, Any], 
         sf: Dict[str, Any], 
         pf: Dict[str, Any], 
-        diagnoses: Optional[Dict[str, Any]],
+        diagnoses: Optional[List[Dict[str, Any]]],
         base_url: Optional[str] = None
     ) -> Sample:
         """
         Convert database records to a Sample object with proper field mappings.
-        
+
         Args:
             sa: Sample node dictionary
             p: Participant node dictionary
             st: Study node dictionary
             sf: Sequencing file node dictionary
             pf: Pathology file node dictionary
-            diagnoses: Single diagnosis node dictionary (or None)
+            diagnoses: List of diagnosis node dictionaries (all matched nodes, or None)
             
         Returns:
             Sample object with proper structure
         """
         from app.models.dto import (
             SampleIdentifier, NamespaceIdentifier, SubjectId,
-            SampleMetadata, DiagnosisField
+            SampleMetadata,
         )
         
         # Build sample ID: namespace from study, name from sample_id
@@ -2392,22 +2392,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
             if study_id:
                 depositions = [{"kind": "dbGaP", "value": study_id}]
         
-        # Build diagnosis field
-        # If empty data, return null; otherwise return {value: diagnosis, comment: diagnosis_comment}
-        diagnosis_field = None
-        if diagnoses and isinstance(diagnoses, dict):
-            # diagnoses is now a single node (or None)
-            diagnosis_value = diagnoses.get("diagnosis")
-            diagnosis_comment = diagnoses.get("diagnosis_comment")
-            
-            # Check if diagnosis_value is empty/null/whitespace
-            if diagnosis_value and str(diagnosis_value).strip():
-                # Has diagnosis value - return object with value and comment
-                diagnosis_field = DiagnosisField(
-                    value=str(diagnosis_value).strip(),
-                    comment=str(diagnosis_comment).strip() if diagnosis_comment and str(diagnosis_comment).strip() else None
-                )
-            # If diagnosis_value is empty/null/whitespace, diagnosis_field remains None (returns null)
+        diagnosis_field, head_d, harmonized_cats, unharmonized_cats = _build_diagnosis_result(diagnoses)
         
         # Helper function to wrap value in ValueField if not None and not empty
         def _wrap_value(value):
@@ -2543,58 +2528,19 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
                 sample_id=sample_id
             )
         
-        # Build metadata with updated field mappings
-        # disease_phase: d.disease_phase (from diagnoses, not sa)
-        disease_phase_value = None
-        if diagnoses and isinstance(diagnoses, dict):
-            disease_phase_value = diagnoses.get("disease_phase")
-        
-        # anatomical_sites: sa.anatomic_site - "Invalid value" to be replaced with null (already handled in _process_anatomical_sites)
+        disease_phase_value = head_d.get("disease_phase") if head_d else None
+        tumor_grade_value = head_d.get("tumor_grade") if head_d else None
+        age_at_diagnosis_value = head_d.get("age_at_diagnosis") if head_d else None
+        tumor_classification_value = head_d.get("tumor_classification") if head_d else None
+
         anatomical_sites_value = sa.get("anatomic_site") if sa else None
-        
-        # library_selection_method: sf.library_selection
         library_selection_value = sf.get("library_selection") if sf else None
-        
-        # library_strategy: sf.library_strategy
         library_strategy_value = sf.get("library_strategy") if sf else None
-        
-        # library_source_material: sf.library_source_material
         library_source_material_value = sf.get("library_source_material") if sf else None
-        
-        # specimen_molecular_analyte_type: sf.library_source_molecule
         specimen_molecular_analyte_type_value = sf.get("library_source_molecule") if sf else None
-        
-        # preservation_method: pf.fixation_embedding_method
         preservation_method_value = pf.get("fixation_embedding_method") if pf else None
-        
-        # tumor_grade: d.tumor_grade
-        tumor_grade_value = None
-        if diagnoses and isinstance(diagnoses, dict):
-            tumor_grade_value = diagnoses.get("tumor_grade")
-        
-        # age_at_diagnosis: d.age_at_diagnosis or null if -999
-        age_at_diagnosis_value = None
-        if diagnoses and isinstance(diagnoses, dict):
-            age_at_diagnosis_value = diagnoses.get("age_at_diagnosis")
-        
-        # age_at_collection: sa.participant_age_at_collection or null if -999
         age_at_collection_value = sa.get("participant_age_at_collection") if sa else None
-        
-        # tumor_classification: d.tumor_classification
-        tumor_classification_value = None
-        if diagnoses and isinstance(diagnoses, dict):
-            tumor_classification_value = diagnoses.get("tumor_classification")
-        
-        # tissue_type: sa.sample_tumor_status (mapped from sample_tumor_status field)
         tissue_type_value = sa.get("sample_tumor_status") if sa else None
-        
-        # diagnoses is a single dict from head(collect(DISTINCT d)); guard against Node objects in other query paths
-        harmonized_cats: List[str] = []
-        unharmonized_cats: List[str] = []
-        if diagnoses and isinstance(diagnoses, dict):
-            raw_cat = diagnoses.get("diagnosis_category")
-            if raw_cat is not None and str(raw_cat).strip():
-                harmonized_cats, unharmonized_cats = split_diagnosis_category_tokens(str(raw_cat))
 
         diagnosis_category_field = (
             [AssociatedDiagnosisCategoryField(value=c) for c in harmonized_cats]
@@ -2647,18 +2593,6 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         Dedicated data+total path for /sample-diagnosis endpoint.
         Keeps /sample endpoint behavior untouched.
         """
-        # When filters are diagnosis-centric, use the optimised WHERE push-down
-        # path instead of Case 3's collect-then-filter approach.  Mirror the
-        # same routing guard used by the summary path in sample_summary.py.
-        if (
-            ("_diagnosis_search" in filters or SD_CAT_MARKER in filters)
-            and all(k in DIAGNOSIS_SEARCH_COMPATIBLE_FILTERS for k in filters)
-        ):
-            return await self._get_samples_by_diagnosis_search(
-                filters=filters, offset=offset, limit=limit,
-                base_url=base_url, return_total=True,
-            )
-
         result = await self.get_samples(
             filters=filters,
             offset=offset,

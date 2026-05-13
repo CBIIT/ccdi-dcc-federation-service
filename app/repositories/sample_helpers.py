@@ -22,8 +22,10 @@ logger = get_logger(__name__)
 # preserve /sample token semantics on non-diagnosis endpoints.
 SD_CAT_MARKER = "_sample_diagnosis_category_substring"
 
-# Filters compatible with the optimised WHERE push-down path in
-# _get_samples_by_diagnosis_search / _get_samples_summary_diagnosis_search.
+# Filters compatible with the internal diagnosis reverse-query helpers.
+# The summary path still routes to `_get_samples_summary_diagnosis_search`;
+# `/sample-diagnosis` list requests currently delegate through `get_samples()`
+# / Case 3 instead of `_get_samples_by_diagnosis_search`.
 DIAGNOSIS_SEARCH_COMPATIBLE_FILTERS = frozenset({
     "identifiers", "depositions",
     "_diagnosis_search", "disease_phase",

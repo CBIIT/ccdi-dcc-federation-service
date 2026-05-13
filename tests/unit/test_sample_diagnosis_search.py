@@ -562,12 +562,10 @@ class TestDiagnosisSearch:
         assert len(result) > 0
         sample = result[0]
         assert isinstance(sample, Sample)
-        # Verify all_matching_diagnoses attribute is set
-        assert hasattr(sample, 'all_matching_diagnoses')
-        assert isinstance(sample.all_matching_diagnoses, list)
-        # All three diagnoses match "Neuroblastoma" (exact and partial matches)
-        assert len(sample.all_matching_diagnoses) == 3
-        
+        # diagnosis is now a list — all three matched nodes are included
+        assert isinstance(sample.metadata.diagnosis, list)
+        assert len(sample.metadata.diagnosis) == 3
+
         # Verify the query uses collect(DISTINCT dx) to collect all matches
         call_args = mock_session.run.call_args
         query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
@@ -576,7 +574,7 @@ class TestDiagnosisSearch:
 
 @pytest.mark.unit
 class TestGetSamplesForDiagnosisEndpointRouting:
-    """Verify get_samples_for_diagnosis_endpoint routes to the optimised path."""
+    """Verify get_samples_for_diagnosis_endpoint delegates through get_samples."""
 
     @pytest.fixture
     def repository(self):
@@ -589,38 +587,69 @@ class TestGetSamplesForDiagnosisEndpointRouting:
         settings.sample_count_fields = []
         return SampleRepository(mock_session, allowlist, settings)
 
-    async def test_diagnosis_category_routes_to_optimised_path(self, repository):
-        """diagnosis_category alone must use _get_samples_by_diagnosis_search (WHERE push-down)."""
-        repository._get_samples_by_diagnosis_search = AsyncMock(return_value=([], 0))
-
-        await repository.get_samples_for_diagnosis_endpoint(
-            filters={"diagnosis_category": "Gliomas", "_sample_diagnosis_category_substring": True},
-        )
-
-        repository._get_samples_by_diagnosis_search.assert_awaited_once()
-
-    async def test_diagnosis_search_routes_to_optimised_path(self, repository):
-        """_diagnosis_search alone must use _get_samples_by_diagnosis_search."""
-        repository._get_samples_by_diagnosis_search = AsyncMock(return_value=([], 0))
-
-        await repository.get_samples_for_diagnosis_endpoint(
-            filters={"_diagnosis_search": "Glioma"},
-        )
-
-        repository._get_samples_by_diagnosis_search.assert_awaited_once()
-
-    async def test_mixed_filters_fall_through_to_get_samples(self, repository):
-        """tissue_type + diagnosis_category must NOT use the optimised path (Case 3 fallback)."""
+    async def test_diagnosis_category_delegates_to_get_samples(self, repository):
+        """diagnosis_category-only requests now use the shared get_samples path."""
         repository._get_samples_by_diagnosis_search = AsyncMock(return_value=([], 0))
         repository.get_samples = AsyncMock(return_value=([], 0))
+        filters = {
+            "diagnosis_category": "Gliomas",
+            "_sample_diagnosis_category_substring": True,
+        }
 
         await repository.get_samples_for_diagnosis_endpoint(
-            filters={
-                "tissue_type": "Tumor",
-                "diagnosis_category": "Gliomas",
-                "_sample_diagnosis_category_substring": True,
-            },
+            filters=filters,
+            offset=5,
+            limit=10,
+            base_url="http://test",
         )
 
         repository._get_samples_by_diagnosis_search.assert_not_awaited()
-        repository.get_samples.assert_awaited_once()
+        repository.get_samples.assert_awaited_once_with(
+            filters=filters,
+            offset=5,
+            limit=10,
+            base_url="http://test",
+            return_total=True,
+        )
+
+    async def test_diagnosis_search_delegates_to_get_samples(self, repository):
+        """_diagnosis_search-only requests now use the shared get_samples path."""
+        repository._get_samples_by_diagnosis_search = AsyncMock(return_value=([], 0))
+        repository.get_samples = AsyncMock(return_value=([], 0))
+        filters = {"_diagnosis_search": "Glioma"}
+
+        await repository.get_samples_for_diagnosis_endpoint(
+            filters=filters,
+        )
+
+        repository._get_samples_by_diagnosis_search.assert_not_awaited()
+        repository.get_samples.assert_awaited_once_with(
+            filters=filters,
+            offset=0,
+            limit=20,
+            base_url=None,
+            return_total=True,
+        )
+
+    async def test_mixed_filters_also_delegate_to_get_samples(self, repository):
+        """Mixed /sample-diagnosis filters still delegate through get_samples."""
+        repository._get_samples_by_diagnosis_search = AsyncMock(return_value=([], 0))
+        repository.get_samples = AsyncMock(return_value=([], 0))
+        filters = {
+            "tissue_type": "Tumor",
+            "diagnosis_category": "Gliomas",
+            "_sample_diagnosis_category_substring": True,
+        }
+
+        await repository.get_samples_for_diagnosis_endpoint(
+            filters=filters,
+        )
+
+        repository._get_samples_by_diagnosis_search.assert_not_awaited()
+        repository.get_samples.assert_awaited_once_with(
+            filters=filters,
+            offset=0,
+            limit=20,
+            base_url=None,
+            return_total=True,
+        )

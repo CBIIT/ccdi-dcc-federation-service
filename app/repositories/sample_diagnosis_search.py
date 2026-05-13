@@ -31,14 +31,11 @@ class SampleDiagnosisSearch:
         return_total: bool = False
     ) -> Union[List[Sample], Tuple[List[Sample], int]]:
         """
-        Optimized query for diagnosis search-only filters.
-        
-        Uses REVERSE query approach:
-        1. Match diagnosis nodes with search filter (uses index - FAST)
-        2. Find samples related to those diagnoses
-        3. Do other relationship traversals
-        
-        This is 10-100x faster than matching all samples first.
+        Internal reverse-query helper for diagnosis-centric sample filters.
+
+        The live `/sample-diagnosis` list endpoint currently delegates through
+        `get_samples()` / Case 3. This helper remains available for targeted
+        diagnosis-search flows and for the matching summary implementation.
         """
         params = {"offset": offset, "limit": limit}
         param_counter = 0
@@ -353,32 +350,17 @@ class SampleDiagnosisSearch:
                     pf = node_to_dict(pf_node)
                     
                     # Handle diagnoses: it's a list from collect(DISTINCT dx), keep ALL matched diagnoses
-                    # Convert all diagnosis nodes to dicts
                     if diagnoses_node:
                         if isinstance(diagnoses_node, list):
-                            # Convert each diagnosis node in the list to a dict - KEEP ALL
                             diagnoses_list = [node_to_dict(d) for d in diagnoses_node if d is not None]
-                            # All diagnoses are already filtered to match the search in the WHERE clause
-                            # For _record_to_sample, use the first one (it expects a single dict)
-                            # But we preserve all diagnoses for the experimental endpoint
-                            diagnoses_for_converter = diagnoses_list[0] if diagnoses_list else None
                         else:
-                            # Single node
                             diagnoses_list = [node_to_dict(diagnoses_node)]
-                            diagnoses_for_converter = diagnoses_list[0]
                     else:
                         diagnoses_list = []
-                        diagnoses_for_converter = None
-                    
+
                     if sa:
-                        # Use first diagnosis for converter (compatibility)
-                        sample = self._record_to_sample(sa, p, st, sf, pf, diagnoses_for_converter, base_url=base_url)
+                        sample = self._record_to_sample(sa, p, st, sf, pf, diagnoses_list or None, base_url=base_url)
                         if sample:
-                            # Store all diagnoses in sample for experimental endpoint
-                            # Since Sample model has extra="allow", we can add custom fields
-                            # This preserves all matching diagnoses for the experimental endpoint
-                            if diagnoses_list:
-                                sample.all_matching_diagnoses = diagnoses_list
                             samples.append(sample)
                 except Exception as e:
                     logger.error("Error converting record to sample", error=str(e), record=str(record)[:200])

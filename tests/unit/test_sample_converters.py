@@ -122,8 +122,8 @@ class TestSampleConverters:
         
         sample = converter._record_to_sample(sa, p, st, {}, {}, diagnoses)
         assert sample.metadata.diagnosis is not None
-        assert sample.metadata.diagnosis.value == "Neuroblastoma"
-    
+        assert sample.metadata.diagnosis[0].value == "Neuroblastoma"
+
     def test_record_to_sample_with_invalid_values(self, converter):
         """Test _record_to_sample filters out invalid values (-999, "Invalid value")."""
         sa = {
@@ -186,8 +186,8 @@ class TestSampleConverters:
         
         sample = converter._record_to_sample(sa, p, st, {}, {}, diagnoses)
         assert sample.metadata.diagnosis is not None
-        assert sample.metadata.diagnosis.value == "Neuroblastoma"
-        assert sample.metadata.diagnosis.comment == "See pathology report"
+        assert sample.metadata.diagnosis[0].value == "Neuroblastoma"
+        assert sample.metadata.diagnosis[0].comment == "See pathology report"
     
     def test_record_to_sample_with_empty_diagnosis(self, converter):
         """Test _record_to_sample handles empty diagnosis."""

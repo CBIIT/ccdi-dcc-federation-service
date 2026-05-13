@@ -27,6 +27,16 @@ from app.repositories.sample_helpers import SD_CAT_MARKER
 
 logger = get_logger(__name__)
 
+# Projection for diagnosis nodes in collect() results.
+# Returns only the 7 properties used by _record_to_sample(), avoiding transferring
+# full node objects (which carry all properties) across the driver connection.
+_DIAG_PROJ = (
+    "{diagnosis: d.diagnosis, diagnosis_comment: d.diagnosis_comment, "
+    "diagnosis_category: d.diagnosis_category, disease_phase: d.disease_phase, "
+    "tumor_grade: d.tumor_grade, age_at_diagnosis: d.age_at_diagnosis, "
+    "tumor_classification: d.tumor_classification}"
+)
+
 
 class SampleQueryCases:
     """Mixin class providing query case implementations for SampleRepository."""
@@ -195,7 +205,7 @@ class SampleQueryCases:
         OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
         
         WITH sa, st,
-             head(collect(DISTINCT d)) AS diagnoses,
+             [d IN collect(DISTINCT d) WHERE d IS NOT NULL | {_DIAG_PROJ}] AS diagnoses,
              head(collect(DISTINCT pf)) AS pf,
              head(collect(DISTINCT sf)) AS sf
         
@@ -221,7 +231,7 @@ class SampleQueryCases:
                 st = dict(record["st"]) if record.get("st") else None
                 sf = dict(record["sf"]) if record.get("sf") else None
                 pf = dict(record["pf"]) if record.get("pf") else None
-                diagnoses = dict(record["diagnoses"]) if record.get("diagnoses") else None
+                diagnoses = [dict(d) for d in record["diagnoses"] if d is not None] if record.get("diagnoses") else None
                 if sa:
                     sample_obj = self._record_to_sample(sa, p, st, sf, pf, diagnoses, base_url)
                     if sample_obj:
@@ -631,7 +641,7 @@ class SampleQueryCases:
                 # Regular diagnosis filters - collect all, filter later
                 with_collects.append("collect(DISTINCT d) AS all_diagnoses")
         else:
-            with_collects.append("head(collect(DISTINCT d)) AS diagnoses")
+            with_collects.append(f"[d IN collect(DISTINCT d) WHERE d IS NOT NULL | {_DIAG_PROJ}] AS diagnoses")
         
         if has_pf_filters:
             # Collect all pathology files to filter for matches
@@ -698,7 +708,7 @@ class SampleQueryCases:
         # After collecting and filtering, pick 1 node per type and paginate
         pick_clause_parts = []
         if has_diagnosis_filters or needs_diagnosis_search:
-            pick_clause_parts.append("head([d IN all_diagnoses WHERE d IS NOT NULL | d]) AS diagnoses")
+            pick_clause_parts.append(f"[d IN all_diagnoses WHERE d IS NOT NULL | {_DIAG_PROJ}] AS diagnoses")
         else:
             pick_clause_parts.append("diagnoses")
         
@@ -753,7 +763,7 @@ class SampleQueryCases:
                 st = dict(record["st"]) if record.get("st") else None
                 sf = dict(record["sf"]) if record.get("sf") else None
                 pf = dict(record["pf"]) if record.get("pf") else None
-                diagnoses = dict(record["diagnoses"]) if record.get("diagnoses") else None
+                diagnoses = [dict(d) for d in record["diagnoses"] if d is not None] if record.get("diagnoses") else None
                 if sa:
                     sample_obj = self._record_to_sample(sa, p, st, sf, pf, diagnoses, base_url)
                     if sample_obj:

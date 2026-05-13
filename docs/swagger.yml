@@ -2643,8 +2643,11 @@ components:
           - type: 'null'
         diagnosis:
           anyOf:
-          - $ref: '#/components/schemas/DiagnosisField'
+          - items:
+              $ref: '#/components/schemas/DiagnosisField'
+            type: array
           - type: 'null'
+          title: Diagnosis
         diagnosis_category:
           anyOf:
           - items:

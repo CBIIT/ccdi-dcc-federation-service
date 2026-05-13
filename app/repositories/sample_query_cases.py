@@ -399,7 +399,7 @@ class SampleQueryCases:
         diagnosis_search_term = categorized["diagnosis"].get("_diagnosis_search")
         needs_diagnosis_search = diagnosis_search_term is not None
         use_substring_diagnosis_category = bool(
-            categorized["diagnosis"].get("_sample_diagnosis_category_substring")
+            categorized["diagnosis"].get(SD_CAT_MARKER)
         )
         
         # Handle diagnosis search - needs special collection filter

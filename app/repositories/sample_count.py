@@ -9,6 +9,7 @@ from typing import Dict, Any, List
 from app.core.logging import get_logger
 from app.models.errors import UnsupportedFieldError
 from app.core.diagnosis_category import HARMONIZED_DIAGNOSIS_CATEGORIES
+from app.repositories.sample_helpers import SD_CAT_MARKER
 from app.core.field_mappings import (
     map_field_value,
     reverse_map_field_value,
@@ -185,7 +186,7 @@ class SampleCount:
             )""")
             params["diagnosis_search_term"] = search_term
 
-        filters.pop("_sample_diagnosis_category_substring", None)
+        filters.pop(SD_CAT_MARKER, None)
 
         # Handle anatomical_sites filter (sample field, not participant field)
         if "anatomical_sites" in filters:

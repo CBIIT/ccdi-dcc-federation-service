@@ -121,10 +121,17 @@ as a breaking change.""",
                                 },
                                 "metadata": {
                                     "disease_phase": {"value": "Initial Diagnosis"},
-                                    "diagnosis": {"value": "Neuroblastoma","comment": "null" },
+                                    "diagnosis": [
+                                        {"value": "Neuroblastoma", "comment": "null"}
+                                    ],
                                     "diagnosis_category": [
                                         {"value": "Brain and Spinal Cord Tumors"}
                                     ],
+                                    "unharmonized": {
+                                        "diagnosis_category": [
+                                            {"value": "Gliomas"}
+                                        ]
+                                    },
                                     "age_at_diagnosis": {"value": 10},
                                     "age_at_collection": {"value": 10},
                                     "anatomical_sites": [
@@ -362,12 +369,20 @@ Paginated. Experimental—may change.""",
                                     "associated_diagnoses": [
                                         {"value": "Neuroblastoma","comment": "null" }
                                     ],
+                                    "associated_diagnosis_categories": [
+                                        {"value": "Brain and Spinal Cord Tumors"}
+                                    ],
+                                    "unharmonized": {
+                                        "associated_diagnosis_categories": [
+                                            {"value": "Gliomas"}
+                                        ]
+                                    },
                                     "depositions": [
                                         {
                                             "kind": "dbGaP",
                                             "value": "phs002430"
                                         }
-                                    ]
+                                    ],
                                 }
                             }
                         ]

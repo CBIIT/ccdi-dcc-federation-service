@@ -161,7 +161,7 @@ paths:
           after `;` split (harmonized CDE 16607972 or unharmonized values). Federation
           API aggregation alignment (v1.3+). Not substring on full string—use
           `GET /api/v1/subject-diagnosis` for that under the same parameter name.
-        example: Neuroblastoma
+        example: Medulloblastoma
       - name: page
         in: query
         required: false
@@ -1076,7 +1076,7 @@ paths:
           `associated_diagnosis_categories` on `GET /api/v1/subject-diagnosis`. On list
           `GET /api/v1/subject` and `GET /api/v1/sample`, that parameter name instead uses
           token match after `;`. Trimmed.
-        example: Neuroblastoma
+        example: Medulloblastoma
       - name: disease_phase
         in: query
         required: false
@@ -1247,6 +1247,68 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SampleResponse'
+              example:
+                summary:
+                  counts:
+                    all: 150
+                    current: 10
+                data:
+                - id:
+                    namespace:
+                      organization: CCDI-DCC
+                      name: phs002430
+                    name: TARGET-10-DCC001-03A-01R
+                  subject:
+                    namespace:
+                      organization: CCDI-DCC
+                      name: phs002430
+                    name: TARGET-10-DCC001
+                  metadata:
+                    disease_phase:
+                      value: Initial Diagnosis
+                    diagnosis:
+                    - value: Neuroblastoma
+                      comment: 'null'
+                    diagnosis_category:
+                    - value: Brain and Spinal Cord Tumors
+                    unharmonized:
+                      diagnosis_category:
+                      - value: Gliomas
+                    age_at_diagnosis:
+                      value: 10
+                    age_at_collection:
+                      value: 10
+                    anatomical_sites:
+                    - value: 'C71.9 : Brain, NOS'
+                    tissue_type:
+                      value: Tumor
+                    tumor_classification:
+                      value: Primary
+                    tumor_grade:
+                      value: G2 Moderately Differentiated
+                    tumor_tissue_morphology:
+                      value: Neuroblastoma
+                    library_strategy:
+                      value: WXS
+                    library_selection_method:
+                      value: Hybrid Selection
+                    library_source_material:
+                      value: Genomic DNA
+                    preservation_method:
+                      value: Frozen
+                    specimen_molecular_analyte_type:
+                      value: DNA
+                    depositions:
+                    - kind: dbGaP
+                      value: phs002430
+                    identifiers:
+                    - value:
+                        namespace:
+                          organization: CCDI-DCC
+                          name: phs002430
+                        name: TARGET-10-DCC001-03A-01R
+                        server: https://dcc.ccdi.cancer.gov/api/v1/sample/CCDI-DCC/phs002430/TARGET-10-DCC001-03A-01R
+                        type: Linked
         '422':
           description: Invalid query or path parameters.
           content:
@@ -1409,6 +1471,48 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SubjectResponse'
+              example:
+                summary:
+                  counts:
+                    all: 300
+                    current: 15
+                data:
+                - id:
+                    namespace:
+                      organization: CCDI-DCC
+                      name: phs002430
+                    name: TARGET-10-DCC001
+                  kind: Participant
+                  metadata:
+                    sex:
+                      value: F
+                    race:
+                    - value: White
+                    ethnicity:
+                      value: Not reported
+                    identifiers:
+                    - value:
+                        namespace:
+                          organization: CCDI-DCC
+                          name: phs002430
+                        name: TARGET-10-DCC001
+                        type: Linked
+                        server: https://dcc.ccdi.cancer.gov/api/v1/subject/CCDI-DCC/phs002430/TARGET-10-DCC001
+                    vital_status:
+                      value: Alive
+                    age_at_vital_status:
+                      value: 12
+                    associated_diagnoses:
+                    - value: Neuroblastoma
+                      comment: 'null'
+                    associated_diagnosis_categories:
+                    - value: Brain and Spinal Cord Tumors
+                    unharmonized:
+                      associated_diagnosis_categories:
+                      - value: Gliomas
+                    depositions:
+                    - kind: dbGaP
+                      value: phs002430
         '422':
           description: Invalid query or path parameters.
           content:

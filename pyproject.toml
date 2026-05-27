@@ -24,8 +24,8 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-  "pytest~=7.4.3",
-  "pytest-asyncio~=0.21.1",
+  "pytest~=8.1",
+  "pytest-asyncio~=0.23",
   "httpx~=0.25.2",
   "ruff~=0.1.7",
   "black~=26.3.1",
@@ -63,8 +63,8 @@ slowapi = "^0.1.9"
 starlette-exporter = "^0.17.1"
 
 [tool.poetry.group.dev.dependencies]
-pytest = "^7.4.3"
-pytest-asyncio = "^0.21.1"
+pytest = "^8.1"
+pytest-asyncio = "^0.23"
 httpx = "^0.25.2"
 ruff = "^0.1.7"
 black = "^26.3.1"
@@ -124,6 +124,7 @@ strict_equality = true
 
 [tool.pytest.ini_options]
 minversion = "6.0"
+asyncio_mode = "auto"
 addopts = "-ra -q --strict-markers"
 testpaths = [
     "tests",

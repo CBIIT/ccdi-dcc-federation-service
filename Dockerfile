@@ -14,16 +14,19 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     POETRY_VENV_IN_PROJECT=1
 
 # System dependencies required for building (gcc, headers) & curl for potential build scripts
-# Update openssl packages to fix security vulnerabilities (CVE-2025-15467, CVE-2025-69419)
+# Update packages to fix security vulnerabilities (CVE-2025-15467, CVE-2025-69419, gnutls28, libcap2)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     build-essential \
-    && apt-get install -y --no-install-recommends --only-upgrade openssl libssl3t64 openssl-provider-legacy \
+    && apt-get install -y --no-install-recommends --only-upgrade \
+        openssl libssl3t64 openssl-provider-legacy \
+        libgnutls30t64 \
+        libcap2 \
     && rm -rf /var/lib/apt/lists/*
 
 
 # Patch pip to fix security vulnerabilities
-RUN python -m pip install --no-cache-dir --upgrade "pip==26.0"
+RUN python -m pip install --no-cache-dir --upgrade "pip==26.1.1"
 
 WORKDIR /app
 
@@ -50,13 +53,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 
 # Minimal runtime deps (curl for HEALTHCHECK)
-# Update openssl packages to fix security vulnerabilities (CVE-2025-15467, CVE-2025-69419)
+# Update packages to fix security vulnerabilities (CVE-2025-15467, CVE-2025-69419, gnutls28, libcap2)
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
-    && apt-get install -y --no-install-recommends --only-upgrade openssl libssl3t64 openssl-provider-legacy \
+    && apt-get install -y --no-install-recommends --only-upgrade \
+        openssl libssl3t64 openssl-provider-legacy \
+        libgnutls30t64 \
+        libcap2 \
     && rm -rf /var/lib/apt/lists/*
 
 # Pin pip in the runtime image for security scans (base image may ship an older pip).
-RUN python -m pip install --no-cache-dir --upgrade "pip==26.0"
+RUN python -m pip install --no-cache-dir --upgrade "pip==26.1.1"
 
 WORKDIR /app
 

@@ -19,15 +19,13 @@ def test_file_list_contract(client, monkeypatch):
             pass
 
         async def get_files(self, filters: Dict[str, Any], offset: int = 0, limit: int = 20):
-            return [
+            files = [
                 {
                     "id": {"namespace": {"organization": "CCDI-DCC", "name": "phs002431"}, "name": "f1"},
                     "metadata": {"type": {"value": "BAM"}},
                 }
             ]
-
-        async def get_files_summary(self, filters: Dict[str, Any]):
-            return SummaryResponse(counts=SummaryCounts(total=1))
+            return files, 1
 
     monkeypatch.setattr(files_ep, "FileService", FakeFileService)
 

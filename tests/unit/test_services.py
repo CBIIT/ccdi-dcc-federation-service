@@ -11,6 +11,7 @@ from neo4j import AsyncSession
 
 from app.services.subject import SubjectService
 from app.services.file import FileService
+from app.config_data.file_node_registry import FILE_NODE_REGISTRY
 from app.services.sample import SampleService
 from app.core.config import Settings, get_settings
 from app.lib.field_allowlist import FieldAllowlist
@@ -383,7 +384,8 @@ class TestFileService:
 
     def test_initialization(self, service, mock_session, mock_allowlist, mock_settings):
         """Test service initialization."""
-        assert service.repository is not None
+        assert service._repos is not None
+        assert len(service._repos) == len(FILE_NODE_REGISTRY)
         assert service.settings is mock_settings
         assert service.materialized_view_service is not None
 
@@ -393,61 +395,75 @@ class TestFileService:
             Mock(spec=File, id=Mock(name="file1")),
             Mock(spec=File, id=Mock(name="file2"))
         ]
-        service.repository.get_files = AsyncMock(return_value=mock_files)
-        
-        result = await service.get_files(filters={}, offset=0, limit=20)
-        
-        assert isinstance(result, list)
-        assert len(result) == 2
-        service.repository.get_files.assert_called_once()
+        mock_repo = AsyncMock()
+        mock_repo.count_for_pagination = AsyncMock(return_value=2)
+        mock_repo.get_files = AsyncMock(return_value=mock_files)
+
+        with patch.object(service, '_repos', [mock_repo]):
+            files, total = await service.get_files(filters={}, offset=0, limit=20)
+
+        assert isinstance(files, list)
+        assert len(files) == 2
+        assert total == 2
+        mock_repo.get_files.assert_called_once()
 
     async def test_get_files_pagination_limit_enforced(self, service, mock_settings):
-        """Test that pagination limit is enforced."""
+        """Test that pagination limit is enforced when get_files is called."""
         mock_settings.pagination.max_page_size = 100
-        service.repository.get_files = AsyncMock(return_value=[])
-        
-        await service.get_files(filters={}, offset=0, limit=200)
-        
-        call_args = service.repository.get_files.call_args
-        assert call_args[0][2] == 100  # limit parameter
+        mock_files = [Mock(spec=File, id=Mock(name=f"file{i}")) for i in range(5)]
+        mock_repo = AsyncMock()
+        mock_repo.count_for_pagination = AsyncMock(return_value=500)
+        mock_repo.get_files = AsyncMock(return_value=mock_files)
+
+        with patch.object(service, '_repos', [mock_repo]):
+            files, total = await service.get_files(filters={}, offset=0, limit=200)
+
+        # Verify limit was capped at max_page_size (100), not passed as 200
+        mock_repo.get_files.assert_called_once_with({}, 0, 100)
+        assert isinstance(files, list)
+        assert total == 500
 
     async def test_get_files_database_connection_error(self, service):
         """Test get_files handles database connection errors gracefully."""
-        service.repository.get_files = AsyncMock(
+        mock_repo = AsyncMock()
+        mock_repo.count_for_pagination = AsyncMock(
             side_effect=DatabaseConnectionError("Connection failed")
         )
-        
-        result = await service.get_files(filters={}, offset=0, limit=20)
-        
-        assert result == []
-        assert isinstance(result, list)
+
+        with patch.object(service, '_repos', [mock_repo]):
+            files, total = await service.get_files(filters={}, offset=0, limit=20)
+
+        assert files == []
+        assert total == 0
 
     async def test_get_file_by_identifier_success(self, service):
         """Test get_file_by_identifier with successful lookup."""
         mock_file = Mock(spec=File, id=Mock(name="file1"))
-        service.repository.get_file_by_identifier = AsyncMock(
-            return_value=mock_file
-        )
-        
-        result = await service.get_file_by_identifier(
-            organization="CCDI-DCC",
-            namespace="phs002431",
-            name="file1"
-        )
-        
+        mock_repo = AsyncMock()
+        mock_repo.get_file_by_identifier = AsyncMock(return_value=mock_file)
+
+        with patch.object(service, '_repos', [mock_repo]):
+            result = await service.get_file_by_identifier(
+                organization="CCDI-DCC",
+                namespace="phs002431",
+                name="file1"
+            )
+
         assert result is not None
-        service.repository.get_file_by_identifier.assert_called_once()
+        mock_repo.get_file_by_identifier.assert_called_once()
 
     async def test_get_file_by_identifier_not_found(self, service):
         """Test get_file_by_identifier when file not found."""
-        service.repository.get_file_by_identifier = AsyncMock(return_value=None)
-        
-        with pytest.raises(NotFoundError):
-            await service.get_file_by_identifier(
-                organization="CCDI-DCC",
-                namespace="phs002431",
-                name="nonexistent"
-            )
+        mock_repo = AsyncMock()
+        mock_repo.get_file_by_identifier = AsyncMock(return_value=None)
+
+        with patch.object(service, '_repos', [mock_repo]):
+            with pytest.raises(NotFoundError):
+                await service.get_file_by_identifier(
+                    organization="CCDI-DCC",
+                    namespace="phs002431",
+                    name="nonexistent"
+                )
 
 
 @pytest.mark.unit

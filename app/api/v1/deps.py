@@ -50,13 +50,13 @@ def get_pagination_params(
     page: Optional[int] = Query(
         default=1,
         ge=1,
-        description="The page to retrieve.\n\nThis is a 1-based index of a page within a page set. The value of page must default to 1 when this parameter is not provided."
+        description="1-based page index. Defaults to 1."
     ),
     per_page: Optional[int] = Query(
         default=None,
         ge=1,
         le=1000,
-        description="The number of results per page.\n\nEach server can select its own default value for per_page when this parameter is not provided. \n\nThat said, the convention within the community is to use 50 as a default value if any value is equally reasonable.\n\nThe maximum allowed value is 1000."
+        description="Number of results per page. Defaults to 50. Maximum: 500."
     )
 ) -> PaginationParams:
     """
@@ -728,24 +728,24 @@ def get_sample_filters_no_descriptions(
 def get_file_filters(
     type: Optional[str] = Query(
         None, 
-        description="Matches any sequencing file where the `file_type` field matches the string provided.",
+        description="Matches any file (methylation_array_file or sequencing_file) where the `file_type` field matches the string provided.",
         alias="type"
     ),
     size: Optional[str] = Query(
         None, 
-        description="Matches any sequencing file where the `file_size` field matches the string provided."
+        description="Matches any file (methylation_array_file or sequencing_file) where the `file_size` field matches the string provided."
     ),
     checksums: Optional[str] = Query(
         None, 
-        description="Matches any sequencing file where the `md5sum` or `checksum_value` field matches the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the file should be included in the results."
+        description="Matches any file (methylation_array_file or sequencing_file) where the `md5sum` or `checksum_value` field matches the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the file should be included in the results."
     ),
     description: Optional[str] = Query(
         None, 
-        description="Matches any sequencing file where the `file_description` field matches the string provided.\n\n**Note:** a file is returned if the value provided is a substring of the description."
+        description="Matches any file (methylation_array_file or sequencing_file) where the `file_description` field matches the string provided.\n\n**Note:** a file is returned if the value provided is a substring of the description."
     ),
     depositions: Optional[str] = Query(
         None, 
-        description="Matches any sequencing file where any member of the `depositions` fields match the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the file should be included in the results."
+        description="Matches any file (methylation_array_file or sequencing_file) where any member of the `depositions` fields match the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the file should be included in the results."
     ),
     metadata_unharmonized_field: Optional[str] = Query(
         None,
@@ -763,7 +763,7 @@ def get_file_filters(
     ),
     request: Request = None
 ) -> Dict[str, Any]:
-    """Get sequencing file filter parameters."""
+    """Get file filter parameters (methylation_array_file and sequencing_file)."""
     filters = {}
     
     # Map generic field names to sequencing_file field names

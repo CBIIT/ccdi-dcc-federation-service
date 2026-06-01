@@ -78,8 +78,6 @@ class TestFileEndpoints:
         self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
     ):
         """Test list_files returns files successfully."""
-        from app.models.dto import SummaryResponse, SummaryCounts
-        
         class MockFile:
             def model_dump(self, exclude=None, exclude_none=None, exclude_unset=None):
                 return {
@@ -89,12 +87,11 @@ class TestFileEndpoints:
                 }
         
         mock_files = [MockFile()]
-        mock_summary = SummaryResponse(counts=SummaryCounts(total=100))
-        
+
         with patch('app.api.v1.endpoints.files.FileService') as mock_service_class:
             mock_service = Mock()
-            mock_service.get_files = AsyncMock(return_value=mock_files)
-            mock_service.get_files_summary = AsyncMock(return_value=mock_summary)
+            mock_service.get_files = AsyncMock(return_value=(mock_files, 100))
+            # get_files_summary no longer called from list handler
             mock_service_class.return_value = mock_service
             
             with patch('app.api.v1.endpoints.files.get_cache_service', return_value=None):

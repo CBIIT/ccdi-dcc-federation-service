@@ -170,10 +170,10 @@ paths:
           - type: integer
             minimum: 1
           - type: 'null'
-          description: Page number (1-based)
+          description: 1-based page index. Defaults to 1.
           default: 1
           title: Page
-        description: Page number (1-based)
+        description: 1-based page index. Defaults to 1.
       - name: per_page
         in: query
         required: false
@@ -182,9 +182,9 @@ paths:
           - type: integer
             minimum: 1
           - type: 'null'
-          description: Items per page
+          description: Number of results per page. Defaults to 50. Maximum: 500.
           title: Per Page
-        description: Items per page
+        description: Number of results per page. Defaults to 50. Maximum: 500.
       responses:
         '200':
           description: Successful operation.
@@ -607,10 +607,10 @@ paths:
           - type: integer
             minimum: 1
           - type: 'null'
-          description: Page number (1-based)
+          description: 1-based page index. Defaults to 1.
           default: 1
           title: Page
-        description: Page number (1-based)
+        description: 1-based page index. Defaults to 1.
       - name: per_page
         in: query
         required: false
@@ -619,9 +619,9 @@ paths:
           - type: integer
             minimum: 1
           - type: 'null'
-          description: Items per page
+          description: Number of results per page. Defaults to 50. Maximum: 500.
           title: Per Page
-        description: Items per page
+        description: Number of results per page. Defaults to 50. Maximum: 500.
       responses:
         '200':
           description: Successful operation.
@@ -1225,10 +1225,10 @@ paths:
           - type: integer
             minimum: 1
           - type: 'null'
-          description: Page number (1-based)
+          description: 1-based page index. Defaults to 1.
           default: 1
           title: Page
-        description: Page number (1-based)
+        description: 1-based page index. Defaults to 1.
       - name: per_page
         in: query
         required: false
@@ -1237,9 +1237,9 @@ paths:
           - type: integer
             minimum: 1
           - type: 'null'
-          description: Items per page
+          description: Number of results per page. Defaults to 50. Maximum: 500.
           title: Per Page
-        description: Items per page
+        description: Number of results per page. Defaults to 50. Maximum: 500.
       responses:
         '200':
           description: Successful Response
@@ -1449,10 +1449,10 @@ paths:
           - type: integer
             minimum: 1
           - type: 'null'
-          description: Page number (1-based)
+          description: 1-based page index. Defaults to 1.
           default: 1
           title: Page
-        description: Page number (1-based)
+        description: 1-based page index. Defaults to 1.
       - name: per_page
         in: query
         required: false
@@ -1461,9 +1461,9 @@ paths:
           - type: integer
             minimum: 1
           - type: 'null'
-          description: Items per page
+          description: Number of results per page. Defaults to 50. Maximum: 500.
           title: Per Page
-        description: Items per page
+        description: Number of results per page. Defaults to 50. Maximum: 500.
       responses:
         '200':
           description: Successful Response
@@ -1523,28 +1523,31 @@ paths:
     get:
       tags:
       - File
-      summary: Gets the sequencing files known by this server.
-      description: "Gets the sequencing files known by this server.\n\n### Pagination\n\
+      summary: Gets files known by this server (methylation array and sequencing).
+      description: "Gets files known by this server.\n\nResults include files from **methylation_array_file**\
+        \ and **sequencing_file** graph node types, returned in a single harmonized\
+        \ `File` shape.\n\n### Pagination\n\
         \nThis endpoint is paginated. Users may override the default pagination\n\
         parameters by providing one or more of the pagination-related query\nparameters\
         \ below.\n\n### Filtering\n\nAll harmonized (top-level) and unharmonized (nested\
         \ under the\n`metadata.unharmonized` key) metadata fields are filterable.\
         \ To achieve\nthis, you can provide the field name as a [`String`]. Filtering\
         \ follows the\nfollowing rules:\n\n* For single-value metadata field, the\
-        \ sequencing file is included in the results if\nits value _exactly_ matches\
+        \ file is included in the results if\nits value _exactly_ matches\
         \ the query string. Matches are case-sensitive.\n* For multiple-value metadata\
-        \ fields, the sequencing file is included in the results\nif any of its values\
+        \ fields, the file is included in the results\nif any of its values\
         \ for the field _exactly_ match the query string (a\nlogical OR (`||`)). Matches\
         \ are case-sensitive.\n* When the metadata field is `null` (in the case of\
-        \ singular or\nmultiple-valued metadata fields) or empty, the sequencing file\
+        \ singular or\nmultiple-valued metadata fields) or empty, the file\
         \ is not included.\n* When multiple fields are provided as filters, a logical\
         \ AND (`&&`) strings\ntogether the predicates. In other words, all filters\
-        \ must match for a\nsequencing file to be returned. Note that this means that\
+        \ must match for a\nfile to be returned. Note that this means that\
         \ servers do not natively\nsupport logical OR (`||`) across multiple fields:\
         \ that must be done by\ncalling this endpoint with each of your desired queries\
-        \ and performing a\nset union of those files out of band.\n\n### Ordering\n\
-        \nThis endpoint has default ordering requirements\u2014those details are documented\n\
-        in the `responses::Files` schema."
+        \ and performing a\nset union of those files out of band.\n        \n### Ordering\n\
+        \nPaginated results are ordered by node type (**methylation_array_file** first,\
+        \ then **sequencing_file**), then by file id within each type. Further details\
+        \ are documented in the `responses::Files` schema."
       operationId: file_index
       parameters:
       - name: type
@@ -1554,10 +1557,10 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: Matches any sequencing file where the `file_type` field matches
+          description: Matches any file (methylation_array_file or sequencing_file) where the `file_type` field matches
             the string provided.
           title: Type
-        description: Matches any sequencing file where the `file_type` field matches
+        description: Matches any file (methylation_array_file or sequencing_file) where the `file_type` field matches
           the string provided.
       - name: size
         in: query
@@ -1566,10 +1569,10 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: Matches any sequencing file where the `file_size` field matches
+          description: Matches any file (methylation_array_file or sequencing_file) where the `file_size` field matches
             the string provided.
           title: Size
-        description: Matches any sequencing file where the `file_size` field matches
+        description: Matches any file (methylation_array_file or sequencing_file) where the `file_size` field matches
           the string provided.
       - name: checksums
         in: query
@@ -1578,14 +1581,14 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: 'Matches any sequencing file where the `md5sum` or `checksum_value`
+          description: 'Matches any file (methylation_array_file or sequencing_file) where the `md5sum` or `checksum_value`
             field matches the string provided.
 
 
             **Note:** a logical OR (`||`) is performed across the values when determining
             whether the file should be included in the results.'
           title: Checksums
-        description: 'Matches any sequencing file where the `md5sum` or `checksum_value`
+        description: 'Matches any file (methylation_array_file or sequencing_file) where the `md5sum` or `checksum_value`
           field matches the string provided.
 
 
@@ -1598,14 +1601,14 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: 'Matches any sequencing file where the `file_description` field
+          description: 'Matches any file (methylation_array_file or sequencing_file) where the `file_description` field
             matches the string provided.
 
 
             **Note:** a file is returned if the value provided is a substring of the
             description.'
           title: Description
-        description: 'Matches any sequencing file where the `file_description` field
+        description: 'Matches any file (methylation_array_file or sequencing_file) where the `file_description` field
           matches the string provided.
 
 
@@ -1618,14 +1621,14 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: 'Matches any sequencing file where any member of the `depositions`
+          description: 'Matches any file (methylation_array_file or sequencing_file) where any member of the `depositions`
             fields match the string provided.
 
 
             **Note:** a logical OR (`||`) is performed across the values when determining
             whether the file should be included in the results.'
           title: Depositions
-        description: 'Matches any sequencing file where any member of the `depositions`
+        description: 'Matches any file (methylation_array_file or sequencing_file) where any member of the `depositions`
           fields match the string provided.
 
 
@@ -1639,10 +1642,10 @@ paths:
           - type: integer
             minimum: 1
           - type: 'null'
-          description: Page number (1-based)
+          description: 1-based page index. Defaults to 1.
           default: 1
           title: Page
-        description: Page number (1-based)
+        description: 1-based page index. Defaults to 1.
       - name: per_page
         in: query
         required: false
@@ -1651,9 +1654,9 @@ paths:
           - type: integer
             minimum: 1
           - type: 'null'
-          description: Items per page
+          description: Number of results per page. Defaults to 50. Maximum: 500.
           title: Per Page
-        description: Items per page
+        description: Number of results per page. Defaults to 50. Maximum: 500.
       responses:
         '200':
           description: Successful operation.
@@ -1710,10 +1713,11 @@ paths:
     get:
       tags:
       - File
-      summary: Groups the sequencing files by the specified metadata field and returns
-        counts.
-      description: Groups the sequencing files by the specified metadata field and
-        returns counts. Only 'type' and 'depositions' are supported.
+      summary: Groups files by metadata field and returns counts (methylation array and sequencing).
+      description: Groups files by the specified metadata field and returns counts.
+        Results include files from **methylation_array_file** and **sequencing_file**
+        graph node types, returned in a single merged `File` shape. Only 'type'
+        and 'depositions' are supported.
       operationId: files_by_count
       parameters:
       - name: field
@@ -1787,10 +1791,10 @@ paths:
     get:
       tags:
       - File
-      summary: Reports summary information for the sequencing files known by this
-        server.
-      description: Reports summary information for the sequencing files known by this
-        server.
+      summary: Reports summary for files known by this server (methylation array and sequencing).
+      description: Reports summary information for files known by this server. Results
+        include files from **methylation_array_file** and **sequencing_file** graph
+        node types, returned in a single merged `File` shape.
       operationId: file_summary
       responses:
         '200':
@@ -1824,9 +1828,10 @@ paths:
     get:
       tags:
       - File
-      summary: Gets the sequencing file matching the provided name (if the file exists).
-      description: Gets the sequencing file matching the provided name (if the file
-        exists). Organization must be 'CCDI-DCC'. Namespace is the study_id value
+      summary: Gets a file by identifier (methylation array or sequencing).
+      description: Gets the file matching the provided identifier (if it exists). Results
+        include files from **methylation_array_file** and **sequencing_file** graph
+        node types. Organization must be 'CCDI-DCC'. Namespace is the study_id value
         from the database. Name is the file.id field value.
       operationId: file_show
       parameters:

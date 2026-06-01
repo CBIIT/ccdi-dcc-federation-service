@@ -133,14 +133,26 @@ class MaterializedViewService:
         # Import here to avoid circular dependencies
         from app.repositories.file import FileRepository
         from app.lib.field_allowlist import get_field_allowlist
-        
-        # Get the global allowlist instance (properly initialized)
+        from app.config_data.file_node_registry import FILE_NODE_REGISTRY
+
         allowlist = get_field_allowlist()
-        file_repo = FileRepository(self.session, allowlist)
-        
-        # Get counts from live query
-        counts_result = await file_repo.count_files_by_field("type", {})
-        
+        raw_results = []
+        for cfg in FILE_NODE_REGISTRY:
+            repo = FileRepository(self.session, allowlist, cfg)
+            raw_results.append(await repo.count_files_by_field("type", {}))
+
+        combined_values: dict = {}
+        for r in raw_results:
+            for item in r.get("values", []):
+                v = item.get("value")
+                if v is not None and v != "" and v != "null":
+                    combined_values[v] = combined_values.get(v, 0) + item.get("count", 0)
+        counts_result = {
+            "total": sum(r.get("total", 0) for r in raw_results),
+            "missing": sum(r.get("missing", 0) for r in raw_results),
+            "values": [{"value": v, "count": c} for v, c in sorted(combined_values.items(), key=lambda x: (-x[1], x[0]))],
+        }
+
         # Step 2: Delete old materialized view
         delete_cypher = """
         MATCH (stats:FileCountStats {type: "by_type"})
@@ -217,13 +229,26 @@ class MaterializedViewService:
         # Step 1: Calculate counts using live queries
         from app.repositories.file import FileRepository
         from app.lib.field_allowlist import get_field_allowlist
-        
-        # Get the global allowlist instance (properly initialized)
+        from app.config_data.file_node_registry import FILE_NODE_REGISTRY
+
         allowlist = get_field_allowlist()
-        file_repo = FileRepository(self.session, allowlist)
-        
-        counts_result = await file_repo.count_files_by_field("depositions", {})
-        
+        raw_results = []
+        for cfg in FILE_NODE_REGISTRY:
+            repo = FileRepository(self.session, allowlist, cfg)
+            raw_results.append(await repo.count_files_by_field("depositions", {}))
+
+        combined_values: dict = {}
+        for r in raw_results:
+            for item in r.get("values", []):
+                v = item.get("value")
+                if v is not None and v != "" and v != "null":
+                    combined_values[v] = combined_values.get(v, 0) + item.get("count", 0)
+        counts_result = {
+            "total": sum(r.get("total", 0) for r in raw_results),
+            "missing": sum(r.get("missing", 0) for r in raw_results),
+            "values": [{"value": v, "count": c} for v, c in sorted(combined_values.items(), key=lambda x: (-x[1], x[0]))],
+        }
+
         # Step 2: Delete old materialized view
         delete_cypher = """
         MATCH (stats:FileCountStats {type: "by_depositions"})

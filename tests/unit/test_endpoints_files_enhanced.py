@@ -111,9 +111,9 @@ class TestFileEndpointsEnhanced:
         with patch('app.api.v1.endpoints.files.FileService') as mock_service_class:
             mock_service = AsyncMock(spec=FileService)
             mock_service.get_files = AsyncMock(side_effect=http_exception)
-            mock_service.get_files_summary = AsyncMock(return_value={"counts": {"total": 0}})
+            # get_files_summary no longer called from list handler
             mock_service_class.return_value = mock_service
-            
+
             with patch('app.api.v1.endpoints.files.get_cache_service', return_value=None):
                 with pytest.raises(HTTPException) as exc_info:
                     await list_files(
@@ -126,7 +126,7 @@ class TestFileEndpointsEnhanced:
                         allowlist=mock_allowlist,
                         _rate_limit=None
                     )
-                
+
                 # Should re-raise the same HTTPException
                 assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
 
@@ -171,7 +171,7 @@ class TestFileEndpointsEnhanced:
             mock_service.get_files = AsyncMock(
                 side_effect=ValueError("Some non-connection error")
             )
-            mock_service.get_files_summary = AsyncMock(return_value={"counts": {"total": 0}})
+            # get_files_summary no longer called from list handler
             mock_service_class.return_value = mock_service
             
             with patch('app.api.v1.endpoints.files.get_cache_service', return_value=None):

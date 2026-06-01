@@ -874,21 +874,6 @@ class TestFileRepositoryEnhanced:
         
         assert result is None
 
-    async def test_get_files_summary(self, repository, mock_session):
-        """Test get_files_summary."""
-        async def async_gen():
-            yield {"total_count": 200}
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        mock_session.run = AsyncMock(return_value=mock_result)
-        
-        result = await repository.get_files_summary(filters={})
-        
-        assert isinstance(result, dict)
-        # The summary returns a dict with total_count key
-        assert "total_count" in result
-
 
 @pytest.mark.unit
 class TestSampleRepositoryEnhanced:

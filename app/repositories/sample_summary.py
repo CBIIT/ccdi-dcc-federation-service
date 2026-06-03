@@ -273,7 +273,7 @@ class SampleSummary:
                     # "Not Reported" is a valid filter value - match database values case-sensitively
                     # The value is stored in DB as-is, so match it directly
                     params[param_name] = value
-                    with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase = ${param_name}")
+                    with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase IS NOT NULL AND diagnoses.disease_phase = ${param_name}")
                     diagnosis_filter_parts_for_search.append(f"d.disease_phase = ${param_name}")
                 else:
                     # Apply reverse mapping for filtering (API value -> DB value(s))
@@ -282,11 +282,11 @@ class SampleSummary:
                     if isinstance(reverse_mapped, list):
                         # Multiple DB values map to this API value - use IN clause with parameter for better query planning
                         params[param_name] = reverse_mapped
-                        with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase IN ${param_name}")
+                        with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase IS NOT NULL AND diagnoses.disease_phase IN ${param_name}")
                         diagnosis_filter_parts_for_search.append(f"d.disease_phase IN ${param_name}")
                     else:
                         params[param_name] = reverse_mapped
-                        with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase = ${param_name}")
+                        with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase IS NOT NULL AND diagnoses.disease_phase = ${param_name}")
                         diagnosis_filter_parts_for_search.append(f"d.disease_phase = ${param_name}")
             elif field == "library_source_material":
                 # Use helper function to validate library_source_material filter
@@ -312,16 +312,16 @@ class SampleSummary:
                     reverse_mapped = reverse_map_field_value("tumor_classification", value)
                     # If reverse_mapped is None, use the original value (no mapping needed)
                     params[param_name] = reverse_mapped if reverse_mapped else value
-                    with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_classification = ${param_name}")
+                    with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_classification IS NOT NULL AND diagnoses.tumor_classification = ${param_name}")
                     diagnosis_filter_parts_for_search.append(f"d.tumor_classification = ${param_name}")
             elif field == "tumor_grade":
-                with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_grade = ${param_name}")
+                with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_grade IS NOT NULL AND diagnoses.tumor_grade = ${param_name}")
                 diagnosis_filter_parts_for_search.append(f"d.tumor_grade = ${param_name}")
             elif field == "tumor_tissue_morphology":
-                with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_tissue_morphology = ${param_name}")
+                with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_tissue_morphology IS NOT NULL AND diagnoses.tumor_tissue_morphology = ${param_name}")
                 diagnosis_filter_parts_for_search.append(f"d.tumor_tissue_morphology = ${param_name}")
             elif field == "age_at_diagnosis":
-                with_conditions.append(f"diagnoses IS NOT NULL AND toInteger(diagnoses.age_at_diagnosis) = ${param_name}")
+                with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.age_at_diagnosis IS NOT NULL AND toInteger(diagnoses.age_at_diagnosis) = ${param_name}")
                 # Convert value to number for numeric comparison
                 try:
                     params[param_name] = int(value) if value is not None else None
@@ -361,7 +361,7 @@ class SampleSummary:
                 # Check both diagnoses.diagnosis and diagnoses.diagnosis_comment (for "see diagnosis_comment" cases)
                 # If diagnosis is "see diagnosis_comment", check the comment field instead
                 diagnosis_condition = (
-                    f"(diagnoses IS NOT NULL AND "
+                    f"(diagnoses IS NOT NULL AND diagnoses.diagnosis IS NOT NULL AND "
                     f"(diagnoses.diagnosis = ${param_name} OR "
                     f"(toLower(trim(toString(diagnoses.diagnosis))) = 'see diagnosis_comment' AND "
                     f"diagnoses.diagnosis_comment IS NOT NULL AND "

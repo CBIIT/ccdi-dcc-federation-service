@@ -508,7 +508,7 @@ class SampleQueryCases:
             
             if diagnosis_conditions:
                 combined_diagnosis_condition = " AND ".join([f"({cond})" for cond in diagnosis_conditions])
-                diagnosis_optional_match_where = f"WHERE d IS NOT NULL AND ({combined_diagnosis_condition})"
+                diagnosis_optional_match_where = f"WHERE {combined_diagnosis_condition}"
         
         # Step 4: Build sequencing_file filters for OPTIONAL MATCH WHERE clause
         sf_optional_match_where = None
@@ -604,7 +604,7 @@ class SampleQueryCases:
             # Collect all diagnoses, filter during collection
             optional_matches.append("OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)")
         elif diagnosis_optional_match_where:
-            optional_matches.append(f"OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)\n        {diagnosis_optional_match_where}")
+            optional_matches.append(f"MATCH (d:diagnosis)-[:of_diagnosis]->(sa)\n        {diagnosis_optional_match_where}")
         else:
             optional_matches.append("OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)")
         

@@ -695,9 +695,8 @@ class SubjectSummary:
 
         // Apply diagnosis search via streamed rows, then dedupe
         {(
-            "OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)\n"
-            "        WITH p, d\n"
-            f"        WHERE d IS NOT NULL AND ({single_diagnosis_node_predicate('d', diagnosis_search_term=diagnosis_search_term, diag_category_filter=diag_category_filter, diagnosis_category_contains=diagnosis_category_contains)})\n"
+            "MATCH (d:diagnosis)-[:of_diagnosis]->(p)\n"
+            f"        WHERE {single_diagnosis_node_predicate('d', diagnosis_search_term=diagnosis_search_term, diag_category_filter=diag_category_filter, diagnosis_category_contains=diagnosis_category_contains)}\n"
             "        WITH DISTINCT p"
         ) if needs_diagnosis_node_filter else ""}
         // Collect survival once per participant (avoid repeating per study row)
@@ -1281,9 +1280,8 @@ class SubjectSummary:
         {combine_where_clauses(where_clause_clean_for_summary, race_filter_condition if race_filter_condition else "")}
 
         // Apply diagnosis-row filter EARLY (before collecting survival records)
-        OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
-        WITH p, st, d
-        WHERE d IS NOT NULL AND ({diag_endpoint_predicate})
+        MATCH (d:diagnosis)-[:of_diagnosis]->(p)
+        WHERE {diag_endpoint_predicate}
         WITH DISTINCT p, st
 
         // Now collect survival records only for filtered participants
@@ -1346,9 +1344,8 @@ class SubjectSummary:
         WITH DISTINCT p
 
         // Apply diagnosis-row filter EARLY (before collecting survival records)
-        OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
-        WITH p, d
-        WHERE d IS NOT NULL AND ({diag_endpoint_predicate})
+        MATCH (d:diagnosis)-[:of_diagnosis]->(p)
+        WHERE {diag_endpoint_predicate}
         WITH DISTINCT p
 
         // Now collect survival records only for filtered participants

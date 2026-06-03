@@ -1280,7 +1280,6 @@ WITH p.participant_id AS participant_id, st.study_id AS study_id, collect(d) AS 
 WHERE size([
     d IN diagnoses WHERE d IS NOT NULL
     AND d.diagnosis_category IS NOT NULL
-    AND toString(d.diagnosis_category) <> ''
     AND any(tok IN split(toString(d.diagnosis_category), ';')
             WHERE toLower(trim(tok)) IN $harmonized_pvs_lower)
 ]) = 0
@@ -1289,7 +1288,7 @@ RETURN count(*) AS missing
 
         values_cypher = """
 MATCH (d:diagnosis)-[:of_diagnosis]->(p:participant)
-WHERE d.diagnosis_category IS NOT NULL AND toString(d.diagnosis_category) <> ''
+WHERE d.diagnosis_category IS NOT NULL
 MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
 WITH p.participant_id AS participant_id, st.study_id AS study_id,
      [tok IN split(toString(d.diagnosis_category), ';') WHERE trim(tok) <> ''] AS tokens

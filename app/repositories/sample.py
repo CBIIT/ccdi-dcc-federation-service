@@ -51,7 +51,6 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         params: Dict[str, Any] = {"offset": offset, "limit": limit}
         early_where_parts = [
             "sa.sample_id IS NOT NULL",
-            "sa.sample_id <> ''",
         ]
         depositions_filter = ""
         
@@ -133,7 +132,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         
         # OPTIMIZATION: For depositions-only queries, start from study to enable early pagination
         # Check if only depositions filter (early_where_parts only has base conditions)
-        has_only_depositions = depositions_filter and len(early_where_parts) == 2  # Only base conditions
+        has_only_depositions = depositions_filter and len(early_where_parts) == 1  # Only base conditions
         
         # Build count query if return_total
         total_count = None
@@ -146,11 +145,11 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
             WHERE {study_filter_clause}
             // Path 1: via cell_line - collect samples
             OPTIONAL MATCH (st)<-[:of_cell_line]-(:cell_line)<-[:of_sample]-(sa1:sample)
-            WHERE sa1.sample_id IS NOT NULL AND sa1.sample_id <> ''
+            WHERE sa1.sample_id IS NOT NULL
             WITH st, collect(DISTINCT sa1) AS sa1_list
             // Path 2: via participant -> consent_group - collect samples
             OPTIONAL MATCH (st)<-[:of_consent_group]-(:consent_group)<-[:of_participant]-(:participant)<-[:of_sample]-(sa2:sample)
-            WHERE sa2.sample_id IS NOT NULL AND sa2.sample_id <> ''
+            WHERE sa2.sample_id IS NOT NULL
             WITH st, sa1_list, collect(DISTINCT sa2) AS sa2_list
             // Combine both paths and unwind
             WITH st, [sa IN (sa1_list + sa2_list) WHERE sa IS NOT NULL] AS sa_list
@@ -204,11 +203,11 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         WHERE {study_filter_clause}
         // Path 1: via cell_line - collect samples
         OPTIONAL MATCH (st)<-[:of_cell_line]-(:cell_line)<-[:of_sample]-(sa1:sample)
-        WHERE sa1.sample_id IS NOT NULL AND sa1.sample_id <> ''
+        WHERE sa1.sample_id IS NOT NULL
         WITH st, collect(DISTINCT sa1) AS sa1_list
         // Path 2: via participant -> consent_group - collect samples
         OPTIONAL MATCH (st)<-[:of_consent_group]-(:consent_group)<-[:of_participant]-(:participant)<-[:of_sample]-(sa2:sample)
-        WHERE sa2.sample_id IS NOT NULL AND sa2.sample_id <> ''
+        WHERE sa2.sample_id IS NOT NULL
         WITH st, sa1_list, collect(DISTINCT sa2) AS sa2_list
         // Combine both paths and unwind
         WITH st, [sa IN (sa1_list + sa2_list) WHERE sa IS NOT NULL] AS sa_list
@@ -988,7 +987,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         # Otherwise: pagination after OPTIONAL MATCH + WHERE + aggregate.
         # Skip when diagnosis search is active: that filter is applied during collection (all_diagnoses), not as a simple WHERE on d.
         if not needs_diag_collection:
-            early_where_str = " AND ".join(early_where_conditions) if early_where_conditions else "sa.sample_id IS NOT NULL AND sa.sample_id <> ''"
+            early_where_str = " AND ".join(early_where_conditions) if early_where_conditions else "sa.sample_id IS NOT NULL"
             early_pagination_where_parts = []
             for c in (where_conditions or []):
                 if not isinstance(c, str):
@@ -1141,7 +1140,6 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         ]
         where_parts = [
             "sa.sample_id IS NOT NULL",
-            "sa.sample_id <> ''"
         ]
         if additional_filters:
             where_parts.extend(additional_filters)
@@ -1335,7 +1333,6 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
                 cypher = f"""
                 MATCH (sa:sample)
                 WHERE sa.sample_id IS NOT NULL
-                  AND sa.sample_id <> ''
                 {optional_matches_str}
                 WITH {with_clause}
                 {where_clause.replace('WHERE ', 'AND ') if where_clause else ''}
@@ -1529,7 +1526,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         MATCH (sf:sequencing_file)
         WHERE {where_clause}
         MATCH (sf)-[:of_sequencing_file]->(sa:sample)
-        WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+        WHERE sa.sample_id IS NOT NULL
         OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
         WITH sa, collect(DISTINCT st1.study_id) AS st1_list
         OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
@@ -1564,7 +1561,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         MATCH (sf:sequencing_file)
         WHERE {where_clause}
         MATCH (sf)-[:of_sequencing_file]->(sa:sample)
-        WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+        WHERE sa.sample_id IS NOT NULL
         // Collect study ids from both paths
         OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
         WITH sa, sf, collect(DISTINCT st1.study_id) AS st1_list_raw
@@ -1694,7 +1691,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         MATCH (pf:pathology_file)
         WHERE {pf_where_clause}
         MATCH (pf)-[:of_pathology_file]->(sa:sample)
-        WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+        WHERE sa.sample_id IS NOT NULL
         OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
         WITH sa, collect(DISTINCT st1.study_id) AS st1_list_raw
         OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
@@ -1734,7 +1731,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         MATCH (pf:pathology_file)
         WHERE {pf_where_clause}
         MATCH (pf)-[:of_pathology_file]->(sa:sample)
-        WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+        WHERE sa.sample_id IS NOT NULL
         // Collect study ids from both paths
         OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
         WITH sa, pf, collect(DISTINCT st1.study_id) AS st1_list_raw
@@ -1934,7 +1931,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         MATCH (sf:sequencing_file)
         WHERE {sf_where_clause}
         MATCH (sf)-[:of_sequencing_file]->(sa:sample)
-        WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+        WHERE sa.sample_id IS NOT NULL
         MATCH (pf:pathology_file)
         WHERE {pf_where_clause}
         MATCH (pf)-[:of_pathology_file]->(sa)
@@ -1973,7 +1970,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         MATCH (sf:sequencing_file)
         WHERE {sf_where_clause}
         MATCH (sf)-[:of_sequencing_file]->(sa:sample)
-        WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''{f" AND {sa_where_clause}" if sa_where_clause else ""}
+        WHERE sa.sample_id IS NOT NULL{f" AND {sa_where_clause}" if sa_where_clause else ""}
         MATCH (pf:pathology_file)
         WHERE {pf_where_clause}
         MATCH (pf)-[:of_pathology_file]->(sa)
@@ -2090,7 +2087,6 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         MATCH (sa:sample)
         WHERE sa.sample_id = $sample_name
           AND sa.sample_id IS NOT NULL
-          AND sa.sample_id <> ''
         OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
         WITH sa, collect(DISTINCT st1.study_id) AS st1_list
         OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
@@ -2221,7 +2217,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         MATCH (sf:sequencing_file)
         WHERE {where_clause}
         MATCH (sf)-[:of_sequencing_file]->(sa:sample)
-        WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+        WHERE sa.sample_id IS NOT NULL
         OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
         WITH sa, sf, collect(DISTINCT st1.study_id) AS st1_list
         OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)

@@ -18,12 +18,15 @@ def diagnosis_search_predicate(var: str) -> str:
 
     Requires params when search is active:
       $diagnosis_search_term_lower, $diagnosis_search_term_see_comment
+
+    Uses coalesce(var.diagnosis, '') so a null diagnosis property evaluates to false
+    rather than null (which would leak rows in OPTIONAL MATCH WHERE clauses).
     """
     return (
-        f"( (toLower(trim(toString({var}.diagnosis))) <> $diagnosis_search_term_see_comment AND "
-        f"ANY(diag IN CASE WHEN valueType({var}.diagnosis) = 'LIST' THEN {var}.diagnosis ELSE [{var}.diagnosis] END "
-        f"WHERE toLower(toString(diag)) CONTAINS $diagnosis_search_term_lower)) OR "
-        f"(toLower(trim(toString({var}.diagnosis))) = $diagnosis_search_term_see_comment AND "
+        f"( (toLower(trim(toString(coalesce({var}.diagnosis, '')))) <> $diagnosis_search_term_see_comment AND "
+        f"ANY(diag IN CASE WHEN valueType({var}.diagnosis) = 'LIST' THEN {var}.diagnosis ELSE [coalesce({var}.diagnosis, '')] END "
+        f"WHERE toLower(toString(coalesce(diag, ''))) CONTAINS $diagnosis_search_term_lower)) OR "
+        f"(toLower(trim(toString(coalesce({var}.diagnosis, '')))) = $diagnosis_search_term_see_comment AND "
         f"{var}.diagnosis_comment IS NOT NULL AND "
         f"toLower(toString({var}.diagnosis_comment)) CONTAINS $diagnosis_search_term_lower) )"
     )

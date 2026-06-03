@@ -255,35 +255,35 @@ class SampleCount:
                         reverse_mapped = reverse_map_field_value("disease_phase", value)
                         if isinstance(reverse_mapped, list):
                             params[param_name] = reverse_mapped
-                            base_where_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase IN ${param_name}")
+                            base_where_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase IS NOT NULL AND diagnoses.disease_phase IN ${param_name}")
                         else:
                             params[param_name] = reverse_mapped
-                            base_where_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase = ${param_name}")
+                            base_where_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase IS NOT NULL AND diagnoses.disease_phase = ${param_name}")
                 elif filter_field == "tumor_classification":
                     if is_null_mapped_value("tumor_classification", value):
                         base_where_conditions.append("false")
                     else:
                         reverse_mapped = reverse_map_field_value("tumor_classification", value)
                         params[param_name] = reverse_mapped
-                        base_where_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_classification = ${param_name}")
+                        base_where_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_classification IS NOT NULL AND diagnoses.tumor_classification = ${param_name}")
                 elif filter_field == "tumor_grade":
                     params[param_name] = value
-                    base_where_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_grade = ${param_name}")
+                    base_where_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_grade IS NOT NULL AND diagnoses.tumor_grade = ${param_name}")
                 elif filter_field == "tumor_tissue_morphology":
                     params[param_name] = value
-                    base_where_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_tissue_morphology = ${param_name}")
+                    base_where_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_tissue_morphology IS NOT NULL AND diagnoses.tumor_tissue_morphology = ${param_name}")
                 elif filter_field == "age_at_diagnosis":
                     try:
                         params[param_name] = int(value) if value is not None else None
                     except (ValueError, TypeError):
                         params[param_name] = value
-                    base_where_conditions.append(f"diagnoses IS NOT NULL AND toInteger(diagnoses.age_at_diagnosis) = ${param_name}")
+                    base_where_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.age_at_diagnosis IS NOT NULL AND toInteger(diagnoses.age_at_diagnosis) = ${param_name}")
                 elif filter_field == "diagnosis":
                     params[param_name] = value
-                    base_where_conditions.append(f"""(diagnoses IS NOT NULL AND 
-                        (diagnoses.diagnosis = ${param_name} OR 
-                        (toLower(trim(toString(diagnoses.diagnosis))) = 'see diagnosis_comment' AND 
-                        diagnoses.diagnosis_comment IS NOT NULL AND 
+                    base_where_conditions.append(f"""(diagnoses IS NOT NULL AND diagnoses.diagnosis IS NOT NULL AND
+                        (diagnoses.diagnosis = ${param_name} OR
+                        (toLower(trim(toString(diagnoses.diagnosis))) = 'see diagnosis_comment' AND
+                        diagnoses.diagnosis_comment IS NOT NULL AND
                         trim(toString(diagnoses.diagnosis_comment)) = ${param_name})))""")
         
         # Add regular filters (participant fields)

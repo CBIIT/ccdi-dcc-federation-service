@@ -1290,22 +1290,17 @@ class FileRepository:
             """.strip()
         else:
             # PATTERN 3: SIMPLE SUMMARY (no filters at all)
-            # Use multi-hop traversal: sample -> participant -> consent_group -> study (preferred)
-            # or sample -> cell_line -> study (fallback)
-            # Must verify study path to match count_files_by_field logic
+            # Count files that have a valid study path. Memgraph does not support path
+            # predicates in WHERE clauses, so we use two OPTIONAL MATCHes with individual
+            # node references and filter on IS NOT NULL. This avoids both collect() memory
+            # exhaustion and the UNION ALL / records[0] double-count bug.
             cypher = f"""
             MATCH (sf:{self.config.node_label})-[:{self.config.rel_name}]->(sa:sample)
-            // study path 2 — via participant → consent → study (preferred path)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)
-                       -[:of_participant]->(:consent_group)
-                       -[:of_consent_group]->(st2:study)
-            WITH sf, sa, collect(DISTINCT st2) AS st2_list
-            // study path 1 — via cell_line (fallback)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-            WITH sf, sa, st2_list, collect(DISTINCT st1) AS st1_list
-            WITH sf, coalesce(st2_list[0], st1_list[0]) AS st
-            WHERE st IS NOT NULL
-            RETURN count(DISTINCT sf) as total_count
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st1:study)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st2:study)
+            WITH sf, st1, st2
+            WHERE st1 IS NOT NULL OR st2 IS NOT NULL
+            RETURN count(DISTINCT sf) AS total_count
             """.strip()
 
         return cypher, params

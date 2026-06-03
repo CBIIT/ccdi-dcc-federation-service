@@ -526,9 +526,118 @@ class TestSpecializedQueries:
         mock_result.single = AsyncMock(return_value=mock_record)
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         filters = {"library_strategy": "WXS"}
         result = await repository._get_samples_summary_reverse_query(filters)
-        
+
         assert mock_session.run.called
         assert "total" in result.get("counts", {})
+
+
+def _empty_case3_result():
+    """Return a mock DB result that yields one minimal sample record."""
+    async def async_gen():
+        yield {
+            "sa": {"sample_id": "SAMP001"},
+            "p": {"participant_id": "PART001"},
+            "st": {"study_id": "phs001"},
+            "sf": {},
+            "pf": {},
+            "diagnoses": [{"diagnosis": "leukemia", "disease_phase": "Initial Diagnosis"}],
+        }
+
+    mock_result = AsyncMock()
+    mock_result.__aiter__ = Mock(return_value=async_gen())
+    mock_result.consume = AsyncMock()
+    return mock_result
+
+
+def _make_categorized(diagnosis: dict | None = None, sequencing_file: dict | None = None) -> dict:
+    """Build a minimal categorized filter dict for Case 3 tests."""
+    return {
+        "sample": {},
+        "study": {},
+        "diagnosis": diagnosis or {},
+        "sequencing_file": sequencing_file or {},
+        "pathology_file": {},
+    }
+
+
+@pytest.mark.unit
+class TestPreUnwindOrdering:
+    """Assert that diagnosis MATCH/OPTIONAL MATCH appears before UNWIND in Case 3 queries.
+
+    The pre-UNWIND optimization collects matching diagnosis nodes per sample
+    before study collection and UNWIND, avoiding the full samples × studies
+    cross product. These tests verify query ordering — not result correctness.
+    """
+
+    @pytest.fixture
+    def mock_session(self):
+        return AsyncMock()
+
+    @pytest.fixture
+    def mock_allowlist(self):
+        al = Mock(spec=FieldAllowlist)
+        al.is_field_allowed = Mock(return_value=True)
+        al.is_allowed = Mock(return_value=True)
+        return al
+
+    @pytest.fixture
+    def mock_settings(self):
+        s = Mock(spec=Settings)
+        s.pagination = Mock()
+        s.pagination.max_page_size = 1000
+        s.sample_count_fields = []
+        return s
+
+    @pytest.fixture
+    def repository(self, mock_session, mock_allowlist, mock_settings):
+        return SampleRepository(mock_session, mock_allowlist, mock_settings)
+
+    @pytest.mark.asyncio
+    async def test_filter_only_diagnosis_match_before_unwind(self, repository, mock_session):
+        """Non-search diagnosis filter: MATCH (d:diagnosis) must precede UNWIND combined."""
+        mock_session.run = AsyncMock(return_value=_empty_case3_result())
+        categorized = _make_categorized(diagnosis={"disease_phase": "Initial Diagnosis"})
+        await repository._get_samples_case3_with_node_filters(
+            {}, categorized, offset=0, limit=20, base_url=None, return_total=False
+        )
+        query = mock_session.run.call_args[0][0]
+        match_pos = query.find("MATCH (d:diagnosis)-[:of_diagnosis]->(sa)")
+        unwind_pos = query.find("UNWIND combined")
+        assert match_pos != -1, "pre-UNWIND MATCH (d:diagnosis) should be present"
+        assert unwind_pos != -1, "UNWIND combined should be present"
+        assert match_pos < unwind_pos, "diagnosis MATCH must appear before UNWIND"
+
+    @pytest.mark.asyncio
+    async def test_search_only_optional_match_before_unwind(self, repository, mock_session):
+        """Diagnosis search: OPTIONAL MATCH (d:diagnosis) must precede UNWIND combined."""
+        mock_session.run = AsyncMock(return_value=_empty_case3_result())
+        categorized = _make_categorized(diagnosis={"_diagnosis_search": "leukemia"})
+        await repository._get_samples_case3_with_node_filters(
+            {}, categorized, offset=0, limit=20, base_url=None, return_total=False
+        )
+        query = mock_session.run.call_args[0][0]
+        opt_match_pos = query.find("OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)")
+        unwind_pos = query.find("UNWIND combined")
+        assert opt_match_pos != -1, "pre-UNWIND OPTIONAL MATCH (d:diagnosis) should be present"
+        assert unwind_pos != -1, "UNWIND combined should be present"
+        assert opt_match_pos < unwind_pos, "diagnosis OPTIONAL MATCH must appear before UNWIND"
+
+    @pytest.mark.asyncio
+    async def test_search_with_filter_optional_match_before_unwind(self, repository, mock_session):
+        """Search + filter combined: pre-UNWIND OPTIONAL MATCH (d:diagnosis) before UNWIND."""
+        mock_session.run = AsyncMock(return_value=_empty_case3_result())
+        categorized = _make_categorized(
+            diagnosis={"_diagnosis_search": "leukemia", "disease_phase": "Initial Diagnosis"}
+        )
+        await repository._get_samples_case3_with_node_filters(
+            {}, categorized, offset=0, limit=20, base_url=None, return_total=False
+        )
+        query = mock_session.run.call_args[0][0]
+        opt_match_pos = query.find("OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)")
+        unwind_pos = query.find("UNWIND combined")
+        assert opt_match_pos != -1, "pre-UNWIND OPTIONAL MATCH (d:diagnosis) should be present"
+        assert unwind_pos != -1, "UNWIND combined should be present"
+        assert opt_match_pos < unwind_pos, "diagnosis OPTIONAL MATCH must appear before UNWIND"

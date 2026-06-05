@@ -99,3 +99,25 @@ class TestCountForPagination:
 
         assert count == 0
         session.run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_filters_uses_st1_or_st2_pattern(self):
+        """Pattern 3 count: IS NOT NULL OR check, not collect(st*) lists."""
+        repo, session = make_repo()
+        session.run = AsyncMock(return_value=_mock_result([{"total_count": 100}]))
+
+        await repo.count_for_pagination({})
+
+        cypher = session.run.call_args[0][0]
+        assert "st1 IS NOT NULL OR st2 IS NOT NULL" in cypher
+        assert "RETURN count(DISTINCT sf)" in cypher
+        assert "collect(DISTINCT st" not in cypher
+
+    @pytest.mark.asyncio
+    async def test_raises_on_database_error(self):
+        """DB failures propagate — caller handles partial-failure policy."""
+        repo, session = make_repo()
+        session.run = AsyncMock(side_effect=Exception("connection lost"))
+
+        with pytest.raises(Exception, match="connection lost"):
+            await repo.count_for_pagination({})

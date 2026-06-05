@@ -178,3 +178,36 @@ class TestFileServiceMerge:
         with patch.object(svc, '_repos', [maf_repo, sf_repo]):
             with pytest.raises(NotFoundError):
                 await svc.get_file_by_identifier("CCDI-DCC", "phs001", "no-such-id")
+
+    @pytest.mark.asyncio
+    async def test_get_file_by_identifier_invalid_organization(self):
+        from app.models.errors import ValidationError
+
+        svc = make_service()
+        with pytest.raises(ValidationError, match="Only 'CCDI-DCC'"):
+            await svc.get_file_by_identifier("WRONG-ORG", "phs001", "file-id")
+
+    @pytest.mark.asyncio
+    async def test_get_file_by_identifier_invalid_characters_in_namespace(self):
+        from app.models.errors import ValidationError
+
+        svc = make_service()
+        with pytest.raises(ValidationError, match="Invalid characters"):
+            await svc.get_file_by_identifier("CCDI-DCC", "phs 001", "file-id")
+
+    @pytest.mark.asyncio
+    async def test_count_files_by_field_timeout_when_budget_exhausted(self):
+        import asyncio
+        from app.models.errors import ValidationError
+
+        svc = make_service()
+        maf_repo = AsyncMock()
+        sf_repo = AsyncMock()
+
+        with patch.object(svc, "_repos", [maf_repo, sf_repo]):
+            with patch(
+                "app.services.file.asyncio.wait_for",
+                side_effect=asyncio.TimeoutError(),
+            ):
+                with pytest.raises(ValidationError, match="timeout"):
+                    await svc.count_files_by_field("type", {})

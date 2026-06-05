@@ -1192,8 +1192,7 @@ class FileRepository:
         study_where_conditions = []  # Filters on study properties
 
         if where_conditions:
-            for cond in where_conditions:
-                file_where_conditions.append(cond)
+            file_where_conditions = list(where_conditions)
 
         study_where_conditions.append("st IS NOT NULL")
 

@@ -81,6 +81,17 @@ class TestBuildCountQuery:
         assert "RETURN count(DISTINCT sf)" in cypher
 
     @pytest.mark.asyncio
+    async def test_get_files_invalid_file_type_returns_empty_without_db(self):
+        """Invalid file_type enum short-circuits in get_files — no session.run."""
+        repo, session = make_repo()
+        session.run = AsyncMock()
+
+        files = await repo.get_files({"file_type": "NOT_A_REAL_TYPE"}, offset=0, limit=10)
+
+        assert files == []
+        session.run.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_no_filters_simple_count_pattern(self):
         # No-filter summary uses two OPTIONAL MATCHes + IS NOT NULL filter — no collect.
         repo, _ = make_repo()

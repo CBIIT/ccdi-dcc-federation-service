@@ -14,6 +14,7 @@ from app.core.field_mappings import (
     map_field_value
 )
 from app.repositories.sample_helpers import DIAGNOSIS_SEARCH_COMPATIBLE_FILTERS, SD_CAT_MARKER
+from app.repositories.subject_diagnosis_cypher import add_diagnosis_search_params, diagnosis_search_predicate
 from app.models.errors import UnsupportedFieldError
 
 logger = get_logger(__name__)
@@ -189,13 +190,7 @@ class SampleSummary:
         diagnosis_search_term = None
         if "_diagnosis_search" in filters:
             diagnosis_search_term = filters.pop("_diagnosis_search")
-            # OPTIMIZATION 4A: Pre-process search term to lowercase (done once in Python)
-            # This removes toLower() calls from Cypher, improving performance
-            diagnosis_search_term_lower = diagnosis_search_term.lower().strip()
-            params["diagnosis_search_term"] = diagnosis_search_term  # Keep original for potential use
-            params["diagnosis_search_term_lower"] = diagnosis_search_term_lower  # Pre-processed lowercase
-            params["diagnosis_search_term_see_comment"] = "see diagnosis_comment"  # Pre-computed constant
-            # This will be applied as a condition after collecting ALL diagnosis nodes
+            add_diagnosis_search_params(params, diagnosis_search_term)
         
         # Add regular filters - map to correct nodes based on field
         for field, value in filters.items():
@@ -878,23 +873,7 @@ RETURN count(*) AS total_count
             # needs_diag_collection can be True for other diagnosis filters (disease_phase, tumor_classification, etc.)
             # but those don't require the diagnosis search parameters
             if needs_diag_collection and diagnosis_search_term is not None:
-                # OPTIMIZATION 4A + 4D: Simplified diagnosis search condition
-                # - Pre-processed search term (toLower done in Python)
-                # - Simplified list handling (avoid wrapper for single values)
-                # Handle both d.diagnosis and d.diagnosis_comment (when diagnosis = "see diagnosis_comment")
-                diagnosis_search_base = f"""(
-                    (toLower(trim(toString(d.diagnosis))) <> $diagnosis_search_term_see_comment AND 
-                     CASE 
-                       WHEN valueType(d.diagnosis) = 'LIST' THEN 
-                         ANY(diag IN d.diagnosis WHERE toLower(toString(diag)) CONTAINS $diagnosis_search_term_lower)
-                       ELSE 
-                         toLower(toString(d.diagnosis)) CONTAINS $diagnosis_search_term_lower
-                     END)
-                    OR
-                    (toLower(trim(toString(d.diagnosis))) = $diagnosis_search_term_see_comment AND 
-                     d.diagnosis_comment IS NOT NULL AND 
-                     toLower(toString(d.diagnosis_comment)) CONTAINS $diagnosis_search_term_lower)
-                )"""
+                diagnosis_search_base = f"({diagnosis_search_predicate('d')})"
 
                 if diagnosis_filter_parts_for_search:
                     diagnosis_search_base = f"{diagnosis_search_base} AND " + " AND ".join(

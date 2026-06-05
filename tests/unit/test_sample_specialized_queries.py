@@ -769,6 +769,62 @@ class TestPreUnwindOrdering:
         assert "sf.library_strategy = $param_1 OR sf.library_strategy = $param_2" in query
 
     @pytest.mark.asyncio
+    async def test_library_source_material_pre_unwind(self, repository, mock_session):
+        """library_source_material filter: MATCH (sf) precedes UNWIND combined."""
+        mock_session.run = AsyncMock(return_value=_empty_case3_result())
+        categorized = _make_categorized(sequencing_file={"library_source_material": "DNA"})
+        with patch("app.repositories.sample_query_cases.is_null_mapped_value", return_value=False):
+            with patch("app.repositories.sample_query_cases.reverse_map_field_value", return_value="DNA"):
+                await repository._get_samples_case3_with_node_filters(
+                    {}, categorized, offset=0, limit=20, base_url=None, return_total=False
+                )
+        query = mock_session.run.call_args[0][0]
+        sf_match_pos = query.find("MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)")
+        unwind_pos = query.find("UNWIND combined")
+        assert sf_match_pos != -1
+        assert sf_match_pos < unwind_pos
+        assert "all_sf" in query
+        assert "OPTIONAL MATCH (sf:sequencing_file)" not in query
+        assert "sf.library_source_material" in query
+
+    @pytest.mark.asyncio
+    async def test_library_selection_method_pre_unwind(self, repository, mock_session):
+        """library_selection_method filter: MATCH (sf) precedes UNWIND combined."""
+        mock_session.run = AsyncMock(return_value=_empty_case3_result())
+        categorized = _make_categorized(sequencing_file={"library_selection_method": "PCR"})
+        with patch("app.repositories.sample_query_cases.is_database_only_value", return_value=False):
+            with patch.object(repository, "_reverse_map_library_selection_method_static", return_value="PCR"):
+                await repository._get_samples_case3_with_node_filters(
+                    {}, categorized, offset=0, limit=20, base_url=None, return_total=False
+                )
+        query = mock_session.run.call_args[0][0]
+        sf_match_pos = query.find("MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)")
+        unwind_pos = query.find("UNWIND combined")
+        assert sf_match_pos != -1
+        assert sf_match_pos < unwind_pos
+        assert "all_sf" in query
+        assert "OPTIONAL MATCH (sf:sequencing_file)" not in query
+        assert "sf.library_selection" in query
+
+    @pytest.mark.asyncio
+    async def test_specimen_molecular_analyte_type_pre_unwind(self, repository, mock_session):
+        """specimen_molecular_analyte_type filter: MATCH (sf) precedes UNWIND combined."""
+        mock_session.run = AsyncMock(return_value=_empty_case3_result())
+        categorized = _make_categorized(sequencing_file={"specimen_molecular_analyte_type": "DNA"})
+        with patch("app.repositories.sample_query_cases.reverse_map_field_value", return_value="DNA"):
+            await repository._get_samples_case3_with_node_filters(
+                {}, categorized, offset=0, limit=20, base_url=None, return_total=False
+            )
+        query = mock_session.run.call_args[0][0]
+        sf_match_pos = query.find("MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)")
+        unwind_pos = query.find("UNWIND combined")
+        assert sf_match_pos != -1
+        assert sf_match_pos < unwind_pos
+        assert "all_sf" in query
+        assert "OPTIONAL MATCH (sf:sequencing_file)" not in query
+        assert "sf.library_source_molecule" in query
+
+    @pytest.mark.asyncio
     async def test_pathology_file_filter_post_unwind(self, repository, mock_session):
         """preservation_method keeps pf OPTIONAL MATCH post-UNWIND with size check."""
         mock_session.run = AsyncMock(return_value=_empty_case3_result())

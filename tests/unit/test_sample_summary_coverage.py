@@ -173,6 +173,30 @@ class TestGetSamplesSummaryCoverage:
         assert not hasattr(repository, '_get_samples_summary_diagnosis_search') or \
                not hasattr(repository._get_samples_summary_diagnosis_search, 'call_count')
 
+    async def test_get_samples_summary_diagnosis_search_cypher_uses_coalesce(
+        self, repository, mock_session
+    ):
+        """Standard summary builder must use null-safe diagnosis_search_predicate."""
+        async def async_gen():
+            yield {"total_count": 2}
+
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        # tissue_type is outside DIAGNOSIS_SEARCH_COMPATIBLE_FILTERS → standard path
+        await repository.get_samples_summary({
+            "_diagnosis_search": "leukemia",
+            "tissue_type": "Tumor",
+        })
+
+        query, params = mock_session.run.call_args[0]
+        assert "coalesce(d.diagnosis" in query
+        assert "has_matching_diagnosis" in query
+        assert params["diagnosis_search_term_lower"] == "leukemia"
+        assert params["diagnosis_search_term_see_comment"] == "see diagnosis_comment"
+
     async def test_get_samples_summary_anatomical_sites_list(self, repository, mock_session):
         """Test get_samples_summary with anatomical_sites as list."""
         async def async_gen():

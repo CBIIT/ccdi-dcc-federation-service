@@ -623,6 +623,8 @@ class SampleQueryCases:
             optional_matches.append("OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)")
 
         if combined_sf_condition is None:
+            # No pre-UNWIND sf block. sf_optional_match_where is set when has_sf_filters is True
+            # but combined_sf_condition stayed None (unrecognised sf field); otherwise plain OPTIONAL.
             if sf_optional_match_where:
                 optional_matches.append(f"OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)\n        {sf_optional_match_where}")
             else:
@@ -635,17 +637,13 @@ class SampleQueryCases:
         if pre_unwind_diagnosis_block is not None:
             # all_diagnoses was collected pre-UNWIND and carried through; reference directly.
             with_collects.append("all_diagnoses")
-        elif has_diagnosis_filters or needs_diagnosis_search:
-            if needs_diagnosis_search:
-                combined_parts = [f"({diagnosis_search_filter})"]
-                if disease_phase_collection_filter:
-                    combined_parts.append(f"({disease_phase_collection_filter})")
-                if combined_diagnosis_condition:
-                    combined_parts.append(f"({combined_diagnosis_condition})")
-                combined_filter = "d IS NOT NULL AND " + " AND ".join(combined_parts)
-                with_collects.append(f"[d IN collect(DISTINCT d) WHERE {combined_filter}] AS all_diagnoses")
-            else:
-                with_collects.append("collect(DISTINCT d) AS all_diagnoses")
+        elif has_diagnosis_filters:
+            # Fallback: pre_unwind_diagnosis_block is None but diagnosis filters exist.
+            # needs_diagnosis_search is always False here (pre_unwind covers Case B).
+            # Only reached if a diagnosis field was not recognised by the handler loop
+            # (combined_diagnosis_condition stayed None); field allowlisting makes this
+            # unlikely in normal use.
+            with_collects.append("collect(DISTINCT d) AS all_diagnoses")
         else:
             with_collects.append(f"[d IN collect(DISTINCT d) WHERE d IS NOT NULL | {_DIAG_PROJ}] AS diagnoses")
 
@@ -658,6 +656,7 @@ class SampleQueryCases:
             # all_sf was collected pre-UNWIND and carried through; reference directly.
             with_collects.append("all_sf")
         elif has_sf_filters:
+            # Fallback: combined_sf_condition is None despite sf filters (unrecognised sf field).
             with_collects.append("collect(DISTINCT sf) AS all_sfs")
         else:
             with_collects.append("head(collect(DISTINCT sf)) AS sf")
@@ -668,11 +667,13 @@ class SampleQueryCases:
         # When pre_unwind_diagnosis_block is set, the diagnosis size check is enforced pre-UNWIND.
         # When combined_sf_condition is set, the sf size check is enforced pre-UNWIND.
         where_conditions = []
-        if pre_unwind_diagnosis_block is None and (has_diagnosis_filters or needs_diagnosis_search):
+        if pre_unwind_diagnosis_block is None and has_diagnosis_filters:
+            # Fallback WHERE guard paired with the elif fallback collect above.
             where_conditions.append("size([d IN all_diagnoses WHERE d IS NOT NULL]) > 0")
         if has_pf_filters:
             where_conditions.append("size([pf IN all_pfs WHERE pf IS NOT NULL]) > 0")
         if combined_sf_condition is None and has_sf_filters:
+            # Fallback WHERE guard paired with the elif fallback sf collect above.
             where_conditions.append("size([sf IN all_sfs WHERE sf IS NOT NULL]) > 0")
 
         where_clause = f"\n        WHERE {' AND '.join(where_conditions)}" if where_conditions else ""
@@ -680,8 +681,7 @@ class SampleQueryCases:
         # Build count query if return_total
         total_count = None
         if return_total:
-            has_pre_unwind = (pre_unwind_diagnosis_block is not None or combined_sf_condition is not None)
-            if has_pre_unwind:
+            if pre_unwind_diagnosis_block is not None or combined_sf_condition is not None:
                 # Optimized count: filter samples pre-UNWIND using all active pre-UNWIND blocks.
                 # After WITH DISTINCT sa the pre-UNWIND vars are dropped; standard study collection follows.
                 count_pre_unwind_blocks = []

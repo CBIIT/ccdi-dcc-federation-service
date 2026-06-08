@@ -101,17 +101,18 @@ class TestCountForPagination:
         session.run.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_no_filters_uses_st1_or_st2_pattern(self):
-        """Pattern 3 count: IS NOT NULL OR check, not collect(st*) lists."""
+    async def test_no_filters_uses_collected_study_paths(self):
+        """Pattern 3 count: collect each study path to prevent Cartesian product before size() check."""
         repo, session = make_repo()
         session.run = AsyncMock(return_value=_mock_result([{"total_count": 100}]))
 
         await repo.count_for_pagination({})
 
         cypher = session.run.call_args[0][0]
-        assert "st1 IS NOT NULL OR st2 IS NOT NULL" in cypher
+        assert "collect(DISTINCT st1) AS st1_list" in cypher
+        assert "collect(DISTINCT st2) AS st2_list" in cypher
+        assert "size(st1_list) > 0 OR size(st2_list) > 0" in cypher
         assert "RETURN count(DISTINCT sf)" in cypher
-        assert "collect(DISTINCT st" not in cypher
 
     @pytest.mark.asyncio
     async def test_raises_on_database_error(self):

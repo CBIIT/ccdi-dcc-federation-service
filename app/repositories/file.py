@@ -1289,16 +1289,17 @@ class FileRepository:
             """.strip()
         else:
             # PATTERN 3: SIMPLE SUMMARY (no filters at all)
-            # Count files that have a valid study path. Memgraph does not support path
-            # predicates in WHERE clauses, so we use two OPTIONAL MATCHes with individual
-            # node references and filter on IS NOT NULL. This avoids both collect() memory
-            # exhaustion and the UNION ALL / records[0] double-count bug.
+            # Collect each study path into a list before the second OPTIONAL MATCH to prevent
+            # a Cartesian product: two bare OPTIONAL MATCHes produce N×M rows when a sample
+            # has N participant→study paths and M cell_line→study paths.
+            # collect(null) → [], so size([]) == 0 correctly excludes samples with no study.
             cypher = f"""
             MATCH (sf:{self.config.node_label})-[:{self.config.rel_name}]->(sa:sample)
             OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st1:study)
+            WITH sf, sa, collect(DISTINCT st1) AS st1_list
             OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st2:study)
-            WITH sf, st1, st2
-            WHERE st1 IS NOT NULL OR st2 IS NOT NULL
+            WITH sf, st1_list, collect(DISTINCT st2) AS st2_list
+            WHERE size(st1_list) > 0 OR size(st2_list) > 0
             RETURN count(DISTINCT sf) AS total_count
             """.strip()
 

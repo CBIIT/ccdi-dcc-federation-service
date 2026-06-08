@@ -65,7 +65,7 @@ class SampleQueryCases:
         # Build sample filter conditions
         params = {"offset": offset, "limit": limit}
         param_counter = 0
-        sample_where_conditions = ["sa.sample_id IS NOT NULL", "trim(toString(sa.sample_id)) <> ''"]
+        sample_where_conditions = ["sa.sample_id IS NOT NULL"]
         
         # Process sample filters
         identifiers_early_filter = None
@@ -308,7 +308,7 @@ class SampleQueryCases:
         param_counter = 0
         
         # Step 1: Build sample filter conditions
-        sample_where_conditions = ["sa.sample_id IS NOT NULL", "trim(toString(sa.sample_id)) <> ''"]
+        sample_where_conditions = ["sa.sample_id IS NOT NULL"]
         
         # Process identifiers filter
         identifiers_early_filter = None
@@ -698,15 +698,34 @@ class SampleQueryCases:
                     )
                 count_pre_unwind_str = "\n            ".join(count_pre_unwind_blocks)
 
+                # Build count-specific optional matches — only join pf/sf when actively filtering.
+                # The count path only needs to count distinct (sample_id, study_id) pairs, so
+                # joining pf or sf nodes that aren't used in a WHERE condition wastes work.
+                count_optional_matches = []
+                if has_pf_filters:
+                    if pf_optional_match_where:
+                        count_optional_matches.append(
+                            f"OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)\n"
+                            f"            {pf_optional_match_where}"
+                        )
+                    else:
+                        count_optional_matches.append("OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)")
+                if combined_sf_condition is None and has_sf_filters:
+                    # Fallback: sf not handled pre-UNWIND; apply post-UNWIND filter.
+                    if sf_optional_match_where:
+                        count_optional_matches.append(
+                            f"OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)\n"
+                            f"            {sf_optional_match_where}"
+                        )
+                    else:
+                        count_optional_matches.append("OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)")
+                count_optional_matches_str = "\n            ".join(count_optional_matches) if count_optional_matches else ""
+
                 count_with_collects = ["st"]
                 if has_pf_filters:
                     count_with_collects.append("collect(DISTINCT pf) AS all_pfs")
-                else:
-                    count_with_collects.append("head(collect(DISTINCT pf)) AS pf")
                 if combined_sf_condition is None and has_sf_filters:
                     count_with_collects.append("collect(DISTINCT sf) AS all_sfs")
-                elif combined_sf_condition is None:
-                    count_with_collects.append("head(collect(DISTINCT sf)) AS sf")
                 count_with_clause = f"WITH sa, {', '.join(count_with_collects)}"
 
                 count_where_conditions = []
@@ -729,7 +748,7 @@ class SampleQueryCases:
             UNWIND combined AS sid
             MATCH (st:study)
             WHERE st.study_id = sid{depositions_study_filter}
-            {optional_matches_str}
+            {count_optional_matches_str}
             {count_with_clause}{count_where_clause}
             WITH DISTINCT sa.sample_id AS sample_id, st.study_id AS study_id
             RETURN count(*) AS total_count

@@ -1,11 +1,13 @@
 # Core dependencies
-fastapi>=0.109.1
+fastapi>=0.134.0
 uvicorn[standard]==0.24.0
-pydantic==2.5.0
+pydantic>=2.7.0,<3.0.0
 pydantic-settings==2.1.0
-python-dotenv==1.0.0
-python-multipart>=0.0.7
-starlette>=0.40.0
+python-dotenv>=1.2.2
+python-multipart>=0.0.27
+idna>=3.15
+starlette>=1.0.1
+click>=8.3.3
 
 # Database
 neo4j==5.15.0
@@ -22,6 +24,8 @@ starlette-exporter==0.17.1
 
 # Integration testing
 testcontainers==3.7.1
+urllib3>=2.7.0
+requests>=2.33.0
 
 # Code quality
 black==26.3.1

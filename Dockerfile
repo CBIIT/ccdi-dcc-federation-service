@@ -54,11 +54,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 # Minimal runtime deps (curl for HEALTHCHECK)
 # Update packages to fix security vulnerabilities (CVE-2025-15467, CVE-2025-69419, gnutls28, libcap2)
+# Remove perl-base after all apt installs — unused by this Python service; clears open perl CVEs on
+# Debian Trixie until a patched package ships. See docs/container-image-security.md.
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && apt-get install -y --no-install-recommends --only-upgrade \
         openssl libssl3t64 openssl-provider-legacy \
         libgnutls30t64 \
         libcap2 \
+    && apt-get remove -y --allow-remove-essential --purge perl-base \
     && rm -rf /var/lib/apt/lists/*
 
 # Pin pip in the runtime image for security scans (base image may ship an older pip).

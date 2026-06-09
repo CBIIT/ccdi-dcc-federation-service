@@ -25,8 +25,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 
-# Patch pip to fix security vulnerabilities
-RUN python -m pip install --no-cache-dir --upgrade "pip==26.1.1"
+# Patch pip to fix security vulnerabilities (builder only; runtime removes pip after install).
+RUN python -m pip install --no-cache-dir --upgrade "pip==26.1.2"
 
 WORKDIR /app
 
@@ -64,14 +64,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && apt-get remove -y --allow-remove-essential --purge perl-base \
     && rm -rf /var/lib/apt/lists/*
 
-# Pin pip in the runtime image for security scans (base image may ship an older pip).
-RUN python -m pip install --no-cache-dir --upgrade "pip==26.1.1"
-
 WORKDIR /app
 
-# Install runtime Python dependencies with pip (globally) to ensure console scripts like uvicorn are on PATH.
+# Install runtime deps, then remove pip — not needed at runtime and clears PRISMA-2022-0168 /
+# other pip CVEs on scanners (base image ships pip 24.1.1; upgrade alone still leaves pip in SBOM).
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python -m pip install --no-cache-dir --upgrade "pip==26.1.2" \
+    && python -m pip install --no-cache-dir -r requirements.txt \
+    && python -m pip uninstall -y pip \
+    && rm -rf /root/.cache/pip
 
 # Copy application code & (optionally) the builder artifacts (virtualenv) for any packages not pinned in requirements.txt
 COPY --from=builder /app/app ./app

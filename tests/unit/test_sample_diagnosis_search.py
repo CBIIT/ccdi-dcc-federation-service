@@ -571,6 +571,45 @@ class TestDiagnosisSearch:
         query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
         assert 'collect(DISTINCT dx) AS diagnoses' in query
 
+    @pytest.mark.asyncio
+    async def test_list_diagnosis_search_uses_coalesce_predicate(self, repository, mock_session):
+        """Verify _get_samples_by_diagnosis_search delegates to the shared null-safe predicate."""
+        async def async_gen():
+            yield {"sa": None, "p": None, "st": None, "sf": None, "pf": None, "diagnoses": []}
+
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        await repository._get_samples_by_diagnosis_search({"_diagnosis_search": "leukemia"}, offset=0, limit=20)
+
+        query, params = mock_session.run.call_args[0]
+        assert "coalesce(dx.diagnosis" in query
+        assert params["diagnosis_search_term_lower"] == "leukemia"
+        assert params["diagnosis_search_term_see_comment"] == "see diagnosis_comment"
+        assert "diagnosis_search_term" not in params
+
+    @pytest.mark.asyncio
+    async def test_summary_diagnosis_search_uses_coalesce_predicate(self, repository, mock_session):
+        """Verify _get_samples_summary_diagnosis_search delegates to the shared null-safe predicate."""
+        async def async_gen():
+            yield {"total_count": 5}
+
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        await repository._get_samples_summary_diagnosis_search({"_diagnosis_search": "leukemia"})
+
+        query, params = mock_session.run.call_args[0]
+        assert "coalesce(dx.diagnosis" in query
+        assert params["diagnosis_search_term_lower"] == "leukemia"
+        assert params["diagnosis_search_term_see_comment"] == "see diagnosis_comment"
+        # regression guard: if the inline predicate ever returns, it would re-add this key
+        assert "diagnosis_search_term" not in params
+
 
 @pytest.mark.unit
 class TestGetSamplesForDiagnosisEndpointRouting:

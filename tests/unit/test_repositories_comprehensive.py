@@ -1387,8 +1387,10 @@ class TestSampleRepositoryInternal:
         assert params["param_1_0"] == "Brain"
         assert params["param_1_1"] == "Lung"
 
-    async def test_count_samples_by_field_diagnosis_search_param(self, repository, mock_session):
-        """Test count_samples_by_field includes diagnosis search param."""
+    async def test_count_samples_by_field_ignores_diagnosis_search_filter(
+        self, repository, mock_session
+    ):
+        """_diagnosis_search is discarded — count endpoint accepts no query parameters."""
         total_result = AsyncMock()
         total_result.__aiter__.return_value = [{"total": 1}]
         missing_result = AsyncMock()
@@ -1397,13 +1399,15 @@ class TestSampleRepositoryInternal:
         values_result.__aiter__.return_value = [{"value": "Tumor", "count": 1}]
         mock_session.run = AsyncMock(side_effect=[total_result, missing_result, values_result])
 
-        result = await repository.count_samples_by_field(
+        await repository.count_samples_by_field(
             "tissue_type",
-            {"_diagnosis_search": "leukemia"}
+            {"_diagnosis_search": "leukemia"},
         )
 
-        params = mock_session.run.call_args_list[0][0][1]
-        assert params["diagnosis_search_term"] == "leukemia"
+        query, params = mock_session.run.call_args_list[0][0]
+        assert "diagnosis_search_term" not in params
+        assert "p._diagnosis_search" not in query
+        assert "leukemia" not in params.values()
 
     def test_record_to_sample(self, repository):
         """Test _record_to_sample conversion."""

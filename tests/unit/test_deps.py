@@ -18,6 +18,7 @@ from app.api.v1.deps import (
     get_subject_diagnosis_filters,
     get_sample_diagnosis_filters,
 )
+from app.core.config import get_settings
 
 
 @pytest.mark.unit
@@ -50,10 +51,83 @@ class TestGetPaginationParams:
         assert exc_info.value.status_code == 400
 
     def test_per_page_exceeds_maximum(self):
-        """Test that per_page exceeding maximum raises error."""
+        """Test that per_page=1001 over the public max with no filters raises 400."""
+        req = self._make_request(["page", "per_page"])
         with pytest.raises(HTTPException) as exc_info:
-            get_pagination_params(page=1, per_page=1001)
+            get_pagination_params(page=1, per_page=1001, request=req)
         assert exc_info.value.status_code == 400
+
+    def _make_request(self, keys: list) -> Mock:
+        """Build a minimal mock Request with the given query-param keys."""
+        req = Mock(spec=Request)
+        req.query_params = Mock()
+        req.query_params.keys = Mock(return_value=keys)
+        return req
+
+    def test_per_page_at_public_max_no_filters_accepted(self):
+        """Test that per_page=500 (at limit) with no filters is accepted."""
+        req = self._make_request(["page", "per_page"])
+        result = get_pagination_params(page=1, per_page=500, request=req)
+        assert result.per_page == 500
+
+    def test_per_page_at_public_max_with_filters_accepted(self):
+        """Test that per_page=500 (at limit) with a filter present is accepted."""
+        req = self._make_request(["page", "per_page", "race"])
+        result = get_pagination_params(page=1, per_page=500, request=req)
+        assert result.per_page == 500
+
+    def test_per_page_over_public_max_no_filters_rejected(self):
+        """Test that per_page=501 (over limit) with no filters raises 400."""
+        req = self._make_request(["page", "per_page"])
+        with pytest.raises(HTTPException) as exc_info:
+            get_pagination_params(page=1, per_page=501, request=req)
+        assert exc_info.value.status_code == 400
+
+    def test_per_page_large_no_filters_rejected(self):
+        """Test that per_page=9999 (far over limit) with no filters raises 400."""
+        req = self._make_request(["page", "per_page"])
+        with pytest.raises(HTTPException) as exc_info:
+            get_pagination_params(page=1, per_page=9999, request=req)
+        assert exc_info.value.status_code == 400
+
+    def test_per_page_over_public_max_with_filter_clamped(self):
+        """Test that per_page=501 with a filter present is clamped to default (50)."""
+        req = self._make_request(["page", "per_page", "race"])
+        result = get_pagination_params(page=1, per_page=501, request=req)
+        assert result.per_page == 50
+
+    def test_per_page_large_with_filter_clamped(self):
+        """Test that per_page=9999 with a filter present is clamped to default (50)."""
+        req = self._make_request(["page", "per_page", "identifiers"])
+        result = get_pagination_params(page=1, per_page=9999, request=req)
+        assert result.per_page == 50
+
+    def test_per_page_min_boundary_accepted(self):
+        """Test that per_page=1 (minimum) with no filters is accepted."""
+        req = self._make_request(["page", "per_page"])
+        result = get_pagination_params(page=1, per_page=1, request=req)
+        assert result.per_page == 1
+
+    def test_per_page_over_hard_max_no_filters_rejected(self):
+        """Test that per_page=1100 is rejected when PUBLIC_MAX_PAGE_SIZE is misconfigured to 1200 (effective_max=1000)."""
+        req = self._make_request(["page", "per_page"])
+        mock_s = Mock()
+        mock_s.public_max_page_size = 1200
+        mock_s.default_page_size = 50
+        with patch("app.api.v1.deps.settings", mock_s):
+            with pytest.raises(HTTPException) as exc_info:
+                get_pagination_params(page=1, per_page=1100, request=req)
+        assert exc_info.value.status_code == 400
+
+    def test_per_page_over_hard_max_with_filter_clamped(self):
+        """Test that per_page=1100 is clamped to 50 when PUBLIC_MAX_PAGE_SIZE is misconfigured to 1200 and a filter is present."""
+        req = self._make_request(["page", "per_page", "depositions"])
+        mock_s = Mock()
+        mock_s.public_max_page_size = 1200
+        mock_s.default_page_size = 50
+        with patch("app.api.v1.deps.settings", mock_s):
+            result = get_pagination_params(page=1, per_page=1100, request=req)
+        assert result.per_page == 50
 
 
 @pytest.mark.unit
@@ -1408,4 +1482,9 @@ class TestCoreDependencies:
         assert allowlist is not None
         # Should have is_field_allowed method
         assert hasattr(allowlist, "is_field_allowed")
+
+    def test_settings_public_max_page_size_default(self):
+        """Test that public_max_page_size defaults to 500."""
+        s = get_settings()
+        assert s.public_max_page_size == 500
 

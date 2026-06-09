@@ -226,10 +226,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Number of results per page. Defaults to 50. Maximum: 500.",
+              "description": "Number of results per page. Defaults to 50. Maximum: 500. When any filter query parameter is present and per_page exceeds 500, per_page is silently reduced to 50.",
               "title": "Per Page"
             },
-            "description": "Number of results per page. Defaults to 50. Maximum: 500."
+            "description": "Number of results per page. Defaults to 50. Maximum: 500. When any filter query parameter is present and per_page exceeds 500, per_page is silently reduced to 50."
           }
         ],
         "responses": {
@@ -1001,10 +1001,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Number of results per page. Defaults to 50. Maximum: 500.",
+              "description": "Number of results per page. Defaults to 50. Maximum: 500. When any filter query parameter is present and per_page exceeds 500, per_page is silently reduced to 50.",
               "title": "Per Page"
             },
-            "description": "Number of results per page. Defaults to 50. Maximum: 500."
+            "description": "Number of results per page. Defaults to 50. Maximum: 500. When any filter query parameter is present and per_page exceeds 500, per_page is silently reduced to 50."
           }
         ],
         "responses": {
@@ -1756,10 +1756,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Number of results per page. Defaults to 50. Maximum: 500.",
+              "description": "Number of results per page. Defaults to 50. Maximum: 500. When any filter query parameter is present and per_page exceeds 500, per_page is silently reduced to 50.",
               "title": "Per Page"
             },
-            "description": "Number of results per page. Defaults to 50. Maximum: 500."
+            "description": "Number of results per page. Defaults to 50. Maximum: 500. When any filter query parameter is present and per_page exceeds 500, per_page is silently reduced to 50."
           }
         ],
         "responses": {
@@ -2160,10 +2160,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Number of results per page. Defaults to 50. Maximum: 500.",
+              "description": "Number of results per page. Defaults to 50. Maximum: 500. When any filter query parameter is present and per_page exceeds 500, per_page is silently reduced to 50.",
               "title": "Per Page"
             },
-            "description": "Number of results per page. Defaults to 50. Maximum: 500."
+            "description": "Number of results per page. Defaults to 50. Maximum: 500. When any filter query parameter is present and per_page exceeds 500, per_page is silently reduced to 50."
           }
         ],
         "responses": {
@@ -2448,10 +2448,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Number of results per page. Defaults to 50. Maximum: 500.",
+              "description": "Number of results per page. Defaults to 50. Maximum: 500. When any filter query parameter is present and per_page exceeds 500, per_page is silently reduced to 50.",
               "title": "Per Page"
             },
-            "description": "Number of results per page. Defaults to 50. Maximum: 500."
+            "description": "Number of results per page. Defaults to 50. Maximum: 500. When any filter query parameter is present and per_page exceeds 500, per_page is silently reduced to 50."
           }
         ],
         "responses": {

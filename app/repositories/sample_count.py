@@ -43,7 +43,10 @@ class SampleCount:
         
         Args:
             field: Field to group by and count
-            filters: Additional filters to apply
+            filters: Additional filters to apply. The HTTP handler for
+                ``GET /sample/by/{field}/count`` always passes ``{}`` and
+                rejects any query parameters; filter keys here are only used
+                by unit tests exercising legacy branches.
             
         Returns:
             List of dictionaries with value and count
@@ -175,18 +178,9 @@ class SampleCount:
                     params[dep_param] = depositions_str
                     base_where_conditions.append(f"st.study_id = ${dep_param}")
         
-        # Handle diagnosis search
-        if "_diagnosis_search" in filters:
-            search_term = filters.pop("_diagnosis_search")
-            base_where_conditions.append("""(
-                ANY(diag IN d.diagnosis WHERE toLower(toString(diag)) CONTAINS toLower($diagnosis_search_term))
-                OR ANY(key IN keys(p.metadata.unharmonized) 
-                       WHERE toLower(key) CONTAINS 'diagnos' 
-                       AND toLower(toString(p.metadata.unharmonized[key])) CONTAINS toLower($diagnosis_search_term))
-            )""")
-            params["diagnosis_search_term"] = search_term
-
         filters.pop(SD_CAT_MARKER, None)
+        # List/search-only keys — not valid for count-by-field (API passes no query params).
+        filters.pop("_diagnosis_search", None)
 
         # Handle anatomical_sites filter (sample field, not participant field)
         if "anatomical_sites" in filters:

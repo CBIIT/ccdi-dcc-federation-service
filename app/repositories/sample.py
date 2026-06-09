@@ -621,118 +621,38 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
                               library_strategy_param is not None or
                               library_source_material_param is not None)
         # For diagnosis search, collect ALL diagnoses first to check if ANY match
-        # Note: needs_diag_collection is already set at line 230 based on diagnosis_search_term
-        
-        # OPTIMIZATION Phase 2: Filter diagnoses during collection when diagnosis search is active
-        # This reduces memory usage and improves performance by only collecting matching diagnoses
         # OPTIMIZATION Phase 3: When sequencing file filters exist (with or without identifiers),
         # use head(collect(DISTINCT sf)) directly instead of collect(DISTINCT sf) AS all_sfs
         # because filters are already applied in OPTIONAL MATCH WHERE clause
         # OPTIMIZATION Phase 4: When sequencing file filters exist AND NOT filtering by diagnosis,
         # skip second_with_clause entirely and collect diagnosis/pathology_file directly (much faster)
         skip_second_with_for_sf = False
-        # IMPORTANT: When needs_diag_collection is True, has_diagnoses_conditions should also be True
-        # because we're collecting all_diagnoses which needs to be processed in the second WITH clause
-        if needs_diag_collection:
-            has_diagnoses_conditions = True
         if needs_sf_collection:
-            if needs_diag_collection:
-                # Build combined filter condition for diagnosis search + disease_phase (if present)
-                diagnosis_search_filter = """(toLower(trim(toString(d.diagnosis))) <> $diagnosis_search_term_see_comment AND 
-                         CASE 
-                           WHEN valueType(d.diagnosis) = 'LIST' THEN 
-                             ANY(diag IN d.diagnosis WHERE toLower(toString(diag)) CONTAINS $diagnosis_search_term_lower)
-                           ELSE 
-                             toLower(toString(d.diagnosis)) CONTAINS $diagnosis_search_term_lower
-                         END)
-                        OR
-                        (toLower(trim(toString(d.diagnosis))) = $diagnosis_search_term_see_comment AND 
-                         d.diagnosis_comment IS NOT NULL AND 
-                         toLower(toString(d.diagnosis_comment)) CONTAINS $diagnosis_search_term_lower)"""
-                
-                if disease_phase_collection_filter:
-                    # Combine both filters during collection
-                    combined_filter = f"d IS NOT NULL AND ({diagnosis_search_filter}) AND ({disease_phase_collection_filter})"
-                else:
-                    # Only diagnosis search filter
-                    combined_filter = f"d IS NOT NULL AND ({diagnosis_search_filter})"
-                
-                # When early filter optimization applies, only matching sequencing files are collected
-                # BUT: When has_diagnoses_conditions is True, we need to collect all_sfs (not sf) 
-                # so the second WITH clause can extract matching sf from it
-                if use_sf_early_filter:
-                    with_collects = [
-                        f"[d IN collect(DISTINCT d) WHERE {combined_filter}] AS all_diagnoses",  # Filter during collection
-                        "head(collect(DISTINCT pf)) AS pf",
-                        "collect(DISTINCT sf) AS all_sfs"  # Collect matching files (filtered in OPTIONAL MATCH) as all_sfs for second WITH clause
-                    ]
-                else:
-                    with_collects = [
-                        f"[d IN collect(DISTINCT d) WHERE {combined_filter}] AS all_diagnoses",  # Filter during collection
-                        "head(collect(DISTINCT pf)) AS pf",
-                        "collect(DISTINCT sf) AS all_sfs"  # Collect all sequencing_files
-                    ]
-            else:
-                # When early filter optimization applies AND no diagnosis filtering,
-                # skip second_with_clause entirely - collect everything directly
-                # BUT: Check if there are any conditions referencing 'diagnoses' (like disease_phase filters)
-                # If so, we can't skip second_with_clause because diagnoses needs to be available
-                # Check both all_conditions AND regular_conditions to catch all diagnosis-related filters
-                has_diagnoses_conditions = (
-                    any(isinstance(cond, str) and "diagnoses" in cond for cond in all_conditions) or
-                    any(isinstance(cond, str) and "diagnoses" in cond for cond in regular_conditions)
-                )
-                if use_sf_early_filter and not has_diagnoses_conditions:
-                    with_collects = [
-                        "head(collect(DISTINCT d)) AS diagnoses",
-                        "head(collect(DISTINCT pf)) AS pf",
-                        "head(collect(DISTINCT sf)) AS sf"  # Only matching files (filtered in OPTIONAL MATCH)
-                    ]
-                    skip_second_with_for_sf = True  # Skip second_with_clause - we already have filtered sf
-                else:
-                    with_collects = [
-                        "head(collect(DISTINCT d)) AS diagnoses",
-                        "head(collect(DISTINCT pf)) AS pf",
-                        "collect(DISTINCT sf) AS all_sfs"  # Collect all sequencing_files
-                    ]
-        else:
-            if needs_diag_collection:
-                # Build combined filter condition for diagnosis search + disease_phase (if present)
-                diagnosis_search_filter = """(toLower(trim(toString(d.diagnosis))) <> $diagnosis_search_term_see_comment AND 
-                         CASE 
-                           WHEN valueType(d.diagnosis) = 'LIST' THEN 
-                             ANY(diag IN d.diagnosis WHERE toLower(toString(diag)) CONTAINS $diagnosis_search_term_lower)
-                           ELSE 
-                             toLower(toString(d.diagnosis)) CONTAINS $diagnosis_search_term_lower
-                         END)
-                        OR
-                        (toLower(trim(toString(d.diagnosis))) = $diagnosis_search_term_see_comment AND 
-                         d.diagnosis_comment IS NOT NULL AND 
-                         toLower(toString(d.diagnosis_comment)) CONTAINS $diagnosis_search_term_lower)"""
-                
-                if disease_phase_collection_filter:
-                    # Combine both filters during collection
-                    combined_filter = f"d IS NOT NULL AND ({diagnosis_search_filter}) AND ({disease_phase_collection_filter})"
-                else:
-                    # Only diagnosis search filter
-                    combined_filter = f"d IS NOT NULL AND ({diagnosis_search_filter})"
-                
-                with_collects = [
-                    f"[d IN collect(DISTINCT d) WHERE {combined_filter}] AS all_diagnoses",  # Filter during collection
-                    "head(collect(DISTINCT pf)) AS pf",
-                    "head(collect(DISTINCT sf)) AS sf"
-                ]
-            else:
-                # When diagnosis early filter is active, we've already filtered to matching diagnoses
-                # So we just need to check if any were found (diagnoses IS NOT NULL)
-                # The WHERE clause will handle the IS NOT NULL check
-                # IMPORTANT: Use the FIRST matching diagnosis (head() picks deterministically from filtered set)
-                # All diagnoses in the collection match the OPTIONAL MATCH WHERE clause filters
+            # Check if any conditions referencing 'diagnoses' exist (like disease_phase filters)
+            # to decide whether second_with_clause is needed
+            has_diagnoses_conditions = (
+                any(isinstance(cond, str) and "diagnoses" in cond for cond in all_conditions) or
+                any(isinstance(cond, str) and "diagnoses" in cond for cond in regular_conditions)
+            )
+            if use_sf_early_filter and not has_diagnoses_conditions:
                 with_collects = [
                     "head(collect(DISTINCT d)) AS diagnoses",
                     "head(collect(DISTINCT pf)) AS pf",
-                    "head(collect(DISTINCT sf)) AS sf"
+                    "head(collect(DISTINCT sf)) AS sf"  # Only matching files (filtered in OPTIONAL MATCH)
                 ]
+                skip_second_with_for_sf = True  # Skip second_with_clause - we already have filtered sf
+            else:
+                with_collects = [
+                    "head(collect(DISTINCT d)) AS diagnoses",
+                    "head(collect(DISTINCT pf)) AS pf",
+                    "collect(DISTINCT sf) AS all_sfs"  # Collect all sequencing_files
+                ]
+        else:
+            with_collects = [
+                "head(collect(DISTINCT d)) AS diagnoses",
+                "head(collect(DISTINCT pf)) AS pf",
+                "head(collect(DISTINCT sf)) AS sf"
+            ]
         with_vars.append("st")
         
         with_clause = ", ".join(with_vars)
@@ -751,23 +671,14 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         if skip_second_with_for_sf:
             # Skip second_with_clause - everything is already collected and filtered
             second_with_clause = None
-        elif needs_sf_collection or needs_diag_collection:
+        elif needs_sf_collection:
             second_with_vars = ["sa", "st"]  # Participant added after pagination
-            
+
             # Pass through id_list if identifiers filter is present
             if identifiers_condition:
                 second_with_vars.append("id_list")
-            
-            # Handle diagnosis search - check if ANY diagnosis matches
-            if needs_diag_collection:
-                # OPTIMIZATION Phase 2: Diagnoses are already filtered during collection
-                # all_diagnoses now only contains matching diagnoses (search + disease_phase if present)
-                # So we just need to check if any were found
-                second_with_vars.append("size(all_diagnoses) > 0 AS has_matching_diagnosis")
-                second_with_vars.append("head(all_diagnoses) AS diagnoses")
-            else:
-                second_with_vars.append("diagnoses")
-            
+
+            second_with_vars.append("diagnoses")
             second_with_vars.append("pf")
         
         # Build conditions to check if ANY sequencing_file matches (only if needed)
@@ -859,12 +770,9 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
                     # No diagnosis conditions - we collected 'sf' directly, just check if it's not null
                     second_with_vars.append("sf IS NOT NULL AS has_matching_sf")
                     second_with_vars.append("sf")
-            elif needs_diag_collection:
-                # Only diagnosis search, no sequencing file collection
-                second_with_vars.append("sf")
-            
+
             # Finalize second_with_clause if we have any second WITH vars
-            if needs_sf_collection or needs_diag_collection:
+            if needs_sf_collection:
                 second_with_clause = ", ".join(second_with_vars)
         
         # If identifiers are present, integrate WHERE clause into WITH clause

@@ -20,6 +20,7 @@ from app.models.errors import create_pagination_error, InvalidParametersError
 from app.repositories.sample_helpers import SD_CAT_MARKER
 
 logger = get_logger(__name__)
+settings = get_settings()
 
 
 # ============================================================================
@@ -46,6 +47,17 @@ def get_allowlist() -> FieldAllowlist:
 # Pagination Dependencies
 # ============================================================================
 
+HARD_MAX_PAGE_SIZE = 1000  # DB-protection ceiling; not operator-configurable
+# Only page/per_page are excluded; all other params (including search, identifiers, etc.) count as active filters.
+NON_PAGINATION_PARAMS = {"page", "per_page"}
+
+PER_PAGE_QUERY_DESCRIPTION = (
+    "Number of results per page. Defaults to 50. Maximum: 500. "
+    "When any filter query parameter is present and per_page exceeds 500, "
+    "per_page is silently reduced to 50."
+)
+
+
 def get_pagination_params(
     page: Optional[int] = Query(
         default=1,
@@ -55,19 +67,32 @@ def get_pagination_params(
     per_page: Optional[int] = Query(
         default=None,
         ge=1,
-        le=1000,
-        description="Number of results per page. Defaults to 50. Maximum: 500."
-    )
+        description=PER_PAGE_QUERY_DESCRIPTION
+    ),
+    request: Request = None  # FastAPI pattern: Request with = None, not Optional[Request]
 ) -> PaginationParams:
     """
     Get and validate pagination parameters.
-    
+
     Raises:
         HTTPException: If pagination parameters are invalid
     """
+    if per_page is not None:
+        effective_max = min(settings.public_max_page_size, HARD_MAX_PAGE_SIZE)
+        if per_page > effective_max:
+            active_filter_keys = (
+                set(request.query_params.keys()) - NON_PAGINATION_PARAMS
+                if request is not None
+                else set()
+            )
+            if active_filter_keys:
+                per_page = settings.default_page_size
+            else:
+                error = create_pagination_error(page, per_page)
+                raise error.to_http_exception()
     try:
         return parse_pagination_params(page, per_page)
-    except ValueError as e:
+    except ValueError:
         error = create_pagination_error(page, per_page)
         raise error.to_http_exception()
 

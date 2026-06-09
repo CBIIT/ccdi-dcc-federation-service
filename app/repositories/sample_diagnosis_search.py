@@ -14,7 +14,11 @@ from app.core.field_mappings import (
 from app.core.logging import get_logger
 from app.models.dto import Sample
 from app.repositories.sample_converters import node_to_dict
-from app.repositories.subject_diagnosis_cypher import diagnosis_category_contains_predicate
+from app.repositories.subject_diagnosis_cypher import (
+    diagnosis_category_contains_predicate,
+    add_diagnosis_search_params,
+    diagnosis_search_predicate,
+)
 
 logger = get_logger(__name__)
 
@@ -118,26 +122,13 @@ class SampleDiagnosisSearch:
             diag_cat_value = filters["diagnosis_category"]
             if isinstance(diag_cat_value, str) and (dc_stripped := diag_cat_value.strip()):
                 params["diag_category_contains_term"] = dc_stripped
-                additional_diagnosis_filters.append(diagnosis_category_contains_predicate("d"))
+                additional_diagnosis_filters.append(diagnosis_category_contains_predicate("dx"))
 
         if diagnosis_search_term:
-            diagnosis_search_term_lower = diagnosis_search_term.lower().strip()
-            params["diagnosis_search_term"] = diagnosis_search_term
-            params["diagnosis_search_term_lower"] = diagnosis_search_term_lower
-            params["diagnosis_search_term_see_comment"] = "see diagnosis_comment"
-            diagnosis_search_filter = """(toLower(trim(toString(d.diagnosis))) <> $diagnosis_search_term_see_comment AND 
-                 CASE 
-                   WHEN valueType(d.diagnosis) = 'LIST' THEN 
-                     ANY(diag IN d.diagnosis WHERE toLower(toString(diag)) CONTAINS $diagnosis_search_term_lower)
-                   ELSE 
-                     toLower(toString(d.diagnosis)) CONTAINS $diagnosis_search_term_lower
-                 END)
-                OR
-                (toLower(trim(toString(d.diagnosis))) = $diagnosis_search_term_see_comment AND 
-                 d.diagnosis_comment IS NOT NULL AND 
-                 toLower(toString(d.diagnosis_comment)) CONTAINS $diagnosis_search_term_lower)"""
+            add_diagnosis_search_params(params, diagnosis_search_term)
+            diagnosis_search_filter_condition = diagnosis_search_predicate("dx")
         elif disease_phase_filter or additional_diagnosis_filters:
-            diagnosis_search_filter = "true"
+            diagnosis_search_filter_condition = "true"
         else:
             return [] if not return_total else ([], 0)
 
@@ -185,9 +176,6 @@ class SampleDiagnosisSearch:
         
         # Build complete diagnosis filter WHERE clause with proper parentheses
         # CRITICAL: Parenthesize correctly to ensure AND binds with the entire OR expression
-        # Structure: WHERE ((search_condition) OR (comment_condition)) AND disease_phase_filter
-        # Replace 'd.' with 'dx.' in the filter since we use 'dx' variable in OPTIONAL MATCH
-        diagnosis_search_filter_condition = diagnosis_search_filter.replace("d.diagnosis", "dx.diagnosis").replace("d.diagnosis_comment", "dx.diagnosis_comment")
         disease_phase_filter_condition = disease_phase_filter.replace("d.disease_phase", "dx.disease_phase") if disease_phase_filter else ""
         
         diagnosis_where_clause = f"""(
@@ -211,7 +199,7 @@ class SampleDiagnosisSearch:
         # When return_total: run lightweight count first, then list query
         total_count_diag = None
         if return_total:
-            sa_where_parts = ["sa.sample_id IS NOT NULL", "sa.sample_id <> ''"]
+            sa_where_parts = ["sa.sample_id IS NOT NULL"]
             if identifiers_early_filter:
                 sa_where_parts.append(identifiers_early_filter)
             sa_where_clause = " AND ".join(sa_where_parts)
@@ -468,21 +456,8 @@ class SampleDiagnosisSearch:
                 additional_diagnosis_filters.append(diagnosis_category_contains_predicate("dx"))
 
         if diagnosis_search_term:
-            diagnosis_search_term_lower = diagnosis_search_term.lower().strip()
-            params["diagnosis_search_term"] = diagnosis_search_term
-            params["diagnosis_search_term_lower"] = diagnosis_search_term_lower
-            params["diagnosis_search_term_see_comment"] = "see diagnosis_comment"
-            diagnosis_search_filter_condition = """(toLower(trim(toString(dx.diagnosis))) <> $diagnosis_search_term_see_comment AND 
-                 CASE 
-                   WHEN valueType(dx.diagnosis) = 'LIST' THEN 
-                     ANY(diag IN dx.diagnosis WHERE toLower(toString(diag)) CONTAINS $diagnosis_search_term_lower)
-                   ELSE 
-                     toLower(toString(dx.diagnosis)) CONTAINS $diagnosis_search_term_lower
-                 END)
-                OR
-                (toLower(trim(toString(dx.diagnosis))) = $diagnosis_search_term_see_comment AND 
-                 dx.diagnosis_comment IS NOT NULL AND 
-                 toLower(toString(dx.diagnosis_comment)) CONTAINS $diagnosis_search_term_lower)"""
+            add_diagnosis_search_params(params, diagnosis_search_term)
+            diagnosis_search_filter_condition = diagnosis_search_predicate("dx")
         elif disease_phase_filter_condition or additional_diagnosis_filters:
             diagnosis_search_filter_condition = "true"
         else:

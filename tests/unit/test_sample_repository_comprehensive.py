@@ -224,7 +224,7 @@ class TestSampleRepositoryCountByField:
         assert "total" in result
 
     async def test_count_samples_by_field_with_diagnosis_search(self, repository, mock_session):
-        """Test count_samples_by_field with diagnosis search filter."""
+        """_diagnosis_search is ignored; count-by-field uses unfiltered cohort (API: no query params)."""
         async def async_gen():
             yield {"value": "Tumor", "count": 3}
         
@@ -238,8 +238,11 @@ class TestSampleRepositoryCountByField:
         ])
         
         result = await repository.count_samples_by_field("tissue_type", {"_diagnosis_search": "cancer"})
-        
+
         assert "total" in result
+        query, params = mock_session.run.call_args_list[0][0]
+        assert "diagnosis_search_term" not in params
+        assert "p._diagnosis_search" not in query
 
     async def test_count_samples_by_field_with_anatomical_sites_filter(self, repository, mock_session):
         """Test count_samples_by_field with anatomical_sites filter (single value)."""

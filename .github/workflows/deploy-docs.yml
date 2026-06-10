@@ -1,57 +1,83 @@
 name: Deploy API Documentation
 
+# Manual only — no push/PR triggers. Run from Actions → "Run workflow".
 on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
   workflow_dispatch:
+    inputs:
+      branch:
+        description: "Branch to generate docs from (e.g. 1.3.0-test or main)"
+        required: true
+        default: "1.3.0-test"
+        type: string
+      publish:
+        description: "Commit docs to branch and deploy GitHub Pages (main/master only)"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
 
 jobs:
   generate-openapi:
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      
-    - name: Set up Python
-      uses: actions/setup-python@v4
       with:
-        python-version: '3.11'
-        
+        ref: ${{ github.event.inputs.branch }}
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+      with:
+        version: "latest"
+        python-version: "3.12"
+
+    - name: Verify Python version
+      run: |
+        uv run python --version
+        uv run python -c "import sys; assert sys.version_info[:2] == (3, 12), sys.version"
+
     - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install fastapi uvicorn
-        
+      run: uv sync --no-dev
+
     - name: Generate OpenAPI spec
-      run: |
-        python -c "
-        import json
-        import yaml
-        from fastapi import FastAPI
-        from app.main import app
-        
-        # Generate OpenAPI spec
-        openapi_spec = app.openapi()
-        
-        # Save as JSON
-        with open('docs/openapi.json', 'w') as f:
-            json.dump(openapi_spec, f, indent=2)
-            
-        # Save as YAML
-        with open('docs/swagger.yml', 'w') as f:
-            yaml.dump(openapi_spec, f, default_flow_style=False, sort_keys=False)
-            
-        print('OpenAPI spec generated successfully')
-        "
-        
-    - name: Update documentation
-      run: |
-        # Update the HTML file to use the generated spec
-        sed -i 's|https://raw.githubusercontent.com/CBIIT/ccdi-dcc-federation-service/main/swagger.yml|./swagger.yml|g' docs/index.html
-        
+      run: uv run --with pyyaml python .github/scripts/generate_openapi.py
+
+    - name: Upload docs artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: api-docs-${{ github.event.inputs.branch }}
+        path: docs/
+
+  commit-docs:
+    if: >-
+      github.event.inputs.publish == true &&
+      (github.event.inputs.branch == 'main' || github.event.inputs.branch == 'master')
+    needs: generate-openapi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.inputs.branch }}
+
+    - name: Download generated docs
+      uses: actions/download-artifact@v4
+      with:
+        name: api-docs-${{ github.event.inputs.branch }}
+        path: docs
+
     - name: Commit and push changes
       run: |
         git config --local user.email "action@github.com"
@@ -61,17 +87,30 @@ jobs:
         git push
 
   deploy-to-github-pages:
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    if: >-
+      github.event.inputs.publish == true &&
+      (github.event.inputs.branch == 'main' || github.event.inputs.branch == 'master')
     needs: generate-openapi
     runs-on: ubuntu-latest
-    
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      
+      with:
+        ref: ${{ github.event.inputs.branch }}
+
+    - name: Download generated docs
+      uses: actions/download-artifact@v4
+      with:
+        name: api-docs-${{ github.event.inputs.branch }}
+        path: docs
+
     - name: Deploy to GitHub Pages
-      uses: peaceiris/actions-gh-pages@v3
+      id: deployment
+      uses: peaceiris/actions-gh-pages@v4
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
         publish_dir: ./docs
-        # GitHub Pages URL will be: https://cbiit.github.io/ccdi-dcc-federation-service/

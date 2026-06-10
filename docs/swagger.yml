@@ -9,12 +9,7 @@ paths:
       tags:
       - Subject
       summary: List subjects
-      description: |-
-        Get a paginated list of subjects with optional filtering. Optional
-        `associated_diagnosis_categories` filters on diagnosis nodes (harmonized or
-        unharmonized values), aligned with the CCDI Federation API aggregation subject
-        model (v1.3+). For substring match on full `diagnosis_category`, use
-        `GET /api/v1/subject-diagnosis`.
+      description: Get a paginated list of subjects with optional filtering
       operationId: list_subjects_api_v1_subject_get
       parameters:
       - name: sex
@@ -109,8 +104,9 @@ paths:
           enum:
           - Alive
           - Dead
-          - Not Reported
+          - Not reported
           - Unknown
+          - Unspecified
           title: Vital Status
         description: Matches any subject where the `vital_status` field matches the
           string provided.
@@ -137,12 +133,15 @@ paths:
             field contains the specified study_id value (e.g., `phs002431`). Returns
             all participants that belong to the specified study. Example: `depositions=phs002431`
             will return all participants in study `phs002431`.'
+          examples:
+            default:
+              summary: Example study_id
+              value: phs002431
           title: Depositions
         description: 'Filter by study_id. Matches any subject where the `depositions`
           field contains the specified study_id value (e.g., `phs002431`). Returns
           all participants that belong to the specified study. Example: `depositions=phs002431`
           will return all participants in study `phs002431`.'
-        example: phs002431
       - name: associated_diagnosis_categories
         in: query
         required: false
@@ -150,18 +149,15 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: |-
-            Matches diagnosis `diagnosis_category` with case-insensitive token equality
-            after `;` split (harmonized CDE 16607972 or unharmonized values). Federation
-            API aggregation alignment (v1.3+). Not substring on full string—use
-            `GET /api/v1/subject-diagnosis` for that under the same parameter name.
+          description: Matches any subject where a diagnosis node's `diagnosis_category`
+            matches the value (case-insensitive token after `;` split). Harmonized
+            (CDE 16607972) or unharmonized values. Aligned with CCDI Federation API
+            aggregation subject filtering (v1.3+).
           title: Associated Diagnosis Categories
-        description: |-
-          Matches diagnosis `diagnosis_category` with case-insensitive token equality
-          after `;` split (harmonized CDE 16607972 or unharmonized values). Federation
-          API aggregation alignment (v1.3+). Not substring on full string—use
-          `GET /api/v1/subject-diagnosis` for that under the same parameter name.
-        example: Medulloblastoma
+        description: Matches any subject where a diagnosis node's `diagnosis_category`
+          matches the value (case-insensitive token after `;` split). Harmonized (CDE
+          16607972) or unharmonized values. Aligned with CCDI Federation API aggregation
+          subject filtering (v1.3+).
       - name: page
         in: query
         required: false
@@ -182,9 +178,13 @@ paths:
           - type: integer
             minimum: 1
           - type: 'null'
-          description: Number of results per page. Defaults to 50. Maximum: 500. When any filter query parameter is present and per_page exceeds 500, per_page is silently reduced to 50.
+          description: 'Number of results per page. Defaults to 50. Maximum: 500.
+            When any filter query parameter is present and per_page exceeds 500, per_page
+            is silently reduced to 50.'
           title: Per Page
-        description: Number of results per page. Defaults to 50. Maximum: 500. When any filter query parameter is present and per_page exceeds 500, per_page is silently reduced to 50.
+        description: 'Number of results per page. Defaults to 50. Maximum: 500. When
+          any filter query parameter is present and per_page exceeds 500, per_page
+          is silently reduced to 50.'
       responses:
         '200':
           description: Successful operation.
@@ -212,17 +212,22 @@ paths:
                     ethnicity:
                       value: Not reported
                     identifiers:
-                    - namespace:
-                        organization: CCDI-DCC
-                        name: phs002430
-                      name: SUBJECT-001
+                    - value:
+                        namespace:
+                          organization: CCDI-DCC
+                          name: phs002430
+                        name: SUBJECT-001
+                        type: Linked
+                        server: https://dcc.ccdi.cancer.gov/api/v1/subject/CCDI-DCC/phs002430/SUBJECT-001
                     vital_status:
                       value: Alive
                     age_at_vital_status:
                       value: 45
+                    associated_diagnoses:
+                    - value: Neuroblastoma
+                      comment: 'null'
                     associated_diagnosis_categories:
-                    - value:
-                        - Neuroblastoma
+                    - value: Brain and Spinal Cord Tumors
                     unharmonized:
                       associated_diagnosis_categories:
                       - value: Gliomas
@@ -246,7 +251,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: '#/components/schemas/ErrorsResponse'
+              example:
+                errors:
+                - kind: InvalidParameters
+                  parameters: []
+                  message: Invalid query parameter(s) provided.
+                  reason: Unknown query parameter(s)
   /api/v1/subject/by/{field}/count:
     get:
       tags:
@@ -310,23 +321,29 @@ paths:
               example:
                 errors:
                 - kind: UnsupportedField
-                  field: handedness
-                  message: 'Field ''handedness'' is not supported: this field is not
-                    present for subjects.'
+                  field: wrong field
+                  message: Field is not supported for subjects.
+                  reason: This field is not present for subjects.
         '422':
           description: Invalid query or path parameters.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: '#/components/schemas/ErrorsResponse'
+              example:
+                errors:
+                - kind: InvalidParameters
+                  parameters: []
+                  message: Invalid query parameter(s) provided.
+                  reason: Unknown query parameter(s)
   /api/v1/subject/{organization}/{namespace}/{name}:
     get:
       tags:
       - Subject
-      summary: Get subject by identifier or filter by field
+      summary: Get subject by identifier
       description: Get a specific subject by organization, namespace, and name. Organization
         defaults to 'CCDI-DCC'. Namespace is the study_id value from the database.
-        'name' is the participant ID.
+        'name' is the participant ID. This endpoint does not accept query parameters.
       operationId: get_subject_api_v1_subject__organization___namespace___name__get
       parameters:
       - name: organization
@@ -349,22 +366,75 @@ paths:
           title: Name
       responses:
         '200':
-          description: Successful Response
+          description: Successful operation.
           content:
             application/json:
               schema: {}
+              example:
+                id:
+                  namespace:
+                    organization: CCDI-DCC
+                    name: phs002430
+                  name: TARGET-10-DCC001
+                kind: Participant
+                metadata:
+                  sex:
+                    value: M
+                  race:
+                  - value: White
+                  ethnicity:
+                    value: Not reported
+                  identifiers:
+                  - value:
+                      namespace:
+                        organization: CCDI-DCC
+                        name: phs002430
+                      name: TARGET-10-DCC001
+                      type: Linked
+                      server: https://dcc.ccdi.cancer.gov/api/v1/subject/CCDI-DCC/phs002430/TARGET-10-DCC001
+                  vital_status:
+                    value: Alive
+                  age_at_vital_status:
+                    value: 15
+                  associated_diagnoses:
+                  - value: Neuroblastoma
+                    comment: 'null'
+                  associated_diagnosis_categories:
+                  - value: Brain and Spinal Cord Tumors
+                  depositions:
+                  - kind: dbGaP
+                    value: phs002430
+        '404':
+          description: Not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorsResponse'
+              example:
+                errors:
+                - kind: NotFound
+                  entity: Subjects
+                  message: Unable to find data for your request.
+                  reason: No data found.
         '422':
           description: Invalid query or path parameters.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: '#/components/schemas/ErrorsResponse'
+              example:
+                errors:
+                - kind: InvalidParameters
+                  parameters: []
+                  message: Invalid query parameter(s) provided.
+                  reason: Unknown query parameter(s)
   /api/v1/subject/summary:
     get:
       tags:
       - Subject
       summary: Reports summary information for the subjects known by this server.
-      description: Reports summary information for the subjects known by this server.
+      description: Returns the total count of all subjects. This endpoint does not
+        accept any query parameters.
       operationId: subject_summary
       responses:
         '200':
@@ -599,6 +669,40 @@ paths:
           title: Diagnosis
         description: Matches any sample where the `diagnosis` field matches the string
           provided.
+      - name: diagnosis_category
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Matches any sample where a diagnosis node's `diagnosis_category`
+            matches the value (case-insensitive token after `;` split). Harmonized
+            (CDE 16607972) or unharmonized values.
+          title: Diagnosis Category
+        description: Matches any sample where a diagnosis node's `diagnosis_category`
+          matches the value (case-insensitive token after `;` split). Harmonized (CDE
+          16607972) or unharmonized values.
+      - name: identifiers
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'Matches any sample where the `sample_id` field matches the
+            string provided.
+
+
+            **Note:** a logical OR (`||`) is performed across the values when determining
+            whether the sample should be included in the results.'
+          title: Identifiers
+        description: 'Matches any sample where the `sample_id` field matches the string
+          provided.
+
+
+          **Note:** a logical OR (`||`) is performed across the values when determining
+          whether the sample should be included in the results.'
       - name: page
         in: query
         required: false
@@ -619,9 +723,13 @@ paths:
           - type: integer
             minimum: 1
           - type: 'null'
-          description: Number of results per page. Defaults to 50. Maximum: 500. When any filter query parameter is present and per_page exceeds 500, per_page is silently reduced to 50.
+          description: 'Number of results per page. Defaults to 50. Maximum: 500.
+            When any filter query parameter is present and per_page exceeds 500, per_page
+            is silently reduced to 50.'
           title: Per Page
-        description: Number of results per page. Defaults to 50. Maximum: 500. When any filter query parameter is present and per_page exceeds 500, per_page is silently reduced to 50.
+        description: 'Number of results per page. Defaults to 50. Maximum: 500. When
+          any filter query parameter is present and per_page exceeds 500, per_page
+          is silently reduced to 50.'
       responses:
         '200':
           description: Successful operation.
@@ -647,21 +755,37 @@ paths:
                     name: TARGET-10-DCC001
                   metadata:
                     disease_phase:
-                      value: Primary
-                    anatomical_sites:
-                      value: Brain
+                      value: Initial Diagnosis
+                    diagnosis:
+                      value: Neuroblastoma
+                      comment: 'null'
                     diagnosis_category:
                     - value: Brain and Spinal Cord Tumors
                     unharmonized:
                       diagnosis_category:
                       - value: Gliomas
+                    age_at_diagnosis:
+                      value: 10
+                    anatomical_sites:
+                    - value: 'C71.9 : Brain, NOS'
+                    tissue_type:
+                      value: Tumor
+                    tumor_classification:
+                      value: Primary
+                    library_strategy:
+                      value: WXS
+                    library_source_material:
+                      value: Genomic DNA
+                    depositions:
+                    - kind: dbGaP
+                      value: phs002430
                     identifiers:
                     - value:
                         namespace:
                           organization: CCDI-DCC
                           name: phs002430
-                        name: TARGET-10-DCC001
-                        server: https://dcc.ccdi.cancer.gov/api/v1/CCDI-DCC/phs002430/TARGET-10-DCC001
+                        name: TARGET-10-DCC001-03A-01R
+                        server: https://dcc.ccdi.cancer.gov/api/v1/sample/CCDI-DCC/phs002430/TARGET-10-DCC001-03A-01R
                         type: Linked
         '404':
           description: Not found.
@@ -680,7 +804,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: '#/components/schemas/ErrorsResponse'
+              example:
+                errors:
+                - kind: InvalidParameters
+                  parameters: []
+                  message: Invalid query parameter(s) provided.
+                  reason: Unknown query parameter(s)
   /api/v1/sample/by/{field}/count:
     get:
       tags:
@@ -711,21 +841,28 @@ paths:
           - age_at_collection
           - tumor_tissue_morphology
           - diagnosis
+          - diagnosis_category
           title: Field
         description: The field to group by and count with.
       responses:
         '200':
-          description: Successful Response
+          description: Successful operation.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/CountResponse'
-        '422':
-          description: Invalid query or path parameters.
+        '400':
+          description: Unsupported field.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: '#/components/schemas/ErrorsResponse'
+              example:
+                errors:
+                - kind: UnsupportedField
+                  field: wrong field
+                  message: Field is not supported for samples.
+                  reason: This field is not present for samples.
   /api/v1/sample/{organization}/{namespace}/{name}:
     get:
       tags:
@@ -773,19 +910,34 @@ paths:
                   name: TARGET-10-DCC001
                 metadata:
                   disease_phase:
-                    value: Primary
-                  anatomical_sites:
-                    value: Brain
+                    value: Initial Diagnosis
+                  diagnosis:
+                    value: Neuroblastoma
+                    comment: 'null'
                   diagnosis_category:
                   - value: Brain and Spinal Cord Tumors
-                  unharmonized: {}
+                  age_at_diagnosis:
+                    value: 10
+                  anatomical_sites:
+                  - value: 'C71.9 : Brain, NOS'
+                  tissue_type:
+                    value: Tumor
+                  tumor_classification:
+                    value: Primary
+                  library_strategy:
+                    value: WXS
+                  library_source_material:
+                    value: Genomic DNA
+                  depositions:
+                  - kind: dbGaP
+                    value: phs002430
                   identifiers:
                   - value:
                       namespace:
                         organization: CCDI-DCC
                         name: phs002430
-                      name: TARGET-10-DCC001
-                      server: https://dcc.ccdi.cancer.gov/api/v1/CCDI-DCC/phs002430/TARGET-10-DCC001
+                      name: TARGET-10-DCC001-03A-01R
+                      server: https://dcc.ccdi.cancer.gov/api/v1/sample/CCDI-DCC/phs002430/TARGET-10-DCC001-03A-01R
                       type: Linked
         '404':
           description: Not found.
@@ -804,7 +956,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: '#/components/schemas/ErrorsResponse'
+              example:
+                errors:
+                - kind: InvalidParameters
+                  parameters: []
+                  message: Invalid query parameter(s) provided.
+                  reason: Unknown query parameter(s)
   /api/v1/sample/summary:
     get:
       tags:
@@ -812,7 +970,82 @@ paths:
       summary: Reports summary information for the samples known by this server.
       description: Reports summary information for the samples known by this server.
       operationId: sample_summary
+      responses:
+        '200':
+          description: Successful operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SummaryResponse'
+              example:
+                counts:
+                  total: 50000
+  /api/v1/sample-diagnosis:
+    get:
+      tags:
+      - Experimental
+      summary: 'Experimental: Filter the samples known by this server by free-text
+        diagnosis search.'
+      description: "Experimental: Filter the samples known by this server by free-text\
+        \ diagnosis search.\n\n### Diagnosis Filtering\n\nThis endpoint supports the\
+        \ experimental `search` parameter: case-insensitive substring on\n`diagnosis`\
+        \ from diagnosis nodes, or on `diagnosis_comment` when `diagnosis` is\n`see\
+        \ diagnosis_comment`.\n\nThe `diagnosis_category` query parameter matches\
+        \ the **full** `diagnosis_category` string\nwith a case-insensitive **substring**.\
+        \ With `search`, both apply as **AND** on the same\ndiagnosis node.\n\n###\
+        \ Pagination\n\nThis endpoint is paginated. Users may override the default\
+        \ pagination\nparameters by providing one or more of the pagination-related\
+        \ query\nparameters below.\n\n### Additional Filtering\n\nAll harmonized (top-level)\
+        \ and unharmonized (nested under the\n`metadata.unharmonized` key) metadata\
+        \ fields are filterable. To achieve\nthis, you can provide the field name\
+        \ as a [`String`]. Filtering follows the\nfollowing rules:\n\n* For single-value\
+        \ metadata field, the sample is included in the results if\nits value _exactly_\
+        \ matches the query string. Matches are case-sensitive.\n* For multiple-value\
+        \ metadata fields, the sample is included in the results\nif any of its values\
+        \ for the field _exactly_ match the query string (a\nlogical OR [`||`]). Matches\
+        \ are case-sensitive.\n* When the metadata field is `null` (in the case of\
+        \ singular or\nmultiple-valued metadata fields) or empty, the sample is not\
+        \ included.\n* When multiple fields are provided as filters, a logical AND\
+        \ (`&&`) strings\ntogether the predicates. In other words, all filters must\
+        \ match for a\nsample to be returned. Note that this means that servers do\
+        \ not natively\nsupport logical OR (`||`) across multiple fields: that must\
+        \ be done by\ncalling this endpoint with each of your desired queries and\
+        \ performing a\nset union of those samples out of band.\n\n### Ordering\n\n\
+        This endpoint has default ordering requirements\u2014those details are documented\n\
+        in the `responses::Samples` schema.\n\nNote: This API is experimental and\
+        \ is subject to change without being considered\nas a breaking change."
+      operationId: sample_diagnosis_search
       parameters:
+      - name: search
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Case-insensitive substring match on diagnosis text from diagnosis
+            nodes (`diagnosis` property). When `diagnosis` is the sentinel value `see
+            diagnosis_comment`, the search is applied to `diagnosis_comment` instead.
+            May be combined with `diagnosis_category` (AND on the same diagnosis node).
+          title: Search
+        description: Case-insensitive substring match on diagnosis text from diagnosis
+          nodes (`diagnosis` property). When `diagnosis` is the sentinel value `see
+          diagnosis_comment`, the search is applied to `diagnosis_comment` instead.
+          May be combined with `diagnosis_category` (AND on the same diagnosis node).
+      - name: diagnosis_category
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'Case-insensitive substring on the full `diagnosis_category`
+            on a diagnosis node (harmonized or unharmonized text). With `search`,
+            AND on the same diagnosis node. '
+          title: Diagnosis Category
+        description: 'Case-insensitive substring on the full `diagnosis_category`
+          on a diagnosis node (harmonized or unharmonized text). With `search`, AND
+          on the same diagnosis node. '
       - name: disease_phase
         in: query
         required: false
@@ -997,226 +1230,26 @@ paths:
 
           **Note:** a logical OR (`||`) is performed across the values when determining
           whether the sample should be included in the results.'
-      - name: diagnosis
+      - name: identifiers
         in: query
         required: false
         schema:
           anyOf:
           - type: string
           - type: 'null'
-          description: Matches any sample where the `diagnosis` field matches the
+          description: 'Matches any sample where the `sample_id` field matches the
             string provided.
-          title: Diagnosis
-        description: Matches any sample where the `diagnosis` field matches the string
+
+
+            **Note:** a logical OR (`||`) is performed across the values when determining
+            whether the sample should be included in the results.'
+          title: Identifiers
+        description: 'Matches any sample where the `sample_id` field matches the string
           provided.
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SummaryResponse'
-        '422':
-          description: Invalid query or path parameters.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/sample-diagnosis:
-    get:
-      tags:
-      - Experimental
-      summary: Search samples by diagnosis (Experimental)
-      description: |-
-        Experimental diagnosis-node filtering (`search`, `diagnosis_category`) with
-        the same sample filters as `GET /api/v1/sample`. Harmonized and unharmonized
-        category values at the diagnosis node; aligned with
-        [CCDI Federation API aggregation](https://cbiit.github.io/ccdi-federation-api-aggregation/) (v1.3+).
-        `search` is substring on diagnosis text (or `diagnosis_comment` when diagnosis is
-        `see diagnosis_comment`); `diagnosis_category` is a case-insensitive substring on the
-        full `diagnosis_category` field—the same rule as `associated_diagnosis_categories` on
-        `GET /api/v1/subject-diagnosis` (distinct from token-after-`;` matching on list
-        `GET /api/v1/subject` / `GET /api/v1/sample`). Both together = AND on one diagnosis node.
-        Experimental—may change.
-      operationId: sample_diagnosis_search
-      parameters:
-      - name: search
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: |-
-            Case-insensitive substring match on `diagnosis` from diagnosis nodes, or
-            on `diagnosis_comment` when diagnosis is `see diagnosis_comment`. Stripped
-            of leading/trailing whitespace; omitted if empty after strip.
-          title: Search
-        description: |-
-          Case-insensitive substring match on `diagnosis` from diagnosis nodes, or
-          on `diagnosis_comment` when diagnosis is `see diagnosis_comment`. Stripped
-          of leading/trailing whitespace; omitted if empty after strip.
-      - name: diagnosis_category
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: |-
-            Substring on full `diagnosis_category` (harmonized or unharmonized). With
-            `search`, AND on same diagnosis node. Same semantics as
-            `associated_diagnosis_categories` on `GET /api/v1/subject-diagnosis`. On list
-            `GET /api/v1/subject` and `GET /api/v1/sample`, that parameter name instead uses
-            token match after `;`. Trimmed.
-          title: Diagnosis Category
-        description: |-
-          Substring on full `diagnosis_category` (harmonized or unharmonized). With
-          `search`, AND on same diagnosis node. Same semantics as
-          `associated_diagnosis_categories` on `GET /api/v1/subject-diagnosis`. On list
-          `GET /api/v1/subject` and `GET /api/v1/sample`, that parameter name instead uses
-          token match after `;`. Trimmed.
-        example: Medulloblastoma
-      - name: disease_phase
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Filter by disease phase
-          title: Disease Phase
-        description: Filter by disease phase
-      - name: anatomical_sites
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Filter by anatomical sites
-          title: Anatomical Sites
-        description: Filter by anatomical sites
-      - name: library_selection_method
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Filter by library selection method
-          title: Library Selection Method
-        description: Filter by library selection method
-      - name: library_strategy
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Filter by library strategy
-          title: Library Strategy
-        description: Filter by library strategy
-      - name: library_source_material
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Filter by library source material
-          title: Library Source Material
-        description: Filter by library source material
-      - name: preservation_method
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Filter by preservation method
-          title: Preservation Method
-        description: Filter by preservation method
-      - name: specimen_molecular_analyte_type
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Filter by specimen molecular analyte type
-          title: Specimen Molecular Analyte Type
-        description: Filter by specimen molecular analyte type
-      - name: tissue_type
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Filter by tissue type
-          title: Tissue Type
-        description: Filter by tissue type
-      - name: tumor_classification
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Filter by tumor classification
-          title: Tumor Classification
-        description: Filter by tumor classification
-      - name: age_at_diagnosis
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Filter by age at diagnosis
-          title: Age At Diagnosis
-        description: Filter by age at diagnosis
-      - name: age_at_collection
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Filter by age at collection
-          title: Age At Collection
-        description: Filter by age at collection
-      - name: tumor_tissue_morphology
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Filter by tumor tissue morphology
-          title: Tumor Tissue Morphology
-        description: Filter by tumor tissue morphology
-      - name: depositions
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Filter by depositions
-          title: Depositions
-        description: Filter by depositions
-      - name: diagnosis
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Filter by diagnosis
-          title: Diagnosis
-        description: Filter by diagnosis
+
+
+          **Note:** a logical OR (`||`) is performed across the values when determining
+          whether the sample should be included in the results.'
       - name: page
         in: query
         required: false
@@ -1237,16 +1270,20 @@ paths:
           - type: integer
             minimum: 1
           - type: 'null'
-          description: Number of results per page. Defaults to 50. Maximum: 500. When any filter query parameter is present and per_page exceeds 500, per_page is silently reduced to 50.
+          description: 'Number of results per page. Defaults to 50. Maximum: 500.
+            When any filter query parameter is present and per_page exceeds 500, per_page
+            is silently reduced to 50.'
           title: Per Page
-        description: Number of results per page. Defaults to 50. Maximum: 500. When any filter query parameter is present and per_page exceeds 500, per_page is silently reduced to 50.
+        description: 'Number of results per page. Defaults to 50. Maximum: 500. When
+          any filter query parameter is present and per_page exceeds 500, per_page
+          is silently reduced to 50.'
       responses:
         '200':
-          description: Successful Response
+          description: Successful operation.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SampleResponse'
+                $ref: '#/components/schemas/SamplesResponse'
               example:
                 summary:
                   counts:
@@ -1309,25 +1346,45 @@ paths:
                         name: TARGET-10-DCC001-03A-01R
                         server: https://dcc.ccdi.cancer.gov/api/v1/sample/CCDI-DCC/phs002430/TARGET-10-DCC001-03A-01R
                         type: Linked
+        '404':
+          description: Not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorsResponse'
+              example:
+                errors:
+                - kind: NotFound
+                  entity: Samples
+                  message: Unable to find data for your request.
+                  reason: No data found.
         '422':
           description: Invalid query or path parameters.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: '#/components/schemas/ErrorsResponse'
+              example:
+                errors:
+                - kind: InvalidParameters
+                  parameters: []
+                  message: Invalid query parameter(s) provided.
+                  reason: Unknown query parameter(s)
   /api/v1/subject-diagnosis:
     get:
       tags:
       - Experimental
-      summary: Search subjects by diagnosis (Experimental)
-      description: |-
-        Experimental diagnosis-node filtering (`diagnosis`, `diagnosis_category`) with
-        the same subject filters as `GET /api/v1/subject`. Harmonized and unharmonized
-        category values at the node; aligned with
-        [CCDI Federation API aggregation](https://cbiit.github.io/ccdi-federation-api-aggregation/) (v1.3+).
-        `search` is substring on diagnosis text; `associated_diagnosis_categories` is
-        substring on full category (on `GET /api/v1/subject` that name is token match after `;`).
-        Both together = AND on one diagnosis node. Experimental—may change.
+      summary: 'Experimental: Filter the subjects known by this server by free-text
+        diagnosis search.'
+      description: "Experimental: filter subjects using diagnosis nodes (`diagnosis`,\
+        \ `diagnosis_category`)\nalongside the usual `GET /subject` query parameters.\
+        \ Supports harmonized and unharmonized\ndiagnosis category values at the data\
+        \ node, in line with the\n[CCDI Federation API aggregation](https://cbiit.github.io/ccdi-federation-api-aggregation/)\
+        \ subject model (v1.3+).\n\n`search`: case-insensitive substring on `diagnosis`\
+        \ (or `diagnosis_comment` when diagnosis is `see diagnosis_comment`).\n`associated_diagnosis_categories`:\
+        \ substring on the full `diagnosis_category` on diagnosis node. Both together\
+        \ apply as AND on one diagnosis node.\n\nPaginated. Experimental\u2014may\
+        \ change."
       operationId: subject_diagnosis_search
       parameters:
       - name: search
@@ -1337,15 +1394,17 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: |-
-            Case-insensitive substring match on `diagnosis` from diagnosis nodes, or
-            on `diagnosis_comment` when diagnosis is `see diagnosis_comment`. Stripped
-            of leading/trailing whitespace; omitted if empty after strip.
+          description: Case-insensitive substring match on diagnosis text from diagnosis
+            nodes (`diagnosis` property). When `diagnosis` is the sentinel value `see
+            diagnosis_comment`, the search is applied to `diagnosis_comment` instead
+            (same behavior as sample diagnosis search). May be combined with `associated_diagnosis_categories`
+            (AND on the same diagnosis node).
           title: Search
-        description: |-
-          Case-insensitive substring match on `diagnosis` from diagnosis nodes, or
-          on `diagnosis_comment` when diagnosis is `see diagnosis_comment`. Stripped
-          of leading/trailing whitespace; omitted if empty after strip.
+        description: Case-insensitive substring match on diagnosis text from diagnosis
+          nodes (`diagnosis` property). When `diagnosis` is the sentinel value `see
+          diagnosis_comment`, the search is applied to `diagnosis_comment` instead
+          (same behavior as sample diagnosis search). May be combined with `associated_diagnosis_categories`
+          (AND on the same diagnosis node).
       - name: associated_diagnosis_categories
         in: query
         required: false
@@ -1353,15 +1412,13 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: |-
-            Substring on full `diagnosis_category` (harmonized or unharmonized). With
-            `search`, AND on same diagnosis node. On `GET /api/v1/subject`, same name =
-            token match after `;`. Trimmed.
+          description: 'Case-insensitive substring on the full `diagnosis_category`
+            on a diagnosis node (harmonized or unharmonized text). With `search`,
+            AND on the same node. '
           title: Associated Diagnosis Categories
-        description: |-
-          Substring on full `diagnosis_category` (harmonized or unharmonized). With
-          `search`, AND on same diagnosis node. On `GET /api/v1/subject`, same name =
-          token match after `;`. Trimmed.
+        description: 'Case-insensitive substring on the full `diagnosis_category`
+          on a diagnosis node (harmonized or unharmonized text). With `search`, AND
+          on the same node. '
       - name: sex
         in: query
         required: false
@@ -1369,21 +1426,44 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: Filter by sex
+          description: Matches any subject where the `sex` field matches the string
+            provided.
+          enum:
+          - M
+          - F
+          - U
           title: Sex
-        description: Filter by sex
+        description: Matches any subject where the `sex` field matches the string
+          provided.
       - name: race
         in: query
         required: false
         schema:
           anyOf:
-          - type: array
-            items:
-              type: string
+          - type: string
           - type: 'null'
-          description: 'Filter by race. Can be provided multiple times: `?race=White&race=Asian`'
+          description: Matches any subject where any member of the `race` field matches
+            any of the provided values. Multiple race values can be provided separated
+            by `||` (double pipe). The race field in the database may contain semicolon-separated
+            values (e.g., 'Asian;White'), and the filter will match if any of the
+            provided values is found within those values. Only `||` is accepted as
+            a delimiter; all other characters are treated as part of a single value.
+          enum:
+          - Not allowed to collect
+          - Native Hawaiian or other Pacific Islander
+          - Not Reported
+          - Unknown
+          - American Indian or Alaska Native
+          - Asian
+          - Black or African American
+          - White
           title: Race
-        description: 'Filter by race. Can be provided multiple times: `?race=White&race=Asian`'
+        description: Matches any subject where any member of the `race` field matches
+          any of the provided values. Multiple race values can be provided separated
+          by `||` (double pipe). The race field in the database may contain semicolon-separated
+          values (e.g., 'Asian;White'), and the filter will match if any of the provided
+          values is found within those values. Only `||` is accepted as a delimiter;
+          all other characters are treated as part of a single value.
       - name: ethnicity
         in: query
         required: false
@@ -1391,16 +1471,18 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: 'Same as `GET /api/v1/subject`: derived from `race` (Hispanic
-            or Latino if race text contains that substring; otherwise Not reported).
-            Only `Hispanic or Latino` and `Not reported` are accepted.'
+          description: 'Matches any subject where the `ethnicity` field matches the
+            string provided. Ethnicity is derived from race values: if race contains
+            ''Hispanic or Latino'', ethnicity is ''Hispanic or Latino''; otherwise
+            ''Not reported''. Only these two values are accepted.'
           enum:
           - Hispanic or Latino
           - Not reported
           title: Ethnicity
-        description: 'Same as `GET /api/v1/subject`: derived from `race` (Hispanic
-          or Latino if race text contains that substring; otherwise Not reported).
-          Only `Hispanic or Latino` and `Not reported` are accepted.'
+        description: 'Matches any subject where the `ethnicity` field matches the
+          string provided. Ethnicity is derived from race values: if race contains
+          ''Hispanic or Latino'', ethnicity is ''Hispanic or Latino''; otherwise ''Not
+          reported''. Only these two values are accepted.'
       - name: identifiers
         in: query
         required: false
@@ -1408,9 +1490,15 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: Filter by identifiers
+          description: Matches any subject where any member of the `identifiers` field
+            matches the string provided. **Note:** a logical OR (`||`) is performed
+            across the values when determining whether the subject should be included
+            in the results.
           title: Identifiers
-        description: Filter by identifiers
+        description: Matches any subject where any member of the `identifiers` field
+          matches the string provided. **Note:** a logical OR (`||`) is performed
+          across the values when determining whether the subject should be included
+          in the results.
       - name: vital_status
         in: query
         required: false
@@ -1418,9 +1506,17 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: Filter by vital status
+          description: Matches any subject where the `vital_status` field matches
+            the string provided.
+          enum:
+          - Alive
+          - Dead
+          - Not reported
+          - Unknown
+          - Unspecified
           title: Vital Status
-        description: Filter by vital status
+        description: Matches any subject where the `vital_status` field matches the
+          string provided.
       - name: age_at_vital_status
         in: query
         required: false
@@ -1428,9 +1524,11 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: Filter by age at vital status
+          description: Matches any subject where the `age_at_vital_status` field matches
+            the string provided.
           title: Age At Vital Status
-        description: Filter by age at vital status
+        description: Matches any subject where the `age_at_vital_status` field matches
+          the string provided.
       - name: depositions
         in: query
         required: false
@@ -1438,9 +1536,19 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: Filter by depositions
+          description: 'Filter by study_id. Matches any subject where the `depositions`
+            field contains the specified study_id value (e.g., `phs002431`). Returns
+            all participants that belong to the specified study. Example: `depositions=phs002431`
+            will return all participants in study `phs002431`.'
+          examples:
+            default:
+              summary: Example study_id
+              value: phs002431
           title: Depositions
-        description: Filter by depositions
+        description: 'Filter by study_id. Matches any subject where the `depositions`
+          field contains the specified study_id value (e.g., `phs002431`). Returns
+          all participants that belong to the specified study. Example: `depositions=phs002431`
+          will return all participants in study `phs002431`.'
       - name: page
         in: query
         required: false
@@ -1461,12 +1569,16 @@ paths:
           - type: integer
             minimum: 1
           - type: 'null'
-          description: Number of results per page. Defaults to 50. Maximum: 500. When any filter query parameter is present and per_page exceeds 500, per_page is silently reduced to 50.
+          description: 'Number of results per page. Defaults to 50. Maximum: 500.
+            When any filter query parameter is present and per_page exceeds 500, per_page
+            is silently reduced to 50.'
           title: Per Page
-        description: Number of results per page. Defaults to 50. Maximum: 500. When any filter query parameter is present and per_page exceeds 500, per_page is silently reduced to 50.
+        description: 'Number of results per page. Defaults to 50. Maximum: 500. When
+          any filter query parameter is present and per_page exceeds 500, per_page
+          is silently reduced to 50.'
       responses:
         '200':
-          description: Successful Response
+          description: Successful operation.
           content:
             application/json:
               schema:
@@ -1513,41 +1625,101 @@ paths:
                     depositions:
                     - kind: dbGaP
                       value: phs002430
+        '404':
+          description: Not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorsResponse'
+              example:
+                errors:
+                - kind: NotFound
+                  entity: Subjects
+                  message: Unable to find data for your request.
+                  reason: No data found.
         '422':
           description: Invalid query or path parameters.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: '#/components/schemas/ErrorsResponse'
+              example:
+                errors:
+                - kind: InvalidParameters
+                  parameters: []
+                  message: Invalid query parameter(s) provided.
+                  reason: Unknown query parameter(s)
   /api/v1/file:
     get:
       tags:
       - File
       summary: Gets files known by this server (methylation array and sequencing).
-      description: "Gets files known by this server.\n\nResults include files from **methylation_array_file**\
-        \ and **sequencing_file** graph node types, returned in a single harmonized\
-        \ `File` shape.\n\n### Pagination\n\
-        \nThis endpoint is paginated. Users may override the default pagination\n\
-        parameters by providing one or more of the pagination-related query\nparameters\
-        \ below.\n\n### Filtering\n\nAll harmonized (top-level) and unharmonized (nested\
-        \ under the\n`metadata.unharmonized` key) metadata fields are filterable.\
-        \ To achieve\nthis, you can provide the field name as a [`String`]. Filtering\
-        \ follows the\nfollowing rules:\n\n* For single-value metadata field, the\
-        \ file is included in the results if\nits value _exactly_ matches\
-        \ the query string. Matches are case-sensitive.\n* For multiple-value metadata\
-        \ fields, the file is included in the results\nif any of its values\
-        \ for the field _exactly_ match the query string (a\nlogical OR (`||`)). Matches\
-        \ are case-sensitive.\n* When the metadata field is `null` (in the case of\
-        \ singular or\nmultiple-valued metadata fields) or empty, the file\
-        \ is not included.\n* When multiple fields are provided as filters, a logical\
-        \ AND (`&&`) strings\ntogether the predicates. In other words, all filters\
-        \ must match for a\nfile to be returned. Note that this means that\
-        \ servers do not natively\nsupport logical OR (`||`) across multiple fields:\
-        \ that must be done by\ncalling this endpoint with each of your desired queries\
-        \ and performing a\nset union of those files out of band.\n        \n### Ordering\n\
-        \nPaginated results are ordered by node type (**methylation_array_file** first,\
-        \ then **sequencing_file**), then by file id within each type. Further details\
-        \ are documented in the `responses::Files` schema."
+      description: 'Gets files known by this server.
+
+
+        Results include files from **methylation_array_file** and **sequencing_file**
+        graph node types, returned in a single merged `File` shape.
+
+
+        ### Pagination
+
+
+        This endpoint is paginated. Users may override the default pagination
+
+        parameters by providing one or more of the pagination-related query
+
+        parameters below.
+
+
+        ### Filtering
+
+
+        All harmonized (top-level) and unharmonized (nested under the
+
+        `metadata.unharmonized` key) metadata fields are filterable. To achieve
+
+        this, you can provide the field name as a [`String`]. Filtering follows the
+
+        following rules:
+
+
+        * For single-value metadata field, the file is included in the results if
+
+        its value _exactly_ matches the query string. Matches are case-sensitive.
+
+        * For multiple-value metadata fields, the file is included in the results
+
+        if any of its values for the field _exactly_ match the query string (a
+
+        logical OR (`||`)). Matches are case-sensitive.
+
+        * When the metadata field is `null` (in the case of singular or
+
+        multiple-valued metadata fields) or empty, the file is not included.
+
+        * When multiple fields are provided as filters, a logical AND (`&&`) strings
+
+        together the predicates. In other words, all filters must match for a
+
+        file to be returned. Note that this means that servers do not natively
+
+        support logical OR (`||`) across multiple fields: that must be done by
+
+        calling this endpoint with each of your desired queries and performing a
+
+        set union of those files out of band.
+
+
+        ### Ordering
+
+
+        Paginated results are ordered by node type (**methylation_array_file** first,
+        then
+
+        **sequencing_file**), then by file id within each type. Further details are
+        documented
+
+        in the `responses::Files` schema.'
       operationId: file_index
       parameters:
       - name: type
@@ -1557,11 +1729,11 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: Matches any file (methylation_array_file or sequencing_file) where the `file_type` field matches
-            the string provided.
+          description: Matches any file (methylation_array_file or sequencing_file)
+            where the `file_type` field matches the string provided.
           title: Type
-        description: Matches any file (methylation_array_file or sequencing_file) where the `file_type` field matches
-          the string provided.
+        description: Matches any file (methylation_array_file or sequencing_file)
+          where the `file_type` field matches the string provided.
       - name: size
         in: query
         required: false
@@ -1569,11 +1741,11 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: Matches any file (methylation_array_file or sequencing_file) where the `file_size` field matches
-            the string provided.
+          description: Matches any file (methylation_array_file or sequencing_file)
+            where the `file_size` field matches the string provided.
           title: Size
-        description: Matches any file (methylation_array_file or sequencing_file) where the `file_size` field matches
-          the string provided.
+        description: Matches any file (methylation_array_file or sequencing_file)
+          where the `file_size` field matches the string provided.
       - name: checksums
         in: query
         required: false
@@ -1581,15 +1753,15 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: 'Matches any file (methylation_array_file or sequencing_file) where the `md5sum` or `checksum_value`
-            field matches the string provided.
+          description: 'Matches any file (methylation_array_file or sequencing_file)
+            where the `md5sum` or `checksum_value` field matches the string provided.
 
 
             **Note:** a logical OR (`||`) is performed across the values when determining
             whether the file should be included in the results.'
           title: Checksums
-        description: 'Matches any file (methylation_array_file or sequencing_file) where the `md5sum` or `checksum_value`
-          field matches the string provided.
+        description: 'Matches any file (methylation_array_file or sequencing_file)
+          where the `md5sum` or `checksum_value` field matches the string provided.
 
 
           **Note:** a logical OR (`||`) is performed across the values when determining
@@ -1601,15 +1773,15 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: 'Matches any file (methylation_array_file or sequencing_file) where the `file_description` field
-            matches the string provided.
+          description: 'Matches any file (methylation_array_file or sequencing_file)
+            where the `file_description` field matches the string provided.
 
 
             **Note:** a file is returned if the value provided is a substring of the
             description.'
           title: Description
-        description: 'Matches any file (methylation_array_file or sequencing_file) where the `file_description` field
-          matches the string provided.
+        description: 'Matches any file (methylation_array_file or sequencing_file)
+          where the `file_description` field matches the string provided.
 
 
           **Note:** a file is returned if the value provided is a substring of the
@@ -1621,19 +1793,68 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: 'Matches any file (methylation_array_file or sequencing_file) where any member of the `depositions`
-            fields match the string provided.
+          description: 'Matches any file (methylation_array_file or sequencing_file)
+            where any member of the `depositions` fields match the string provided.
 
 
             **Note:** a logical OR (`||`) is performed across the values when determining
             whether the file should be included in the results.'
           title: Depositions
-        description: 'Matches any file (methylation_array_file or sequencing_file) where any member of the `depositions`
-          fields match the string provided.
+        description: 'Matches any file (methylation_array_file or sequencing_file)
+          where any member of the `depositions` fields match the string provided.
 
 
           **Note:** a logical OR (`||`) is performed across the values when determining
           whether the file should be included in the results.'
+      - name: metadata.unharmonized.file_name
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'All unharmonized fields should be filterable in the same manner
+            as harmonized fields:
+
+
+            * Filtering on a singular field should include the `File` in the results
+            if the query exactly matches the value of that field for the `File` (case-sensitive).
+
+            * Filtering on field with multiple values should include the `File` in
+            the results if the query exactly matches any of the values of the field
+            for that `File` (case-sensitive).
+
+            * Unlike harmonized fields, unharmonized fields must be prefixed with
+            `metadata.unharmonized`.
+
+
+            **Examples:**
+
+            * `?metadata.unharmonized.file_name=UTYE.fastq` - Filter files by file_name
+
+
+            '
+          title: Metadata.Unharmonized.File Name
+        description: 'All unharmonized fields should be filterable in the same manner
+          as harmonized fields:
+
+
+          * Filtering on a singular field should include the `File` in the results
+          if the query exactly matches the value of that field for the `File` (case-sensitive).
+
+          * Filtering on field with multiple values should include the `File` in the
+          results if the query exactly matches any of the values of the field for
+          that `File` (case-sensitive).
+
+          * Unlike harmonized fields, unharmonized fields must be prefixed with `metadata.unharmonized`.
+
+
+          **Examples:**
+
+          * `?metadata.unharmonized.file_name=UTYE.fastq` - Filter files by file_name
+
+
+          '
       - name: page
         in: query
         required: false
@@ -1654,9 +1875,13 @@ paths:
           - type: integer
             minimum: 1
           - type: 'null'
-          description: Number of results per page. Defaults to 50. Maximum: 500. When any filter query parameter is present and per_page exceeds 500, per_page is silently reduced to 50.
+          description: 'Number of results per page. Defaults to 50. Maximum: 500.
+            When any filter query parameter is present and per_page exceeds 500, per_page
+            is silently reduced to 50.'
           title: Per Page
-        description: Number of results per page. Defaults to 50. Maximum: 500. When any filter query parameter is present and per_page exceeds 500, per_page is silently reduced to 50.
+        description: 'Number of results per page. Defaults to 50. Maximum: 500. When
+          any filter query parameter is present and per_page exceeds 500, per_page
+          is silently reduced to 50.'
       responses:
         '200':
           description: Successful operation.
@@ -1685,12 +1910,16 @@ paths:
                     type:
                       value: Sequence Record Format
                     checksums:
-                      value: 2f6a4ef817eb907bdbeee8c35c40ca09
+                      value:
+                        md5: 2f6a4ef817eb907bdbeee8c35c40ca09
                     description:
                       value: Sequence Record
                     depositions:
                     - kind: dbGaP
                       value: phs002430
+                    unharmonized:
+                      file_name:
+                        value: sample1-WGS.fastq.gz
         '404':
           description: Not found.
           content:
@@ -1708,16 +1937,23 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: '#/components/schemas/ErrorsResponse'
+              example:
+                errors:
+                - kind: InvalidParameters
+                  parameters: []
+                  message: Invalid query parameter(s) provided.
+                  reason: Unknown query parameter(s)
   /api/v1/file/by/{field}/count:
     get:
       tags:
       - File
-      summary: Groups files by metadata field and returns counts (methylation array and sequencing).
+      summary: Groups files by metadata field and returns counts (methylation array
+        and sequencing).
       description: Groups files by the specified metadata field and returns counts.
         Results include files from **methylation_array_file** and **sequencing_file**
-        graph node types, returned in a single merged `File` shape. Only 'type'
-        and 'depositions' are supported.
+        graph node types, returned in a single merged `File` shape. Only 'type' and
+        'depositions' are supported.
       operationId: files_by_count
       parameters:
       - name: field
@@ -1727,13 +1963,19 @@ paths:
           type: string
           description: The field to group by and count. Only 'type' and 'depositions'
             are supported.
+          examples:
+            type:
+              value: type
+              summary: Count by file type
+            depositions:
+              value: depositions
+              summary: Count by depositions
           enum:
           - type
           - depositions
           title: Field
         description: The field to group by and count. Only 'type' and 'depositions'
           are supported.
-        example: type
       responses:
         '200':
           description: Successful operation.
@@ -1752,87 +1994,27 @@ paths:
                 - value: Sequence Record Format
                   count: 200
         '400':
-          description: Invalid parameter.
+          description: Unsupported field.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorsResponse'
               example:
                 errors:
-                - kind: InvalidParameters
-                  message: The parameter is not allowed.
-                  reason: 'The field is not a valid option. Valid options are: ''type'',
-                    ''depositions''.'
-        '422':
-          description: Invalid query or path parameters.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorsResponse'
-              example:
-                errors:
-                - kind: InvalidParameters
-                  message: The parameter is not allowed.
-                  reason: 'The field is not a valid option. Valid options are: ''type'',
-                    ''depositions''.'
-        '404':
-          description: Not found.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorsResponse'
-              example:
-                errors:
-                - kind: NotFound
-                  entity: Files
-                  message: Unable to find data for your request.
-                  reason: No data found.
-  /api/v1/file/summary:
-    get:
-      tags:
-      - File
-      summary: Reports summary for files known by this server (methylation array and sequencing).
-      description: Reports summary information for files known by this server. Results
-        include files from **methylation_array_file** and **sequencing_file** graph
-        node types, returned in a single merged `File` shape.
-      operationId: file_summary
-      responses:
-        '200':
-          description: Successful operation.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SummaryResponse'
-              example:
-                counts:
-                  total: 123456
-        '404':
-          description: Not found.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorsResponse'
-              example:
-                errors:
-                - kind: NotFound
-                  entity: Files
-                  message: Unable to find data for your request.
-                  reason: No data found.
-        '422':
-          description: Invalid query or path parameters.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                - kind: UnsupportedField
+                  field: wrong field
+                  message: Field is not supported for files.
+                  reason: This field is not present for files.
   /api/v1/file/{organization}/{namespace}/{name}:
     get:
       tags:
       - File
       summary: Gets a file by identifier (methylation array or sequencing).
-      description: Gets the file matching the provided identifier (if it exists). Results
-        include files from **methylation_array_file** and **sequencing_file** graph
-        node types. Organization must be 'CCDI-DCC'. Namespace is the study_id value
-        from the database. Name is the file.id field value.
+      description: Gets the file matching the provided identifier (if it exists).
+        Results include files from **methylation_array_file** and **sequencing_file**
+        graph node types, returned in a single merged `File` shape. Organization must
+        be 'CCDI-DCC'. Namespace is the study_id value from the database. Name is
+        the file id field value from the database.
       operationId: file_show
       parameters:
       - name: organization
@@ -1840,19 +2022,37 @@ paths:
         required: true
         schema:
           type: string
+          description: Organization identifier
+          examples:
+            default:
+              summary: Organization
+              value: CCDI-DCC
           title: Organization
+        description: Organization identifier
       - name: namespace
         in: path
         required: true
         schema:
           type: string
+          description: Study namespace (study_id)
+          examples:
+            default:
+              summary: Study namespace (study_id)
+              value: phs002430
           title: Namespace
+        description: Study namespace (study_id)
       - name: name
         in: path
         required: true
         schema:
           type: string
+          description: File identifier (file.id)
+          examples:
+            default:
+              summary: Example file ID
+              value: b51fd7ab-e464-5012-b418-3502af28980d
           title: Name
+        description: File identifier (file.id)
       responses:
         '200':
           description: Successful operation.
@@ -1880,9 +2080,13 @@ paths:
                   size:
                     value: 12340
                   checksums:
-                    value: 608449b55fe5480b3562a967eb7dc2b0
+                    value:
+                      md5: 608449b55fe5480b3562a967eb7dc2b0
                   description:
                     value: WGS FASTQ Files R2
+                  unharmonized:
+                    file_name:
+                      value: UTYE.fastq
         '404':
           description: Not found.
           content:
@@ -1900,11 +2104,37 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: '#/components/schemas/ErrorsResponse'
+              example:
+                errors:
+                - kind: InvalidParameters
+                  parameters: []
+                  message: Invalid query parameter(s) provided.
+                  reason: Unknown query parameter(s)
+  /api/v1/file/summary:
+    get:
+      tags:
+      - File
+      summary: Reports summary for files known by this server (methylation array and
+        sequencing).
+      description: Reports summary information for files known by this server. Results
+        include files from **methylation_array_file** and **sequencing_file** graph
+        node types, returned in a single merged `File` shape.
+      operationId: file_summary
+      responses:
+        '200':
+          description: Successful operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SummaryResponse'
+              example:
+                counts:
+                  total: 123456
   /api/v1/metadata/fields/subject:
     get:
       tags:
-      - metadata
+      - Metadata
       summary: Get subject metadata fields
       description: Get metadata fields for subjects. Returns the list of metadata
         fields with their harmonization status, wiki URLs, and standard information.
@@ -1919,7 +2149,7 @@ paths:
   /api/v1/metadata/fields/sample:
     get:
       tags:
-      - metadata
+      - Metadata
       summary: Get sample metadata fields
       description: Get metadata fields for samples. Returns the list of metadata fields
         with their harmonization status, wiki URLs, and standard information.
@@ -1934,7 +2164,7 @@ paths:
   /api/v1/metadata/fields/file:
     get:
       tags:
-      - metadata
+      - Metadata
       summary: Get file metadata fields
       description: Get metadata fields for files. Returns the list of metadata fields
         with their harmonization status, wiki URLs, and standard information.
@@ -1949,7 +2179,7 @@ paths:
   /api/v1/namespace:
     get:
       tags:
-      - namespaces
+      - Namespace
       summary: List namespaces
       description: Get all available namespaces
       operationId: list_namespaces_api_v1_namespace_get
@@ -1966,7 +2196,7 @@ paths:
   /api/v1/namespace/{organization}/{namespace}:
     get:
       tags:
-      - namespaces
+      - Namespace
       summary: Get namespace details
       description: Get details for a specific namespace. Returns 404 if organization
         or namespace doesn't match.
@@ -1996,7 +2226,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: '#/components/schemas/ErrorsResponse'
+              example:
+                errors:
+                - kind: InvalidParameters
+                  parameters: []
+                  message: Invalid query parameter(s) provided.
+                  reason: Unknown query parameter(s)
   /api/v1/organization:
     get:
       tags:
@@ -2050,7 +2286,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: '#/components/schemas/ErrorsResponse'
+              example:
+                errors:
+                - kind: InvalidParameters
+                  parameters: []
+                  message: Invalid query parameter(s) provided.
+                  reason: Unknown query parameter(s)
   /api/v1/errors/examples:
     get:
       tags:
@@ -2099,43 +2341,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/:
-    get:
-      tags:
-      - Root
-      summary: API root JSON
-      description: 'Returns the API root JSON configuration.
-
-
-        This endpoint serves the root API configuration file that describes
-
-        the available endpoints and API metadata.'
-      operationId: api_root_api_v1__get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-  /:
-    get:
-      tags:
-      - Root
-      summary: API root JSON
-      description: 'Returns the API root JSON configuration.
-
-
-        This endpoint serves the root API configuration file that describes
-
-        the available endpoints and API metadata.'
-      operationId: api_root__get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
+                $ref: '#/components/schemas/ErrorsResponse'
+              example:
+                errors:
+                - kind: InvalidParameters
+                  parameters: []
+                  message: Invalid query parameter(s) provided.
+                  reason: Unknown query parameter(s)
   /api/v1/info:
     get:
       tags:
@@ -2195,34 +2407,35 @@ paths:
               schema: {}
 components:
   schemas:
-    ApproximateLink:
+    AssociatedDiagnosisCategoryField:
       properties:
-        url:
+        value:
           type: string
-          title: Url
-          description: Approximate resource URL
-        instructions:
-          type: string
-          title: Instructions
-          description: Manual instructions
-        kind:
-          allOf:
-          - $ref: '#/components/schemas/LinkKind'
-          default: Approximate
+          title: Value
+          description: Harmonized diagnosis category value
       type: object
       required:
-      - url
-      - instructions
-      title: ApproximateLink
-      description: Approximate link with instructions.
-    ClosedStatus:
-      type: string
-      enum:
-      - IndefinitelyClosed
-      - AwaitingPublication
-      - Embargoed
-      title: ClosedStatus
-      description: Closed gateway status.
+      - value
+      title: AssociatedDiagnosisCategoryField
+      description: "Associated diagnosis categories field \u2014 one harmonized PV\
+        \ value."
+    AssociatedDiagnosisField:
+      properties:
+        value:
+          type: string
+          title: Value
+          description: Diagnosis ID
+        comment:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Comment
+          description: Comment
+      type: object
+      required:
+      - value
+      title: AssociatedDiagnosisField
+      description: Associated diagnosis field with detailed structure.
     CountResponse:
       properties:
         total:
@@ -2293,25 +2506,12 @@ components:
       - value
       title: DiagnosisField
       description: Diagnosis field with value and comment.
-    DirectLink:
-      properties:
-        url:
-          type: string
-          title: Url
-          description: Resource URL
-        kind:
-          allOf:
-          - $ref: '#/components/schemas/LinkKind'
-          default: Direct
-      type: object
-      required:
-      - url
-      title: DirectLink
-      description: Direct link to resource.
     ErrorDetail:
       properties:
         kind:
-          type: string
+          anyOf:
+          - type: string
+          - type: 'null'
           title: Kind
         message:
           anyOf:
@@ -2351,8 +2551,6 @@ components:
           - type: 'null'
           title: Reason
       type: object
-      required:
-      - kind
       title: ErrorDetail
       description: 'Individual error detail model matching OpenAPI specification.
 
@@ -2406,15 +2604,6 @@ components:
       type: object
       title: File
       description: Flexible file model that can contain any fields.
-    GatewayKind:
-      type: string
-      enum:
-      - Open
-      - Registered
-      - Controlled
-      - Closed
-      title: GatewayKind
-      description: Gateway access kinds.
     HTTPValidationError:
       properties:
         detail:
@@ -2441,50 +2630,65 @@ components:
       type: object
       title: HarmonizedStandard
       description: Standard to which a field is harmonized.
-    InformationalLink:
+    IdentifierField:
       properties:
-        url:
-          type: string
-          title: Url
-          description: Information URL
-        kind:
-          allOf:
-          - $ref: '#/components/schemas/LinkKind'
-          default: Informational
+        value:
+          $ref: '#/components/schemas/IdentifierValue'
+          description: Identifier value
       type: object
       required:
-      - url
-      title: InformationalLink
-      description: Informational link about access.
-    LinkKind:
-      type: string
-      enum:
-      - Direct
-      - Approximate
-      - Informational
-      - MailTo
-      title: LinkKind
-      description: Link types.
-    MailToLink:
+      - value
+      title: IdentifierField
+      description: Identifier field with nested value.
+    IdentifierValue:
       properties:
-        url:
+        namespace:
+          $ref: '#/components/schemas/app__models__dto__NamespaceIdentifier__2'
+          description: Namespace identifier
+        name:
           type: string
-          title: Url
-          description: Email URL
-        instructions:
-          type: string
-          title: Instructions
-          description: Email instructions
-        kind:
-          allOf:
-          - $ref: '#/components/schemas/LinkKind'
-          default: MailTo
+          title: Name
+          description: Identifier name
+        type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Type
+          description: Identifier type
+          default: Linked
+        server:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Server
+          description: Server URL
       type: object
       required:
-      - url
-      - instructions
-      title: MailToLink
-      description: Email link for access requests.
+      - namespace
+      - name
+      title: IdentifierValue
+      description: Identifier value with nested structure.
+    IntegerValueField:
+      properties:
+        value:
+          type: integer
+          title: Value
+          description: Field value
+      type: object
+      required:
+      - value
+      title: IntegerValueField
+      description: Integer field with value attribute.
+    MetadataField:
+      properties:
+        value:
+          title: Value
+          description: Field value
+      type: object
+      required:
+      - value
+      title: MetadataField
+      description: Metadata field with value and ancestors.
     MetadataFieldInfo:
       properties:
         path:
@@ -2502,14 +2706,12 @@ components:
           title: Wiki Url
           description: Wiki URL for field documentation; null when not available
         standard:
-          allOf:
-          - $ref: '#/components/schemas/HarmonizedStandard'
+          $ref: '#/components/schemas/HarmonizedStandard'
           description: Standard information
       type: object
       required:
       - path
       - harmonized
-      - wiki_url
       - standard
       title: MetadataFieldInfo
       description: Metadata field information for /metadata/fields endpoint.
@@ -2526,50 +2728,10 @@ components:
       - fields
       title: MetadataFieldsInfoResponse
       description: Response for /metadata/fields/{field_type} endpoint.
-    NamedGateway:
-      properties:
-        name:
-          type: string
-          title: Name
-          description: Gateway name
-        link:
-          anyOf:
-          - $ref: '#/components/schemas/DirectLink'
-          - $ref: '#/components/schemas/ApproximateLink'
-          - $ref: '#/components/schemas/InformationalLink'
-          - $ref: '#/components/schemas/MailToLink'
-          - type: 'null'
-          title: Link
-        status:
-          anyOf:
-          - $ref: '#/components/schemas/ClosedStatus'
-          - type: 'null'
-        available_at:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Available At
-        description:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Description
-        kind:
-          allOf:
-          - $ref: '#/components/schemas/GatewayKind'
-          description: Gateway kind
-      type: object
-      required:
-      - name
-      - kind
-      title: NamedGateway
-      description: Named gateway for response gateways collection.
     Namespace:
       properties:
         id:
-          allOf:
-          - $ref: '#/components/schemas/app__models__dto__NamespaceIdentifier'
+          $ref: '#/components/schemas/app__models__dto__NamespaceIdentifier__1'
           description: Namespace identifier
         description:
           type: string
@@ -2645,7 +2807,8 @@ components:
           description: Organization name
         metadata:
           anyOf:
-          - type: object
+          - additionalProperties: true
+            type: object
           - type: 'null'
           title: Metadata
       type: object
@@ -2657,8 +2820,7 @@ components:
     Sample:
       properties:
         id:
-          allOf:
-          - $ref: '#/components/schemas/SampleIdentifier'
+          $ref: '#/components/schemas/SampleIdentifier'
           description: Sample identifier
         subject:
           anyOf:
@@ -2666,8 +2828,7 @@ components:
           - type: 'null'
           description: Subject reference
         metadata:
-          allOf:
-          - $ref: '#/components/schemas/SampleMetadata'
+          $ref: '#/components/schemas/SampleMetadata'
           description: Sample metadata
       additionalProperties: true
       type: object
@@ -2679,8 +2840,7 @@ components:
     SampleIdentifier:
       properties:
         namespace:
-          allOf:
-          - $ref: '#/components/schemas/app__models__dto__NamespaceIdentifier__1'
+          $ref: '#/components/schemas/app__models__dto__NamespaceIdentifier__2'
           description: Namespace identifier
         name:
           type: string
@@ -2709,8 +2869,11 @@ components:
           - type: 'null'
         anatomical_sites:
           anyOf:
-          - $ref: '#/components/schemas/ValueField'
+          - items:
+              $ref: '#/components/schemas/ValueField'
+            type: array
           - type: 'null'
+          title: Anatomical Sites
         library_selection_method:
           anyOf:
           - $ref: '#/components/schemas/ValueField'
@@ -2745,11 +2908,11 @@ components:
           - type: 'null'
         age_at_diagnosis:
           anyOf:
-          - $ref: '#/components/schemas/ValueField'
+          - $ref: '#/components/schemas/IntegerValueField'
           - type: 'null'
         age_at_collection:
           anyOf:
-          - $ref: '#/components/schemas/ValueField'
+          - $ref: '#/components/schemas/IntegerValueField'
           - type: 'null'
         tumor_tissue_morphology:
           anyOf:
@@ -2765,67 +2928,33 @@ components:
         diagnosis_category:
           anyOf:
           - items:
-              properties:
-                value:
-                  type: string
-                  title: Value
-              required:
-              - value
-              type: object
+              $ref: '#/components/schemas/AssociatedDiagnosisCategoryField'
             type: array
           - type: 'null'
           title: Diagnosis Category
         unharmonized:
           anyOf:
-          - type: object
-            additionalProperties: true
+          - additionalProperties: true
+            type: object
           - type: 'null'
           title: Unharmonized
+          description: Unharmonized metadata fields
         identifiers:
           anyOf:
           - items:
-              $ref: '#/components/schemas/UnharmonizedField'
+              $ref: '#/components/schemas/IdentifierField'
             type: array
           - type: 'null'
           title: Identifiers
       type: object
       title: SampleMetadata
       description: Sample metadata model.
-    SampleResponse:
-      properties:
-        samples:
-          anyOf:
-          - items:
-              $ref: '#/components/schemas/Sample'
-            type: array
-          - type: 'null'
-          title: Samples
-          description: List of samples
-        gateways:
-          anyOf:
-          - additionalProperties:
-              $ref: '#/components/schemas/NamedGateway'
-            type: object
-          - type: 'null'
-          title: Gateways
-          description: Named gateways referenced by samples (placeholder - excluded
-            from responses)
-        pagination:
-          anyOf:
-          - {}
-          - type: 'null'
-          title: Pagination
-          description: Pagination information
-      additionalProperties: true
-      type: object
-      title: SampleResponse
-      description: Flexible sample response that can handle both single samples and
-        lists with pagination.
     SamplesResponse:
       properties:
         summary:
           anyOf:
-          - type: object
+          - additionalProperties: true
+            type: object
           - type: 'null'
           title: Summary
           description: Summary information with counts
@@ -2842,11 +2971,30 @@ components:
       title: SamplesResponse
       description: Flexible samples list response that can accommodate any sample
         structure.
+    Subject:
+      properties:
+        id:
+          $ref: '#/components/schemas/SubjectId'
+          description: Subject identifier with nested namespace
+        kind:
+          type: string
+          title: Kind
+          description: Entity kind
+          default: Participant
+        metadata:
+          $ref: '#/components/schemas/SubjectMetadata'
+          description: Subject metadata
+      additionalProperties: true
+      type: object
+      required:
+      - id
+      - metadata
+      title: Subject
+      description: Subject model with nested CCDI-DCC structure.
     SubjectId:
       properties:
         namespace:
-          allOf:
-          - $ref: '#/components/schemas/app__models__dto__NamespaceIdentifier'
+          $ref: '#/components/schemas/app__models__dto__NamespaceIdentifier__1'
           description: Namespace identifier
         name:
           type: string
@@ -2858,16 +3006,81 @@ components:
       - name
       title: SubjectId
       description: Subject identifier with nested namespace.
+    SubjectMetadata:
+      properties:
+        sex:
+          anyOf:
+          - $ref: '#/components/schemas/MetadataField'
+          - type: 'null'
+        race:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/MetadataField'
+            type: array
+          - type: 'null'
+          title: Race
+        ethnicity:
+          anyOf:
+          - $ref: '#/components/schemas/MetadataField'
+          - type: 'null'
+        identifiers:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/IdentifierField'
+            type: array
+          - type: 'null'
+          title: Identifiers
+        associated_diagnoses:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/AssociatedDiagnosisField'
+            type: array
+          - type: 'null'
+          title: Associated Diagnoses
+        associated_diagnosis_categories:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/AssociatedDiagnosisCategoryField'
+            type: array
+          - type: 'null'
+          title: Associated Diagnosis Categories
+        unharmonized:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Unharmonized
+          description: Unharmonized metadata fields
+        vital_status:
+          anyOf:
+          - $ref: '#/components/schemas/MetadataField'
+          - type: 'null'
+        age_at_vital_status:
+          anyOf:
+          - $ref: '#/components/schemas/MetadataField'
+          - type: 'null'
+        depositions:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/DepositionAccession'
+            type: array
+          - type: 'null'
+          title: Depositions
+      type: object
+      title: SubjectMetadata
+      description: Subject metadata with nested field structure.
     SubjectResponse:
       properties:
         summary:
           anyOf:
-          - type: object
+          - additionalProperties: true
+            type: object
           - type: 'null'
           title: Summary
           description: Summary statistics
         data:
-          items: {}
+          items:
+            $ref: '#/components/schemas/Subject'
           type: array
           title: Data
           description: List of subjects with nested structure
@@ -2891,8 +3104,7 @@ components:
     SummaryResponse:
       properties:
         counts:
-          allOf:
-          - $ref: '#/components/schemas/SummaryCounts'
+          $ref: '#/components/schemas/SummaryCounts'
           description: Summary counts
       type: object
       required:
@@ -2933,6 +3145,11 @@ components:
         type:
           type: string
           title: Error Type
+        input:
+          title: Input
+        ctx:
+          type: object
+          title: Context
       type: object
       required:
       - loc
@@ -2950,7 +3167,7 @@ components:
       - value
       title: ValueField
       description: Simple field with value attribute.
-    app__models__dto__NamespaceIdentifier:
+    app__models__dto__NamespaceIdentifier__1:
       properties:
         organization:
           type: string
@@ -2966,7 +3183,7 @@ components:
       - name
       title: NamespaceIdentifier
       description: Namespace identifier for nested structure.
-    app__models__dto__NamespaceIdentifier__1:
+    app__models__dto__NamespaceIdentifier__2:
       properties:
         organization:
           type: string
@@ -2982,3 +3199,19 @@ components:
       - name
       title: NamespaceIdentifier
       description: Namespace identifier model.
+tags:
+- name: Subject
+  description: Subjects within the CCDI-DCC ecosystem.
+- name: Sample
+  description: Samples within the CCDI-DCC ecosystem.
+- name: File
+  description: Files within the CCDI-DCC ecosystem.-- (sequencing files only this
+    release)
+- name: Metadata
+  description: List and describe provided metadata fields.
+- name: Namespace
+  description: List and describe namespaces known by this server.
+- name: Organization
+  description: List and describe organizations known by this server.
+- name: Info
+  description: Information about the API implementation itself.

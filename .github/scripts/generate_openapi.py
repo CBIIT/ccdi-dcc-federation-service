@@ -26,6 +26,17 @@ _HTTP_METHODS = frozenset(
 )
 
 
+def _iter_operations(spec: dict[str, Any]):
+    """Yield each HTTP operation dict from spec['paths']."""
+    for path_item in (spec.get("paths") or {}).values():
+        if not isinstance(path_item, dict):
+            continue
+        for method, operation in path_item.items():
+            if method not in _HTTP_METHODS or not isinstance(operation, dict):
+                continue
+            yield operation
+
+
 def _is_openapi_examples_map(examples: Any) -> bool:
     """True when `examples` is an OpenAPI Example map (invalid on JSON Schema)."""
     if not isinstance(examples, dict) or not examples:
@@ -79,16 +90,32 @@ def normalize_parameter_schema_examples(spec: dict[str, Any]) -> int:
     return moved
 
 
+def normalize_validation_error_status(spec: dict[str, Any]) -> int:
+    """Rename HTTP 422 → 400 in all path responses to match the runtime handler."""
+    renamed = 0
+    for operation in _iter_operations(spec):
+        responses = operation.get("responses")
+        if not isinstance(responses, dict):
+            continue
+        entry = responses.pop("422", None)
+        if entry is not None:
+            responses.setdefault("400", entry)
+            renamed += 1
+    return renamed
+
+
 def patch_index_html_for_local_spec(index_path: Path = INDEX_HTML) -> bool:
     """Point Swagger UI at ./swagger.yml for local preview and CI artifacts."""
     if not index_path.is_file():
         return False
     content = index_path.read_text(encoding="utf-8")
     patched = content
+    changed = False
     for remote_url in REMOTE_SPEC_URLS:
         if remote_url in patched:
             patched = patched.replace(remote_url, LOCAL_SPEC_PATH)
-    if patched == content:
+            changed = True
+    if not changed:
         return False
     index_path.write_text(patched, encoding="utf-8")
     return True
@@ -101,13 +128,16 @@ def main() -> None:
         print(
             f"Normalized {moved} parameter example(s) from schema.examples to parameter.examples"
         )
+    renamed = normalize_validation_error_status(openapi_spec)
+    if renamed:
+        print(f"Renamed {renamed} response(s) from HTTP 422 to 400")
 
     with (DOCS_DIR / "openapi.json").open("w", encoding="utf-8") as handle:
         json.dump(openapi_spec, handle, indent=2)
         handle.write("\n")
 
     with (DOCS_DIR / "swagger.yml").open("w", encoding="utf-8") as handle:
-        yaml.dump(
+        yaml.safe_dump(
             openapi_spec,
             handle,
             default_flow_style=False,

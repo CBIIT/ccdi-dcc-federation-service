@@ -49,7 +49,7 @@ jobs:
       run: uv sync --no-dev
 
     - name: Generate OpenAPI spec
-      run: uv run --with pyyaml python .github/scripts/generate_openapi.py
+      run: uv run python .github/scripts/generate_openapi.py
 
     - name: Upload docs artifact
       uses: actions/upload-artifact@v4

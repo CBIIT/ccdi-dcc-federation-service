@@ -3205,8 +3205,8 @@ tags:
 - name: Sample
   description: Samples within the CCDI-DCC ecosystem.
 - name: File
-  description: Files within the CCDI-DCC ecosystem.-- (sequencing files only this
-    release)
+  description: Files within the CCDI-DCC ecosystem (methylation array and sequencing
+    files).
 - name: Metadata
   description: List and describe provided metadata fields.
 - name: Namespace

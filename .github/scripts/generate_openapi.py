@@ -14,10 +14,12 @@ from app.main import app
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DOCS_DIR = REPO_ROOT / "docs"
 INDEX_HTML = DOCS_DIR / "index.html"
-RAW_GITHUB_SPEC_URL = (
-    "https://raw.githubusercontent.com/CBIIT/ccdi-dcc-federation-service/main/swagger.yml"
-)
 LOCAL_SPEC_PATH = "./swagger.yml"
+# Remote spec URLs in index.html that should load the co-located swagger.yml artifact.
+REMOTE_SPEC_URLS = (
+    "https://raw.githubusercontent.com/CBIIT/ccdi-dcc-federation-service/main/swagger.yml",
+    "https://cbiit.github.io/ccdi-dcc-federation-service/docs/swagger.yml",
+)
 
 _HTTP_METHODS = frozenset(
     {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
@@ -77,6 +79,21 @@ def normalize_parameter_schema_examples(spec: dict[str, Any]) -> int:
     return moved
 
 
+def patch_index_html_for_local_spec(index_path: Path = INDEX_HTML) -> bool:
+    """Point Swagger UI at ./swagger.yml for local preview and CI artifacts."""
+    if not index_path.is_file():
+        return False
+    content = index_path.read_text(encoding="utf-8")
+    patched = content
+    for remote_url in REMOTE_SPEC_URLS:
+        if remote_url in patched:
+            patched = patched.replace(remote_url, LOCAL_SPEC_PATH)
+    if patched == content:
+        return False
+    index_path.write_text(patched, encoding="utf-8")
+    return True
+
+
 def main() -> None:
     openapi_spec = app.openapi()
     moved = normalize_parameter_schema_examples(openapi_spec)
@@ -97,13 +114,8 @@ def main() -> None:
             sort_keys=False,
         )
 
-    if INDEX_HTML.is_file():
-        content = INDEX_HTML.read_text(encoding="utf-8")
-        if RAW_GITHUB_SPEC_URL in content:
-            INDEX_HTML.write_text(
-                content.replace(RAW_GITHUB_SPEC_URL, LOCAL_SPEC_PATH),
-                encoding="utf-8",
-            )
+    if patch_index_html_for_local_spec():
+        print(f"Patched {INDEX_HTML.name} to use {LOCAL_SPEC_PATH}")
 
     print("OpenAPI spec generated successfully")
 

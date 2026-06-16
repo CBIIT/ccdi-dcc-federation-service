@@ -92,6 +92,10 @@ jobs:
       (github.event.inputs.branch == 'main' || github.event.inputs.branch == 'master')
     needs: generate-openapi
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

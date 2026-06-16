@@ -103,7 +103,10 @@ def create_app() -> FastAPI:
             },
             {
                 "name": "File",
-                "description": "Files within the CCDI-DCC ecosystem.-- (sequencing files only this release)"
+                "description": (
+                    "Files within the CCDI-DCC ecosystem "
+                    "(methylation array and sequencing files)."
+                ),
             },
             {
                 "name": "Metadata",

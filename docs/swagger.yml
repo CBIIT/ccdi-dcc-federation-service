@@ -133,15 +133,15 @@ paths:
             field contains the specified study_id value (e.g., `phs002431`). Returns
             all participants that belong to the specified study. Example: `depositions=phs002431`
             will return all participants in study `phs002431`.'
-          examples:
-            default:
-              summary: Example study_id
-              value: phs002431
           title: Depositions
         description: 'Filter by study_id. Matches any subject where the `depositions`
           field contains the specified study_id value (e.g., `phs002431`). Returns
           all participants that belong to the specified study. Example: `depositions=phs002431`
           will return all participants in study `phs002431`.'
+        examples:
+          default:
+            summary: Example study_id
+            value: phs002431
       - name: associated_diagnosis_categories
         in: query
         required: false
@@ -273,28 +273,6 @@ paths:
         schema:
           type: string
           description: The field to group by and count with.
-          examples:
-            sex:
-              value: sex
-              summary: Count by sex
-            race:
-              value: race
-              summary: Count by race
-            ethnicity:
-              value: ethnicity
-              summary: Count by ethnicity
-            vital_status:
-              value: vital_status
-              summary: Count by vital status
-            age_at_vital_status:
-              value: age_at_vital_status
-              summary: Count by age at vital status
-            associated_diagnoses:
-              value: associated_diagnoses
-              summary: Count by associated diagnoses
-            associated_diagnosis_categories:
-              value: associated_diagnosis_categories
-              summary: Count by diagnosis category
           enum:
           - sex
           - race
@@ -305,6 +283,28 @@ paths:
           - associated_diagnosis_categories
           title: Field
         description: The field to group by and count with.
+        examples:
+          sex:
+            value: sex
+            summary: Count by sex
+          race:
+            value: race
+            summary: Count by race
+          ethnicity:
+            value: ethnicity
+            summary: Count by ethnicity
+          vital_status:
+            value: vital_status
+            summary: Count by vital status
+          age_at_vital_status:
+            value: age_at_vital_status
+            summary: Count by age at vital status
+          associated_diagnoses:
+            value: associated_diagnoses
+            summary: Count by associated diagnoses
+          associated_diagnosis_categories:
+            value: associated_diagnosis_categories
+            summary: Count by diagnosis category
       responses:
         '200':
           description: Successful operation.
@@ -1540,15 +1540,15 @@ paths:
             field contains the specified study_id value (e.g., `phs002431`). Returns
             all participants that belong to the specified study. Example: `depositions=phs002431`
             will return all participants in study `phs002431`.'
-          examples:
-            default:
-              summary: Example study_id
-              value: phs002431
           title: Depositions
         description: 'Filter by study_id. Matches any subject where the `depositions`
           field contains the specified study_id value (e.g., `phs002431`). Returns
           all participants that belong to the specified study. Example: `depositions=phs002431`
           will return all participants in study `phs002431`.'
+        examples:
+          default:
+            summary: Example study_id
+            value: phs002431
       - name: page
         in: query
         required: false
@@ -1963,19 +1963,19 @@ paths:
           type: string
           description: The field to group by and count. Only 'type' and 'depositions'
             are supported.
-          examples:
-            type:
-              value: type
-              summary: Count by file type
-            depositions:
-              value: depositions
-              summary: Count by depositions
           enum:
           - type
           - depositions
           title: Field
         description: The field to group by and count. Only 'type' and 'depositions'
           are supported.
+        examples:
+          type:
+            value: type
+            summary: Count by file type
+          depositions:
+            value: depositions
+            summary: Count by depositions
       responses:
         '200':
           description: Successful operation.
@@ -2023,36 +2023,36 @@ paths:
         schema:
           type: string
           description: Organization identifier
-          examples:
-            default:
-              summary: Organization
-              value: CCDI-DCC
           title: Organization
         description: Organization identifier
+        examples:
+          default:
+            summary: Organization
+            value: CCDI-DCC
       - name: namespace
         in: path
         required: true
         schema:
           type: string
           description: Study namespace (study_id)
-          examples:
-            default:
-              summary: Study namespace (study_id)
-              value: phs002430
           title: Namespace
         description: Study namespace (study_id)
+        examples:
+          default:
+            summary: Study namespace (study_id)
+            value: phs002430
       - name: name
         in: path
         required: true
         schema:
           type: string
           description: File identifier (file.id)
-          examples:
-            default:
-              summary: Example file ID
-              value: b51fd7ab-e464-5012-b418-3502af28980d
           title: Name
         description: File identifier (file.id)
+        examples:
+          default:
+            summary: Example file ID
+            value: b51fd7ab-e464-5012-b418-3502af28980d
       responses:
         '200':
           description: Successful operation.

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -18,9 +19,71 @@ RAW_GITHUB_SPEC_URL = (
 )
 LOCAL_SPEC_PATH = "./swagger.yml"
 
+_HTTP_METHODS = frozenset(
+    {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
+)
+
+
+def _is_openapi_examples_map(examples: Any) -> bool:
+    """True when `examples` is an OpenAPI Example map (invalid on JSON Schema)."""
+    if not isinstance(examples, dict) or not examples:
+        return False
+    for value in examples.values():
+        if isinstance(value, dict) and any(
+            key in value for key in ("summary", "description", "value", "externalValue")
+        ):
+            return True
+    return False
+
+
+def _normalize_parameter_list(parameters: list[Any]) -> int:
+    moved = 0
+    for param in parameters:
+        if not isinstance(param, dict):
+            continue
+        schema = param.get("schema")
+        if not isinstance(schema, dict):
+            continue
+        examples = schema.get("examples")
+        if not _is_openapi_examples_map(examples):
+            continue
+        del schema["examples"]
+        param.setdefault("examples", examples)
+        moved += 1
+    return moved
+
+
+def normalize_parameter_schema_examples(spec: dict[str, Any]) -> int:
+    """Move OpenAPI Example maps from parameter.schema.examples to parameter.examples."""
+    moved = 0
+    paths = spec.get("paths")
+    if not isinstance(paths, dict):
+        return moved
+
+    for path_item in paths.values():
+        if not isinstance(path_item, dict):
+            continue
+        path_params = path_item.get("parameters")
+        if isinstance(path_params, list):
+            moved += _normalize_parameter_list(path_params)
+
+        for method, operation in path_item.items():
+            if method not in _HTTP_METHODS or not isinstance(operation, dict):
+                continue
+            op_params = operation.get("parameters")
+            if isinstance(op_params, list):
+                moved += _normalize_parameter_list(op_params)
+
+    return moved
+
 
 def main() -> None:
     openapi_spec = app.openapi()
+    moved = normalize_parameter_schema_examples(openapi_spec)
+    if moved:
+        print(
+            f"Normalized {moved} parameter example(s) from schema.examples to parameter.examples"
+        )
 
     with (DOCS_DIR / "openapi.json").open("w", encoding="utf-8") as handle:
         json.dump(openapi_spec, handle, indent=2)

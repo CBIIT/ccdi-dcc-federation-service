@@ -14,7 +14,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     POETRY_VENV_IN_PROJECT=1
 
 # System dependencies required for building (gcc, headers) & curl for potential build scripts
-# Update packages to fix security vulnerabilities (CVE-2025-15467, CVE-2025-69419, gnutls28, libcap2)
+# DSA-6335: openssl 3.5.6-1~deb13u2+ from trixie-security (CVE-2026-34182 and related OpenSSL CVEs).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     build-essential \
@@ -22,6 +22,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         openssl libssl3t64 openssl-provider-legacy \
         libgnutls30t64 \
         libcap2 \
+    && dpkg --compare-versions "$(dpkg-query -f '${Version}' -W openssl)" ge 3.5.6-1~deb13u2 \
+    || (echo "FATAL: openssl < 3.5.6-1~deb13u2 (DSA-6335). apt-get update may be stale — rebuild with --no-cache." && exit 1) \
     && rm -rf /var/lib/apt/lists/*
 
 
@@ -53,7 +55,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 
 # Minimal runtime deps (curl for HEALTHCHECK)
-# Update packages to fix security vulnerabilities (CVE-2025-15467, CVE-2025-69419, gnutls28, libcap2)
+# DSA-6335: openssl 3.5.6-1~deb13u2+ from trixie-security (CVE-2026-34182 and related OpenSSL CVEs).
 # Remove perl-base after all apt installs — unused by this Python service; clears open perl CVEs on
 # Debian Trixie until a patched package ships. See docs/container-image-security.md.
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
@@ -61,6 +63,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
         openssl libssl3t64 openssl-provider-legacy \
         libgnutls30t64 \
         libcap2 \
+    && dpkg --compare-versions "$(dpkg-query -f '${Version}' -W openssl)" ge 3.5.6-1~deb13u2 \
+    || (echo "FATAL: openssl < 3.5.6-1~deb13u2 (DSA-6335). apt-get update may be stale — rebuild with --no-cache." && exit 1) \
     && apt-get remove -y --allow-remove-essential --purge perl-base \
     && rm -rf /var/lib/apt/lists/*
 

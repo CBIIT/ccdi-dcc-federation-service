@@ -1330,7 +1330,17 @@ WITH {carry},
                         safe_conditions = [c for c in pagination_with_where_conditions if c and 'study_id' not in c.lower()]
                         if safe_conditions:
                             pagination_with_clause += f"\n        WHERE {' AND '.join(safe_conditions)}"
-                    
+
+                    if dep_param:
+                        study_match_clause = (
+                            f"MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)\n"
+                            f"        WHERE st.study_id {deposition_operator} ${dep_param}"
+                        )
+                    else:
+                        study_match_clause = (
+                            "MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)"
+                        )
+
                     cypher = f"""
         // Step 1: Match participants, apply filters, and paginate EARLY
         MATCH (p:participant){early_where_clause}
@@ -1349,7 +1359,7 @@ WITH {carry},
         WITH p, participant_id{", race_tokens, pr_tokens" if race_condition else ""}, survival_records, collect(DISTINCT d) AS diagnosis_nodes
         // Collect studies separately (no cartesian product)
         // Use participant -> consent_group -> study relationship
-        {"MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)\n        WHERE st.study_id " + deposition_operator + " $" + dep_param if dep_param else "MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)"}
+        {study_match_clause}
         // Bind a scalar `study_id` for the row. Avoid carrying a LIST of study IDs through long WITH chains,
         // which Memgraph can mis-handle and report as "Unbound variable".
         WITH p, participant_id{", race_tokens, pr_tokens" if race_condition else ""}, survival_records, diagnosis_nodes,

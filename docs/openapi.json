@@ -163,15 +163,15 @@
                 }
               ],
               "description": "Filter by study_id. Matches any subject where the `depositions` field contains the specified study_id value (e.g., `phs002431`). Returns all participants that belong to the specified study. Example: `depositions=phs002431` will return all participants in study `phs002431`.",
-              "examples": {
-                "default": {
-                  "summary": "Example study_id",
-                  "value": "phs002431"
-                }
-              },
               "title": "Depositions"
             },
-            "description": "Filter by study_id. Matches any subject where the `depositions` field contains the specified study_id value (e.g., `phs002431`). Returns all participants that belong to the specified study. Example: `depositions=phs002431` will return all participants in study `phs002431`."
+            "description": "Filter by study_id. Matches any subject where the `depositions` field contains the specified study_id value (e.g., `phs002431`). Returns all participants that belong to the specified study. Example: `depositions=phs002431` will return all participants in study `phs002431`.",
+            "examples": {
+              "default": {
+                "summary": "Example study_id",
+                "value": "phs002431"
+              }
+            }
           },
           {
             "name": "associated_diagnosis_categories",
@@ -219,7 +219,6 @@
               "anyOf": [
                 {
                   "type": "integer",
-                  "maximum": 1000,
                   "minimum": 1
                 },
                 {
@@ -378,36 +377,6 @@
             "schema": {
               "type": "string",
               "description": "The field to group by and count with.",
-              "examples": {
-                "sex": {
-                  "value": "sex",
-                  "summary": "Count by sex"
-                },
-                "race": {
-                  "value": "race",
-                  "summary": "Count by race"
-                },
-                "ethnicity": {
-                  "value": "ethnicity",
-                  "summary": "Count by ethnicity"
-                },
-                "vital_status": {
-                  "value": "vital_status",
-                  "summary": "Count by vital status"
-                },
-                "age_at_vital_status": {
-                  "value": "age_at_vital_status",
-                  "summary": "Count by age at vital status"
-                },
-                "associated_diagnoses": {
-                  "value": "associated_diagnoses",
-                  "summary": "Count by associated diagnoses"
-                },
-                "associated_diagnosis_categories": {
-                  "value": "associated_diagnosis_categories",
-                  "summary": "Count by diagnosis category"
-                }
-              },
               "enum": [
                 "sex",
                 "race",
@@ -419,7 +388,37 @@
               ],
               "title": "Field"
             },
-            "description": "The field to group by and count with."
+            "description": "The field to group by and count with.",
+            "examples": {
+              "sex": {
+                "value": "sex",
+                "summary": "Count by sex"
+              },
+              "race": {
+                "value": "race",
+                "summary": "Count by race"
+              },
+              "ethnicity": {
+                "value": "ethnicity",
+                "summary": "Count by ethnicity"
+              },
+              "vital_status": {
+                "value": "vital_status",
+                "summary": "Count by vital status"
+              },
+              "age_at_vital_status": {
+                "value": "age_at_vital_status",
+                "summary": "Count by age at vital status"
+              },
+              "associated_diagnoses": {
+                "value": "associated_diagnoses",
+                "summary": "Count by associated diagnoses"
+              },
+              "associated_diagnosis_categories": {
+                "value": "associated_diagnosis_categories",
+                "summary": "Count by diagnosis category"
+              }
+            }
           }
         ],
         "responses": {
@@ -994,7 +993,6 @@
               "anyOf": [
                 {
                   "type": "integer",
-                  "maximum": 1000,
                   "minimum": 1
                 },
                 {
@@ -1749,7 +1747,6 @@
               "anyOf": [
                 {
                   "type": "integer",
-                  "maximum": 1000,
                   "minimum": 1
                 },
                 {
@@ -2115,15 +2112,15 @@
                 }
               ],
               "description": "Filter by study_id. Matches any subject where the `depositions` field contains the specified study_id value (e.g., `phs002431`). Returns all participants that belong to the specified study. Example: `depositions=phs002431` will return all participants in study `phs002431`.",
-              "examples": {
-                "default": {
-                  "summary": "Example study_id",
-                  "value": "phs002431"
-                }
-              },
               "title": "Depositions"
             },
-            "description": "Filter by study_id. Matches any subject where the `depositions` field contains the specified study_id value (e.g., `phs002431`). Returns all participants that belong to the specified study. Example: `depositions=phs002431` will return all participants in study `phs002431`."
+            "description": "Filter by study_id. Matches any subject where the `depositions` field contains the specified study_id value (e.g., `phs002431`). Returns all participants that belong to the specified study. Example: `depositions=phs002431` will return all participants in study `phs002431`.",
+            "examples": {
+              "default": {
+                "summary": "Example study_id",
+                "value": "phs002431"
+              }
+            }
           },
           {
             "name": "page",
@@ -2153,7 +2150,6 @@
               "anyOf": [
                 {
                   "type": "integer",
-                  "maximum": 1000,
                   "minimum": 1
                 },
                 {
@@ -2441,7 +2437,6 @@
               "anyOf": [
                 {
                   "type": "integer",
-                  "maximum": 1000,
                   "minimum": 1
                 },
                 {
@@ -2577,23 +2572,23 @@
             "schema": {
               "type": "string",
               "description": "The field to group by and count. Only 'type' and 'depositions' are supported.",
-              "examples": {
-                "type": {
-                  "value": "type",
-                  "summary": "Count by file type"
-                },
-                "depositions": {
-                  "value": "depositions",
-                  "summary": "Count by depositions"
-                }
-              },
               "enum": [
                 "type",
                 "depositions"
               ],
               "title": "Field"
             },
-            "description": "The field to group by and count. Only 'type' and 'depositions' are supported."
+            "description": "The field to group by and count. Only 'type' and 'depositions' are supported.",
+            "examples": {
+              "type": {
+                "value": "type",
+                "summary": "Count by file type"
+              },
+              "depositions": {
+                "value": "depositions",
+                "summary": "Count by depositions"
+              }
+            }
           }
         ],
         "responses": {
@@ -2664,15 +2659,15 @@
             "schema": {
               "type": "string",
               "description": "Organization identifier",
-              "examples": {
-                "default": {
-                  "summary": "Organization",
-                  "value": "CCDI-DCC"
-                }
-              },
               "title": "Organization"
             },
-            "description": "Organization identifier"
+            "description": "Organization identifier",
+            "examples": {
+              "default": {
+                "summary": "Organization",
+                "value": "CCDI-DCC"
+              }
+            }
           },
           {
             "name": "namespace",
@@ -2681,15 +2676,15 @@
             "schema": {
               "type": "string",
               "description": "Study namespace (study_id)",
-              "examples": {
-                "default": {
-                  "summary": "Study namespace (study_id)",
-                  "value": "phs002430"
-                }
-              },
               "title": "Namespace"
             },
-            "description": "Study namespace (study_id)"
+            "description": "Study namespace (study_id)",
+            "examples": {
+              "default": {
+                "summary": "Study namespace (study_id)",
+                "value": "phs002430"
+              }
+            }
           },
           {
             "name": "name",
@@ -2698,15 +2693,15 @@
             "schema": {
               "type": "string",
               "description": "File identifier (file.id)",
-              "examples": {
-                "default": {
-                  "summary": "Example file ID",
-                  "value": "b51fd7ab-e464-5012-b418-3502af28980d"
-                }
-              },
               "title": "Name"
             },
-            "description": "File identifier (file.id)"
+            "description": "File identifier (file.id)",
+            "examples": {
+              "default": {
+                "summary": "Example file ID",
+                "value": "b51fd7ab-e464-5012-b418-3502af28980d"
+              }
+            }
           }
         ],
         "responses": {
@@ -3569,11 +3564,7 @@
       "IdentifierField": {
         "properties": {
           "value": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/IdentifierValue"
-              }
-            ],
+            "$ref": "#/components/schemas/IdentifierValue",
             "description": "Identifier value"
           }
         },
@@ -3587,11 +3578,7 @@
       "IdentifierValue": {
         "properties": {
           "namespace": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/app__models__dto__NamespaceIdentifier__2"
-              }
-            ],
+            "$ref": "#/components/schemas/app__models__dto__NamespaceIdentifier__2",
             "description": "Namespace identifier"
           },
           "name": {
@@ -3687,11 +3674,7 @@
             "description": "Wiki URL for field documentation; null when not available"
           },
           "standard": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/HarmonizedStandard"
-              }
-            ],
+            "$ref": "#/components/schemas/HarmonizedStandard",
             "description": "Standard information"
           }
         },
@@ -3725,11 +3708,7 @@
       "Namespace": {
         "properties": {
           "id": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/app__models__dto__NamespaceIdentifier"
-              }
-            ],
+            "$ref": "#/components/schemas/app__models__dto__NamespaceIdentifier__1",
             "description": "Namespace identifier"
           },
           "description": {
@@ -3858,6 +3837,7 @@
           "metadata": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -3878,11 +3858,7 @@
       "Sample": {
         "properties": {
           "id": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/SampleIdentifier"
-              }
-            ],
+            "$ref": "#/components/schemas/SampleIdentifier",
             "description": "Sample identifier"
           },
           "subject": {
@@ -3897,11 +3873,7 @@
             "description": "Subject reference"
           },
           "metadata": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/SampleMetadata"
-              }
-            ],
+            "$ref": "#/components/schemas/SampleMetadata",
             "description": "Sample metadata"
           }
         },
@@ -3917,11 +3889,7 @@
       "SampleIdentifier": {
         "properties": {
           "namespace": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/app__models__dto__NamespaceIdentifier__2"
-              }
-            ],
+            "$ref": "#/components/schemas/app__models__dto__NamespaceIdentifier__2",
             "description": "Namespace identifier"
           },
           "name": {
@@ -4122,6 +4090,7 @@
           "unharmonized": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -4155,6 +4124,7 @@
           "summary": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -4184,11 +4154,7 @@
       "Subject": {
         "properties": {
           "id": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/SubjectId"
-              }
-            ],
+            "$ref": "#/components/schemas/SubjectId",
             "description": "Subject identifier with nested namespace"
           },
           "kind": {
@@ -4198,11 +4164,7 @@
             "default": "Participant"
           },
           "metadata": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/SubjectMetadata"
-              }
-            ],
+            "$ref": "#/components/schemas/SubjectMetadata",
             "description": "Subject metadata"
           }
         },
@@ -4218,11 +4180,7 @@
       "SubjectId": {
         "properties": {
           "namespace": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/app__models__dto__NamespaceIdentifier"
-              }
-            ],
+            "$ref": "#/components/schemas/app__models__dto__NamespaceIdentifier__1",
             "description": "Namespace identifier"
           },
           "name": {
@@ -4320,6 +4278,7 @@
           "unharmonized": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -4373,6 +4332,7 @@
           "summary": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -4417,11 +4377,7 @@
       "SummaryResponse": {
         "properties": {
           "counts": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/SummaryCounts"
-              }
-            ],
+            "$ref": "#/components/schemas/SummaryCounts",
             "description": "Summary counts"
           }
         },
@@ -4490,6 +4446,13 @@
           "type": {
             "type": "string",
             "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
           }
         },
         "type": "object",
@@ -4515,7 +4478,7 @@
         "title": "ValueField",
         "description": "Simple field with value attribute."
       },
-      "app__models__dto__NamespaceIdentifier": {
+      "app__models__dto__NamespaceIdentifier__1": {
         "properties": {
           "organization": {
             "type": "string",
@@ -4570,7 +4533,7 @@
     },
     {
       "name": "File",
-      "description": "Files within the CCDI-DCC ecosystem.-- (sequencing files only this release)"
+      "description": "Files within the CCDI-DCC ecosystem (methylation array and sequencing files)."
     },
     {
       "name": "Metadata",

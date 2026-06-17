@@ -81,10 +81,8 @@
         window.onload = function() {
             // Configuration for Swagger UI
             const ui = SwaggerUIBundle({
-                // URL to your OpenAPI spec
-                url: 'https://cbiit.github.io/ccdi-dcc-federation-service/docs/swagger.yml',
-                // Alternative: use local file
-                // url: './swagger.yml',
+                // Co-located spec (CI artifact / GitHub Pages publish_dir)
+                url: './swagger.yml',
                 
                 dom_id: '#swagger-ui',
                 deepLinking: true,

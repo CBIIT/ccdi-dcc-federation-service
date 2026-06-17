@@ -19,7 +19,7 @@ develop-eggs/
 dist/
 downloads/
 data_models/
-scripts/
+/scripts/
 eggs/
 .eggs/
 lib64/

@@ -842,16 +842,19 @@ def setup_custom_docs_endpoint(app: FastAPI) -> None:
             base_url = f"{scheme}://{host}".rstrip("/")
             filtered_openapi_url = f"{base_url}/openapi-filtered.json"
             
-            # Replace the hardcoded GitHub Pages URL with the filtered OpenAPI URL
-            html_content = html_content.replace(
+            # index.html uses ./swagger.yml for GitHub Pages artifacts; at runtime
+            # relative paths resolve to /swagger.yml (404). Point Swagger UI at live spec.
+            spec_url_replacements = (
+                "url: './swagger.yml',",
+                'url: "./swagger.yml",',
                 "url: 'https://cbiit.github.io/ccdi-dcc-federation-service/docs/swagger.yml',",
-                f"url: '{filtered_openapi_url}',"
+                "url: 'https://raw.githubusercontent.com/CBIIT/ccdi-dcc-federation-service/main/swagger.yml',",
             )
-            # Also handle the alternative local file reference
-            html_content = html_content.replace(
-                "// url: './swagger.yml',",
-                f"// url: '{filtered_openapi_url}',"
-            )
+            for old_url in spec_url_replacements:
+                html_content = html_content.replace(
+                    old_url,
+                    f"url: '{filtered_openapi_url}',",
+                )
             
             return HTMLResponse(content=html_content)
         except FileNotFoundError:  # pragma: no cover

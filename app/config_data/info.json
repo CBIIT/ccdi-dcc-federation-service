@@ -1,7 +1,7 @@
 {
   "server": {
     "name": "CCDI-DCC",
-    "version": "v1.0",
+    "version": "v1.1.0",
     "owner": "Childhood Cancer Data Initiative Data Coordinating Center",
     "contact_email": "NCIChildhoodCancerDataInitiative@mail.nih.gov"
   },
@@ -33,7 +33,7 @@
     },
     "last_updated": "2025-09-12",
     "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki",
-    "documentation_url": "https://cbiit.github.io/ccdi-dcc-federation-service/docs/index.html"
+    "documentation_url": "https://github.com/CBIIT/ccdi-dcc-federation-service-spec/tree/main/docs"
   },
   "organizations": [
     {

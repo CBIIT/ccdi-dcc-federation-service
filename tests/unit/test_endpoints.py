@@ -203,8 +203,25 @@ class TestMetadataEndpoints:
         assert len(result.fields) == 2
         assert result.fields[0].path == "id.name"
         assert result.fields[0].harmonized is True
+        assert result.fields[0].wiki_url == "https://example.com"
         assert result.fields[0].standard.name == "CCDI"
         assert result.fields[1].harmonized is False
+        assert result.fields[1].wiki_url is None
+
+    def test_convert_to_response_omitted_wiki_url_is_null(self):
+        """Missing wiki_url in JSON becomes null (None), not empty string."""
+        data = {
+            "fields": [
+                {
+                    "path": "id.only",
+                    "harmonized": True,
+                    "standard": {"name": "X", "url": "https://x"},
+                }
+            ]
+        }
+        result = convert_to_response(data)
+        assert len(result.fields) == 1
+        assert result.fields[0].wiki_url is None
 
     async def test_get_subject_metadata_fields_success(self, tmp_path):
         """Test get_subject_metadata_fields returns subject fields."""
@@ -232,6 +249,7 @@ class TestMetadataEndpoints:
             assert isinstance(result, MetadataFieldsInfoResponse)
             assert len(result.fields) == 1
             assert result.fields[0].path == "id.name"
+            assert result.fields[0].wiki_url is None
 
     async def test_get_subject_metadata_fields_not_found(self, tmp_path):
         """Test get_subject_metadata_fields handles missing type."""
@@ -275,6 +293,8 @@ class TestMetadataEndpoints:
             
             assert isinstance(result, MetadataFieldsInfoResponse)
             assert len(result.fields) == 1
+            assert result.fields[0].path == "id.name"
+            assert result.fields[0].wiki_url is None
 
     async def test_get_file_metadata_fields_success(self, tmp_path):
         """Test get_file_metadata_fields returns file fields."""
@@ -301,6 +321,8 @@ class TestMetadataEndpoints:
             
             assert isinstance(result, MetadataFieldsInfoResponse)
             assert len(result.fields) == 1
+            assert result.fields[0].path == "id.name"
+            assert result.fields[0].wiki_url is None
 
     async def test_get_metadata_fields_error_handling(self, tmp_path):
         """Test metadata endpoints handle errors gracefully."""

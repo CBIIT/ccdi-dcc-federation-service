@@ -19,8 +19,6 @@ from app.models.dto import (
     SubjectMetadata,
     MetadataField,
     DepositionAccession,
-    SummaryResponse,
-    SummaryCounts,
 )
 
 
@@ -78,12 +76,10 @@ def test_subject_list_and_individual_return_same_vital_status(client, monkeypatc
             offset: int = 0,
             limit: int = 20,
             base_url: str | None = None,
+            return_total: bool = False,
         ):
             # Return subject from list endpoint
-            return [subject]
-
-        async def get_subjects_summary(self, filters: Dict[str, Any]):
-            return SummaryResponse(counts=SummaryCounts(total=1))
+            return ([subject], 1)
 
         async def get_subject_by_identifier(
             self,
@@ -158,12 +154,10 @@ def test_subject_list_namespace_matches_study_id(client, monkeypatch):
             offset: int = 0,
             limit: int = 20,
             base_url: str | None = None,
+            return_total: bool = False,
         ):
             # Return both subjects (participant in multiple studies)
-            return [subject_1, subject_2]
-
-        async def get_subjects_summary(self, filters: Dict[str, Any]):
-            return SummaryResponse(counts=SummaryCounts(total=2))
+            return ([subject_1, subject_2], 2)
 
     monkeypatch.setattr(subjects_ep, "SubjectService", FakeSubjectService)
 
@@ -171,7 +165,7 @@ def test_subject_list_namespace_matches_study_id(client, monkeypatch):
     list_response = client.get(f"/api/v1/subject?identifiers={participant_id}&per_page=10")
     assert list_response.status_code == 200
     list_body = list_response.json()
-    
+
     # Verify each row has namespace matching a study_id
     for subject in list_body["data"]:
         if subject.get("id", {}).get("name") == participant_id:
@@ -216,12 +210,10 @@ def test_subject_list_returns_multiple_rows_for_multiple_studies(client, monkeyp
             offset: int = 0,
             limit: int = 20,
             base_url: str | None = None,
+            return_total: bool = False,
         ):
             # Return both subjects (participant in multiple studies)
-            return [subject_1, subject_2]
-
-        async def get_subjects_summary(self, filters: Dict[str, Any]):
-            return SummaryResponse(counts=SummaryCounts(total=2))
+            return ([subject_1, subject_2], 2)
 
     monkeypatch.setattr(subjects_ep, "SubjectService", FakeSubjectService)
 
@@ -229,7 +221,7 @@ def test_subject_list_returns_multiple_rows_for_multiple_studies(client, monkeyp
     list_response = client.get(f"/api/v1/subject?identifiers={participant_id}&per_page=10")
     assert list_response.status_code == 200
     list_body = list_response.json()
-    
+
     # Find all rows for this participant
     participant_rows = [
         s for s in list_body["data"]

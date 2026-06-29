@@ -53,11 +53,13 @@ router = APIRouter(tags=["Experimental"],  include_in_schema=True)
 
 ### Diagnosis Filtering
 
-This endpoint supports the experimental `search` parameter.
-For this parameter, the sample is included in the results if the value of its
-its `diagnosis` field _contains_ the query string, or if an unharmonized field
-treated by the implementer as a diagnosis field contains that query string.
-Matches are case-insensitive.
+This endpoint supports the experimental `search` parameter: case-insensitive substring on
+`diagnosis` from diagnosis nodes, or on `diagnosis_comment` when `diagnosis` is
+`see diagnosis_comment`.
+
+The `diagnosis_category` query parameter matches the **full** `diagnosis_category` string
+with a case-insensitive **substring**. With `search`, both apply as **AND** on the same
+diagnosis node.
 
 ### Pagination
 
@@ -119,7 +121,17 @@ as a breaking change.""",
                                 },
                                 "metadata": {
                                     "disease_phase": {"value": "Initial Diagnosis"},
-                                    "diagnosis": {"value": "Neuroblastoma","comment": "null" },
+                                    "diagnosis": [
+                                        {"value": "Neuroblastoma", "comment": "null"}
+                                    ],
+                                    "diagnosis_category": [
+                                        {"value": "Brain and Spinal Cord Tumors"}
+                                    ],
+                                    "unharmonized": {
+                                        "diagnosis_category": [
+                                            {"value": "Gliomas"}
+                                        ]
+                                    },
                                     "age_at_diagnosis": {"value": 10},
                                     "age_at_collection": {"value": 10},
                                     "anatomical_sites": [
@@ -200,11 +212,11 @@ async def search_samples_by_diagnosis(
         # Validate query parameters - check for unknown parameters
         # Note: "diagnosis" is NOT included - use "search" parameter for diagnosis filtering
         # When "search" is not provided, endpoint behaves like /sample for all other parameters
-        allowed_params = {"search", "disease_phase", "anatomical_sites", "library_selection_method", 
+        allowed_params = {"search", "disease_phase", "anatomical_sites", "library_selection_method",
                          "library_strategy", "library_source_material", "preservation_method", "tumor_grade",
-                         "specimen_molecular_analyte_type", "tissue_type", "tumor_classification", 
-                         "age_at_diagnosis", "age_at_collection", "tumor_tissue_morphology", 
-                         "depositions", "identifiers", "page", "per_page"}
+                         "specimen_molecular_analyte_type", "tissue_type", "tumor_classification",
+                         "age_at_diagnosis", "age_at_collection", "tumor_tissue_morphology",
+                         "depositions", "identifiers", "diagnosis_category", "page", "per_page"}
         
         unknown_params = []
         for key in request.query_params.keys():
@@ -301,49 +313,15 @@ async def search_samples_by_diagnosis(
     "/subject-diagnosis",
     response_model=SubjectResponse,
     summary="Experimental: Filter the subjects known by this server by free-text diagnosis search.",
-    description="""Experimental: Filter the subjects known by this server by free-text diagnosis search.
+    description="""Experimental: filter subjects using diagnosis nodes (`diagnosis`, `diagnosis_category`)
+alongside the usual `GET /subject` query parameters. Supports harmonized and unharmonized
+diagnosis category values at the data node, in line with the
+[CCDI Federation API aggregation](https://cbiit.github.io/ccdi-federation-api-aggregation/) subject model (v1.3+).
 
-### Diagnosis Filtering
+`search`: case-insensitive substring on `diagnosis` (or `diagnosis_comment` when diagnosis is `see diagnosis_comment`).
+`associated_diagnosis_categories`: substring on the full `diagnosis_category` on diagnosis node. Both together apply as AND on one diagnosis node.
 
-This endpoint supports the experimental `search` parameter.
-For this parameter, the subject is included in the results if the value of its
-its `associated_diagnoses` field has at least one diagnosis which _contains_ the query string.
-Matches are case-insensitive.
-
-### Pagination
-
-This endpoint is paginated. Users may override the default pagination
-parameters by providing one or more of the pagination-related query
-parameters below.
-
-### Additional Filtering
-
-All harmonized (top-level) and unharmonized (nested under the
-`metadata.unharmonized` key) metadata fields are filterable. To achieve
-this, you can provide the field name as a [`String`]. Filtering follows the
-following rules:
-
-* For single-value metadata field, the subject is included in the results if
-its value _exactly_ matches the query string. Matches are case-sensitive.
-* For multiple-value metadata fields, the subject is included in the results
-if any of its values for the field _exactly_ match the query string (a
-logical OR [`||`]). Matches are case-sensitive.
-* When the metadata field is `null` (in the case of singular or
-multiple-valued metadata fields) or empty, the subject is not included.
-* When multiple fields are provided as filters, a logical AND (`&&`) strings
-together the predicates. In other words, all filters must match for a
-subject to be returned. Note that this means that servers do not natively
-support logical OR (`||`) across multiple fields: that must be done by
-calling this endpoint with each of your desired queries and performing a
-set union of those subjects out of band.
-
-### Ordering
-
-This endpoint has default ordering requirements—those details are documented
-in the `responses::Subjects` schema.
-
-Note: This API is experimental and is subject to change without being considered
-as a breaking change.""",
+Paginated. Experimental—may change.""",
     operation_id="subject_diagnosis_search",
     responses={
         200: {
@@ -391,12 +369,20 @@ as a breaking change.""",
                                     "associated_diagnoses": [
                                         {"value": "Neuroblastoma","comment": "null" }
                                     ],
+                                    "associated_diagnosis_categories": [
+                                        {"value": "Brain and Spinal Cord Tumors"}
+                                    ],
+                                    "unharmonized": {
+                                        "associated_diagnosis_categories": [
+                                            {"value": "Gliomas"}
+                                        ]
+                                    },
                                     "depositions": [
                                         {
                                             "kind": "dbGaP",
                                             "value": "phs002430"
                                         }
-                                    ]
+                                    ],
                                 }
                             }
                         ]
@@ -445,7 +431,19 @@ async def search_subjects_by_diagnosis(
     
     try:
         # Validate query parameters - check for unknown parameters
-        allowed_params = {"search", "sex", "race", "ethnicity", "identifiers", "vital_status", "age_at_vital_status", "depositions", "page", "per_page"}
+        allowed_params = {
+            "search",
+            "associated_diagnosis_categories",
+            "sex",
+            "race",
+            "ethnicity",
+            "identifiers",
+            "vital_status",
+            "age_at_vital_status",
+            "depositions",
+            "page",
+            "per_page",
+        }
         
         unknown_params = []
         for key in request.query_params.keys():
@@ -514,64 +512,12 @@ async def search_subjects_by_diagnosis(
         cache_service = get_cache_service()
         service = SubjectService(session, allowlist, settings, cache_service)
         
-        # Make a copy of filters for get_subjects (it modifies the dict by popping race/identifiers)
-        filters_copy = filters.copy()
-        
-        # Use configured identifier server URL for all identifier server values
-        base_url = settings.identifier_server_url.rstrip("/")
-        
-        # Get subjects
-        subjects = await service.get_subjects(
-            filters=filters_copy,
+        # Single round-trip: data + total together
+        subjects, total_count = await service.get_subjects_for_diagnosis_endpoint(
+            filters=filters,
             offset=pagination.offset,
             limit=pagination.per_page,
-            base_url=base_url
         )
-        
-        # Get total count for summary (use original filters dict)
-        # Use dedicated diagnosis endpoint method for optimized query
-        try:
-            summary_result = await service.get_subjects_summary_for_diagnosis_endpoint(filters)
-            total_count = summary_result.counts.total
-        except DatabaseConnectionError as summary_error:
-            # Database connection error - log clearly for AWS cloud monitoring
-            logger.error(
-                "Database connection error while getting subjects summary in subject-diagnosis endpoint - using 0 as total",
-                error=str(summary_error),
-                error_type=type(summary_error).__name__,
-                filters=filters,
-                is_database_connection_error=True,
-                will_use_zero_total=True,
-                aws_cloudwatch_alert=True
-            )
-            total_count = 0
-        except Exception as summary_error:
-            # Check if this is a connection-related error
-            error_str = str(summary_error).lower()
-            is_connection_error = any(keyword in error_str for keyword in [
-                'connection', 'database', 'unavailable', 'timeout', 'network',
-                'service unavailable', 'broken pipe', 'connection reset', 'connection closed'
-            ])
-            
-            if is_connection_error:
-                # Connection-related error - log clearly for AWS cloud monitoring
-                logger.error(
-                    "Database connection issue while getting subjects summary in subject-diagnosis endpoint - using 0 as total",
-                    error=str(summary_error),
-                    error_type=type(summary_error).__name__,
-                    filters=filters,
-                    is_connection_related=True,
-                    will_use_zero_total=True,
-                    aws_cloudwatch_alert=True,
-                    exc_info=True
-                )
-            else:
-                logger.warning(
-                    "Error getting subjects summary, using 0 as total",
-                    error=str(summary_error),
-                    exc_info=True
-                )
-            total_count = 0
 
         # Build pagination info
         # NOTE: total_count is the number of unique subjects matching filters (not just the current page size)

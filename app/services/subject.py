@@ -6,7 +6,7 @@ including caching, validation, and coordination between
 repositories and API endpoints.
 """
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple, Union, Literal, overload
 import asyncio
 from neo4j import AsyncSession
 
@@ -37,23 +37,46 @@ class SubjectService:
         self.settings = settings
         self.cache_service = cache_service
         
+    @overload
+    async def get_subjects(
+        self,
+        filters: Dict[str, Any],
+        offset: int = ...,
+        limit: int = ...,
+        base_url: Optional[str] = ...,
+        *,
+        return_total: Literal[True],
+    ) -> Tuple[List[Subject], int]: ...
+
+    @overload
+    async def get_subjects(
+        self,
+        filters: Dict[str, Any],
+        offset: int = ...,
+        limit: int = ...,
+        base_url: Optional[str] = ...,
+        return_total: Literal[False] = ...,
+    ) -> List[Subject]: ...
+
     async def get_subjects(
         self,
         filters: Dict[str, Any],
         offset: int = 0,
         limit: int = 20,
-        base_url: Optional[str] = None
-    ) -> List[Subject]:
+        base_url: Optional[str] = None,
+        return_total: bool = False,
+    ) -> Union[List[Subject], Tuple[List[Subject], int]]:
         """
         Get paginated list of subjects with filtering.
-        
+
         Args:
             filters: Dictionary of field filters
             offset: Number of records to skip
             limit: Maximum number of records to return
-            
+            return_total: If True, returns a (subjects, total_count) tuple
+
         Returns:
-            List of Subject objects
+            List of Subject objects, or (list, int) tuple when return_total=True
         """
         logger.debug(
             "Getting subjects",
@@ -77,7 +100,7 @@ class SubjectService:
         
         for attempt in range(max_retries + 1):
             try:
-                subjects = await self.repository.get_subjects(filters, offset, limit, base_url=base_url)
+                result = await self.repository.get_subjects(filters, offset, limit, base_url=base_url, return_total=return_total)
                 break
             except DatabaseConnectionError as e:
                 # Database connection error - log clearly for AWS cloud monitoring
@@ -93,7 +116,9 @@ class SubjectService:
                     is_database_connection_error=True,
                     will_return_empty=True
                 )
-                # Return empty list instead of raising - API will return 404
+                # Return empty result instead of raising - API will return 404
+                if return_total:
+                    return ([], 0)
                 return []
             except Exception as e:
                 # Check if this is a transient error that might benefit from retry
@@ -117,14 +142,13 @@ class SubjectService:
                     # Not a transient error or max retries reached, re-raise
                     raise
         
-        logger.info(
-            "Retrieved subjects",
-            count=len(subjects),
-            offset=offset,
-            limit=limit
-        )
-        
-        return subjects
+        if return_total:
+            subjects, total_count = result
+            logger.info("Retrieved subjects", count=len(subjects), offset=offset, limit=limit)
+            return subjects, total_count
+
+        logger.info("Retrieved subjects", count=len(result), offset=offset, limit=limit)
+        return result
     
     async def get_subject_by_identifier(
         self,
@@ -369,7 +393,8 @@ class SubjectService:
         Optimized to filter by diagnosis FIRST before collecting survival records.
         
         Args:
-            filters: Filters to apply (must include _diagnosis_search)
+            filters: Filters to apply; include `_diagnosis_search` and/or
+                `_associated_diagnosis_categories_contains` for diagnosis-first summary.
             
         Returns:
             SummaryResponse with summary statistics
@@ -379,8 +404,11 @@ class SubjectService:
             filters=filters
         )
 
-        # If no diagnosis search term, use standard subject summary behavior.
-        if not filters or not filters.get("_diagnosis_search"):
+        # If no diagnosis-related filters, use standard subject summary behavior.
+        if not filters or (
+            not filters.get("_diagnosis_search")
+            and not filters.get("_associated_diagnosis_categories_contains")
+        ):
             return await self.get_subjects_summary(filters or {})
         
         # Check cache first
@@ -442,10 +470,41 @@ class SubjectService:
             "Completed subjects summary for diagnosis endpoint",
             total_count=response.counts.total
         )
-        
+
         return response
-    
-    
+
+    async def get_subjects_for_diagnosis_endpoint(
+        self,
+        filters: Dict[str, Any],
+        offset: int = 0,
+        limit: int = 20,
+    ) -> Tuple[List[Subject], int]:
+        """Dedicated service path for /subject-diagnosis. Fetches data and total in one round trip."""
+        base_url = (
+            self.settings.identifier_server_url.rstrip("/")
+            if hasattr(self.settings, "identifier_server_url") and self.settings.identifier_server_url
+            else None
+        )
+        try:
+            subjects, total_count = await self.repository.get_subjects_for_diagnosis_endpoint(
+                filters=filters,
+                offset=offset,
+                limit=limit,
+                base_url=base_url,
+            )
+            return subjects, total_count
+        except DatabaseConnectionError as e:
+            logger.error(
+                "Database connection error while fetching diagnosis subjects",
+                error=str(e),
+                error_type=type(e).__name__,
+                filters=filters,
+                offset=offset,
+                limit=limit,
+                is_database_connection_error=True,
+            )
+            return [], 0
+
     def _validate_identifier_params(self, organization: str, namespace: Optional[str], name: str) -> None:
         """
         Validate identifier parameters.

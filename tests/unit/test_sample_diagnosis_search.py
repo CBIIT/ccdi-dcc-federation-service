@@ -562,13 +562,133 @@ class TestDiagnosisSearch:
         assert len(result) > 0
         sample = result[0]
         assert isinstance(sample, Sample)
-        # Verify all_matching_diagnoses attribute is set
-        assert hasattr(sample, 'all_matching_diagnoses')
-        assert isinstance(sample.all_matching_diagnoses, list)
-        # All three diagnoses match "Neuroblastoma" (exact and partial matches)
-        assert len(sample.all_matching_diagnoses) == 3
-        
+        # diagnosis is now a list — all three matched nodes are included
+        assert isinstance(sample.metadata.diagnosis, list)
+        assert len(sample.metadata.diagnosis) == 3
+
         # Verify the query uses collect(DISTINCT dx) to collect all matches
         call_args = mock_session.run.call_args
         query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
         assert 'collect(DISTINCT dx) AS diagnoses' in query
+
+    @pytest.mark.asyncio
+    async def test_list_diagnosis_search_uses_coalesce_predicate(self, repository, mock_session):
+        """Verify _get_samples_by_diagnosis_search delegates to the shared null-safe predicate."""
+        async def async_gen():
+            yield {"sa": None, "p": None, "st": None, "sf": None, "pf": None, "diagnoses": []}
+
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        await repository._get_samples_by_diagnosis_search({"_diagnosis_search": "leukemia"}, offset=0, limit=20)
+
+        query, params = mock_session.run.call_args[0]
+        assert "coalesce(dx.diagnosis" in query
+        assert params["diagnosis_search_term_lower"] == "leukemia"
+        assert params["diagnosis_search_term_see_comment"] == "see diagnosis_comment"
+        assert "diagnosis_search_term" not in params
+
+    @pytest.mark.asyncio
+    async def test_summary_diagnosis_search_uses_coalesce_predicate(self, repository, mock_session):
+        """Verify _get_samples_summary_diagnosis_search delegates to the shared null-safe predicate."""
+        async def async_gen():
+            yield {"total_count": 5}
+
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        await repository._get_samples_summary_diagnosis_search({"_diagnosis_search": "leukemia"})
+
+        query, params = mock_session.run.call_args[0]
+        assert "coalesce(dx.diagnosis" in query
+        assert params["diagnosis_search_term_lower"] == "leukemia"
+        assert params["diagnosis_search_term_see_comment"] == "see diagnosis_comment"
+        # regression guard: if the inline predicate ever returns, it would re-add this key
+        assert "diagnosis_search_term" not in params
+
+
+@pytest.mark.unit
+class TestGetSamplesForDiagnosisEndpointRouting:
+    """Verify get_samples_for_diagnosis_endpoint delegates through get_samples."""
+
+    @pytest.fixture
+    def repository(self):
+        mock_session = AsyncMock()
+        allowlist = Mock(spec=FieldAllowlist)
+        allowlist.is_field_allowed = Mock(return_value=True)
+        settings = Mock(spec=Settings)
+        settings.pagination = Mock()
+        settings.pagination.max_page_size = 1000
+        settings.sample_count_fields = []
+        return SampleRepository(mock_session, allowlist, settings)
+
+    async def test_diagnosis_category_delegates_to_get_samples(self, repository):
+        """diagnosis_category-only requests now use the shared get_samples path."""
+        repository._get_samples_by_diagnosis_search = AsyncMock(return_value=([], 0))
+        repository.get_samples = AsyncMock(return_value=([], 0))
+        filters = {
+            "diagnosis_category": "Gliomas",
+            "_sample_diagnosis_category_substring": True,
+        }
+
+        await repository.get_samples_for_diagnosis_endpoint(
+            filters=filters,
+            offset=5,
+            limit=10,
+            base_url="http://test",
+        )
+
+        repository._get_samples_by_diagnosis_search.assert_not_awaited()
+        repository.get_samples.assert_awaited_once_with(
+            filters=filters,
+            offset=5,
+            limit=10,
+            base_url="http://test",
+            return_total=True,
+        )
+
+    async def test_diagnosis_search_delegates_to_get_samples(self, repository):
+        """_diagnosis_search-only requests now use the shared get_samples path."""
+        repository._get_samples_by_diagnosis_search = AsyncMock(return_value=([], 0))
+        repository.get_samples = AsyncMock(return_value=([], 0))
+        filters = {"_diagnosis_search": "Glioma"}
+
+        await repository.get_samples_for_diagnosis_endpoint(
+            filters=filters,
+        )
+
+        repository._get_samples_by_diagnosis_search.assert_not_awaited()
+        repository.get_samples.assert_awaited_once_with(
+            filters=filters,
+            offset=0,
+            limit=20,
+            base_url=None,
+            return_total=True,
+        )
+
+    async def test_mixed_filters_also_delegate_to_get_samples(self, repository):
+        """Mixed /sample-diagnosis filters still delegate through get_samples."""
+        repository._get_samples_by_diagnosis_search = AsyncMock(return_value=([], 0))
+        repository.get_samples = AsyncMock(return_value=([], 0))
+        filters = {
+            "tissue_type": "Tumor",
+            "diagnosis_category": "Gliomas",
+            "_sample_diagnosis_category_substring": True,
+        }
+
+        await repository.get_samples_for_diagnosis_endpoint(
+            filters=filters,
+        )
+
+        repository._get_samples_by_diagnosis_search.assert_not_awaited()
+        repository.get_samples.assert_awaited_once_with(
+            filters=filters,
+            offset=0,
+            limit=20,
+            base_url=None,
+            return_total=True,
+        )

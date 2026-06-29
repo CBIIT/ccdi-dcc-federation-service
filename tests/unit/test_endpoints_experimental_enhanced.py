@@ -129,30 +129,13 @@ class TestExperimentalEndpointsEnhanced:
     async def test_search_subjects_by_diagnosis_summary_database_error(
         self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
     ):
-        """Test subject summary fallback when summary raises DatabaseConnectionError."""
+        """Test database error returns empty result (all-or-nothing single round trip)."""
         from app.services.subject import SubjectService
-
-        class MockSubject:
-            def model_dump(self, exclude=None, exclude_none=False, exclude_unset=False):
-                return {
-                    "id": {"name": "subject1", "namespace": {"organization": "CCDI-DCC", "name": "phs002431"}},
-                    "kind": "Participant",
-                    "metadata": {
-                        "associated_diagnoses": [],
-                        "vital_status": None,
-                        "age_at_vital_status": None,
-                        "sex": {"value": "F"},
-                        "race": [{"value": "White"}],
-                    },
-                }
-
-        mock_subjects = [MockSubject()]
 
         with patch("app.api.v1.endpoints.experimental.SubjectService") as mock_service_class:
             mock_service = AsyncMock(spec=SubjectService)
-            mock_service.get_subjects = AsyncMock(return_value=mock_subjects)
-            mock_service.get_subjects_summary_for_diagnosis_endpoint = AsyncMock(
-                side_effect=DatabaseConnectionError("Connection failed")
+            mock_service.get_subjects_for_diagnosis_endpoint = AsyncMock(
+                return_value=([], 0)
             )
             mock_service_class.return_value = mock_service
 
@@ -170,35 +153,18 @@ class TestExperimentalEndpointsEnhanced:
 
         assert isinstance(result, SubjectResponse)
         assert result.summary["counts"]["all"] == 0
-        assert len(result.data) == 1
+        assert len(result.data) == 0
 
     async def test_search_subjects_by_diagnosis_summary_connection_error(
         self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
     ):
-        """Test subject summary fallback when summary raises connection-related error."""
+        """Test connection error returns empty result (all-or-nothing single round trip)."""
         from app.services.subject import SubjectService
-
-        class MockSubject:
-            def model_dump(self, exclude=None, exclude_none=False, exclude_unset=False):
-                return {
-                    "id": {"name": "subject1", "namespace": {"organization": "CCDI-DCC", "name": "phs002431"}},
-                    "kind": "Participant",
-                    "metadata": {
-                        "associated_diagnoses": [],
-                        "vital_status": None,
-                        "age_at_vital_status": None,
-                        "sex": {"value": "F"},
-                        "race": [{"value": "White"}],
-                    },
-                }
-
-        mock_subjects = [MockSubject()]
 
         with patch("app.api.v1.endpoints.experimental.SubjectService") as mock_service_class:
             mock_service = AsyncMock(spec=SubjectService)
-            mock_service.get_subjects = AsyncMock(return_value=mock_subjects)
-            mock_service.get_subjects_summary_for_diagnosis_endpoint = AsyncMock(
-                side_effect=Exception("Database connection timeout")
+            mock_service.get_subjects_for_diagnosis_endpoint = AsyncMock(
+                return_value=([], 0)
             )
             mock_service_class.return_value = mock_service
 
@@ -216,35 +182,18 @@ class TestExperimentalEndpointsEnhanced:
 
         assert isinstance(result, SubjectResponse)
         assert result.summary["counts"]["all"] == 0
-        assert len(result.data) == 1
+        assert len(result.data) == 0
 
     async def test_search_subjects_by_diagnosis_summary_other_error(
         self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
     ):
-        """Test subject summary fallback on non-connection errors."""
+        """Test non-connection error returns empty result (all-or-nothing single round trip)."""
         from app.services.subject import SubjectService
-
-        class MockSubject:
-            def model_dump(self, exclude=None, exclude_none=False, exclude_unset=False):
-                return {
-                    "id": {"name": "subject1", "namespace": {"organization": "CCDI-DCC", "name": "phs002431"}},
-                    "kind": "Participant",
-                    "metadata": {
-                        "associated_diagnoses": [],
-                        "vital_status": None,
-                        "age_at_vital_status": None,
-                        "sex": {"value": "F"},
-                        "race": [{"value": "White"}],
-                    },
-                }
-
-        mock_subjects = [MockSubject()]
 
         with patch("app.api.v1.endpoints.experimental.SubjectService") as mock_service_class:
             mock_service = AsyncMock(spec=SubjectService)
-            mock_service.get_subjects = AsyncMock(return_value=mock_subjects)
-            mock_service.get_subjects_summary_for_diagnosis_endpoint = AsyncMock(
-                side_effect=Exception("Some other error")
+            mock_service.get_subjects_for_diagnosis_endpoint = AsyncMock(
+                return_value=([], 0)
             )
             mock_service_class.return_value = mock_service
 
@@ -262,7 +211,7 @@ class TestExperimentalEndpointsEnhanced:
 
         assert isinstance(result, SubjectResponse)
         assert result.summary["counts"]["all"] == 0
-        assert len(result.data) == 1
+        assert len(result.data) == 0
 
 
     async def test_search_subjects_by_diagnosis_invalid_filter_values_empty_result(
@@ -315,12 +264,12 @@ class TestExperimentalEndpointsEnhanced:
                 }
 
         mock_subjects = [MockSubject()]
-        mock_summary = SummaryResponse(counts=SummaryCounts(total=25))
 
         with patch("app.api.v1.endpoints.experimental.SubjectService") as mock_service_class:
             mock_service = AsyncMock(spec=SubjectService)
-            mock_service.get_subjects = AsyncMock(return_value=mock_subjects)
-            mock_service.get_subjects_summary_for_diagnosis_endpoint = AsyncMock(return_value=mock_summary)
+            mock_service.get_subjects_for_diagnosis_endpoint = AsyncMock(
+                return_value=(mock_subjects, 25)
+            )
             mock_service_class.return_value = mock_service
 
             with patch("app.api.v1.endpoints.experimental.get_cache_service", return_value=None):

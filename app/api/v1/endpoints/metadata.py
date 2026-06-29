@@ -70,9 +70,10 @@ def convert_to_response(data: Dict[str, Any]) -> MetadataFieldsInfoResponse:
             url=standard_data.get("url") if standard_data else None
         )
         
-        # Handle optional wiki_url field
-        wiki_url = field_data.get("wiki_url", "")
-        
+        # Normalize: missing/null/blank → None; preserve non-empty strings.
+        raw_wiki = field_data.get("wiki_url")
+        wiki_url = (raw_wiki.strip() or None) if isinstance(raw_wiki, str) else None
+
         field_info = MetadataFieldInfo(
             path=field_data["path"],
             harmonized=field_data.get("harmonized", True),

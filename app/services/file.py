@@ -11,6 +11,7 @@ import time
 from typing import List, Dict, Any, Optional
 from neo4j import AsyncSession
 
+from app.config_data.file_node_registry import FILE_NODE_REGISTRY
 from app.core.config import Settings
 from app.core.logging import get_logger
 from app.core.cache import CacheService
@@ -35,27 +36,26 @@ class FileService:
         cache_service: Optional[CacheService] = None
     ):
         """Initialize service with dependencies."""
-        self.repository = FileRepository(session, allowlist)
         self.materialized_view_service = MaterializedViewService(session)
         self.settings = settings
         self.cache_service = cache_service
+        # Build one repository per registered file node type
+        self._repos = [
+            FileRepository(session, allowlist, cfg)
+            for cfg in FILE_NODE_REGISTRY
+        ]
         
     async def get_files(
         self,
         filters: Dict[str, Any],
         offset: int = 0,
         limit: int = 20
-    ) -> List[File]:
+    ) -> tuple[List[File], int]:
         """
-        Get paginated list of sequencing files with filtering.
-        
-        Args:
-            filters: Dictionary of field filters
-            offset: Number of records to skip
-            limit: Maximum number of records to return
-            
+        Get paginated list of files across all registered node types.
+
         Returns:
-            List of File objects
+            Tuple of (files, total_count).
         """
         logger.debug(
             "Getting sequencing files",
@@ -63,42 +63,61 @@ class FileService:
             offset=offset,
             limit=limit
         )
-        
+
         # Validate pagination limits
         if limit > self.settings.pagination.max_page_size:
             limit = self.settings.pagination.max_page_size
-            logger.debug(
-                "Limiting page size",
-                requested=limit,
-                max_allowed=self.settings.pagination.max_page_size
-            )
-        
-        # Get data from repository
+
         try:
-            files = await self.repository.get_files(filters, offset, limit)
+            # Sequential per repo: all repos share one session; concurrent gather
+            # would cause "read() called while another coroutine is already waiting".
+            counts = []
+            for repo in self._repos:
+                counts.append(await repo.count_for_pagination(filters))
+            total_count = sum(counts)
+
+            # Offset-split: determine which repos contribute to this page
+            contributions: list[tuple] = []  # (repo, local_offset, local_limit)
+            remaining_offset = offset
+            remaining_limit = limit
+
+            for repo, count in zip(self._repos, counts):
+                if remaining_offset >= count:
+                    remaining_offset -= count
+                    continue
+                local_limit = min(remaining_limit, count - remaining_offset)
+                contributions.append((repo, remaining_offset, local_limit))
+                remaining_offset = 0
+                remaining_limit -= local_limit
+                if remaining_limit == 0:
+                    break
+
+            if not contributions:
+                return [], total_count
+
+            files = []
+            for repo, lo, ll in contributions:
+                batch = await repo.get_files(filters, lo, ll)
+                files.extend(batch)
+
+            logger.info(
+                "Retrieved sequencing files",
+                count=len(files),
+                total=total_count,
+                offset=offset,
+                limit=limit
+            )
+            return files, total_count
+
         except DatabaseConnectionError as e:
-            # Database connection error - log clearly for AWS cloud monitoring
             logger.error(
-                "Database connection error while fetching files - returning empty result",
+                "Database connection error while fetching files",
                 error=str(e),
                 error_type=type(e).__name__,
                 filters=filters,
-                offset=offset,
-                limit=limit,
                 is_database_connection_error=True,
-                will_return_empty=True
             )
-            # Return empty list instead of raising - API will return 404
-            return []
-        
-        logger.info(
-            "Retrieved sequencing files",
-            count=len(files),
-            offset=offset,
-            limit=limit
-        )
-        
-        return files
+            return [], 0
     
     async def get_file_by_identifier(
         self,
@@ -129,22 +148,24 @@ class FileService:
         
         # Validate parameters
         self._validate_identifier_params(organization, namespace, name)
-        
-        # Get from repository
-        file = await self.repository.get_file_by_identifier(organization, namespace, name)
-        
-        if not file:
+
+        result = None
+        for repo in self._repos:
+            match = await repo.get_file_by_identifier(organization, namespace, name)
+            if match is not None:
+                result = match
+                break
+
+        if not result:
             raise NotFoundError("Files")
-        
+
         logger.info(
             "Retrieved sequencing file by identifier",
             organization=organization,
             namespace=namespace,
             name=name,
-            file_data=getattr(file, 'id', str(file)[:50])  # Flexible logging
         )
-        
-        return file
+        return result
     
     async def count_files_by_field(
         self,
@@ -179,42 +200,56 @@ class FileService:
                 logger.debug("Returning cached sequencing file count", field=field)
                 return CountResponse(**cached_result)
         
-        # Always use live query from repository (does not use IN_STUDY materialized view)
-        # Materialized view usage disabled to ensure consistent results without materialized view dependency
-        query_timeout = self.settings.query_timeout or 60  # Default to 60 seconds
+        # Sequential per repo: shared session cannot handle concurrent queries.
+        # Each call is individually timeout-bounded by the remaining budget.
+        query_timeout = self.settings.query_timeout or 60
         start_time = time.time()
         try:
-            result = await asyncio.wait_for(
-                self.repository.count_files_by_field(field, filters),
-                timeout=query_timeout
-            )
-            elapsed_time = time.time() - start_time
-            if elapsed_time > 10:  # Log warning if query takes more than 10 seconds
-                logger.warning(
-                    "Slow query detected",
-                    field=field,
-                    elapsed_time=elapsed_time,
-                    timeout=query_timeout
+            results = []
+            for repo in self._repos:
+                remaining = query_timeout - (time.time() - start_time)
+                if remaining <= 0:
+                    raise asyncio.TimeoutError()
+                results.append(
+                    await asyncio.wait_for(
+                        repo.count_files_by_field(field, filters),
+                        timeout=remaining,
+                    )
                 )
         except asyncio.TimeoutError:
-            elapsed_time = time.time() - start_time
+            elapsed = time.time() - start_time
             logger.error(
                 "Query timeout exceeded",
                 field=field,
                 timeout=query_timeout,
-                elapsed_time=elapsed_time,
+                elapsed_time=elapsed,
                 filters=filters
             )
             raise ValidationError(
                 "Query execution exceeded the allowed timeout. "
                 "The request may be too complex or the database is under heavy load."
             )
-        
+
+        total = sum(r.get("total", 0) for r in results)
+        missing = sum(r.get("missing", 0) for r in results)
+
+        combined: Dict[str, int] = {}
+        for r in results:
+            for item in r.get("values", []):
+                v = item.get("value")
+                if v is not None and v != "" and v != "null":
+                    combined[v] = combined.get(v, 0) + item.get("count", 0)
+
+        values = [
+            {"value": v, "count": c}
+            for v, c in sorted(combined.items(), key=lambda x: (-x[1], x[0]))
+        ]
+
         # Build response
         response = CountResponse(
-            total=result.get("total", 0),
-            missing=result.get("missing", 0),
-            values=result.get("values", [])
+            total=total,
+            missing=missing,
+            values=values,
         )
         
         # Cache result
@@ -259,27 +294,25 @@ class FileService:
                 logger.debug("Returning cached sequencing files summary")
                 return SummaryResponse(**cached_result)
         
-        # Get summary from repository
+        # Sequential per repo: shared session cannot handle concurrent queries.
         try:
-            summary_data = await self.repository.get_files_summary(filters)
+            counts = []
+            for repo in self._repos:
+                counts.append(await repo.count_for_pagination(filters))
         except DatabaseConnectionError as e:
-            # Database connection error - log clearly for AWS cloud monitoring
             logger.error(
-                "Database connection error while fetching files summary - returning empty result",
+                "Database connection error while fetching files summary",
                 error=str(e),
                 error_type=type(e).__name__,
                 filters=filters,
                 is_database_connection_error=True,
-                will_return_empty=True
             )
-            # Return empty summary instead of raising - API will return 404
             from app.models.dto import SummaryCounts
             return SummaryResponse(counts=SummaryCounts(total=0))
-        
-        # Transform repository format to response format
+
         from app.models.dto import SummaryCounts
         response = SummaryResponse(
-            counts=SummaryCounts(total=summary_data.get("total_count", 0))
+            counts=SummaryCounts(total=sum(counts))
         )
         
         # Cache result

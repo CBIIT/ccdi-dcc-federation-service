@@ -178,10 +178,10 @@ class TestMaterializedViewService:
         mock_session.run = AsyncMock(return_value=mock_result)
         
         result = await service.refresh_file_count_by_type()
-        
+
         assert result["type"] == "by_type"
-        assert result["total"] == 1000
-        assert result["missing"] == 50
+        assert result["total"] == 2000   # 1000 × 2 registry entries
+        assert result["missing"] == 100  # 50 × 2 registry entries
         assert result["values_count"] == 2
         assert "last_updated" in result
         # Verify delete, create stats, and create counts were called
@@ -213,10 +213,10 @@ class TestMaterializedViewService:
         mock_session.run = AsyncMock(return_value=mock_result)
         
         result = await service.refresh_file_count_by_depositions()
-        
+
         assert result["type"] == "by_depositions"
-        assert result["total"] == 2000
-        assert result["missing"] == 100
+        assert result["total"] == 4000   # 2000 × 2 registry entries
+        assert result["missing"] == 200  # 100 × 2 registry entries
         assert result["values_count"] == 1
         assert "last_updated" in result
 
@@ -293,13 +293,11 @@ class TestMaterializedViewService:
         
         # Mock repository to raise error for by_type
         mock_repo = Mock()
+        deps_result = {"total": 2000, "missing": 100, "values": [{"value": "phs002431", "count": 1000}]}
         mock_repo.count_files_by_field = AsyncMock(side_effect=[
-            Exception("Database error"),  # First call fails
-            {  # Second call succeeds
-                "total": 2000,
-                "missing": 100,
-                "values": [{"value": "phs002431", "count": 1000}]
-            }
+            Exception("Database error"),  # by_type, first registry entry → whole by_type fails
+            deps_result,                  # by_depositions, first registry entry
+            deps_result,                  # by_depositions, second registry entry
         ])
         mock_file_repo_class.return_value = mock_repo
         

@@ -384,7 +384,7 @@ class TestSetupCustomDocsEndpoint:
         """Test serving custom docs successfully."""
         mock_exists.return_value = True
         mock_file = MagicMock()
-        mock_file.read.return_value = "url: 'https://cbiit.github.io/ccdi-dcc-federation-service/docs/swagger.yml',"
+        mock_file.read.return_value = "url: './swagger.yml',"
         mock_file.__enter__ = Mock(return_value=mock_file)
         mock_file.__exit__ = Mock(return_value=None)
         mock_open.return_value = mock_file
@@ -402,6 +402,7 @@ class TestSetupCustomDocsEndpoint:
                 endpoint_func = route.endpoint
                 response = await endpoint_func(mock_request)
                 assert response.status_code == 200
+                assert "http://localhost:8000/openapi-filtered.json" in response.body.decode()
                 break
 
     @patch('pathlib.Path.open')

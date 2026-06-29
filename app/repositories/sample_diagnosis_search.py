@@ -6,13 +6,18 @@ These methods are provided as a mixin class that can be inherited by SampleRepos
 """
 
 from typing import Dict, Any, List, Optional, Tuple, Union
-from app.core.logging import get_logger
-from app.models.dto import Sample
-from app.repositories.sample_converters import node_to_dict
 from app.core.field_mappings import (
     reverse_map_field_value,
     is_null_mapped_value,
     is_database_only_value
+)
+from app.core.logging import get_logger
+from app.models.dto import Sample
+from app.repositories.sample_converters import node_to_dict
+from app.repositories.subject_diagnosis_cypher import (
+    diagnosis_category_contains_predicate,
+    add_diagnosis_search_params,
+    diagnosis_search_predicate,
 )
 
 logger = get_logger(__name__)
@@ -30,42 +35,17 @@ class SampleDiagnosisSearch:
         return_total: bool = False
     ) -> Union[List[Sample], Tuple[List[Sample], int]]:
         """
-        Optimized query for diagnosis search-only filters.
-        
-        Uses REVERSE query approach:
-        1. Match diagnosis nodes with search filter (uses index - FAST)
-        2. Find samples related to those diagnoses
-        3. Do other relationship traversals
-        
-        This is 10-100x faster than matching all samples first.
+        Internal reverse-query helper for diagnosis-centric sample filters.
+
+        The live `/sample-diagnosis` list endpoint currently delegates through
+        `get_samples()` / Case 3. This helper remains available for targeted
+        diagnosis-search flows and for the matching summary implementation.
         """
         params = {"offset": offset, "limit": limit}
         param_counter = 0
-        
-        # Extract diagnosis search term
+
         diagnosis_search_term = filters.get("_diagnosis_search")
-        if not diagnosis_search_term:
-            return [] if not return_total else ([], 0)
-        
-        # Pre-process search term to lowercase (done once in Python)
-        diagnosis_search_term_lower = diagnosis_search_term.lower().strip()
-        params["diagnosis_search_term"] = diagnosis_search_term
-        params["diagnosis_search_term_lower"] = diagnosis_search_term_lower
-        params["diagnosis_search_term_see_comment"] = "see diagnosis_comment"
-        
-        # Build diagnosis search filter
-        diagnosis_search_filter = """(toLower(trim(toString(d.diagnosis))) <> $diagnosis_search_term_see_comment AND 
-                 CASE 
-                   WHEN valueType(d.diagnosis) = 'LIST' THEN 
-                     ANY(diag IN d.diagnosis WHERE toLower(toString(diag)) CONTAINS $diagnosis_search_term_lower)
-                   ELSE 
-                     toLower(toString(d.diagnosis)) CONTAINS $diagnosis_search_term_lower
-                 END)
-                OR
-                (toLower(trim(toString(d.diagnosis))) = $diagnosis_search_term_see_comment AND 
-                 d.diagnosis_comment IS NOT NULL AND 
-                 toLower(toString(d.diagnosis_comment)) CONTAINS $diagnosis_search_term_lower)"""
-        
+
         # Handle disease_phase filter if present - CRITICAL: Apply early to avoid cartesian product explosion
         # This prevents collecting all diagnoses then filtering, which creates (samples × studies × diagnoses) rows
         disease_phase_filter = ""
@@ -135,7 +115,23 @@ class SampleDiagnosisSearch:
             aad_param = f"param_{param_counter}"
             params[aad_param] = age_int
             additional_diagnosis_filters.append(f"toInteger(d.age_at_diagnosis) = ${aad_param}")
-        
+
+        # Handle diagnosis_category filter (AND on same diagnosis node as search).
+        # Same semantics as GET /subject-diagnosis associated_diagnosis_categories: substring on full field.
+        if "diagnosis_category" in filters:
+            diag_cat_value = filters["diagnosis_category"]
+            if isinstance(diag_cat_value, str) and (dc_stripped := diag_cat_value.strip()):
+                params["diag_category_contains_term"] = dc_stripped
+                additional_diagnosis_filters.append(diagnosis_category_contains_predicate("dx"))
+
+        if diagnosis_search_term:
+            add_diagnosis_search_params(params, diagnosis_search_term)
+            diagnosis_search_filter_condition = diagnosis_search_predicate("dx")
+        elif disease_phase_filter or additional_diagnosis_filters:
+            diagnosis_search_filter_condition = "true"
+        else:
+            return [] if not return_total else ([], 0)
+
         # Handle identifiers filter if present
         identifiers_early_filter = None
         if "identifiers" in filters:
@@ -180,9 +176,6 @@ class SampleDiagnosisSearch:
         
         # Build complete diagnosis filter WHERE clause with proper parentheses
         # CRITICAL: Parenthesize correctly to ensure AND binds with the entire OR expression
-        # Structure: WHERE ((search_condition) OR (comment_condition)) AND disease_phase_filter
-        # Replace 'd.' with 'dx.' in the filter since we use 'dx' variable in OPTIONAL MATCH
-        diagnosis_search_filter_condition = diagnosis_search_filter.replace("d.diagnosis", "dx.diagnosis").replace("d.diagnosis_comment", "dx.diagnosis_comment")
         disease_phase_filter_condition = disease_phase_filter.replace("d.disease_phase", "dx.disease_phase") if disease_phase_filter else ""
         
         diagnosis_where_clause = f"""(
@@ -206,7 +199,7 @@ class SampleDiagnosisSearch:
         # When return_total: run lightweight count first, then list query
         total_count_diag = None
         if return_total:
-            sa_where_parts = ["sa.sample_id IS NOT NULL", "sa.sample_id <> ''"]
+            sa_where_parts = ["sa.sample_id IS NOT NULL"]
             if identifiers_early_filter:
                 sa_where_parts.append(identifiers_early_filter)
             sa_where_clause = " AND ".join(sa_where_parts)
@@ -345,32 +338,17 @@ class SampleDiagnosisSearch:
                     pf = node_to_dict(pf_node)
                     
                     # Handle diagnoses: it's a list from collect(DISTINCT dx), keep ALL matched diagnoses
-                    # Convert all diagnosis nodes to dicts
                     if diagnoses_node:
                         if isinstance(diagnoses_node, list):
-                            # Convert each diagnosis node in the list to a dict - KEEP ALL
                             diagnoses_list = [node_to_dict(d) for d in diagnoses_node if d is not None]
-                            # All diagnoses are already filtered to match the search in the WHERE clause
-                            # For _record_to_sample, use the first one (it expects a single dict)
-                            # But we preserve all diagnoses for the experimental endpoint
-                            diagnoses_for_converter = diagnoses_list[0] if diagnoses_list else None
                         else:
-                            # Single node
                             diagnoses_list = [node_to_dict(diagnoses_node)]
-                            diagnoses_for_converter = diagnoses_list[0]
                     else:
                         diagnoses_list = []
-                        diagnoses_for_converter = None
-                    
+
                     if sa:
-                        # Use first diagnosis for converter (compatibility)
-                        sample = self._record_to_sample(sa, p, st, sf, pf, diagnoses_for_converter, base_url=base_url)
+                        sample = self._record_to_sample(sa, p, st, sf, pf, diagnoses_list or None, base_url=base_url)
                         if sample:
-                            # Store all diagnoses in sample for experimental endpoint
-                            # Since Sample model has extra="allow", we can add custom fields
-                            # This preserves all matching diagnoses for the experimental endpoint
-                            if diagnoses_list:
-                                sample.all_matching_diagnoses = diagnoses_list
                             samples.append(sample)
                 except Exception as e:
                     logger.error("Error converting record to sample", error=str(e), record=str(record)[:200])
@@ -396,33 +374,9 @@ class SampleDiagnosisSearch:
         """
         params = {}
         param_counter = 0
-        
-        # Extract diagnosis search term
+
         diagnosis_search_term = filters.get("_diagnosis_search")
-        if not diagnosis_search_term:
-            return {"counts": {"total": 0}}
-        
-        # Pre-process search term to lowercase (done once in Python)
-        diagnosis_search_term_lower = diagnosis_search_term.lower().strip()
-        params["diagnosis_search_term"] = diagnosis_search_term
-        params["diagnosis_search_term_lower"] = diagnosis_search_term_lower
-        params["diagnosis_search_term_see_comment"] = "see diagnosis_comment"
-        
-        # Build diagnosis search filter - will be used in OPTIONAL MATCH WHERE clause
-        # Note: We don't do an initial MATCH (d:diagnosis) anymore to avoid row multiplication
-        # Instead, we start from samples and OPTIONAL MATCH filtered diagnoses
-        diagnosis_search_filter_condition = """(toLower(trim(toString(dx.diagnosis))) <> $diagnosis_search_term_see_comment AND 
-                 CASE 
-                   WHEN valueType(dx.diagnosis) = 'LIST' THEN 
-                     ANY(diag IN dx.diagnosis WHERE toLower(toString(diag)) CONTAINS $diagnosis_search_term_lower)
-                   ELSE 
-                     toLower(toString(dx.diagnosis)) CONTAINS $diagnosis_search_term_lower
-                 END)
-                OR
-                (toLower(trim(toString(dx.diagnosis))) = $diagnosis_search_term_see_comment AND 
-                 dx.diagnosis_comment IS NOT NULL AND 
-                 toLower(toString(dx.diagnosis_comment)) CONTAINS $diagnosis_search_term_lower)"""
-        
+
         # Handle disease_phase filter if present - CRITICAL: Apply early to avoid cartesian product explosion
         # This prevents collecting all diagnoses then filtering, which creates (samples × studies × diagnoses) rows
         disease_phase_filter_condition = ""
@@ -492,6 +446,22 @@ class SampleDiagnosisSearch:
             aad_param = f"param_{param_counter}"
             params[aad_param] = age_int
             additional_diagnosis_filters.append(f"toInteger(dx.age_at_diagnosis) = ${aad_param}")
+
+        # Handle diagnosis_category filter (AND on same diagnosis node as search).
+        # Same semantics as GET /subject-diagnosis associated_diagnosis_categories: substring on full field.
+        if "diagnosis_category" in filters:
+            diag_cat_value = filters["diagnosis_category"]
+            if isinstance(diag_cat_value, str) and (dc_stripped := diag_cat_value.strip()):
+                params["diag_category_contains_term"] = dc_stripped
+                additional_diagnosis_filters.append(diagnosis_category_contains_predicate("dx"))
+
+        if diagnosis_search_term:
+            add_diagnosis_search_params(params, diagnosis_search_term)
+            diagnosis_search_filter_condition = diagnosis_search_predicate("dx")
+        elif disease_phase_filter_condition or additional_diagnosis_filters:
+            diagnosis_search_filter_condition = "true"
+        else:
+            return {"counts": {"total": 0}}
 
         # Handle identifiers filter if present
         identifiers_early_filter = None

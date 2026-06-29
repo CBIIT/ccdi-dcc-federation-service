@@ -65,6 +65,24 @@
         }
       },
       {
+        "path": "associated_diagnosis_categories",
+        "harmonized": true,
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api/wiki/Subject-Metadata-Fields#associated_diagnosis_categories",
+        "standard": {
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=16607972%20and%20ver_nr=1",
+          "name": "caDSR CDE 16607969v1.00:16607971v1.00"
+        }
+      },
+      {
+        "path": "unharmonized.associated_diagnosis_categories",
+        "harmonized": false,
+        "wiki_url": null,
+        "standard": {
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=6161017%20and%20ver_nr=1",
+          "name": "caDSR CDE 6161017 disease_type"
+        }
+      },
+      {
         "path": "depositions",
         "harmonized": true,
         "wiki_url": "https://github.com/CBIIT/ccdi-federation-api/wiki/Subject-Metadata-Fields",
@@ -180,6 +198,24 @@
         "harmonized": true,
         "path": "diagnosis",
         "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#diagnosis"
+      },
+      {
+        "harmonized": true,
+        "path": "diagnosis_category",
+        "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#diagnosis_category",
+        "standard": {
+          "name": "caDSR CDE 16607972 1.00",
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=16607972%20and%20ver_nr=1"
+        }
+      },
+      {
+        "harmonized": false,
+        "path": "unharmonized.diagnosis_category",
+        "wiki_url": null,
+        "standard": {
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=6161017%20and%20ver_nr=1",
+          "name": "caDSR CDE 6161017 disease_type"
+        }
       },
       {
         "harmonized": true,

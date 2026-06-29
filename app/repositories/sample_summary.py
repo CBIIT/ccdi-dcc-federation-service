@@ -13,6 +13,8 @@ from app.core.field_mappings import (
     is_database_only_value,
     map_field_value
 )
+from app.repositories.sample_helpers import DIAGNOSIS_SEARCH_COMPATIBLE_FILTERS, SD_CAT_MARKER
+from app.repositories.subject_diagnosis_cypher import add_diagnosis_search_params, diagnosis_search_predicate
 from app.models.errors import UnsupportedFieldError
 
 logger = get_logger(__name__)
@@ -54,25 +56,19 @@ class SampleSummary:
         
         # OPTIMIZATION: Specialized summary query for diagnosis search-only filters
         has_diagnosis_search = "_diagnosis_search" in original_filters_keys
-        allowed_with_diagnosis_search = {
-            "identifiers", "depositions", "_diagnosis_search",
-            "disease_phase", "tumor_grade", "tumor_classification",
-            "tumor_tissue_morphology", "age_at_diagnosis"
-        }
-        # Debug: Log which keys are causing routing to fail
         if has_diagnosis_search:
-            disallowed_keys = original_filters_keys - allowed_with_diagnosis_search
+            disallowed_keys = original_filters_keys - DIAGNOSIS_SEARCH_COMPATIBLE_FILTERS
             if disallowed_keys:
                 logger.debug(
                     "Diagnosis search routing check failed - disallowed keys present",
                     disallowed_keys=disallowed_keys,
                     original_filters_keys=original_filters_keys,
-                    allowed_keys=allowed_with_diagnosis_search
+                    allowed_keys=DIAGNOSIS_SEARCH_COMPATIBLE_FILTERS
                 )
 
         diagnosis_search_only_summary = (
-            has_diagnosis_search and
-            all(k in allowed_with_diagnosis_search for k in original_filters_keys)
+            (has_diagnosis_search or SD_CAT_MARKER in original_filters_keys)
+            and all(k in DIAGNOSIS_SEARCH_COMPATIBLE_FILTERS for k in original_filters_keys)
         )
 
         if diagnosis_search_only_summary:
@@ -194,13 +190,7 @@ class SampleSummary:
         diagnosis_search_term = None
         if "_diagnosis_search" in filters:
             diagnosis_search_term = filters.pop("_diagnosis_search")
-            # OPTIMIZATION 4A: Pre-process search term to lowercase (done once in Python)
-            # This removes toLower() calls from Cypher, improving performance
-            diagnosis_search_term_lower = diagnosis_search_term.lower().strip()
-            params["diagnosis_search_term"] = diagnosis_search_term  # Keep original for potential use
-            params["diagnosis_search_term_lower"] = diagnosis_search_term_lower  # Pre-processed lowercase
-            params["diagnosis_search_term_see_comment"] = "see diagnosis_comment"  # Pre-computed constant
-            # This will be applied as a condition after collecting ALL diagnosis nodes
+            add_diagnosis_search_params(params, diagnosis_search_term)
         
         # Add regular filters - map to correct nodes based on field
         for field, value in filters.items():
@@ -278,7 +268,7 @@ class SampleSummary:
                     # "Not Reported" is a valid filter value - match database values case-sensitively
                     # The value is stored in DB as-is, so match it directly
                     params[param_name] = value
-                    with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase = ${param_name}")
+                    with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase IS NOT NULL AND diagnoses.disease_phase = ${param_name}")
                     diagnosis_filter_parts_for_search.append(f"d.disease_phase = ${param_name}")
                 else:
                     # Apply reverse mapping for filtering (API value -> DB value(s))
@@ -287,11 +277,11 @@ class SampleSummary:
                     if isinstance(reverse_mapped, list):
                         # Multiple DB values map to this API value - use IN clause with parameter for better query planning
                         params[param_name] = reverse_mapped
-                        with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase IN ${param_name}")
+                        with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase IS NOT NULL AND diagnoses.disease_phase IN ${param_name}")
                         diagnosis_filter_parts_for_search.append(f"d.disease_phase IN ${param_name}")
                     else:
                         params[param_name] = reverse_mapped
-                        with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase = ${param_name}")
+                        with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase IS NOT NULL AND diagnoses.disease_phase = ${param_name}")
                         diagnosis_filter_parts_for_search.append(f"d.disease_phase = ${param_name}")
             elif field == "library_source_material":
                 # Use helper function to validate library_source_material filter
@@ -317,16 +307,16 @@ class SampleSummary:
                     reverse_mapped = reverse_map_field_value("tumor_classification", value)
                     # If reverse_mapped is None, use the original value (no mapping needed)
                     params[param_name] = reverse_mapped if reverse_mapped else value
-                    with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_classification = ${param_name}")
+                    with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_classification IS NOT NULL AND diagnoses.tumor_classification = ${param_name}")
                     diagnosis_filter_parts_for_search.append(f"d.tumor_classification = ${param_name}")
             elif field == "tumor_grade":
-                with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_grade = ${param_name}")
+                with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_grade IS NOT NULL AND diagnoses.tumor_grade = ${param_name}")
                 diagnosis_filter_parts_for_search.append(f"d.tumor_grade = ${param_name}")
             elif field == "tumor_tissue_morphology":
-                with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_tissue_morphology = ${param_name}")
+                with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_tissue_morphology IS NOT NULL AND diagnoses.tumor_tissue_morphology = ${param_name}")
                 diagnosis_filter_parts_for_search.append(f"d.tumor_tissue_morphology = ${param_name}")
             elif field == "age_at_diagnosis":
-                with_conditions.append(f"diagnoses IS NOT NULL AND toInteger(diagnoses.age_at_diagnosis) = ${param_name}")
+                with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.age_at_diagnosis IS NOT NULL AND toInteger(diagnoses.age_at_diagnosis) = ${param_name}")
                 # Convert value to number for numeric comparison
                 try:
                     params[param_name] = int(value) if value is not None else None
@@ -366,7 +356,7 @@ class SampleSummary:
                 # Check both diagnoses.diagnosis and diagnoses.diagnosis_comment (for "see diagnosis_comment" cases)
                 # If diagnosis is "see diagnosis_comment", check the comment field instead
                 diagnosis_condition = (
-                    f"(diagnoses IS NOT NULL AND "
+                    f"(diagnoses IS NOT NULL AND diagnoses.diagnosis IS NOT NULL AND "
                     f"(diagnoses.diagnosis = ${param_name} OR "
                     f"(toLower(trim(toString(diagnoses.diagnosis))) = 'see diagnosis_comment' AND "
                     f"diagnoses.diagnosis_comment IS NOT NULL AND "
@@ -883,23 +873,7 @@ RETURN count(*) AS total_count
             # needs_diag_collection can be True for other diagnosis filters (disease_phase, tumor_classification, etc.)
             # but those don't require the diagnosis search parameters
             if needs_diag_collection and diagnosis_search_term is not None:
-                # OPTIMIZATION 4A + 4D: Simplified diagnosis search condition
-                # - Pre-processed search term (toLower done in Python)
-                # - Simplified list handling (avoid wrapper for single values)
-                # Handle both d.diagnosis and d.diagnosis_comment (when diagnosis = "see diagnosis_comment")
-                diagnosis_search_base = f"""(
-                    (toLower(trim(toString(d.diagnosis))) <> $diagnosis_search_term_see_comment AND 
-                     CASE 
-                       WHEN valueType(d.diagnosis) = 'LIST' THEN 
-                         ANY(diag IN d.diagnosis WHERE toLower(toString(diag)) CONTAINS $diagnosis_search_term_lower)
-                       ELSE 
-                         toLower(toString(d.diagnosis)) CONTAINS $diagnosis_search_term_lower
-                     END)
-                    OR
-                    (toLower(trim(toString(d.diagnosis))) = $diagnosis_search_term_see_comment AND 
-                     d.diagnosis_comment IS NOT NULL AND 
-                     toLower(toString(d.diagnosis_comment)) CONTAINS $diagnosis_search_term_lower)
-                )"""
+                diagnosis_search_base = f"({diagnosis_search_predicate('d')})"
 
                 if diagnosis_filter_parts_for_search:
                     diagnosis_search_base = f"{diagnosis_search_base} AND " + " AND ".join(

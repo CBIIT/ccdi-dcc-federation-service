@@ -11,20 +11,37 @@ from neo4j import AsyncSession
 
 from app.core.logging import get_logger
 from app.core.constants import FileType, load_file_enum
+from app.config_data.file_node_registry import FileNodeConfig, FILE_NODE_REGISTRY
 from app.lib.field_allowlist import FieldAllowlist
 from app.models.dto import File
 from app.models.errors import UnsupportedFieldError
 
 logger = get_logger(__name__)
 
+# Sentinel returned by _build_count_query when the filter is provably zero (e.g., invalid
+# file_type enum value). Callers check identity (`is _ZERO_COUNT_SENTINEL`) before issuing a
+# DB round-trip, preserving the pre-refactor behaviour of short-circuiting in Python.
+_ZERO_COUNT_SENTINEL = "RETURN 0 AS total_count"
+
+_SEQUENCING_FILE_DEFAULT = next(
+    c for c in FILE_NODE_REGISTRY if c.node_label == "sequencing_file"
+)
+
 
 class FileRepository:
     """Repository for sequencing file data operations."""
     
-    def __init__(self, session: AsyncSession, allowlist: FieldAllowlist):
-        """Initialize repository with database session and field allowlist."""
+    def __init__(
+        self,
+        session: AsyncSession,
+        allowlist: FieldAllowlist,
+        config: FileNodeConfig | None = None,
+    ):
+        """Initialize repository with database session, field allowlist, and node config."""
         self.session = session
         self.allowlist = allowlist
+        # Default to sequencing_file for backwards compatibility
+        self.config = config if config is not None else _SEQUENCING_FILE_DEFAULT
         
     async def get_files(
         self,
@@ -228,10 +245,10 @@ class FileRepository:
             
             cypher = f"""
             // Step 1: Match files and apply file property filters FIRST
-            MATCH (sf:sequencing_file)
+            MATCH (sf:{self.config.node_label})
             {file_where_clause}
             // Step 2: Find study path using multi-hop traversal (with WITH clauses to prevent cartesian products)
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa:sample)
             // study path 2 — via participant → consent → study (preferred path)
             OPTIONAL MATCH (sa)-[:of_sample]->(:participant)
                        -[:of_participant]->(:consent_group)
@@ -251,10 +268,10 @@ class FileRepository:
             SKIP $offset
             LIMIT $limit
             // Step 5: Collect samples for final results only
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa2:sample)
+            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa2:sample)
             WITH sf, collect(DISTINCT sa2) as samples
             // Step 6: Get study for response (using multi-hop traversal)
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa3:sample)
+            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa3:sample)
             OPTIONAL MATCH (sa3)-[:of_sample]->(:participant)
                        -[:of_participant]->(:consent_group)
                        -[:of_consent_group]->(st3:study)
@@ -273,10 +290,10 @@ class FileRepository:
             # Apply file filters FIRST, then traverse to study using multi-hop
             cypher = f"""
             // Step 1: Match files and apply file property filters FIRST (before any traversals)
-            MATCH (sf:sequencing_file)
+            MATCH (sf:{self.config.node_label})
             {file_where_clause}
             // Step 2: Find study path using multi-hop traversal (with WITH clauses to prevent cartesian products)
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa:sample)
             // study path 2 — via participant → consent → study (preferred path)
             OPTIONAL MATCH (sa)-[:of_sample]->(:participant)
                        -[:of_participant]->(:consent_group)
@@ -293,10 +310,10 @@ class FileRepository:
             SKIP $offset
             LIMIT $limit
             // Step 4: Collect samples only for paginated files (much faster!)
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa3:sample)
+            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa3:sample)
             WITH sf, collect(DISTINCT sa3) AS samples
             // Step 5: Get study for response (only for the 20 returned files, using multi-hop traversal)
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa4:sample)
+            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa4:sample)
             OPTIONAL MATCH (sa4)-[:of_sample]->(:participant)
                        -[:of_participant]->(:consent_group)
                        -[:of_consent_group]->(st4:study)
@@ -326,7 +343,7 @@ class FileRepository:
             WHERE st.study_id {deposition_operator} ${deposition_param}
             // Step 2: Match files that are connected to study via sample (path 1: via participant -> consent_group)
             // File (sf) must be connected to both study (st) and sample (sa) - ensures correct relationships
-            MATCH (st)<-[:of_consent_group]-(:consent_group)<-[:of_participant]-(:participant)<-[:of_sample]-(sa:sample)<-[:of_sequencing_file]-(sf:sequencing_file)
+            MATCH (st)<-[:of_consent_group]-(:consent_group)<-[:of_participant]-(:participant)<-[:of_sample]-(sa:sample)<-[:{self.config.rel_name}]-(sf:{self.config.node_label})
             // Step 3: Deduplicate by unique file ID (sf.id) only - files are unique, not file-study pairs
             // Paginate IMMEDIATELY (no intermediate collections!)
             WITH DISTINCT sf.id AS file_id, sf, st
@@ -334,7 +351,7 @@ class FileRepository:
             SKIP $offset
             LIMIT $limit
             // Step 4: Collect ALL samples for each paginated file (file can have multiple samples)
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa:sample)
             WITH sf, st, collect(DISTINCT sa) AS samples
             RETURN sf, samples, st
             """.strip()
@@ -349,17 +366,17 @@ class FileRepository:
             # Use multi-hop traversal: sample -> participant -> consent_group -> study (preferred)
             # or sample -> cell_line -> study (fallback)
             cypher = f"""
-            // Step 1: Apply pagination immediately to sequencing_file (no filters)
-            MATCH (sf:sequencing_file)
+            // Step 1: Apply pagination immediately to {self.config.node_label} (no filters)
+            MATCH (sf:{self.config.node_label})
             WITH sf
             ORDER BY sf.id
             SKIP $offset
             LIMIT $limit
             // Step 2: Now traverse only for the paginated files
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa:sample)
             WITH sf, collect(DISTINCT sa) AS samples
             // Step 3: Get study for response (only for paginated files, using multi-hop traversal)
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa2:sample)
+            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa2:sample)
             // study path 2 — via participant → consent → study (preferred path)
             OPTIONAL MATCH (sa2)-[:of_sample]->(:participant)
                        -[:of_participant]->(:consent_group)
@@ -456,10 +473,10 @@ class FileRepository:
         # Only include sequencing_files that have a path to a study
         # Path 1: sequencing_file -> sample -> participant -> consent_group -> study
         # Path 2: sequencing_file -> sample -> cell_line -> study
-        cypher = """
-        MATCH (sf:sequencing_file)
+        cypher = f"""
+        MATCH (sf:{self.config.node_label})
         WHERE sf.id = $name
-        MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+        MATCH (sf)-[:{self.config.rel_name}]->(sa:sample)
         OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st1:study)
         OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st2:study)
@@ -651,16 +668,16 @@ class FileRepository:
             
             # Query 1: Total count (with file filters applied early)
             total_cypher = f"""
-            MATCH (sf:sequencing_file)
+            MATCH (sf:{self.config.node_label})
             {base_where_clause}
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa:sample)
             OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
             OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
             WITH DISTINCT sf, coalesce(st1, st2) AS st
             WHERE st IS NOT NULL
             RETURN count(sf) as total
             """.strip()
-            
+
             # Query 2: Missing count (with file filters applied early)
             # For type count: Missing includes NULL file_type OR file_type not in enum list
             missing_where_conditions = base_where_conditions.copy() if base_where_conditions else []
@@ -672,18 +689,18 @@ class FileRepository:
                 # For other fields: Missing = NULL
                 missing_where_conditions.append(f"sf.{db_field} IS NULL")
             missing_where_clause = "WHERE " + " AND ".join(missing_where_conditions)
-            
+
             missing_cypher = f"""
-            MATCH (sf:sequencing_file)
+            MATCH (sf:{self.config.node_label})
             {missing_where_clause}
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa:sample)
             OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
             OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
             WITH DISTINCT sf, coalesce(st1, st2) AS st
             WHERE st IS NOT NULL
             RETURN count(sf) as missing
             """.strip()
-            
+
             # Query 3: Values with counts (with file filters applied early)
             # For type count: Also apply enum IN filter to only group valid enum types
             field_where_conditions_filtered = base_where_conditions.copy() if base_where_conditions else []
@@ -692,11 +709,11 @@ class FileRepository:
             if type_enum_filter:
                 field_where_conditions_filtered.append(type_enum_filter)
             field_where_clause_filtered = "WHERE " + " AND ".join(field_where_conditions_filtered) if field_where_conditions_filtered else ""
-            
+
             values_cypher = f"""
-            MATCH (sf:sequencing_file)
+            MATCH (sf:{self.config.node_label})
             {field_where_clause_filtered}
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa:sample)
             OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
             OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
             WITH sf, coalesce(st1, st2) AS st
@@ -710,14 +727,14 @@ class FileRepository:
             # SIMPLE PATTERN: No file filters - use original pattern (already optimized)
             # Query 1: Total count
             total_cypher = f"""
-            MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
+            MATCH (sf:{self.config.node_label})-[:{self.config.rel_name}]->(sa:sample)
             OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
             OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
             WITH DISTINCT sf, coalesce(st1, st2) AS st
             WHERE st IS NOT NULL
             RETURN count(sf) as total
             """.strip()
-            
+
             # Query 2: Missing count
             # For type count: Missing includes NULL file_type OR file_type not in enum list
             if type_enum_filter:
@@ -726,25 +743,25 @@ class FileRepository:
             else:
                 # For other fields: Missing = NULL
                 missing_where_additional = f" AND sf.{db_field} IS NULL"
-            
+
             missing_cypher = f"""
-            MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
+            MATCH (sf:{self.config.node_label})-[:{self.config.rel_name}]->(sa:sample)
             OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
             OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
             WITH DISTINCT sf, coalesce(st1, st2) AS st
             WHERE st IS NOT NULL{missing_where_additional}
             RETURN count(sf) as missing
             """.strip()
-            
+
             # Query 3: Values with counts
             # For type count: Also apply enum IN filter to only group valid enum types
             values_where_parts = [f"sf.{db_field} IS NOT NULL"]
             if type_enum_filter:
                 values_where_parts.append(type_enum_filter)
             values_where_additional = " AND " + " AND ".join(values_where_parts) if values_where_parts else ""
-            
+
             values_cypher = f"""
-            MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
+            MATCH (sf:{self.config.node_label})-[:{self.config.rel_name}]->(sa:sample)
             OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
             OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
             WITH sf, coalesce(st1, st2) AS st
@@ -921,37 +938,37 @@ class FileRepository:
             # OPTIMIZED PATTERN: Apply file filters FIRST, then traverse to study
             # Query 1: Total count (with file filters applied early)
             total_cypher = f"""
-            MATCH (sf:sequencing_file)
+            MATCH (sf:{self.config.node_label})
             {base_where_clause}
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa:sample)
             OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
             OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
             WITH DISTINCT sf, coalesce(st1, st2) AS st
             WHERE st IS NOT NULL
             RETURN count(sf) as total
             """.strip()
-            
+
             # Query 2: Missing count (files with null study_id)
             missing_where_conditions = base_where_conditions.copy() if base_where_conditions else []
             missing_where_conditions.append("st.study_id IS NULL")
             missing_where_clause = "WHERE " + " AND ".join(missing_where_conditions)
-            
+
             missing_cypher = f"""
-            MATCH (sf:sequencing_file)
+            MATCH (sf:{self.config.node_label})
             {base_where_clause}
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa:sample)
             OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
             OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
             WITH DISTINCT sf, coalesce(st1, st2) AS st
             {missing_where_clause}
             RETURN count(sf) as missing
             """.strip()
-            
+
             # Query 3: Values with counts - group by study_id (with file filters applied early)
             values_cypher = f"""
-            MATCH (sf:sequencing_file)
+            MATCH (sf:{self.config.node_label})
             {base_where_clause}
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa:sample)
             OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
             OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
             WITH sf, coalesce(st1, st2) AS st
@@ -965,27 +982,27 @@ class FileRepository:
             # SIMPLE PATTERN: No file filters - use original pattern
             # Query 1: Total count
             total_cypher = f"""
-            MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
+            MATCH (sf:{self.config.node_label})-[:{self.config.rel_name}]->(sa:sample)
             OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
             OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
             WITH DISTINCT sf, coalesce(st1, st2) AS st
             WHERE st IS NOT NULL
             RETURN count(sf) as total
             """.strip()
-            
+
             # Query 2: Missing count (files with null study_id)
             missing_cypher = f"""
-            MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
+            MATCH (sf:{self.config.node_label})-[:{self.config.rel_name}]->(sa:sample)
             OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
             OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
             WITH DISTINCT sf, coalesce(st1, st2) AS st
             WHERE st IS NOT NULL AND st.study_id IS NULL
             RETURN count(sf) as missing
             """.strip()
-            
+
             # Query 3: Values with counts - group by study_id
             values_cypher = f"""
-            MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
+            MATCH (sf:{self.config.node_label})-[:{self.config.rel_name}]->(sa:sample)
             OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
             OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
             WITH sf, coalesce(st1, st2) AS st
@@ -1043,26 +1060,25 @@ class FileRepository:
             "values": counts
         }
     
-    async def get_files_summary(
+    async def _build_count_query(
         self,
         filters: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    ) -> Tuple[str, Dict[str, Any]]:
         """
-        Get summary statistics for sequencing files.
-        
-        Args:
-            filters: Filters to apply
-            
-        Returns:
-            Dictionary with summary statistics
+        Build (cypher, params) for COUNT(DISTINCT sf) with the same filter logic
+        as get_files_summary. Used by count_for_pagination and get_files_summary.
+
+        Returns a sentinel query ("RETURN 0 AS total_count", {}) when a filter
+        value is provably empty (e.g., an invalid file_type enum value), so callers
+        always receive a (str, dict) tuple and never need to special-case None.
         """
-        logger.debug("Getting sequencing files summary", filters=filters)
-        
+        # async def for consistent await-able interface with callers;
+        # this method is currently pure computation with no I/O.
         # Build WHERE conditions and parameters
         where_conditions = []
-        params = {}
+        params: Dict[str, Any] = {}
         param_counter = 0
-        
+
         # Handle depositions filter separately - it filters by study_id
         # Parse || separator for OR logic (e.g., "phs002517 || phs002790")
         # Make a copy to avoid modifying the original filters dict
@@ -1077,7 +1093,7 @@ class FileRepository:
             if not depositions_list:
                 depositions_list = None
                 depositions_value = None
-        
+
         # Handle checksums filter separately - supports || separator for OR logic
         # Note: checksums in filters_copy is mapped to "md5sum" field by get_file_filters()
         checksums_value = filters_copy.pop("md5sum", None)
@@ -1089,7 +1105,7 @@ class FileRepository:
             checksums_list = [c for c in checksums_list if c]
             if not checksums_list:
                 checksums_list = None
-        
+
         # Validate type filter - must match enum value exactly (case-sensitive)
         # Note: filter key is "file_type" because get_file_filters() maps "type" -> "file_type"
         # After validation, use case-insensitive matching in the query to handle database case variations
@@ -1098,13 +1114,13 @@ class FileRepository:
             type_value = filters_copy.pop("file_type")  # Remove from filters_copy to handle separately
             # Check if the type value exactly matches an enum value (case-sensitive)
             if type_value not in FileType.values():
-                # Type doesn't match any enum value, return empty results
+                # Type doesn't match any enum value — return a sentinel zero-count query
                 logger.info(
-                    "Type filter value does not match any enum value (case-sensitive) - returning empty summary",
+                    "Type filter value does not match any enum value (case-sensitive) - returning zero-count sentinel query",
                     type_value=type_value,
                     valid_values=FileType.values()[:5]  # Log first 5 for reference
                 )
-                return {"total_count": 0}
+                return _ZERO_COUNT_SENTINEL, {}
             # Use case-insensitive matching in the query (toLower for both sides)
             param_counter += 1
             type_filter_param = f"param_{param_counter}"
@@ -1113,7 +1129,7 @@ class FileRepository:
                 "Type filter validated successfully for summary, will use case-insensitive matching in query",
                 type_value=type_value
             )
-        
+
         # Add regular filters
         for field, value in filters_copy.items():
             # Handle unharmonized fields (e.g., metadata.unharmonized.file_name)
@@ -1121,20 +1137,20 @@ class FileRepository:
                 # Extract the actual database field name
                 # e.g., "metadata.unharmonized.file_name" -> "file_name"
                 db_field_name = field.replace("metadata.unharmonized.", "")
-                
+
                 param_counter += 1
                 param_name = f"param_{param_counter}"
-                
+
                 if isinstance(value, list):
                     where_conditions.append(f"sf.{db_field_name} IN ${param_name}")
                 else:
                     where_conditions.append(f"sf.{db_field_name} = ${param_name}")
                 params[param_name] = value
                 continue
-            
+
             param_counter += 1
             param_name = f"param_{param_counter}"
-            
+
             # Convert file_size to number if it's a string that can be converted
             if field == "file_size" and isinstance(value, str):
                 try:
@@ -1144,17 +1160,17 @@ class FileRepository:
                 except (ValueError, TypeError):
                     # If conversion fails, keep as string (might be a different format)
                     pass
-            
+
             if isinstance(value, list):
                 where_conditions.append(f"sf.{field} IN ${param_name}")
             else:
                 where_conditions.append(f"sf.{field} = ${param_name}")
             params[param_name] = value
-        
+
         # Add case-insensitive type filter if present
         if type_filter_param:
             where_conditions.append(f"toLower(sf.file_type) = toLower(${type_filter_param})")
-        
+
         # Add checksums filter if present (supports || separator for OR logic)
         if checksums_list is not None:
             param_counter += 1
@@ -1167,22 +1183,22 @@ class FileRepository:
                 # Multiple checksums: check if either field is IN the list
                 where_conditions.append(f"(sf.md5sum IN ${checksums_param_name} OR sf.checksum_value IN ${checksums_param_name})")
                 params[checksums_param_name] = checksums_list
-        
+
         # Build final query - OPTIMIZATION: Same as get_files, filter files FIRST
         # PERFORMANCE OPTIMIZATION: Split WHERE conditions into:
         # 1. File property filters (apply BEFORE any traversals)
         # 2. Study filters (apply AFTER study path is established)
         file_where_conditions = []  # Filters on sf.* properties
         study_where_conditions = []  # Filters on study properties
-        
+
         if where_conditions:
-            for cond in where_conditions:
-                file_where_conditions.append(cond)
-        
+            file_where_conditions = list(where_conditions)
+
         study_where_conditions.append("st IS NOT NULL")
-        
-        # Add depositions filter (filter by study_id)  
+
+        # Add depositions filter (filter by study_id)
         # Support || separator for OR logic (e.g., "phs002517 || phs002790")
+        depositions_param_name = None
         if depositions_list is not None:
             param_counter += 1
             param_name = f"param_{param_counter}"
@@ -1193,14 +1209,14 @@ class FileRepository:
             else:
                 study_where_conditions.append(f"st.study_id IN ${param_name}")
                 params[param_name] = depositions_list
-        
+
         # Build WHERE clauses
         file_where_clause = "WHERE " + " AND ".join(file_where_conditions) if file_where_conditions else ""
         study_where_clause = "WHERE " + " AND ".join(study_where_conditions)
-        
+
         # Detect if we have depositions filter for CALL+UNION optimization
         has_depositions_filter = depositions_list is not None
-        
+
         # CONDITIONAL OPTIMIZATION: Match get_files pattern (same 4 patterns, using multi-hop traversal)
         if file_where_conditions and has_depositions_filter:
             # PATTERN 1: OPTIMIZED SUMMARY (with file filters + depositions)
@@ -1208,12 +1224,12 @@ class FileRepository:
             # or sample -> cell_line -> study (fallback)
             deposition_param = depositions_param_name
             deposition_operator = "=" if len(depositions_list) == 1 else "IN"
-            
+
             cypher = f"""
-            MATCH (sf:sequencing_file)
+            MATCH (sf:{self.config.node_label})
             {file_where_clause}
             // Use multi-hop traversal (with WITH clauses to prevent cartesian products)
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa:sample)
             // study path 2 — via participant → consent → study (preferred path)
             OPTIONAL MATCH (sa)-[:of_sample]->(:participant)
                        -[:of_participant]->(:consent_group)
@@ -1233,10 +1249,10 @@ class FileRepository:
             # Use multi-hop traversal: sample -> participant -> consent_group -> study (preferred)
             # or sample -> cell_line -> study (fallback)
             cypher = f"""
-            MATCH (sf:sequencing_file)
+            MATCH (sf:{self.config.node_label})
             {file_where_clause}
             // Use multi-hop traversal (with WITH clauses to prevent cartesian products)
-            OPTIONAL MATCH (sf)-[:of_sequencing_file]->(sa:sample)
+            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa:sample)
             // study path 2 — via participant → consent → study (preferred path)
             OPTIONAL MATCH (sa)-[:of_sample]->(:participant)
                        -[:of_participant]->(:consent_group)
@@ -1256,16 +1272,16 @@ class FileRepository:
             # or: study <- cell_line <- sample <- sequencing_file
             deposition_param = depositions_param_name
             deposition_operator = "=" if len(depositions_list) == 1 else "IN"
-            
+
             cypher = f"""
             // Start from study nodes (only a few studies)
             MATCH (st:study)
             WHERE st.study_id {deposition_operator} ${deposition_param}
             // Collect files using multi-hop traversal (path 2 - preferred)
-            OPTIONAL MATCH (st)<-[:of_consent_group]-(:consent_group)<-[:of_participant]-(:participant)<-[:of_sample]-(sa:sample)<-[:of_sequencing_file]-(sf:sequencing_file)
+            OPTIONAL MATCH (st)<-[:of_consent_group]-(:consent_group)<-[:of_participant]-(:participant)<-[:of_sample]-(sa:sample)<-[:{self.config.rel_name}]-(sf:{self.config.node_label})
             WITH st, collect(DISTINCT sf) AS sf_list_path2
             // Collect files using multi-hop traversal (path 1 - fallback)
-            OPTIONAL MATCH (st)<-[:of_cell_line]-(:cell_line)<-[:of_sample]-(sa2:sample)<-[:of_sequencing_file]-(sf2:sequencing_file)
+            OPTIONAL MATCH (st)<-[:of_cell_line]-(:cell_line)<-[:of_sample]-(sa2:sample)<-[:{self.config.rel_name}]-(sf2:{self.config.node_label})
             WITH st, sf_list_path2, collect(DISTINCT sf2) AS sf_list_path1
             // Combine files from both paths and count distinct
             UNWIND [sf IN sf_list_path2 WHERE sf IS NOT NULL | sf] + [sf IN sf_list_path1 WHERE sf IS NOT NULL] AS sf
@@ -1273,73 +1289,47 @@ class FileRepository:
             """.strip()
         else:
             # PATTERN 3: SIMPLE SUMMARY (no filters at all)
-            # Use multi-hop traversal: sample -> participant -> consent_group -> study (preferred)
-            # or sample -> cell_line -> study (fallback)
-            # Must verify study path to match count_files_by_field logic
+            # Collect each study path into a list before the second OPTIONAL MATCH to prevent
+            # a Cartesian product: two bare OPTIONAL MATCHes produce N×M rows when a sample
+            # has N participant→study paths and M cell_line→study paths.
+            # collect(null) → [], so size([]) == 0 correctly excludes samples with no study.
             cypher = f"""
-            MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa:sample)
-            // study path 2 — via participant → consent → study (preferred path)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)
-                       -[:of_participant]->(:consent_group)
-                       -[:of_consent_group]->(st2:study)
-            WITH sf, sa, collect(DISTINCT st2) AS st2_list
-            // study path 1 — via cell_line (fallback)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-            WITH sf, sa, st2_list, collect(DISTINCT st1) AS st1_list
-            WITH sf, coalesce(st2_list[0], st1_list[0]) AS st
-            WHERE st IS NOT NULL
-            RETURN count(DISTINCT sf) as total_count
+            MATCH (sf:{self.config.node_label})-[:{self.config.rel_name}]->(sa:sample)
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st1:study)
+            WITH sf, sa, collect(DISTINCT st1) AS st1_list
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st2:study)
+            WITH sf, st1_list, collect(DISTINCT st2) AS st2_list
+            WHERE size(st1_list) > 0 OR size(st2_list) > 0
+            RETURN count(DISTINCT sf) AS total_count
             """.strip()
-        
-        logger.info(
-            "Executing get_files_summary Cypher query",
-            cypher=cypher,
-            params=params
-        )
-        
-        # Execute query with proper result consumption and retry logic
-        max_retries = 2
-        retry_count = 0
-        records = []
-        
-        while retry_count <= max_retries:
-            try:
-                result = await self.session.run(cypher, params)
-                records = []
-                async for record in result:
-                    records.append(dict(record))
-                
-                # Ensure result is fully consumed
-                await result.consume()
-                
-                # If we got results, break out of retry loop
-                if records:
-                    break
-                
-                # If no results and not the last retry, wait a bit and retry
-                if retry_count < max_retries:
-                    await asyncio.sleep(0.1 * (retry_count + 1))  # Exponential backoff: 0.1s, 0.2s
-                    retry_count += 1
-                    logger.debug(f"Retrying get_files_summary query (attempt {retry_count + 1})")
-                else:
-                    break
-            except Exception as e:
-                if retry_count < max_retries:
-                    await asyncio.sleep(0.1 * (retry_count + 1))
-                    retry_count += 1
-                    logger.warning(f"Error in get_files_summary query, retrying (attempt {retry_count + 1})", error=str(e))
-                else:
-                    logger.error("Error in get_files_summary query after retries", error=str(e), exc_info=True)
-                    raise
-        
-        if not records:
-            logger.debug("No records returned from get_files_summary query")
-            return {"total_count": 0}
-        
-        summary = records[0]
-        logger.debug("Completed sequencing files summary", total_count=summary.get("total_count", 0))
-        
-        return summary
+
+        return cypher, params
+
+    async def count_for_pagination(self, filters: Dict[str, Any]) -> int:
+        """
+        Return COUNT(DISTINCT sf) for these filters.
+        Used by FileService to split pagination across node types.
+
+        Raises database exceptions directly — caller is responsible for handling.
+        This is intentional: partial failures propagate rather than silently returning 0.
+        """
+        cypher, params = await self._build_count_query(filters)
+        if cypher is _ZERO_COUNT_SENTINEL:
+            return 0
+        try:
+            result = await self.session.run(cypher, params)
+            records = []
+            async for record in result:
+                records.append(dict(record))
+            await result.consume()
+            return records[0].get("total_count", 0) if records else 0
+        except Exception:
+            logger.error(
+                "Database error in count_for_pagination",
+                node_label=self.config.node_label,
+                filters=filters,
+            )
+            raise
     
     def _validate_filters(self, filters: Dict[str, Any], entity_type: str) -> None:
         """
@@ -1472,6 +1462,12 @@ class FileRepository:
         file_name_value = sf.get("file_name")
         if file_name_value is not None:
             unharmonized["file_name"] = format_metadata_value(file_name_value)
+
+        # Merge any per-type additional unharmonized fields declared in config
+        for api_field, db_property in self.config.unharmonized_fields.items():
+            value = sf.get(db_property)
+            if value is not None:
+                unharmonized[api_field] = format_metadata_value(value)
         
         metadata = {
             "size": format_metadata_value(sf.get("file_size") or sf.get("size")),

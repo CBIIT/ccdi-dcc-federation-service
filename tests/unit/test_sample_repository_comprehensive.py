@@ -224,7 +224,7 @@ class TestSampleRepositoryCountByField:
         assert "total" in result
 
     async def test_count_samples_by_field_with_diagnosis_search(self, repository, mock_session):
-        """Test count_samples_by_field with diagnosis search filter."""
+        """_diagnosis_search is ignored; count-by-field uses unfiltered cohort (API: no query params)."""
         async def async_gen():
             yield {"value": "Tumor", "count": 3}
         
@@ -238,8 +238,11 @@ class TestSampleRepositoryCountByField:
         ])
         
         result = await repository.count_samples_by_field("tissue_type", {"_diagnosis_search": "cancer"})
-        
+
         assert "total" in result
+        query, params = mock_session.run.call_args_list[0][0]
+        assert "diagnosis_search_term" not in params
+        assert "p._diagnosis_search" not in query
 
     async def test_count_samples_by_field_with_anatomical_sites_filter(self, repository, mock_session):
         """Test count_samples_by_field with anatomical_sites filter (single value)."""
@@ -608,12 +611,12 @@ class TestSampleRepositoryGetSamples:
         assert mock_session.run.called
 
     async def test_get_samples_for_diagnosis_endpoint_returns_tuple(self, repository):
-        """Dedicated diagnosis endpoint path returns tuple from get_samples(return_total=True)."""
+        """Non-diagnosis filters delegate to get_samples and unwrap the tuple correctly."""
         with patch.object(repository, "get_samples", new_callable=AsyncMock) as mock_get_samples:
             mock_get_samples.return_value = ([Mock()], 8)
 
             samples, total_count = await repository.get_samples_for_diagnosis_endpoint(
-                filters={"_diagnosis_search": "glioma"},
+                filters={"tissue_type": "Tumor"},
                 offset=0,
                 limit=20,
                 base_url="https://example.org",
@@ -622,7 +625,7 @@ class TestSampleRepositoryGetSamples:
             assert isinstance(samples, list)
             assert total_count == 8
             mock_get_samples.assert_awaited_once_with(
-                filters={"_diagnosis_search": "glioma"},
+                filters={"tissue_type": "Tumor"},
                 offset=0,
                 limit=20,
                 base_url="https://example.org",
@@ -630,12 +633,12 @@ class TestSampleRepositoryGetSamples:
             )
 
     async def test_get_samples_for_diagnosis_endpoint_fallback_list(self, repository):
-        """Dedicated diagnosis endpoint path returns zero total if get_samples omits count."""
+        """Returns zero total when get_samples returns a plain list (no count)."""
         with patch.object(repository, "get_samples", new_callable=AsyncMock) as mock_get_samples:
             mock_get_samples.return_value = [Mock()]
 
             samples, total_count = await repository.get_samples_for_diagnosis_endpoint(
-                filters={"_diagnosis_search": "glioma"},
+                filters={"tissue_type": "Tumor"},
                 offset=0,
                 limit=20,
             )
@@ -1011,8 +1014,8 @@ class TestSampleRepositoryRecordToSample:
         with patch('app.repositories.sample.map_field_value', return_value="Tumor"):
             sample = repository._record_to_sample(sa, p, st, {}, {}, diagnoses)
             assert sample.metadata.diagnosis is not None
-            assert sample.metadata.diagnosis.value == "Neuroblastoma"
-            assert sample.metadata.diagnosis.comment == "See pathology report"
+            assert sample.metadata.diagnosis[0].value == "Neuroblastoma"
+            assert sample.metadata.diagnosis[0].comment == "See pathology report"
 
     def test_record_to_sample_with_empty_diagnosis(self, repository):
         """Test _record_to_sample handles empty diagnosis."""
@@ -1024,6 +1027,41 @@ class TestSampleRepositoryRecordToSample:
         with patch('app.repositories.sample.map_field_value', return_value="Tumor"):
             sample = repository._record_to_sample(sa, p, st, {}, {}, diagnoses)
             assert sample.metadata.diagnosis is None
+
+    def test_record_to_sample_with_multiple_diagnoses_aggregates_categories(self, repository):
+        """Test repository _record_to_sample preserves all diagnosis entries and category tokens."""
+        sa = {
+            "sample_id": "SAMP001",
+            "participant_age_at_collection": "12.0",
+            "sample_tumor_status": "Tumor",
+        }
+        p = {"participant_id": "PART001"}
+        st = {"study_id": "phs002431"}
+        diagnoses = [
+            {
+                "diagnosis": "Neuroblastoma",
+                "tumor_grade": "G1",
+                "age_at_diagnosis": 10,
+                "diagnosis_category": "Medulloblastoma;Gliomas",
+            },
+            {
+                "diagnosis": "Leukemia",
+                "tumor_grade": "G3",
+                "age_at_diagnosis": 20,
+                "diagnosis_category": "Medulloblastoma;Custom Category",
+            },
+        ]
+
+        sample = repository._record_to_sample(sa, p, st, {}, {}, diagnoses)
+
+        assert [item.value for item in sample.metadata.diagnosis] == ["Neuroblastoma", "Leukemia"]
+        assert sample.metadata.tumor_grade.value == "G1"
+        assert sample.metadata.age_at_diagnosis.value == 10
+        assert [item.value for item in sample.metadata.diagnosis_category] == ["Medulloblastoma"]
+        assert [item["value"] for item in sample.metadata.unharmonized["diagnosis_category"]] == [
+            "Gliomas",
+            "Custom Category",
+        ]
 
 
 @pytest.mark.unit

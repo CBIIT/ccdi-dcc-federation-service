@@ -1,6 +1,6 @@
 # CCDI Federation Service
 
-**Version: 1.2.0**
+**Version: 1.3.0**
 
 A REST API service for querying the CCDI (Childhood Cancer Data Initiative) graph database. This service provides endpoints for retrieving subjects, samples, files, and metadata from a Memgraph graph database.
 
@@ -178,7 +178,7 @@ The service uses environment variables for configuration. See `.env.example` for
 #### Application
 ```bash
 APP_NAME="CCDI Federation Service"
-APP_VERSION="v1.2.0" 
+APP_VERSION="v1.3.0" 
 DEBUG=false
 HOST=0.0.0.0
 PORT=8000

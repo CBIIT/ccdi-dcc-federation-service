@@ -212,6 +212,40 @@ class TestSampleEndpoints:
                     
                     assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
 
+    async def test_count_samples_by_field_rejects_query_params(
+        self, mock_session, mock_settings, mock_allowlist, mock_request
+    ):
+        """Count endpoint must not accept any query parameters."""
+        class QueryParams(dict):
+            def __init__(self, params):
+                super().__init__(params)
+                self._params = params
+
+            def keys(self):
+                return self._params.keys()
+
+            def __len__(self):
+                return len(self._params)
+
+        mock_request.query_params = QueryParams({"tissue_type": "Tumor"})
+
+        with pytest.raises(HTTPException) as exc_info:
+            await count_samples_by_field(
+                field="tissue_type",
+                request=mock_request,
+                session=mock_session,
+                settings=mock_settings,
+                allowlist=mock_allowlist,
+                _rate_limit=None,
+            )
+
+        assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
+        assert exc_info.value.detail["errors"][0]["kind"] == ErrorKind.INVALID_PARAMETERS
+        assert (
+            exc_info.value.detail["errors"][0]["reason"]
+            == "Count endpoint does not accept any query parameters"
+        )
+
     async def test_count_samples_by_field_success(
         self, mock_session, mock_settings, mock_allowlist, mock_request
     ):

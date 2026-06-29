@@ -1,7 +1,8 @@
 ############################
 # Builder stage
 ############################
-FROM python:3.12-slim AS builder
+# Pin trixie: libssl3t64 / openssl-provider-legacy match this series (unpinned slim may switch Debian).
+FROM python:3.12-slim-trixie AS builder
 
 ARG POETRY_VERSION=1.6.1
 
@@ -13,16 +14,21 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     POETRY_VENV_IN_PROJECT=1
 
 # System dependencies required for building (gcc, headers) & curl for potential build scripts
-# Update openssl packages to fix security vulnerabilities (CVE-2025-15467, CVE-2025-69419)
+# DSA-6335: openssl 3.5.6-1~deb13u2+ from trixie-security (CVE-2026-34182 and related OpenSSL CVEs).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     build-essential \
-    && apt-get upgrade -y --no-install-recommends openssl libssl3 openssl-provider-legacy \
+    && apt-get install -y --no-install-recommends --only-upgrade \
+        openssl libssl3t64 openssl-provider-legacy \
+        libgnutls30t64 \
+        libcap2 \
+    && dpkg --compare-versions "$(dpkg-query -f '${Version}' -W openssl)" ge 3.5.6-1~deb13u2 \
+    || (echo "FATAL: openssl < 3.5.6-1~deb13u2 (DSA-6335). apt-get update may be stale — rebuild with --no-cache." && exit 1) \
     && rm -rf /var/lib/apt/lists/*
 
 
-# Patch pip to fix security vulnerabilities
-RUN python -m pip install --no-cache-dir --upgrade "pip==25.3"
+# Patch pip to fix security vulnerabilities (builder only; runtime removes pip after install).
+RUN python -m pip install --no-cache-dir --upgrade "pip==26.1.2"
 
 WORKDIR /app
 
@@ -42,26 +48,35 @@ RUN poetry install --only-root \
 ############################
 # Runtime stage
 ############################
-FROM python:3.12-slim AS runtime
+FROM python:3.12-slim-trixie AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 
 # Minimal runtime deps (curl for HEALTHCHECK)
-# Update openssl packages to fix security vulnerabilities (CVE-2025-15467, CVE-2025-69419)
+# DSA-6335: openssl 3.5.6-1~deb13u2+ from trixie-security (CVE-2026-34182 and related OpenSSL CVEs).
+# Remove perl-base after all apt installs — unused by this Python service; clears open perl CVEs on
+# Debian Trixie until a patched package ships. See docs/container-image-security.md.
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
-    && apt-get upgrade -y --no-install-recommends openssl libssl3 openssl-provider-legacy \
+    && apt-get install -y --no-install-recommends --only-upgrade \
+        openssl libssl3t64 openssl-provider-legacy \
+        libgnutls30t64 \
+        libcap2 \
+    && dpkg --compare-versions "$(dpkg-query -f '${Version}' -W openssl)" ge 3.5.6-1~deb13u2 \
+    || (echo "FATAL: openssl < 3.5.6-1~deb13u2 (DSA-6335). apt-get update may be stale — rebuild with --no-cache." && exit 1) \
+    && apt-get remove -y --allow-remove-essential --purge perl-base \
     && rm -rf /var/lib/apt/lists/*
-
-# Keep pip patched in builder image for security scans
-RUN python -m pip install --no-cache-dir --upgrade "pip==25.3"
 
 WORKDIR /app
 
-# Install runtime Python dependencies with pip (globally) to ensure console scripts like uvicorn are on PATH.
+# Install runtime deps, then remove pip — not needed at runtime and clears PRISMA-2022-0168 /
+# other pip CVEs on scanners (base image ships pip 24.1.1; upgrade alone still leaves pip in SBOM).
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python -m pip install --no-cache-dir --upgrade "pip==26.1.2" \
+    && python -m pip install --no-cache-dir -r requirements.txt \
+    && python -m pip uninstall -y pip \
+    && rm -rf /root/.cache/pip
 
 # Copy application code & (optionally) the builder artifacts (virtualenv) for any packages not pinned in requirements.txt
 COPY --from=builder /app/app ./app
@@ -84,5 +99,5 @@ LABEL org.opencontainers.image.source="https://github.com/CBIIT/ccdi-dcc-federat
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -fsS http://localhost:8000/health || exit 1
 
-# Use uvicorn directly from the in-project Poetry venv for faster startup
+# Uvicorn is installed from requirements.txt and invoked on PATH (runtime does not use the builder Poetry venv).
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

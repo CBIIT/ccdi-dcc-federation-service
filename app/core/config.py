@@ -133,6 +133,7 @@ class Settings(BaseSettings):
     # Pagination defaults
     default_page_size: int = Field(default=50, alias="DEFAULT_PAGE_SIZE")
     max_page_size: int = Field(default=1000, alias="MAX_PAGE_SIZE")
+    public_max_page_size: int = Field(default=500, alias="PUBLIC_MAX_PAGE_SIZE")
     
     # Cache settings
     # Redis is not deployed yet; keep caching opt-in via CACHE_ENABLED=true.
@@ -233,7 +234,8 @@ class Settings(BaseSettings):
     
     # Valid fields for subject count operations (case-sensitive)
     subject_count_fields: List[str] = Field(
-        default=["sex", "race", "ethnicity", "vital_status", "age_at_vital_status","associated_diagnoses"],
+        default=["sex", "race", "ethnicity", "vital_status", "age_at_vital_status",
+                 "associated_diagnoses", "associated_diagnosis_categories"],
         alias="SUBJECT_COUNT_FIELDS",
         description="Valid field names for /subject/by/{field}/count endpoint"
     )

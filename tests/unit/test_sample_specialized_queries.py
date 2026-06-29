@@ -526,9 +526,313 @@ class TestSpecializedQueries:
         mock_result.single = AsyncMock(return_value=mock_record)
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         filters = {"library_strategy": "WXS"}
         result = await repository._get_samples_summary_reverse_query(filters)
-        
+
         assert mock_session.run.called
         assert "total" in result.get("counts", {})
+
+
+def _empty_case3_result():
+    """Return a mock DB result that yields one minimal sample record."""
+    async def async_gen():
+        yield {
+            "sa": {"sample_id": "SAMP001"},
+            "p": {"participant_id": "PART001"},
+            "st": {"study_id": "phs001"},
+            "sf": {},
+            "pf": {},
+            "diagnoses": [{"diagnosis": "leukemia", "disease_phase": "Initial Diagnosis"}],
+        }
+
+    mock_result = AsyncMock()
+    mock_result.__aiter__ = Mock(return_value=async_gen())
+    mock_result.consume = AsyncMock()
+    return mock_result
+
+
+def _make_categorized(
+    diagnosis: dict | None = None,
+    sequencing_file: dict | None = None,
+    pathology_file: dict | None = None,
+) -> dict:
+    """Build a minimal categorized filter dict for Case 3 tests."""
+    return {
+        "sample": {},
+        "study": {},
+        "diagnosis": diagnosis or {},
+        "sequencing_file": sequencing_file or {},
+        "pathology_file": pathology_file or {},
+    }
+
+
+def _mock_count_result(total: int = 50):
+    """Async mock for Case 3 count query returning total_count."""
+    async def count_async_gen():
+        yield {"total_count": total}
+
+    mock_count_result = AsyncMock()
+    mock_count_result.__aiter__ = Mock(return_value=count_async_gen())
+    mock_count_result.consume = AsyncMock()
+    return mock_count_result
+
+
+@pytest.mark.unit
+class TestPreUnwindOrdering:
+    """Assert that diagnosis MATCH/OPTIONAL MATCH appears before UNWIND in Case 3 queries.
+
+    The pre-UNWIND optimization collects matching diagnosis nodes per sample
+    before study collection and UNWIND, avoiding the full samples × studies
+    cross product. These tests verify query ordering — not result correctness.
+    """
+
+    @pytest.fixture
+    def mock_session(self):
+        return AsyncMock()
+
+    @pytest.fixture
+    def mock_allowlist(self):
+        al = Mock(spec=FieldAllowlist)
+        al.is_field_allowed = Mock(return_value=True)
+        al.is_allowed = Mock(return_value=True)
+        return al
+
+    @pytest.fixture
+    def mock_settings(self):
+        s = Mock(spec=Settings)
+        s.pagination = Mock()
+        s.pagination.max_page_size = 1000
+        s.sample_count_fields = []
+        return s
+
+    @pytest.fixture
+    def repository(self, mock_session, mock_allowlist, mock_settings):
+        return SampleRepository(mock_session, mock_allowlist, mock_settings)
+
+    @pytest.mark.asyncio
+    async def test_filter_only_diagnosis_match_before_unwind(self, repository, mock_session):
+        """Non-search diagnosis filter: MATCH (d:diagnosis) must precede UNWIND combined."""
+        mock_session.run = AsyncMock(return_value=_empty_case3_result())
+        categorized = _make_categorized(diagnosis={"disease_phase": "Initial Diagnosis"})
+        await repository._get_samples_case3_with_node_filters(
+            {}, categorized, offset=0, limit=20, base_url=None, return_total=False
+        )
+        query = mock_session.run.call_args[0][0]
+        match_pos = query.find("MATCH (d:diagnosis)-[:of_diagnosis]->(sa)")
+        unwind_pos = query.find("UNWIND combined")
+        assert match_pos != -1, "pre-UNWIND MATCH (d:diagnosis) should be present"
+        assert unwind_pos != -1, "UNWIND combined should be present"
+        assert match_pos < unwind_pos, "diagnosis MATCH must appear before UNWIND"
+
+    @pytest.mark.asyncio
+    async def test_search_only_optional_match_before_unwind(self, repository, mock_session):
+        """Diagnosis search: OPTIONAL MATCH (d:diagnosis) must precede UNWIND combined."""
+        mock_session.run = AsyncMock(return_value=_empty_case3_result())
+        categorized = _make_categorized(diagnosis={"_diagnosis_search": "leukemia"})
+        await repository._get_samples_case3_with_node_filters(
+            {}, categorized, offset=0, limit=20, base_url=None, return_total=False
+        )
+        query = mock_session.run.call_args[0][0]
+        opt_match_pos = query.find("OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)")
+        unwind_pos = query.find("UNWIND combined")
+        assert opt_match_pos != -1, "pre-UNWIND OPTIONAL MATCH (d:diagnosis) should be present"
+        assert unwind_pos != -1, "UNWIND combined should be present"
+        assert opt_match_pos < unwind_pos, "diagnosis OPTIONAL MATCH must appear before UNWIND"
+
+    @pytest.mark.asyncio
+    async def test_search_with_filter_optional_match_before_unwind(self, repository, mock_session):
+        """Search + filter combined: pre-UNWIND OPTIONAL MATCH (d:diagnosis) before UNWIND."""
+        mock_session.run = AsyncMock(return_value=_empty_case3_result())
+        categorized = _make_categorized(
+            diagnosis={"_diagnosis_search": "leukemia", "disease_phase": "Initial Diagnosis"}
+        )
+        await repository._get_samples_case3_with_node_filters(
+            {}, categorized, offset=0, limit=20, base_url=None, return_total=False
+        )
+        query = mock_session.run.call_args[0][0]
+        opt_match_pos = query.find("OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)")
+        unwind_pos = query.find("UNWIND combined")
+        assert opt_match_pos != -1, "pre-UNWIND OPTIONAL MATCH (d:diagnosis) should be present"
+        assert unwind_pos != -1, "UNWIND combined should be present"
+        assert opt_match_pos < unwind_pos, "diagnosis OPTIONAL MATCH must appear before UNWIND"
+
+    @pytest.mark.asyncio
+    async def test_sf_filter_pre_unwind_match_before_unwind(self, repository, mock_session):
+        """Sequencing_file filter: MATCH (sf) must precede UNWIND combined."""
+        mock_session.run = AsyncMock(return_value=_empty_case3_result())
+        categorized = _make_categorized(sequencing_file={"library_strategy": "WXS"})
+        with patch("app.repositories.sample_query_cases.is_database_only_value", return_value=False):
+            with patch("app.repositories.sample_query_cases.reverse_map_field_value", return_value="WXS"):
+                await repository._get_samples_case3_with_node_filters(
+                    {}, categorized, offset=0, limit=20, base_url=None, return_total=False
+                )
+        query = mock_session.run.call_args[0][0]
+        sf_match_pos = query.find("MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)")
+        unwind_pos = query.find("UNWIND combined")
+        assert sf_match_pos != -1
+        assert sf_match_pos < unwind_pos
+        assert "all_sf" in query
+        assert "OPTIONAL MATCH (sf:sequencing_file)" not in query
+
+    @pytest.mark.asyncio
+    async def test_diagnosis_and_sf_both_pre_unwind_before_unwind(self, repository, mock_session):
+        """Diagnosis + sf filters: both pre-UNWIND vars carried into study collection."""
+        mock_session.run = AsyncMock(return_value=_empty_case3_result())
+        categorized = _make_categorized(
+            diagnosis={"disease_phase": "Initial Diagnosis"},
+            sequencing_file={"library_strategy": "WXS"},
+        )
+        with patch("app.repositories.sample_query_cases.is_database_only_value", return_value=False):
+            with patch("app.repositories.sample_query_cases.reverse_map_field_value", return_value="WXS"):
+                await repository._get_samples_case3_with_node_filters(
+                    {}, categorized, offset=0, limit=20, base_url=None, return_total=False
+                )
+        query = mock_session.run.call_args[0][0]
+        unwind_pos = query.find("UNWIND combined")
+        assert query.find("MATCH (d:diagnosis)-[:of_diagnosis]->(sa)") < unwind_pos
+        assert query.find("MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)") < unwind_pos
+        assert "all_diagnoses" in query and "all_sf" in query
+
+    @pytest.mark.asyncio
+    async def test_return_total_uses_pre_unwind_count_query(self, repository, mock_session):
+        """return_total=True runs optimized count with WITH DISTINCT sa after pre-UNWIND."""
+        mock_session.run = AsyncMock(
+            side_effect=[_mock_count_result(42), _empty_case3_result()]
+        )
+        categorized = _make_categorized(diagnosis={"disease_phase": "Initial Diagnosis"})
+        result = await repository._get_samples_case3_with_node_filters(
+            {}, categorized, offset=0, limit=20, base_url=None, return_total=True
+        )
+        assert mock_session.run.call_count == 2
+        count_query = mock_session.run.call_args_list[0][0][0]
+        assert "WITH DISTINCT sa" in count_query
+        assert "MATCH (d:diagnosis)-[:of_diagnosis]->(sa)" in count_query
+        assert isinstance(result, tuple)
+        assert result[1] == 42
+
+    @pytest.mark.asyncio
+    async def test_return_total_sf_pre_unwind_count_query(self, repository, mock_session):
+        """return_total=True with sf-only filter uses sf pre-UNWIND in count path."""
+        mock_session.run = AsyncMock(
+            side_effect=[_mock_count_result(7), _empty_case3_result()]
+        )
+        categorized = _make_categorized(sequencing_file={"library_strategy": "WXS"})
+        with patch("app.repositories.sample_query_cases.is_database_only_value", return_value=False):
+            with patch("app.repositories.sample_query_cases.reverse_map_field_value", return_value="WXS"):
+                result = await repository._get_samples_case3_with_node_filters(
+                    {}, categorized, offset=0, limit=20, base_url=None, return_total=True
+                )
+        count_query = mock_session.run.call_args_list[0][0][0]
+        assert "MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)" in count_query
+        assert "WITH DISTINCT sa" in count_query
+        assert result[1] == 7
+
+    @pytest.mark.asyncio
+    async def test_invalid_library_strategy_returns_empty_without_db(self, repository, mock_session):
+        """Database-only library_strategy short-circuits before session.run."""
+        mock_session.run = AsyncMock()
+        categorized = _make_categorized(sequencing_file={"library_strategy": "Archer Fusion"})
+        with patch("app.repositories.sample_query_cases.is_database_only_value", return_value=True):
+            result = await repository._get_samples_case3_with_node_filters(
+                {}, categorized, offset=0, limit=20, base_url=None, return_total=False
+            )
+        assert result == []
+        mock_session.run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_invalid_library_strategy_return_total_zero(self, repository, mock_session):
+        """Database-only library_strategy with return_total returns ([], 0)."""
+        mock_session.run = AsyncMock()
+        categorized = _make_categorized(sequencing_file={"library_strategy": "Archer Fusion"})
+        with patch("app.repositories.sample_query_cases.is_database_only_value", return_value=True):
+            result = await repository._get_samples_case3_with_node_filters(
+                {}, categorized, offset=0, limit=20, base_url=None, return_total=True
+            )
+        assert result == ([], 0)
+        mock_session.run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_library_strategy_other_reverse_mapping_in_pre_unwind(self, repository, mock_session):
+        """Other -> Archer Fusion produces OR clause in pre-UNWIND sf WHERE."""
+        mock_session.run = AsyncMock(return_value=_empty_case3_result())
+        categorized = _make_categorized(sequencing_file={"library_strategy": "Other"})
+        with patch("app.repositories.sample_query_cases.is_database_only_value", return_value=False):
+            with patch(
+                "app.repositories.sample_query_cases.reverse_map_field_value",
+                return_value="Archer Fusion",
+            ):
+                await repository._get_samples_case3_with_node_filters(
+                    {}, categorized, offset=0, limit=20, base_url=None, return_total=False
+                )
+        query = mock_session.run.call_args[0][0]
+        assert "sf.library_strategy = $param_1 OR sf.library_strategy = $param_2" in query
+
+    @pytest.mark.asyncio
+    async def test_library_source_material_pre_unwind(self, repository, mock_session):
+        """library_source_material filter: MATCH (sf) precedes UNWIND combined."""
+        mock_session.run = AsyncMock(return_value=_empty_case3_result())
+        categorized = _make_categorized(sequencing_file={"library_source_material": "DNA"})
+        with patch("app.repositories.sample_query_cases.is_null_mapped_value", return_value=False):
+            with patch("app.repositories.sample_query_cases.reverse_map_field_value", return_value="DNA"):
+                await repository._get_samples_case3_with_node_filters(
+                    {}, categorized, offset=0, limit=20, base_url=None, return_total=False
+                )
+        query = mock_session.run.call_args[0][0]
+        sf_match_pos = query.find("MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)")
+        unwind_pos = query.find("UNWIND combined")
+        assert sf_match_pos != -1
+        assert sf_match_pos < unwind_pos
+        assert "all_sf" in query
+        assert "OPTIONAL MATCH (sf:sequencing_file)" not in query
+        assert "sf.library_source_material" in query
+
+    @pytest.mark.asyncio
+    async def test_library_selection_method_pre_unwind(self, repository, mock_session):
+        """library_selection_method filter: MATCH (sf) precedes UNWIND combined."""
+        mock_session.run = AsyncMock(return_value=_empty_case3_result())
+        categorized = _make_categorized(sequencing_file={"library_selection_method": "PCR"})
+        with patch("app.repositories.sample_query_cases.is_database_only_value", return_value=False):
+            with patch.object(repository, "_reverse_map_library_selection_method_static", return_value="PCR"):
+                await repository._get_samples_case3_with_node_filters(
+                    {}, categorized, offset=0, limit=20, base_url=None, return_total=False
+                )
+        query = mock_session.run.call_args[0][0]
+        sf_match_pos = query.find("MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)")
+        unwind_pos = query.find("UNWIND combined")
+        assert sf_match_pos != -1
+        assert sf_match_pos < unwind_pos
+        assert "all_sf" in query
+        assert "OPTIONAL MATCH (sf:sequencing_file)" not in query
+        assert "sf.library_selection" in query
+
+    @pytest.mark.asyncio
+    async def test_specimen_molecular_analyte_type_pre_unwind(self, repository, mock_session):
+        """specimen_molecular_analyte_type filter: MATCH (sf) precedes UNWIND combined."""
+        mock_session.run = AsyncMock(return_value=_empty_case3_result())
+        categorized = _make_categorized(sequencing_file={"specimen_molecular_analyte_type": "DNA"})
+        with patch("app.repositories.sample_query_cases.reverse_map_field_value", return_value="DNA"):
+            await repository._get_samples_case3_with_node_filters(
+                {}, categorized, offset=0, limit=20, base_url=None, return_total=False
+            )
+        query = mock_session.run.call_args[0][0]
+        sf_match_pos = query.find("MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)")
+        unwind_pos = query.find("UNWIND combined")
+        assert sf_match_pos != -1
+        assert sf_match_pos < unwind_pos
+        assert "all_sf" in query
+        assert "OPTIONAL MATCH (sf:sequencing_file)" not in query
+        assert "sf.library_source_molecule" in query
+
+    @pytest.mark.asyncio
+    async def test_pathology_file_filter_post_unwind(self, repository, mock_session):
+        """preservation_method keeps pf OPTIONAL MATCH post-UNWIND with size check."""
+        mock_session.run = AsyncMock(return_value=_empty_case3_result())
+        categorized = _make_categorized(pathology_file={"preservation_method": "FFPE"})
+        await repository._get_samples_case3_with_node_filters(
+            {}, categorized, offset=0, limit=20, base_url=None, return_total=False
+        )
+        query = mock_session.run.call_args[0][0]
+        assert "OPTIONAL MATCH (pf:pathology_file)" in query
+        assert "pf.fixation_embedding_method" in query
+        assert "size([pf IN all_pfs WHERE pf IS NOT NULL]) > 0" in query

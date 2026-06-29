@@ -18,7 +18,7 @@ info:
   contact:
     name: Childhood Cancer Data Initiative support email
     email: NCIChildhoodCancerDataInitiative@mail.nih.gov
-  version: v1.2.0
+  version: v1.3.0
 servers:
 - url: https://ccdi.stjude.cloud/api/v1
   description: St. Jude Children's Research Hospital CCDI API server
@@ -1311,59 +1311,32 @@ paths:
       - Experimental
       summary: 'Experimental: Filter the subjects known by this server by free-text diagnosis search.'
       description: |-
-        Experimental: Filter the subjects known by this server by free-text diagnosis search.
-
-        ### Diagnosis Filtering
-
-        This endpoint supports the experimental `search` parameter.
-        For this parameter, the subject is included in the results if the value of its
-        its `associated_diagnoses` field has at least one diagnosis which _contains_ the query string.
-        Matches are case-insensitive.
-
-        ### Pagination
-
-        This endpoint is paginated. Users may override the default pagination
-        parameters by providing one or more of the pagination-related query
-        parameters below.
-
-        ### Additional Filtering
-
-        All harmonized (top-level) and unharmonized (nested under the
-        `metadata.unharmonized` key) metadata fields are filterable. To achieve
-        this, you can provide the field name as a [`String`]. Filtering follows the
-        following rules:
-
-        * For single-value metadata field, the subject is included in the results if
-        its value _exactly_ matches the query string. Matches are case-sensitive.
-        * For multiple-value metadata fields, the subject is included in the results
-        if any of its values for the field _exactly_ match the query string (a
-        logical OR [`||`]). Matches are case-sensitive.
-        * When the metadata field is `null` (in the case of singular or
-        multiple-valued metadata fields) or empty, the subject is not included.
-        * When multiple fields are provided as filters, a logical AND (`&&`) strings
-        together the predicates. In other words, all filters must match for a
-        subject to be returned. Note that this means that servers do not natively
-        support logical OR (`||`) across multiple fields: that must be done by
-        calling this endpoint with each of your desired queries and performing a
-        set union of those subjects out of band.
-
-        ### Ordering
-
-        This endpoint has default ordering requirementsâ€”those details are documented
-        in the `responses::Subjects` schema.
-
-        Note: This API is experimental and is subject to change without being considered
-        as a breaking change.
+        Experimental diagnosis-node search with the same subject filters as `GET /subject`.
+        Harmonized and unharmonized category values; see
+        [CCDI Federation API aggregation](https://cbiit.github.io/ccdi-federation-api-aggregation/) (v1.3+).
+        `search`: substring on `diagnosis` (or `diagnosis_comment` for `see diagnosis_comment`).
+        `associated_diagnosis_categories`: substring on full `diagnosis_category` (on `GET /subject`,
+        same name = token match after `;`). Both = AND on one node. Paginated. Experimental.
       operationId: subject_diagnosis_index
       parameters:
       - name: search
         in: query
         description: |-
-          Matches any subject where any member of the `associated_diagnoses` field contains the
-          string provided, ignoring case.
+          Case-insensitive substring match on `diagnosis` from each diagnosis node
+          (list or scalar). When the diagnosis value is `see diagnosis_comment`, the
+          match is applied to `diagnosis_comment` instead. The value is trimmed;
+          all-whitespace is ignored.
 
-          **Note:** a logical OR (`||`) is performed across the values when
-          determining whether the subject should be included in the results.
+          May be combined with `associated_diagnosis_categories` (AND on the same
+          diagnosis node).
+        required: false
+        schema:
+          type: string
+      - name: associated_diagnosis_categories
+        in: query
+        description: |-
+          Substring on full `diagnosis_category` (harmonized or unharmonized). With `search`,
+          AND on same node. On `GET /subject`, same name = token match after `;`. Trimmed.
         required: false
         schema:
           type: string
@@ -1387,11 +1360,15 @@ paths:
       - name: ethnicity
         in: query
         description: |-
-          Matches any subject where the `ethnicity` field matches the string
-          provided.
+          Same derivation as `GET /subject`: inferred from `race` (contains
+          `Hispanic or Latino` → Hispanic or Latino; otherwise Not reported). Only
+          those two API values are valid filters.
         required: false
         schema:
           type: string
+          enum:
+          - Hispanic or Latino
+          - Not reported
       - name: identifiers
         in: query
         description: |-
@@ -19161,7 +19138,7 @@ components:
         api_version:
           type: string
           description: The version of the API that this server supports.
-          example: v1.2.0
+          example: v1.3.0
         documentation_url:
           type: string
           description: |-

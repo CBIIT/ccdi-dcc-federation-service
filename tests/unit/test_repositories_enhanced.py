@@ -375,9 +375,10 @@ class TestSubjectRepositoryEnhanced:
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         # Test with API value that needs mapping
-        with patch("app.repositories.subject.reverse_map_field_value") as mock_reverse_map:
+        # Patch the module where get_subjects_summary lives (subject_summary mixin)
+        with patch("app.repositories.subject_summary.reverse_map_field_value") as mock_reverse_map:
             def reverse_map_side_effect(field, value):
                 if field == "race" and value == "Not allowed to collect":
                     return "Not Allowed to Collect"
@@ -471,6 +472,60 @@ class TestSubjectRepositoryEnhanced:
 
         assert result == {"total_count": 11}
         repository.get_subjects_summary.assert_called_once_with({"sex": "F", "_invalid_sex": True})
+
+    async def test_get_subjects_summary_for_diagnosis_category_contains_only_runs_query(
+        self, repository, mock_session
+    ):
+        """Substring category filter without search still uses diagnosis-first Cypher path."""
+        mock_result = AsyncMock()
+        mock_result.data = AsyncMock(return_value=[{"total_count": 7}])
+        mock_session.run = AsyncMock(return_value=mock_result)
+        repository.get_subjects_summary = AsyncMock()
+
+        result = await repository.get_subjects_summary_for_diagnosis_endpoint(
+            filters={"_associated_diagnosis_categories_contains": "brain"}
+        )
+
+        assert result == {"total_count": 7}
+        repository.get_subjects_summary.assert_not_called()
+        assert mock_session.run.called
+        cypher = mock_session.run.call_args.args[0]
+        run_params = mock_session.run.call_args.args[1]
+        assert "$diag_category_contains_term" in cypher
+        assert "diag_category_contains_term" in run_params
+
+    async def test_get_subjects_summary_for_diagnosis_ethnicity_hispanic_predicate(
+        self, repository, mock_session
+    ):
+        """Ethnicity filter must apply p.race predicates on diagnosis summary path."""
+        mock_result = AsyncMock()
+        mock_result.data = AsyncMock(return_value=[{"total_count": 2}])
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        await repository.get_subjects_summary_for_diagnosis_endpoint(
+            filters={"_diagnosis_search": "Neuro", "ethnicity": "Hispanic or Latino"}
+        )
+
+        cypher = mock_session.run.call_args.args[0]
+        run_params = mock_session.run.call_args.args[1]
+        assert "toString(p.race) CONTAINS" in cypher
+        assert any(v == "Hispanic or Latino" for v in run_params.values())
+
+    async def test_get_subjects_summary_for_diagnosis_ethnicity_not_reported_predicate(
+        self, repository, mock_session
+    ):
+        mock_result = AsyncMock()
+        mock_result.data = AsyncMock(return_value=[{"total_count": 1}])
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        await repository.get_subjects_summary_for_diagnosis_endpoint(
+            filters={"_diagnosis_search": "Glioma", "ethnicity": "Not reported"}
+        )
+
+        cypher = mock_session.run.call_args.args[0]
+        run_params = mock_session.run.call_args.args[1]
+        assert "NOT toString(p.race) CONTAINS" in cypher or "NOT toString(p.race)" in cypher
+        assert any(v == "Hispanic or Latino" for v in run_params.values())
 
     async def test_get_subjects_summary_for_diagnosis_maps_sex_values(self, repository, mock_session):
         """Test diagnosis-summary path maps API sex values (F -> Female)."""
@@ -818,21 +873,6 @@ class TestFileRepositoryEnhanced:
         )
         
         assert result is None
-
-    async def test_get_files_summary(self, repository, mock_session):
-        """Test get_files_summary."""
-        async def async_gen():
-            yield {"total_count": 200}
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        mock_session.run = AsyncMock(return_value=mock_result)
-        
-        result = await repository.get_files_summary(filters={})
-        
-        assert isinstance(result, dict)
-        # The summary returns a dict with total_count key
-        assert "total_count" in result
 
 
 @pytest.mark.unit

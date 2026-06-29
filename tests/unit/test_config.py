@@ -29,7 +29,7 @@ class TestAppSettings:
         # The name comes from info.json if available, otherwise defaults to "CCDI Federation Service"
         # In CI/test environments, it may be "CCDI-DCC" from info.json
         assert settings.name in ["CCDI Federation Service", "CCDI-DCC"]
-        assert settings.version == "v1.2.0"
+        assert settings.version == "v1.3.0"
         assert settings.debug is False
 
     def test_app_settings_custom_values(self):

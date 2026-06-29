@@ -17,8 +17,10 @@ from app.core.constants import Race, Ethnicity, VitalStatus
 from app.db.memgraph import get_session
 from app.lib.field_allowlist import get_field_allowlist, FieldAllowlist
 from app.models.errors import create_pagination_error, InvalidParametersError
+from app.repositories.sample_helpers import SD_CAT_MARKER
 
 logger = get_logger(__name__)
+settings = get_settings()
 
 
 # ============================================================================
@@ -45,28 +47,52 @@ def get_allowlist() -> FieldAllowlist:
 # Pagination Dependencies
 # ============================================================================
 
+HARD_MAX_PAGE_SIZE = 1000  # DB-protection ceiling; not operator-configurable
+# Only page/per_page are excluded; all other params (including search, identifiers, etc.) count as active filters.
+NON_PAGINATION_PARAMS = {"page", "per_page"}
+
+PER_PAGE_QUERY_DESCRIPTION = (
+    "Number of results per page. Defaults to 50. Maximum: 500. "
+    "When any filter query parameter is present and per_page exceeds 500, "
+    "per_page is silently reduced to 50."
+)
+
+
 def get_pagination_params(
     page: Optional[int] = Query(
         default=1,
         ge=1,
-        description="The page to retrieve.\n\nThis is a 1-based index of a page within a page set. The value of page must default to 1 when this parameter is not provided."
+        description="1-based page index. Defaults to 1."
     ),
     per_page: Optional[int] = Query(
         default=None,
         ge=1,
-        le=1000,
-        description="The number of results per page.\n\nEach server can select its own default value for per_page when this parameter is not provided. \n\nThat said, the convention within the community is to use 50 as a default value if any value is equally reasonable.\n\nThe maximum allowed value is 1000."
-    )
+        description=PER_PAGE_QUERY_DESCRIPTION
+    ),
+    request: Request = None  # FastAPI pattern: Request with = None, not Optional[Request]
 ) -> PaginationParams:
     """
     Get and validate pagination parameters.
-    
+
     Raises:
         HTTPException: If pagination parameters are invalid
     """
+    if per_page is not None:
+        effective_max = min(settings.public_max_page_size, HARD_MAX_PAGE_SIZE)
+        if per_page > effective_max:
+            active_filter_keys = (
+                set(request.query_params.keys()) - NON_PAGINATION_PARAMS
+                if request is not None
+                else set()
+            )
+            if active_filter_keys:
+                per_page = settings.default_page_size
+            else:
+                error = create_pagination_error(page, per_page)
+                raise error.to_http_exception()
     try:
         return parse_pagination_params(page, per_page)
-    except ValueError as e:
+    except ValueError:
         error = create_pagination_error(page, per_page)
         raise error.to_http_exception()
 
@@ -77,29 +103,29 @@ def get_pagination_params(
 
 def get_subject_filters(
     sex: Optional[str] = Query(
-        None, 
+        None,
         description="Matches any subject where the `sex` field matches the string provided.",
         enum=["M", "F", "U"]
     ),
     race: Optional[str] = Query(
-        None, 
+        None,
         description="Matches any subject where any member of the `race` field matches any of the provided values. Multiple race values can be provided separated by `||` (double pipe). The race field in the database may contain semicolon-separated values (e.g., 'Asian;White'), and the filter will match if any of the provided values is found within those values. Only `||` is accepted as a delimiter; all other characters are treated as part of a single value.",
         enum=[r.value for r in Race]
     ),
     ethnicity: Optional[str] = Query(
-        None, 
+        None,
         description="Matches any subject where the `ethnicity` field matches the string provided. Ethnicity is derived from race values: if race contains 'Hispanic or Latino', ethnicity is 'Hispanic or Latino'; otherwise 'Not reported'. Only these two values are accepted.",
         enum=[e.value for e in Ethnicity]
     ),
     identifiers: Optional[str] = Query(None, description="Matches any subject where any member of the `identifiers` field matches the string provided. **Note:** a logical OR (`||`) is performed across the values when determining whether the subject should be included in the results."),
     vital_status: Optional[str] = Query(
-        None, 
+        None,
         description="Matches any subject where the `vital_status` field matches the string provided.",
         enum=[v.value for v in VitalStatus]
     ),
     age_at_vital_status: Optional[str] = Query(None, description="Matches any subject where the `age_at_vital_status` field matches the string provided."),
     depositions: Optional[str] = Query(
-        None, 
+        None,
         description="Filter by study_id. Matches any subject where the `depositions` field contains the specified study_id value (e.g., `phs002431`). Returns all participants that belong to the specified study. Example: `depositions=phs002431` will return all participants in study `phs002431`.",
         examples={
             "default": {
@@ -108,17 +134,28 @@ def get_subject_filters(
             }
         },
     ),
+    associated_diagnosis_categories: Optional[str] = Query(
+        None,
+        description=(
+            "Matches any subject where a diagnosis node's `diagnosis_category` matches "
+            "the value (case-insensitive token after `;` split). Harmonized (CDE 16607972) "
+            "or unharmonized values. Aligned with CCDI Federation API aggregation subject "
+            "filtering (v1.3+)."
+        ),
+    ),
     request: Request = None
 ) -> Dict[str, Any]:
     """Get subject filter parameters."""
     filters = {}
-    
+
     # Validate that no unknown query parameters are provided
     if request:
         # Define all allowed query parameter names
         allowed_params = {
-            "sex", "race", "ethnicity", "identifiers", "vital_status", 
-            "age_at_vital_status", "depositions", "page", "per_page", "search"
+            "sex", "race", "ethnicity", "identifiers", "vital_status",
+            "age_at_vital_status", "depositions",
+            "associated_diagnosis_categories",
+            "page", "per_page", "search"
         }
         
         # Check for unknown parameters (excluding unharmonized fields)
@@ -240,41 +277,46 @@ def get_subject_filters(
                 return filters
     if depositions is not None:
         filters["depositions"] = depositions
-    
+
+    if isinstance(associated_diagnosis_categories, str):
+        val = associated_diagnosis_categories.strip()
+        if val:
+            filters["associated_diagnosis_categories"] = val
+
     # Handle unharmonized fields from query parameters
     if request:
         for key, value in request.query_params.items():
             if key.startswith("metadata.unharmonized."):
                 filters[key] = value
-    
+
     return filters
 
 
 def get_subject_summary_filters(
     sex: Optional[str] = Query(
-        None, 
+        None,
         description="Matches any subject where the `sex` field matches the string provided.",
         enum=["M", "F", "U"]
     ),
     race: Optional[str] = Query(
-        None, 
+        None,
         description="Matches any subject where any member of the `race` field matches any of the provided values. Multiple race values can be provided separated by `||` (double pipe).",
         enum=[r.value for r in Race]
     ),
     ethnicity: Optional[str] = Query(
-        None, 
+        None,
         description="Matches any subject where the `ethnicity` field matches the string provided.",
         enum=[e.value for e in Ethnicity]
     ),
     identifiers: Optional[str] = Query(None, description="Matches any subject where any member of the `identifiers` field matches the string provided."),
     vital_status: Optional[str] = Query(
-        None, 
+        None,
         description="Matches any subject where the `vital_status` field matches the string provided.",
         enum=[v.value for v in VitalStatus]
     ),
     age_at_vital_status: Optional[str] = Query(None, description="Matches any subject where the `age_at_vital_status` field matches the string provided."),
     depositions: Optional[str] = Query(
-        None, 
+        None,
         description="Filter by study_id. Matches any subject where the `depositions` field contains the specified study_id value.",
         examples={
             "default": {
@@ -283,17 +325,27 @@ def get_subject_summary_filters(
             }
         },
     ),
+    associated_diagnosis_categories: Optional[str] = Query(
+        None,
+        description=(
+            "Matches any subject where a diagnosis node's `diagnosis_category` matches "
+            "the value (case-insensitive token after `;` split). Harmonized (CDE 16607972) "
+            "or unharmonized values. Aligned with CCDI Federation API aggregation subject "
+            "filtering (v1.3+)."
+        ),
+    ),
     request: Request = None
 ) -> Dict[str, Any]:
     """Get subject filter parameters for summary endpoint (excludes pagination and search)."""
     filters = {}
-    
+
     # Validate that no unknown query parameters are provided
     if request:
         # Summary endpoint only allows filter parameters, not pagination or search
         allowed_params = {
-            "sex", "race", "ethnicity", "identifiers", "vital_status", 
-            "age_at_vital_status", "depositions"
+            "sex", "race", "ethnicity", "identifiers", "vital_status",
+            "age_at_vital_status", "depositions",
+            "associated_diagnosis_categories",
         }
         
         # Check for unknown parameters (excluding unharmonized fields)
@@ -399,13 +451,18 @@ def get_subject_summary_filters(
         depositions_str = str(depositions).strip() if depositions else None
         if depositions_str:
             filters["depositions"] = depositions_str
-    
+
+    if isinstance(associated_diagnosis_categories, str):
+        val = associated_diagnosis_categories.strip()
+        if val:
+            filters["associated_diagnosis_categories"] = val
+
     # Handle unharmonized fields from query parameters
     if request:
         for key, value in request.query_params.items():
             if key.startswith("metadata.unharmonized."):
                 filters[key] = value
-    
+
     return filters
 
 
@@ -467,8 +524,15 @@ def get_sample_filters(
         description="Matches any sample where any member of the `depositions` fields match the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the sample should be included in the results."
     ),
     diagnosis: Optional[str] = Query(
-        None, 
+        None,
         description="Matches any sample where the `diagnosis` field matches the string provided."
+    ),
+    diagnosis_category: Optional[str] = Query(
+        None,
+        description=(
+            "Matches any sample where a diagnosis node's `diagnosis_category` matches the value "
+            "(case-insensitive token after `;` split). Harmonized (CDE 16607972) or unharmonized values."
+        ),
     ),
     identifiers: Optional[str] = Query(
         None,
@@ -562,7 +626,11 @@ def get_sample_filters(
         filters["depositions"] = str(depositions).strip()
     if diagnosis is not None and str(diagnosis).strip():
         filters["diagnosis"] = str(diagnosis).strip()
-    
+    if isinstance(diagnosis_category, str):
+        val = diagnosis_category.strip()
+        if val:
+            filters["diagnosis_category"] = val
+
     # Handle unharmonized fields from query parameters
     if request:
         for key, value in request.query_params.items():
@@ -595,6 +663,7 @@ def get_sample_filters_no_descriptions(
     depositions: Optional[str] = Query(None, include_in_schema=False),
     diagnosis: Optional[str] = Query(None, include_in_schema=False),
     identifiers: Optional[str] = Query(None, include_in_schema=False),
+    diagnosis_category: Optional[str] = Query(None, include_in_schema=False),
     request: Request = None
 ) -> Dict[str, Any]:
     """Get sample filter parameters without descriptions (for count endpoint)."""
@@ -661,7 +730,11 @@ def get_sample_filters_no_descriptions(
         filters["depositions"] = depositions
     if diagnosis is not None:
         filters["diagnosis"] = diagnosis
-    
+    if isinstance(diagnosis_category, str):
+        val = diagnosis_category.strip()
+        if val:
+            filters["diagnosis_category"] = val
+
     # Handle unharmonized fields from query parameters
     if request:
         for key, value in request.query_params.items():
@@ -673,31 +746,31 @@ def get_sample_filters_no_descriptions(
                 raise InvalidParametersError(
                     parameters=[]
                 )
-    
+
     return filters
 
 
 def get_file_filters(
     type: Optional[str] = Query(
         None, 
-        description="Matches any sequencing file where the `file_type` field matches the string provided.",
+        description="Matches any file (methylation_array_file or sequencing_file) where the `file_type` field matches the string provided.",
         alias="type"
     ),
     size: Optional[str] = Query(
         None, 
-        description="Matches any sequencing file where the `file_size` field matches the string provided."
+        description="Matches any file (methylation_array_file or sequencing_file) where the `file_size` field matches the string provided."
     ),
     checksums: Optional[str] = Query(
         None, 
-        description="Matches any sequencing file where the `md5sum` or `checksum_value` field matches the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the file should be included in the results."
+        description="Matches any file (methylation_array_file or sequencing_file) where the `md5sum` or `checksum_value` field matches the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the file should be included in the results."
     ),
     description: Optional[str] = Query(
         None, 
-        description="Matches any sequencing file where the `file_description` field matches the string provided.\n\n**Note:** a file is returned if the value provided is a substring of the description."
+        description="Matches any file (methylation_array_file or sequencing_file) where the `file_description` field matches the string provided.\n\n**Note:** a file is returned if the value provided is a substring of the description."
     ),
     depositions: Optional[str] = Query(
         None, 
-        description="Matches any sequencing file where any member of the `depositions` fields match the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the file should be included in the results."
+        description="Matches any file (methylation_array_file or sequencing_file) where any member of the `depositions` fields match the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the file should be included in the results."
     ),
     metadata_unharmonized_field: Optional[str] = Query(
         None,
@@ -715,7 +788,7 @@ def get_file_filters(
     ),
     request: Request = None
 ) -> Dict[str, Any]:
-    """Get sequencing file filter parameters."""
+    """Get file filter parameters (methylation_array_file and sequencing_file)."""
     filters = {}
     
     # Map generic field names to sequencing_file field names
@@ -787,7 +860,19 @@ def get_diagnosis_search_params(
 def get_subject_diagnosis_filters(
     search: Optional[str] = Query(
         None,
-        description="Matches any subject where any member of the `associated_diagnoses` field contains the string provided, ignoring case.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the subject should be included in the results."
+        description=(
+            "Case-insensitive substring match on diagnosis text from diagnosis nodes (`diagnosis` property). "
+            "When `diagnosis` is the sentinel value `see diagnosis_comment`, the search is applied to "
+            "`diagnosis_comment` instead (same behavior as sample diagnosis search). "
+            "May be combined with `associated_diagnosis_categories` (AND on the same diagnosis node)."
+        ),
+    ),
+    associated_diagnosis_categories: Optional[str] = Query(
+        None,
+        description=(
+            "Case-insensitive substring on the full `diagnosis_category` on a diagnosis "
+            "node (harmonized or unharmonized text). With `search`, AND on the same node. "
+        ),
     ),
     sex: Optional[str] = Query(
         None,
@@ -835,16 +920,36 @@ def get_subject_diagnosis_filters(
         request=request
     )
     
-    if search:
-        filters["_diagnosis_search"] = search
-    
+    if isinstance(search, str):
+        search_stripped = search.strip()
+        if search_stripped:
+            filters["_diagnosis_search"] = search_stripped
+
+    if isinstance(associated_diagnosis_categories, str):
+        catv = associated_diagnosis_categories.strip()
+        if catv:
+            filters["_associated_diagnosis_categories_contains"] = catv
+
     return filters
 
 
 def get_sample_diagnosis_filters(
     search: Optional[str] = Query(
         None,
-        description="Matches any sample where the `diagnosis` field contains the string provided, ignoring case. When provided, this enables experimental case-insensitive partial matching. When not provided, the endpoint behaves exactly like `/sample` endpoint."
+        description=(
+            "Case-insensitive substring match on diagnosis text from diagnosis nodes (`diagnosis` property). "
+            "When `diagnosis` is the sentinel value `see diagnosis_comment`, the search is applied to "
+            "`diagnosis_comment` instead. "
+            "May be combined with `diagnosis_category` (AND on the same diagnosis node)."
+        ),
+    ),
+    diagnosis_category: Optional[str] = Query(
+        None,
+        description=(
+            "Case-insensitive substring on the full `diagnosis_category` on a diagnosis "
+            "node (harmonized or unharmonized text). "
+            "With `search`, AND on the same diagnosis node. "
+        ),
     ),
     disease_phase: Optional[str] = Query(
         None,
@@ -909,9 +1014,11 @@ def get_sample_diagnosis_filters(
     request: Request = None
 ) -> Dict[str, Any]:
     """Get sample diagnosis search filters.
-    
+
     When `search` is provided: Uses experimental case-insensitive partial matching.
-    When `search` is NOT provided: Behaves exactly like `/sample` endpoint (for all parameters including diagnosis).
+    When `search` is NOT provided: Behaves like `/sample` for other parameters, except
+    `diagnosis_category` uses substring on the full field (via internal routing), not
+    the list endpoint's token-after-`;` match.
     Note: When search is not provided, diagnosis parameter from query_params is extracted and passed to get_sample_filters.
     """
     # Strip whitespace from search parameter
@@ -949,13 +1056,17 @@ def get_sample_diagnosis_filters(
         depositions=depositions,
         diagnosis=None,  # Explicitly disable diagnosis param on /sample-diagnosis
         identifiers=identifiers,
+        diagnosis_category=diagnosis_category,
         request=request
     )
     
     # Only add _diagnosis_search when search parameter is provided and not empty
     if search_stripped:
         filters["_diagnosis_search"] = search_stripped
-    
+
+    if "diagnosis_category" in filters:
+        filters[SD_CAT_MARKER] = True
+
     return filters
 
 

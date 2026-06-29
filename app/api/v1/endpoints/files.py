@@ -1,9 +1,16 @@
 """
 File API routes for the CCDI Federation Service.
 
-This module provides REST endpoints for sequencing file operations
-including listing, individual retrieval, counting, and summaries.
+This module provides REST endpoints for file operations (methylation_array_file
+and sequencing_file graph node types), including listing, individual retrieval,
+counting, and summaries.
 """
+
+# Shared OpenAPI note for all /file routes (shown on /docs).
+_FILE_TYPES_SCOPE = (
+    "Results include files from **methylation_array_file** and **sequencing_file** "
+    "graph node types, returned in a single merged `File` shape."
+)
 
 from typing import Dict, Any
 
@@ -45,8 +52,10 @@ router = APIRouter(prefix="/file", tags=["File"])
 @router.get(
     "",
     response_model=None,  # Returning custom dict structure
-    summary="Gets the sequencing files known by this server.",
-    description="""Gets the sequencing files known by this server.
+    summary="Gets files known by this server (methylation array and sequencing).",
+    description=f"""Gets files known by this server.
+
+{_FILE_TYPES_SCOPE}
 
 ### Pagination
 
@@ -61,23 +70,24 @@ All harmonized (top-level) and unharmonized (nested under the
 this, you can provide the field name as a [`String`]. Filtering follows the
 following rules:
 
-* For single-value metadata field, the sequencing file is included in the results if
+* For single-value metadata field, the file is included in the results if
 its value _exactly_ matches the query string. Matches are case-sensitive.
-* For multiple-value metadata fields, the sequencing file is included in the results
+* For multiple-value metadata fields, the file is included in the results
 if any of its values for the field _exactly_ match the query string (a
 logical OR (`||`)). Matches are case-sensitive.
 * When the metadata field is `null` (in the case of singular or
-multiple-valued metadata fields) or empty, the sequencing file is not included.
+multiple-valued metadata fields) or empty, the file is not included.
 * When multiple fields are provided as filters, a logical AND (`&&`) strings
 together the predicates. In other words, all filters must match for a
-sequencing file to be returned. Note that this means that servers do not natively
+file to be returned. Note that this means that servers do not natively
 support logical OR (`||`) across multiple fields: that must be done by
 calling this endpoint with each of your desired queries and performing a
 set union of those files out of band.
 
 ### Ordering
 
-This endpoint has default ordering requirements—those details are documented
+Paginated results are ordered by node type (**methylation_array_file** first, then
+**sequencing_file**), then by file id within each type. Further details are documented
 in the `responses::Files` schema.""",
     operation_id="file_index",
     responses={
@@ -196,16 +206,12 @@ async def list_files(
         cache_service = get_cache_service()
         service = FileService(session, allowlist, settings, cache_service)
         
-        # Get sequencing files
-        files = await service.get_files(
+        # get_files returns (files, total_count) — no separate summary call needed
+        files, total_count = await service.get_files(
             filters=filters,
             offset=pagination.offset,
             limit=pagination.per_page
         )
-        
-        # Get total count for summary
-        summary_result = await service.get_files_summary(filters)
-        total_count = summary_result.counts.total
         
         # Build pagination info for Link header
         pagination_info = PaginationInfo(
@@ -325,8 +331,11 @@ async def list_files(
 @router.get(
     "/by/{field}/count",
     response_model=CountResponse,
-    summary="Groups the sequencing files by the specified metadata field and returns counts.",
-    description="Groups the sequencing files by the specified metadata field and returns counts. Only 'type' and 'depositions' are supported.",
+    summary="Groups files by metadata field and returns counts (methylation array and sequencing).",
+    description=(
+        f"Groups files by the specified metadata field and returns counts. "
+        f"{_FILE_TYPES_SCOPE} Only 'type' and 'depositions' are supported."
+    ),
     operation_id="files_by_count",
     responses={
         200: {
@@ -492,8 +501,12 @@ async def count_files_by_field(
 @router.get(
     "/{organization}/{namespace}/{name}",
     response_model=File,
-    summary="Gets the sequencing file matching the provided identifier (if the file exists).",
-    description="Gets the sequencing file matching the provided identifier (if the file exists). Organization must be 'CCDI-DCC'. Namespace is the study_id value from the database. Name is the file id field value from the database.",
+    summary="Gets a file by identifier (methylation array or sequencing).",
+    description=(
+        f"Gets the file matching the provided identifier (if it exists). {_FILE_TYPES_SCOPE} "
+        "Organization must be 'CCDI-DCC'. Namespace is the study_id value from the database. "
+        "Name is the file id field value from the database."
+    ),
     operation_id="file_show",
     responses={
         200: {
@@ -691,8 +704,10 @@ async def get_file(
 @router.get(
     "/summary",
     response_model=SummaryResponse,
-    summary="Reports summary information for the sequencing files known by this server.",
-    description="Reports summary information for the sequencing files known by this server.",
+    summary="Reports summary for files known by this server (methylation array and sequencing).",
+    description=(
+        f"Reports summary information for files known by this server. {_FILE_TYPES_SCOPE}"
+    ),
     operation_id="file_summary",
     responses={
         200: {

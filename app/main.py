@@ -103,7 +103,10 @@ def create_app() -> FastAPI:
             },
             {
                 "name": "File",
-                "description": "Files within the CCDI-DCC ecosystem.-- (sequencing files only this release)"
+                "description": (
+                    "Files within the CCDI-DCC ecosystem "
+                    "(methylation array and sequencing files)."
+                ),
             },
             {
                 "name": "Metadata",
@@ -839,25 +842,28 @@ def setup_custom_docs_endpoint(app: FastAPI) -> None:
             base_url = f"{scheme}://{host}".rstrip("/")
             filtered_openapi_url = f"{base_url}/openapi-filtered.json"
             
-            # Replace the hardcoded GitHub Pages URL with the filtered OpenAPI URL
-            html_content = html_content.replace(
+            # index.html uses ./swagger.yml for GitHub Pages artifacts; at runtime
+            # relative paths resolve to /swagger.yml (404). Point Swagger UI at live spec.
+            spec_url_replacements = (
+                "url: './swagger.yml',",
+                'url: "./swagger.yml",',
                 "url: 'https://cbiit.github.io/ccdi-dcc-federation-service/docs/swagger.yml',",
-                f"url: '{filtered_openapi_url}',"
+                "url: 'https://raw.githubusercontent.com/CBIIT/ccdi-dcc-federation-service/main/swagger.yml',",
             )
-            # Also handle the alternative local file reference
-            html_content = html_content.replace(
-                "// url: './swagger.yml',",
-                f"// url: '{filtered_openapi_url}',"
-            )
+            for old_url in spec_url_replacements:
+                html_content = html_content.replace(
+                    old_url,
+                    f"url: '{filtered_openapi_url}',",
+                )
             
             return HTMLResponse(content=html_content)
-        except FileNotFoundError:
+        except FileNotFoundError:  # pragma: no cover
             logger.error(f"Index HTML file not found at {index_html_path}")
             raise HTTPException(
                 status_code=500,
                 detail="Documentation file not found"
             )
-        except Exception as e:
+        except Exception as e:  # pragma: no cover
             logger.error(f"Error serving documentation: {e}", exc_info=True)
             raise HTTPException(
                 status_code=500,
@@ -885,13 +891,13 @@ def setup_custom_docs_endpoint(app: FastAPI) -> None:
             with embedded_html_path.open("r", encoding="utf-8") as f:
                 html_content = f.read()
             return HTMLResponse(content=html_content)
-        except FileNotFoundError:
+        except FileNotFoundError:  # pragma: no cover
             logger.error(f"Embedded HTML file not found at {embedded_html_path}")
             raise HTTPException(
                 status_code=500,
                 detail="Embedded documentation file not found"
             )
-        except Exception as e:
+        except Exception as e:  # pragma: no cover
             logger.error(f"Error serving embedded documentation: {e}", exc_info=True)
             raise HTTPException(
                 status_code=500,
@@ -974,7 +980,7 @@ def setup_custom_docs_endpoint(app: FastAPI) -> None:
   </body>
 </html>"""
             return HTMLResponse(content=redoc_html)
-        except Exception as e:
+        except Exception as e:  # pragma: no cover
             logger.error(f"Error serving ReDoc: {e}", exc_info=True)
             raise HTTPException(
                 status_code=500,

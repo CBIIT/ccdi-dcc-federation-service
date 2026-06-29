@@ -63,7 +63,9 @@ class HarmonizedFieldDescription(BaseModel):
     """Harmonized metadata field description."""
     harmonized: bool = Field(True, description="Always true for harmonized fields")
     path: str = Field(..., description="Dot-delimited path to field location")
-    wiki_url: str = Field(..., description="Wiki URL for field documentation")
+    wiki_url: Optional[str] = Field(
+        None, description="Wiki URL for field documentation; null when not available"
+    )
     standard: Optional[HarmonizedStandard] = None
 
 
@@ -71,7 +73,9 @@ class MetadataFieldInfo(BaseModel):
     """Metadata field information for /metadata/fields endpoint."""
     path: str = Field(..., description="Field path")
     harmonized: bool = Field(..., description="Whether the field is harmonized")
-    wiki_url: str = Field(..., description="Wiki URL for field documentation")
+    wiki_url: Optional[str] = Field(
+        None, description="Wiki URL for field documentation; null when not available"
+    )
     standard: HarmonizedStandard = Field(..., description="Standard information")
 
 
@@ -259,21 +263,6 @@ class SubjectIdentifier(BaseModel):
     name: str = Field(..., description="Subject name", examples=["SubjectName001"])
 
 
-class SubjectMetadata(CommonMetadata):
-    """Subject metadata model."""
-    sex: Optional[UnharmonizedField] = None
-    race: Optional[UnharmonizedField] = None
-    ethnicity: Optional[UnharmonizedField] = None
-    identifiers: Optional[List[UnharmonizedField]] = None
-    vital_status: Optional[UnharmonizedField] = None
-    age_at_vital_status: Optional[UnharmonizedField] = None
-    associated_diagnoses: Optional[UnharmonizedField] = None
-    unharmonized: Optional[Dict[str, UnharmonizedField]] = Field(
-        None,
-        description="Unharmonized metadata fields"
-    )
-
-
 class SampleIdentifier(BaseModel):
     """Sample identifier model."""
     namespace: NamespaceIdentifier = Field(..., description="Namespace identifier")
@@ -308,6 +297,11 @@ class IdentifierField(BaseModel):
     ancestors: Optional[Any] = Field(default=None, description="Ancestor entities", exclude=True)
 
 
+class AssociatedDiagnosisCategoryField(BaseModel):
+    """Associated diagnosis categories field — one harmonized PV value."""
+    value: str = Field(..., description="Harmonized diagnosis category value")
+
+
 class SampleMetadata(CommonMetadata):
     """Sample metadata model."""
     disease_phase: Optional[ValueField] = None
@@ -324,13 +318,13 @@ class SampleMetadata(CommonMetadata):
     age_at_collection: Optional[IntegerValueField] = None
     tumor_tissue_morphology: Optional[ValueField] = None
     depositions: Optional[List[DepositionAccession]] = None
-    diagnosis: Optional[DiagnosisField] = None
-    identifiers: Optional[List[IdentifierField]] = None
-    unharmonized: Optional[Dict[str, UnharmonizedField]] = Field(
+    diagnosis: Optional[List[DiagnosisField]] = None
+    diagnosis_category: Optional[List[AssociatedDiagnosisCategoryField]] = None
+    unharmonized: Optional[Dict[str, Any]] = Field(
         None,
-        exclude=True,  # Exclude from serialization
         description="Unharmonized metadata fields"
     )
+    identifiers: Optional[List[IdentifierField]] = None
 
 
 class FileIdentifier(BaseModel):
@@ -385,6 +379,7 @@ class AssociatedDiagnosisField(BaseModel):
     ancestors: Optional[Any] = Field(default=None, description="Ancestor entities", exclude=True)
     comment: Optional[str] = Field(default=None, description="Comment")
 
+
 class SubjectMetadata(BaseModel):
     """Subject metadata with nested field structure."""
     sex: Optional[MetadataField] = None
@@ -392,10 +387,10 @@ class SubjectMetadata(BaseModel):
     ethnicity: Optional[MetadataField] = None
     identifiers: Optional[List[IdentifierField]] = None
     associated_diagnoses: Optional[List[AssociatedDiagnosisField]] = None
-    unharmonized: Optional[Any] = Field(
+    associated_diagnosis_categories: Optional[List[AssociatedDiagnosisCategoryField]] = None
+    unharmonized: Optional[Dict[str, Any]] = Field(
         default=None,
-        exclude=True,  # Exclude from serialization but keep as placeholder for future use
-        description="Unharmonized metadata fields (reserved for future use)"
+        description="Unharmonized metadata fields"
     )
     vital_status: Optional[MetadataField] = None
     age_at_vital_status: Optional[MetadataField] = None
@@ -582,7 +577,7 @@ class SubjectResponse(BaseModel):
     
     # Top-level response structure
     summary: Optional[Dict[str, Any]] = Field(None, description="Summary statistics")
-    data: List[Any] = Field(..., description="List of subjects with nested structure")
+    data: List[Subject] = Field(..., description="List of subjects with nested structure")
     # gateways field kept as placeholder in code but excluded from responses
     gateways: List[Any] = Field(
         default_factory=list,

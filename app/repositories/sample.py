@@ -11,13 +11,14 @@ from neo4j import AsyncSession
 
 from app.core.logging import get_logger
 from app.lib.field_allowlist import FieldAllowlist
-from app.models.dto import Sample
+from app.models.dto import Sample, AssociatedDiagnosisCategoryField
 from app.models.errors import UnsupportedFieldError
 from app.core.config import Settings
 from app.core.field_mappings import map_field_value, reverse_map_field_value, is_null_mapped_value, is_database_only_value, build_invalid_value_filter, build_invalid_value_list_filter, build_invalid_value_all_clause, build_case_mapping_statement, get_mapped_db_values, load_sequencing_file_enum, load_sample_enum, get_null_mappings
+from app.repositories.sample_converters import _build_diagnosis_result
 from app.repositories.sample_diagnosis_search import SampleDiagnosisSearch
 from app.repositories.sample_query_cases import SampleQueryCases
-from app.repositories.sample_helpers import SampleHelpers
+from app.repositories.sample_helpers import SampleHelpers, SD_CAT_MARKER
 from app.repositories.sample_count import SampleCount
 from app.repositories.sample_summary import SampleSummary
 
@@ -50,7 +51,6 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         params: Dict[str, Any] = {"offset": offset, "limit": limit}
         early_where_parts = [
             "sa.sample_id IS NOT NULL",
-            "sa.sample_id <> ''",
         ]
         depositions_filter = ""
         
@@ -132,7 +132,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         
         # OPTIMIZATION: For depositions-only queries, start from study to enable early pagination
         # Check if only depositions filter (early_where_parts only has base conditions)
-        has_only_depositions = depositions_filter and len(early_where_parts) == 2  # Only base conditions
+        has_only_depositions = depositions_filter and len(early_where_parts) == 1  # Only base conditions
         
         # Build count query if return_total
         total_count = None
@@ -145,11 +145,11 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
             WHERE {study_filter_clause}
             // Path 1: via cell_line - collect samples
             OPTIONAL MATCH (st)<-[:of_cell_line]-(:cell_line)<-[:of_sample]-(sa1:sample)
-            WHERE sa1.sample_id IS NOT NULL AND sa1.sample_id <> ''
+            WHERE sa1.sample_id IS NOT NULL
             WITH st, collect(DISTINCT sa1) AS sa1_list
             // Path 2: via participant -> consent_group - collect samples
             OPTIONAL MATCH (st)<-[:of_consent_group]-(:consent_group)<-[:of_participant]-(:participant)<-[:of_sample]-(sa2:sample)
-            WHERE sa2.sample_id IS NOT NULL AND sa2.sample_id <> ''
+            WHERE sa2.sample_id IS NOT NULL
             WITH st, sa1_list, collect(DISTINCT sa2) AS sa2_list
             // Combine both paths and unwind
             WITH st, [sa IN (sa1_list + sa2_list) WHERE sa IS NOT NULL] AS sa_list
@@ -203,11 +203,11 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         WHERE {study_filter_clause}
         // Path 1: via cell_line - collect samples
         OPTIONAL MATCH (st)<-[:of_cell_line]-(:cell_line)<-[:of_sample]-(sa1:sample)
-        WHERE sa1.sample_id IS NOT NULL AND sa1.sample_id <> ''
+        WHERE sa1.sample_id IS NOT NULL
         WITH st, collect(DISTINCT sa1) AS sa1_list
         // Path 2: via participant -> consent_group - collect samples
         OPTIONAL MATCH (st)<-[:of_consent_group]-(:consent_group)<-[:of_participant]-(:participant)<-[:of_sample]-(sa2:sample)
-        WHERE sa2.sample_id IS NOT NULL AND sa2.sample_id <> ''
+        WHERE sa2.sample_id IS NOT NULL
         WITH st, sa1_list, collect(DISTINCT sa2) AS sa2_list
         // Combine both paths and unwind
         WITH st, [sa IN (sa1_list + sa2_list) WHERE sa IS NOT NULL] AS sa_list
@@ -340,7 +340,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         categorized = self._categorize_filters(filters)
         has_sample_filters = len(categorized["sample"]) > 0
         has_study_filters = len(categorized["study"]) > 0
-        has_diagnosis_filters = len(categorized["diagnosis"]) > 0
+        has_diagnosis_filters = bool(set(categorized["diagnosis"].keys()) - {SD_CAT_MARKER})
         has_sf_filters = len(categorized["sequencing_file"]) > 0
         has_pf_filters = len(categorized["pathology_file"]) > 0
         
@@ -621,118 +621,38 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
                               library_strategy_param is not None or
                               library_source_material_param is not None)
         # For diagnosis search, collect ALL diagnoses first to check if ANY match
-        # Note: needs_diag_collection is already set at line 230 based on diagnosis_search_term
-        
-        # OPTIMIZATION Phase 2: Filter diagnoses during collection when diagnosis search is active
-        # This reduces memory usage and improves performance by only collecting matching diagnoses
         # OPTIMIZATION Phase 3: When sequencing file filters exist (with or without identifiers),
         # use head(collect(DISTINCT sf)) directly instead of collect(DISTINCT sf) AS all_sfs
         # because filters are already applied in OPTIONAL MATCH WHERE clause
         # OPTIMIZATION Phase 4: When sequencing file filters exist AND NOT filtering by diagnosis,
         # skip second_with_clause entirely and collect diagnosis/pathology_file directly (much faster)
         skip_second_with_for_sf = False
-        # IMPORTANT: When needs_diag_collection is True, has_diagnoses_conditions should also be True
-        # because we're collecting all_diagnoses which needs to be processed in the second WITH clause
-        if needs_diag_collection:
-            has_diagnoses_conditions = True
         if needs_sf_collection:
-            if needs_diag_collection:
-                # Build combined filter condition for diagnosis search + disease_phase (if present)
-                diagnosis_search_filter = """(toLower(trim(toString(d.diagnosis))) <> $diagnosis_search_term_see_comment AND 
-                         CASE 
-                           WHEN valueType(d.diagnosis) = 'LIST' THEN 
-                             ANY(diag IN d.diagnosis WHERE toLower(toString(diag)) CONTAINS $diagnosis_search_term_lower)
-                           ELSE 
-                             toLower(toString(d.diagnosis)) CONTAINS $diagnosis_search_term_lower
-                         END)
-                        OR
-                        (toLower(trim(toString(d.diagnosis))) = $diagnosis_search_term_see_comment AND 
-                         d.diagnosis_comment IS NOT NULL AND 
-                         toLower(toString(d.diagnosis_comment)) CONTAINS $diagnosis_search_term_lower)"""
-                
-                if disease_phase_collection_filter:
-                    # Combine both filters during collection
-                    combined_filter = f"d IS NOT NULL AND ({diagnosis_search_filter}) AND ({disease_phase_collection_filter})"
-                else:
-                    # Only diagnosis search filter
-                    combined_filter = f"d IS NOT NULL AND ({diagnosis_search_filter})"
-                
-                # When early filter optimization applies, only matching sequencing files are collected
-                # BUT: When has_diagnoses_conditions is True, we need to collect all_sfs (not sf) 
-                # so the second WITH clause can extract matching sf from it
-                if use_sf_early_filter:
-                    with_collects = [
-                        f"[d IN collect(DISTINCT d) WHERE {combined_filter}] AS all_diagnoses",  # Filter during collection
-                        "head(collect(DISTINCT pf)) AS pf",
-                        "collect(DISTINCT sf) AS all_sfs"  # Collect matching files (filtered in OPTIONAL MATCH) as all_sfs for second WITH clause
-                    ]
-                else:
-                    with_collects = [
-                        f"[d IN collect(DISTINCT d) WHERE {combined_filter}] AS all_diagnoses",  # Filter during collection
-                        "head(collect(DISTINCT pf)) AS pf",
-                        "collect(DISTINCT sf) AS all_sfs"  # Collect all sequencing_files
-                    ]
-            else:
-                # When early filter optimization applies AND no diagnosis filtering,
-                # skip second_with_clause entirely - collect everything directly
-                # BUT: Check if there are any conditions referencing 'diagnoses' (like disease_phase filters)
-                # If so, we can't skip second_with_clause because diagnoses needs to be available
-                # Check both all_conditions AND regular_conditions to catch all diagnosis-related filters
-                has_diagnoses_conditions = (
-                    any(isinstance(cond, str) and "diagnoses" in cond for cond in all_conditions) or
-                    any(isinstance(cond, str) and "diagnoses" in cond for cond in regular_conditions)
-                )
-                if use_sf_early_filter and not has_diagnoses_conditions:
-                    with_collects = [
-                        "head(collect(DISTINCT d)) AS diagnoses",
-                        "head(collect(DISTINCT pf)) AS pf",
-                        "head(collect(DISTINCT sf)) AS sf"  # Only matching files (filtered in OPTIONAL MATCH)
-                    ]
-                    skip_second_with_for_sf = True  # Skip second_with_clause - we already have filtered sf
-                else:
-                    with_collects = [
-                        "head(collect(DISTINCT d)) AS diagnoses",
-                        "head(collect(DISTINCT pf)) AS pf",
-                        "collect(DISTINCT sf) AS all_sfs"  # Collect all sequencing_files
-                    ]
-        else:
-            if needs_diag_collection:
-                # Build combined filter condition for diagnosis search + disease_phase (if present)
-                diagnosis_search_filter = """(toLower(trim(toString(d.diagnosis))) <> $diagnosis_search_term_see_comment AND 
-                         CASE 
-                           WHEN valueType(d.diagnosis) = 'LIST' THEN 
-                             ANY(diag IN d.diagnosis WHERE toLower(toString(diag)) CONTAINS $diagnosis_search_term_lower)
-                           ELSE 
-                             toLower(toString(d.diagnosis)) CONTAINS $diagnosis_search_term_lower
-                         END)
-                        OR
-                        (toLower(trim(toString(d.diagnosis))) = $diagnosis_search_term_see_comment AND 
-                         d.diagnosis_comment IS NOT NULL AND 
-                         toLower(toString(d.diagnosis_comment)) CONTAINS $diagnosis_search_term_lower)"""
-                
-                if disease_phase_collection_filter:
-                    # Combine both filters during collection
-                    combined_filter = f"d IS NOT NULL AND ({diagnosis_search_filter}) AND ({disease_phase_collection_filter})"
-                else:
-                    # Only diagnosis search filter
-                    combined_filter = f"d IS NOT NULL AND ({diagnosis_search_filter})"
-                
-                with_collects = [
-                    f"[d IN collect(DISTINCT d) WHERE {combined_filter}] AS all_diagnoses",  # Filter during collection
-                    "head(collect(DISTINCT pf)) AS pf",
-                    "head(collect(DISTINCT sf)) AS sf"
-                ]
-            else:
-                # When diagnosis early filter is active, we've already filtered to matching diagnoses
-                # So we just need to check if any were found (diagnoses IS NOT NULL)
-                # The WHERE clause will handle the IS NOT NULL check
-                # IMPORTANT: Use the FIRST matching diagnosis (head() picks deterministically from filtered set)
-                # All diagnoses in the collection match the OPTIONAL MATCH WHERE clause filters
+            # Check if any conditions referencing 'diagnoses' exist (like disease_phase filters)
+            # to decide whether second_with_clause is needed
+            has_diagnoses_conditions = (
+                any(isinstance(cond, str) and "diagnoses" in cond for cond in all_conditions) or
+                any(isinstance(cond, str) and "diagnoses" in cond for cond in regular_conditions)
+            )
+            if use_sf_early_filter and not has_diagnoses_conditions:
                 with_collects = [
                     "head(collect(DISTINCT d)) AS diagnoses",
                     "head(collect(DISTINCT pf)) AS pf",
-                    "head(collect(DISTINCT sf)) AS sf"
+                    "head(collect(DISTINCT sf)) AS sf"  # Only matching files (filtered in OPTIONAL MATCH)
                 ]
+                skip_second_with_for_sf = True  # Skip second_with_clause - we already have filtered sf
+            else:
+                with_collects = [
+                    "head(collect(DISTINCT d)) AS diagnoses",
+                    "head(collect(DISTINCT pf)) AS pf",
+                    "collect(DISTINCT sf) AS all_sfs"  # Collect all sequencing_files
+                ]
+        else:
+            with_collects = [
+                "head(collect(DISTINCT d)) AS diagnoses",
+                "head(collect(DISTINCT pf)) AS pf",
+                "head(collect(DISTINCT sf)) AS sf"
+            ]
         with_vars.append("st")
         
         with_clause = ", ".join(with_vars)
@@ -751,23 +671,14 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         if skip_second_with_for_sf:
             # Skip second_with_clause - everything is already collected and filtered
             second_with_clause = None
-        elif needs_sf_collection or needs_diag_collection:
+        elif needs_sf_collection:
             second_with_vars = ["sa", "st"]  # Participant added after pagination
-            
+
             # Pass through id_list if identifiers filter is present
             if identifiers_condition:
                 second_with_vars.append("id_list")
-            
-            # Handle diagnosis search - check if ANY diagnosis matches
-            if needs_diag_collection:
-                # OPTIMIZATION Phase 2: Diagnoses are already filtered during collection
-                # all_diagnoses now only contains matching diagnoses (search + disease_phase if present)
-                # So we just need to check if any were found
-                second_with_vars.append("size(all_diagnoses) > 0 AS has_matching_diagnosis")
-                second_with_vars.append("head(all_diagnoses) AS diagnoses")
-            else:
-                second_with_vars.append("diagnoses")
-            
+
+            second_with_vars.append("diagnoses")
             second_with_vars.append("pf")
         
         # Build conditions to check if ANY sequencing_file matches (only if needed)
@@ -859,12 +770,9 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
                     # No diagnosis conditions - we collected 'sf' directly, just check if it's not null
                     second_with_vars.append("sf IS NOT NULL AS has_matching_sf")
                     second_with_vars.append("sf")
-            elif needs_diag_collection:
-                # Only diagnosis search, no sequencing file collection
-                second_with_vars.append("sf")
-            
+
             # Finalize second_with_clause if we have any second WITH vars
-            if needs_sf_collection or needs_diag_collection:
+            if needs_sf_collection:
                 second_with_clause = ", ".join(second_with_vars)
         
         # If identifiers are present, integrate WHERE clause into WITH clause
@@ -987,7 +895,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         # Otherwise: pagination after OPTIONAL MATCH + WHERE + aggregate.
         # Skip when diagnosis search is active: that filter is applied during collection (all_diagnoses), not as a simple WHERE on d.
         if not needs_diag_collection:
-            early_where_str = " AND ".join(early_where_conditions) if early_where_conditions else "sa.sample_id IS NOT NULL AND sa.sample_id <> ''"
+            early_where_str = " AND ".join(early_where_conditions) if early_where_conditions else "sa.sample_id IS NOT NULL"
             early_pagination_where_parts = []
             for c in (where_conditions or []):
                 if not isinstance(c, str):
@@ -1140,7 +1048,6 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         ]
         where_parts = [
             "sa.sample_id IS NOT NULL",
-            "sa.sample_id <> ''"
         ]
         if additional_filters:
             where_parts.extend(additional_filters)
@@ -1334,7 +1241,6 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
                 cypher = f"""
                 MATCH (sa:sample)
                 WHERE sa.sample_id IS NOT NULL
-                  AND sa.sample_id <> ''
                 {optional_matches_str}
                 WITH {with_clause}
                 {where_clause.replace('WHERE ', 'AND ') if where_clause else ''}
@@ -1528,7 +1434,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         MATCH (sf:sequencing_file)
         WHERE {where_clause}
         MATCH (sf)-[:of_sequencing_file]->(sa:sample)
-        WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+        WHERE sa.sample_id IS NOT NULL
         OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
         WITH sa, collect(DISTINCT st1.study_id) AS st1_list
         OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
@@ -1563,7 +1469,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         MATCH (sf:sequencing_file)
         WHERE {where_clause}
         MATCH (sf)-[:of_sequencing_file]->(sa:sample)
-        WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+        WHERE sa.sample_id IS NOT NULL
         // Collect study ids from both paths
         OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
         WITH sa, sf, collect(DISTINCT st1.study_id) AS st1_list_raw
@@ -1693,7 +1599,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         MATCH (pf:pathology_file)
         WHERE {pf_where_clause}
         MATCH (pf)-[:of_pathology_file]->(sa:sample)
-        WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+        WHERE sa.sample_id IS NOT NULL
         OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
         WITH sa, collect(DISTINCT st1.study_id) AS st1_list_raw
         OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
@@ -1733,7 +1639,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         MATCH (pf:pathology_file)
         WHERE {pf_where_clause}
         MATCH (pf)-[:of_pathology_file]->(sa:sample)
-        WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+        WHERE sa.sample_id IS NOT NULL
         // Collect study ids from both paths
         OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
         WITH sa, pf, collect(DISTINCT st1.study_id) AS st1_list_raw
@@ -1933,7 +1839,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         MATCH (sf:sequencing_file)
         WHERE {sf_where_clause}
         MATCH (sf)-[:of_sequencing_file]->(sa:sample)
-        WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+        WHERE sa.sample_id IS NOT NULL
         MATCH (pf:pathology_file)
         WHERE {pf_where_clause}
         MATCH (pf)-[:of_pathology_file]->(sa)
@@ -1972,7 +1878,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         MATCH (sf:sequencing_file)
         WHERE {sf_where_clause}
         MATCH (sf)-[:of_sequencing_file]->(sa:sample)
-        WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''{f" AND {sa_where_clause}" if sa_where_clause else ""}
+        WHERE sa.sample_id IS NOT NULL{f" AND {sa_where_clause}" if sa_where_clause else ""}
         MATCH (pf:pathology_file)
         WHERE {pf_where_clause}
         MATCH (pf)-[:of_pathology_file]->(sa)
@@ -2089,7 +1995,6 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         MATCH (sa:sample)
         WHERE sa.sample_id = $sample_name
           AND sa.sample_id IS NOT NULL
-          AND sa.sample_id <> ''
         OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
         WITH sa, collect(DISTINCT st1.study_id) AS st1_list
         OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
@@ -2220,7 +2125,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         MATCH (sf:sequencing_file)
         WHERE {where_clause}
         MATCH (sf)-[:of_sequencing_file]->(sa:sample)
-        WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+        WHERE sa.sample_id IS NOT NULL
         OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
         WITH sa, sf, collect(DISTINCT st1.study_id) AS st1_list
         OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
@@ -2266,26 +2171,26 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         st: Dict[str, Any], 
         sf: Dict[str, Any], 
         pf: Dict[str, Any], 
-        diagnoses: Optional[Dict[str, Any]],
+        diagnoses: Optional[List[Dict[str, Any]]],
         base_url: Optional[str] = None
     ) -> Sample:
         """
         Convert database records to a Sample object with proper field mappings.
-        
+
         Args:
             sa: Sample node dictionary
             p: Participant node dictionary
             st: Study node dictionary
             sf: Sequencing file node dictionary
             pf: Pathology file node dictionary
-            diagnoses: Single diagnosis node dictionary (or None)
+            diagnoses: List of diagnosis node dictionaries (all matched nodes, or None)
             
         Returns:
             Sample object with proper structure
         """
         from app.models.dto import (
             SampleIdentifier, NamespaceIdentifier, SubjectId,
-            SampleMetadata, DiagnosisField
+            SampleMetadata,
         )
         
         # Build sample ID: namespace from study, name from sample_id
@@ -2391,22 +2296,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
             if study_id:
                 depositions = [{"kind": "dbGaP", "value": study_id}]
         
-        # Build diagnosis field
-        # If empty data, return null; otherwise return {value: diagnosis, comment: diagnosis_comment}
-        diagnosis_field = None
-        if diagnoses and isinstance(diagnoses, dict):
-            # diagnoses is now a single node (or None)
-            diagnosis_value = diagnoses.get("diagnosis")
-            diagnosis_comment = diagnoses.get("diagnosis_comment")
-            
-            # Check if diagnosis_value is empty/null/whitespace
-            if diagnosis_value and str(diagnosis_value).strip():
-                # Has diagnosis value - return object with value and comment
-                diagnosis_field = DiagnosisField(
-                    value=str(diagnosis_value).strip(),
-                    comment=str(diagnosis_comment).strip() if diagnosis_comment and str(diagnosis_comment).strip() else None
-                )
-            # If diagnosis_value is empty/null/whitespace, diagnosis_field remains None (returns null)
+        diagnosis_field, head_d, harmonized_cats, unharmonized_cats = _build_diagnosis_result(diagnoses)
         
         # Helper function to wrap value in ValueField if not None and not empty
         def _wrap_value(value):
@@ -2542,51 +2432,29 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
                 sample_id=sample_id
             )
         
-        # Build metadata with updated field mappings
-        # disease_phase: d.disease_phase (from diagnoses, not sa)
-        disease_phase_value = None
-        if diagnoses and isinstance(diagnoses, dict):
-            disease_phase_value = diagnoses.get("disease_phase")
-        
-        # anatomical_sites: sa.anatomic_site - "Invalid value" to be replaced with null (already handled in _process_anatomical_sites)
+        disease_phase_value = head_d.get("disease_phase") if head_d else None
+        tumor_grade_value = head_d.get("tumor_grade") if head_d else None
+        age_at_diagnosis_value = head_d.get("age_at_diagnosis") if head_d else None
+        tumor_classification_value = head_d.get("tumor_classification") if head_d else None
+
         anatomical_sites_value = sa.get("anatomic_site") if sa else None
-        
-        # library_selection_method: sf.library_selection
         library_selection_value = sf.get("library_selection") if sf else None
-        
-        # library_strategy: sf.library_strategy
         library_strategy_value = sf.get("library_strategy") if sf else None
-        
-        # library_source_material: sf.library_source_material
         library_source_material_value = sf.get("library_source_material") if sf else None
-        
-        # specimen_molecular_analyte_type: sf.library_source_molecule
         specimen_molecular_analyte_type_value = sf.get("library_source_molecule") if sf else None
-        
-        # preservation_method: pf.fixation_embedding_method
         preservation_method_value = pf.get("fixation_embedding_method") if pf else None
-        
-        # tumor_grade: d.tumor_grade
-        tumor_grade_value = None
-        if diagnoses and isinstance(diagnoses, dict):
-            tumor_grade_value = diagnoses.get("tumor_grade")
-        
-        # age_at_diagnosis: d.age_at_diagnosis or null if -999
-        age_at_diagnosis_value = None
-        if diagnoses and isinstance(diagnoses, dict):
-            age_at_diagnosis_value = diagnoses.get("age_at_diagnosis")
-        
-        # age_at_collection: sa.participant_age_at_collection or null if -999
         age_at_collection_value = sa.get("participant_age_at_collection") if sa else None
-        
-        # tumor_classification: d.tumor_classification
-        tumor_classification_value = None
-        if diagnoses and isinstance(diagnoses, dict):
-            tumor_classification_value = diagnoses.get("tumor_classification")
-        
-        # tissue_type: sa.sample_tumor_status (mapped from sample_tumor_status field)
         tissue_type_value = sa.get("sample_tumor_status") if sa else None
-        
+
+        diagnosis_category_field = (
+            [AssociatedDiagnosisCategoryField(value=c) for c in harmonized_cats]
+            if harmonized_cats else None
+        )
+        unharmonized_field = (
+            {"diagnosis_category": [{"value": c} for c in unharmonized_cats]}
+            if unharmonized_cats else None
+        )
+
         # Build metadata with field mappings applied
         metadata = SampleMetadata(
             disease_phase=_wrap_value(map_field_value("disease_phase", _null_if_invalid(disease_phase_value))),
@@ -2604,7 +2472,9 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
             tumor_tissue_morphology=None,  # Not in the provided mapping
             depositions=depositions,
             diagnosis=diagnosis_field,
-            identifiers=identifiers
+            identifiers=identifiers,
+            diagnosis_category=diagnosis_category_field,
+            unharmonized=unharmonized_field,
         )
         
         # Create Sample object

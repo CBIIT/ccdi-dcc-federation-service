@@ -73,13 +73,14 @@ class TestFileServiceEnhanced:
             "values": [{"value": "BAM", "count": 50}]
         }
         mock_cache_service.get = AsyncMock(return_value=cached_result)
-        service.repository.count_files_by_field = AsyncMock()
-        
-        result = await service.count_files_by_field("type", {})
-        
+        mock_repo = AsyncMock()
+
+        with patch.object(service, '_repos', [mock_repo]):
+            result = await service.count_files_by_field("type", {})
+
         assert isinstance(result, CountResponse)
         assert result.total == 100
-        service.repository.count_files_by_field.assert_not_called()
+        mock_repo.count_files_by_field.assert_not_called()
 
     async def test_count_files_by_field_cache_miss(self, service, mock_cache_service):
         """Test count_files_by_field with cache miss."""
@@ -88,11 +89,13 @@ class TestFileServiceEnhanced:
             "missing": 0,
             "values": [{"value": "BAM", "count": 50}]
         }
-        service.repository.count_files_by_field = AsyncMock(return_value=mock_count_result)
+        mock_repo = AsyncMock()
+        mock_repo.count_files_by_field = AsyncMock(return_value=mock_count_result)
         mock_cache_service.get = AsyncMock(return_value=None)
-        
-        result = await service.count_files_by_field("type", {})
-        
+
+        with patch.object(service, '_repos', [mock_repo]):
+            result = await service.count_files_by_field("type", {})
+
         assert result.total == 50
         mock_cache_service.set.assert_called_once()
 
@@ -101,16 +104,17 @@ class TestFileServiceEnhanced:
         mock_count_result = {
             "total": 100,
             "missing": 0,
-            "values": [{"value": "BAM", "count": 50}]
+            "values": [{"value": "BAM", "count": 100}]
         }
-        service.repository.count_files_by_field = AsyncMock(return_value=mock_count_result)
+        mock_repo = AsyncMock()
+        mock_repo.count_files_by_field = AsyncMock(return_value=mock_count_result)
         mock_cache_service.get = AsyncMock(return_value=None)
-        
-        result = await service.count_files_by_field("type", {})
-        
+
+        with patch.object(service, '_repos', [mock_repo]):
+            result = await service.count_files_by_field("type", {})
+
         assert result.total == 100
-        # Repository should always be called (materialized view disabled)
-        service.repository.count_files_by_field.assert_called_once_with("type", {})
+        mock_repo.count_files_by_field.assert_called_once_with("type", {})
 
     async def test_count_files_by_field_materialized_view_depositions(self, service, mock_cache_service):
         """Test count_files_by_field always uses repository for depositions (materialized view disabled)."""
@@ -119,14 +123,15 @@ class TestFileServiceEnhanced:
             "missing": 0,
             "values": [{"value": "phs002431", "count": 200}]
         }
-        service.repository.count_files_by_field = AsyncMock(return_value=mock_count_result)
+        mock_repo = AsyncMock()
+        mock_repo.count_files_by_field = AsyncMock(return_value=mock_count_result)
         mock_cache_service.get = AsyncMock(return_value=None)
-        
-        result = await service.count_files_by_field("depositions", {})
-        
+
+        with patch.object(service, '_repos', [mock_repo]):
+            result = await service.count_files_by_field("depositions", {})
+
         assert result.total == 200
-        # Repository should always be called (materialized view disabled)
-        service.repository.count_files_by_field.assert_called_once_with("depositions", {})
+        mock_repo.count_files_by_field.assert_called_once_with("depositions", {})
 
     async def test_count_files_by_field_materialized_view_fallback(self, service, mock_cache_service):
         """Test count_files_by_field always uses repository (materialized view disabled, no fallback needed)."""
@@ -135,14 +140,15 @@ class TestFileServiceEnhanced:
             "missing": 0,
             "values": [{"value": "BAM", "count": 50}]
         }
-        service.repository.count_files_by_field = AsyncMock(return_value=mock_count_result)
+        mock_repo = AsyncMock()
+        mock_repo.count_files_by_field = AsyncMock(return_value=mock_count_result)
         mock_cache_service.get = AsyncMock(return_value=None)
-        
-        result = await service.count_files_by_field("type", {})
-        
+
+        with patch.object(service, '_repos', [mock_repo]):
+            result = await service.count_files_by_field("type", {})
+
         assert result.total == 50
-        # Repository should always be called directly (materialized view disabled)
-        service.repository.count_files_by_field.assert_called_once_with("type", {})
+        mock_repo.count_files_by_field.assert_called_once_with("type", {})
 
     async def test_count_files_by_field_with_filters_uses_repository(self, service, mock_cache_service):
         """Test count_files_by_field always uses repository (materialized view disabled)."""
@@ -151,31 +157,33 @@ class TestFileServiceEnhanced:
             "missing": 0,
             "values": [{"value": "BAM", "count": 30}]
         }
-        service.repository.count_files_by_field = AsyncMock(return_value=mock_count_result)
+        mock_repo = AsyncMock()
+        mock_repo.count_files_by_field = AsyncMock(return_value=mock_count_result)
         mock_cache_service.get = AsyncMock(return_value=None)
-        
-        # Repository is always used (materialized view disabled)
-        result = await service.count_files_by_field("type", {"file_type": "BAM"})
-        
+
+        with patch.object(service, '_repos', [mock_repo]):
+            result = await service.count_files_by_field("type", {"file_type": "BAM"})
+
         assert result.total == 30
-        service.repository.count_files_by_field.assert_called_once_with("type", {"file_type": "BAM"})
+        mock_repo.count_files_by_field.assert_called_once_with("type", {"file_type": "BAM"})
 
     async def test_count_files_by_field_timeout(self, service, mock_cache_service):
         """Test count_files_by_field handles query timeout."""
-        # Create a coroutine that will timeout
-        async def timeout_coro(*args, **kwargs):
-            await asyncio.sleep(0.1)
-            raise asyncio.TimeoutError()
-        
-        service.repository.count_files_by_field = timeout_coro
+        async def slow_count(*args, **kwargs):
+            await asyncio.sleep(10)
+            return {"total": 0, "missing": 0, "values": []}
+
+        mock_repo = AsyncMock()
+        mock_repo.count_files_by_field = slow_count
         mock_cache_service.get = AsyncMock(return_value=None)
-        
+
         # Set a very short timeout for testing
         service.settings.query_timeout = 0.01
-        
-        with pytest.raises(ValidationError) as exc_info:
-            await service.count_files_by_field("type", {})
-        
+
+        with patch.object(service, '_repos', [mock_repo]):
+            with pytest.raises(ValidationError) as exc_info:
+                await service.count_files_by_field("type", {})
+
         assert "timeout" in str(exc_info.value).lower()
 
     async def test_count_files_by_field_no_cache(self, service_no_cache):
@@ -185,14 +193,14 @@ class TestFileServiceEnhanced:
             "missing": 0,
             "values": [{"value": "BAM", "count": 50}]
         }
-        service_no_cache.repository.count_files_by_field = AsyncMock(
-            return_value=mock_count_result
-        )
-        
-        result = await service_no_cache.count_files_by_field("type", {})
-        
+        mock_repo = AsyncMock()
+        mock_repo.count_files_by_field = AsyncMock(return_value=mock_count_result)
+
+        with patch.object(service_no_cache, '_repos', [mock_repo]):
+            result = await service_no_cache.count_files_by_field("type", {})
+
         assert result.total == 50
-        service_no_cache.repository.count_files_by_field.assert_called_once_with("type", {})
+        mock_repo.count_files_by_field.assert_called_once_with("type", {})
 
     async def test_get_files_summary_cache_hit(self, service, mock_cache_service):
         """Test get_files_summary returns cached result."""
@@ -200,53 +208,52 @@ class TestFileServiceEnhanced:
             "counts": {"total": 500}
         }
         mock_cache_service.get = AsyncMock(return_value=cached_summary)
-        service.repository.get_files_summary = AsyncMock()
-        
-        result = await service.get_files_summary({})
-        
+        mock_repo = AsyncMock()
+
+        with patch.object(service, '_repos', [mock_repo]):
+            result = await service.get_files_summary({})
+
         assert isinstance(result, SummaryResponse)
         assert result.counts.total == 500
-        service.repository.get_files_summary.assert_not_called()
+        mock_repo.count_for_pagination.assert_not_called()
 
     async def test_get_files_summary_cache_miss(self, service, mock_cache_service):
         """Test get_files_summary with cache miss."""
-        mock_summary_result = {
-            "total_count": 1000
-        }
-        service.repository.get_files_summary = AsyncMock(return_value=mock_summary_result)
+        mock_repo = AsyncMock()
+        mock_repo.count_for_pagination = AsyncMock(return_value=1000)
         mock_cache_service.get = AsyncMock(return_value=None)
-        
-        result = await service.get_files_summary({})
-        
+
+        with patch.object(service, '_repos', [mock_repo]):
+            result = await service.get_files_summary({})
+
         assert isinstance(result, SummaryResponse)
         assert result.counts.total == 1000
         mock_cache_service.set.assert_called_once()
 
     async def test_get_files_summary_database_error(self, service, mock_cache_service):
         """Test get_files_summary handles database connection errors."""
-        service.repository.get_files_summary = AsyncMock(
+        mock_repo = AsyncMock()
+        mock_repo.count_for_pagination = AsyncMock(
             side_effect=DatabaseConnectionError("Connection failed")
         )
         mock_cache_service.get = AsyncMock(return_value=None)
-        
-        result = await service.get_files_summary({})
-        
+
+        with patch.object(service, '_repos', [mock_repo]):
+            result = await service.get_files_summary({})
+
         assert isinstance(result, SummaryResponse)
         assert result.counts.total == 0
 
     async def test_get_files_summary_no_cache(self, service_no_cache):
         """Test get_files_summary without cache service."""
-        mock_summary_result = {
-            "total_count": 500
-        }
-        service_no_cache.repository.get_files_summary = AsyncMock(
-            return_value=mock_summary_result
-        )
-        
-        result = await service_no_cache.get_files_summary({})
-        
+        mock_repo = AsyncMock()
+        mock_repo.count_for_pagination = AsyncMock(return_value=500)
+
+        with patch.object(service_no_cache, '_repos', [mock_repo]):
+            result = await service_no_cache.get_files_summary({})
+
         assert result.counts.total == 500
-        service_no_cache.repository.get_files_summary.assert_called_once()
+        mock_repo.count_for_pagination.assert_called_once()
 
     async def test_get_file_by_identifier_validation_error(self, service):
         """Test get_file_by_identifier with invalid parameters."""
@@ -445,6 +452,30 @@ class TestSampleServiceEnhanced:
         assert samples == mock_samples
         assert total_count == 42
         service.repository.get_samples_for_diagnosis_endpoint.assert_awaited_once()
+
+    async def test_get_samples_for_diagnosis_endpoint_diagnosis_category_only_forwards_filters(
+        self, service
+    ):
+        """Test diagnosis_category-only requests are forwarded unchanged to repository path."""
+        mock_samples = [Mock()]
+        service.repository.get_samples_for_diagnosis_endpoint = AsyncMock(return_value=(mock_samples, 7))
+
+        samples, total_count = await service.get_samples_for_diagnosis_endpoint(
+            filters={
+                "diagnosis_category": "Glioma",
+                "_sample_diagnosis_category_substring": True,
+            },
+            offset=0,
+            limit=15,
+        )
+
+        assert samples == mock_samples
+        assert total_count == 7
+        call_kwargs = service.repository.get_samples_for_diagnosis_endpoint.await_args.kwargs
+        assert call_kwargs["filters"]["diagnosis_category"] == "Glioma"
+        assert call_kwargs["filters"]["_sample_diagnosis_category_substring"] is True
+        assert call_kwargs["offset"] == 0
+        assert call_kwargs["limit"] == 15
 
     async def test_get_samples_for_diagnosis_endpoint_database_error(self, service):
         """Test dedicated diagnosis endpoint path maps DB errors to NotFoundError."""

@@ -53,7 +53,7 @@ class TestSampleRepositoryCountByField:
     async def test_count_samples_by_field_unsupported_field(self, repository):
         """Test count_samples_by_field raises UnsupportedFieldError for unsupported fields."""
         with pytest.raises(UnsupportedFieldError) as exc_info:
-            await repository.count_samples_by_field("invalid_field", {})
+            await repository.count_samples_by_field("invalid_field")
         
         assert exc_info.value.field == "invalid_field"
         assert exc_info.value._entity_type == "sample"  # Use private attribute
@@ -63,9 +63,9 @@ class TestSampleRepositoryCountByField:
         with patch.object(repository, '_count_samples_by_associated_diagnoses', new_callable=AsyncMock) as mock_count:
             mock_count.return_value = {"total": 10, "missing": 2, "values": []}
             
-            result = await repository.count_samples_by_field("diagnosis", {})
+            result = await repository.count_samples_by_field("diagnosis")
             
-            mock_count.assert_called_once_with({})
+            mock_count.assert_called_once_with()
             assert result == {"total": 10, "missing": 2, "values": []}
 
     async def test_count_samples_by_field_tissue_type_no_filters(self, repository, mock_session):
@@ -99,7 +99,7 @@ class TestSampleRepositoryCountByField:
             mock_result_missing
         ])
         
-        result = await repository.count_samples_by_field("tissue_type", {})
+        result = await repository.count_samples_by_field("tissue_type")
         
         assert isinstance(result, dict)
         assert "total" in result
@@ -124,161 +124,12 @@ class TestSampleRepositoryCountByField:
             AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 2}])))  # missing query
         ])
         
-        result = await repository.count_samples_by_field("age_at_collection", {})
+        result = await repository.count_samples_by_field("age_at_collection")
         
         assert "total" in result
         assert "missing" in result
         assert "values" in result
         assert result["total"] == 3
-
-    async def test_count_samples_by_field_with_race_filter(self, repository, mock_session):
-        """Test count_samples_by_field with race filter."""
-        async def async_gen():
-            yield {"value": "Tumor", "count": 10}
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        
-        mock_session.run = AsyncMock(side_effect=[
-            mock_result,
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"total": 10}]))),
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 0}])))
-        ])
-        
-        result = await repository.count_samples_by_field("tissue_type", {"race": "White"})
-        
-        assert "total" in result
-        # Verify race filter was processed (check query was called)
-        assert mock_session.run.called
-
-    async def test_count_samples_by_field_with_identifiers_filter(self, repository, mock_session):
-        """Test count_samples_by_field with identifiers filter (single value)."""
-        async def async_gen():
-            yield {"value": "Tumor", "count": 1}
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        
-        mock_session.run = AsyncMock(side_effect=[
-            mock_result,
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"total": 1}]))),
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 0}])))
-        ])
-        
-        result = await repository.count_samples_by_field("tissue_type", {"identifiers": "SAMP001"})
-        
-        assert "total" in result
-
-    async def test_count_samples_by_field_with_identifiers_filter_multiple(self, repository, mock_session):
-        """Test count_samples_by_field with identifiers filter (multiple values with ||)."""
-        async def async_gen():
-            yield {"value": "Tumor", "count": 2}
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        
-        mock_session.run = AsyncMock(side_effect=[
-            mock_result,
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"total": 2}]))),
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 0}])))
-        ])
-        
-        result = await repository.count_samples_by_field("tissue_type", {"identifiers": "SAMP001 || SAMP002"})
-        
-        assert "total" in result
-
-    async def test_count_samples_by_field_with_depositions_filter(self, repository, mock_session):
-        """Test count_samples_by_field with depositions filter."""
-        async def async_gen():
-            yield {"value": "Tumor", "count": 5}
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        
-        mock_session.run = AsyncMock(side_effect=[
-            mock_result,
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"total": 5}]))),
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 0}])))
-        ])
-        
-        result = await repository.count_samples_by_field("tissue_type", {"depositions": "phs002431"})
-        
-        assert "total" in result
-
-    async def test_count_samples_by_field_with_depositions_filter_multiple(self, repository, mock_session):
-        """Test count_samples_by_field with multiple depositions (|| separator)."""
-        async def async_gen():
-            yield {"value": "Tumor", "count": 10}
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        
-        mock_session.run = AsyncMock(side_effect=[
-            mock_result,
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"total": 10}]))),
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 0}])))
-        ])
-        
-        result = await repository.count_samples_by_field("tissue_type", {"depositions": "phs001 || phs002"})
-        
-        assert "total" in result
-
-    async def test_count_samples_by_field_with_diagnosis_search(self, repository, mock_session):
-        """_diagnosis_search is ignored; count-by-field uses unfiltered cohort (API: no query params)."""
-        async def async_gen():
-            yield {"value": "Tumor", "count": 3}
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        
-        mock_session.run = AsyncMock(side_effect=[
-            mock_result,
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"total": 3}]))),
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 0}])))
-        ])
-        
-        result = await repository.count_samples_by_field("tissue_type", {"_diagnosis_search": "cancer"})
-
-        assert "total" in result
-        query, params = mock_session.run.call_args_list[0][0]
-        assert "diagnosis_search_term" not in params
-        assert "p._diagnosis_search" not in query
-
-    async def test_count_samples_by_field_with_anatomical_sites_filter(self, repository, mock_session):
-        """Test count_samples_by_field with anatomical_sites filter (single value)."""
-        async def async_gen():
-            yield {"value": "Tumor", "count": 4}
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        
-        mock_session.run = AsyncMock(side_effect=[
-            mock_result,
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"total": 4}]))),
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 0}])))
-        ])
-        
-        result = await repository.count_samples_by_field("tissue_type", {"anatomical_sites": "Brain"})
-        
-        assert "total" in result
-
-    async def test_count_samples_by_field_with_anatomical_sites_filter_list(self, repository, mock_session):
-        """Test count_samples_by_field with anatomical_sites filter (list of values)."""
-        async def async_gen():
-            yield {"value": "Tumor", "count": 6}
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        
-        mock_session.run = AsyncMock(side_effect=[
-            mock_result,
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"total": 6}]))),
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 0}])))
-        ])
-        
-        result = await repository.count_samples_by_field("tissue_type", {"anatomical_sites": ["Brain", "Liver"]})
-        
-        assert "total" in result
 
     async def test_count_samples_by_field_library_strategy(self, repository, mock_session):
         """Test count_samples_by_field for library_strategy (uses combined query when no filters)."""
@@ -289,7 +140,7 @@ class TestSampleRepositoryCountByField:
         mock_result.__aiter__ = Mock(return_value=async_gen())
         mock_session.run = AsyncMock(return_value=mock_result)
         
-        result = await repository.count_samples_by_field("library_strategy", {})
+        result = await repository.count_samples_by_field("library_strategy")
         
         assert "total" in result
         assert "missing" in result
@@ -308,7 +159,7 @@ class TestSampleRepositoryCountByField:
         
         with patch("app.repositories.sample.map_field_value", side_effect=lambda field, value: value), \
              patch("app.repositories.sample.is_null_mapped_value", return_value=False):
-            result = await repository.count_samples_by_field("library_selection_method", {})
+            result = await repository.count_samples_by_field("library_selection_method")
         
         assert "total" in result
         assert "missing" in result
@@ -350,7 +201,7 @@ class TestSampleRepositoryCountByField:
             mock_result_missing
         ])
         
-        result = await repository.count_samples_by_field("disease_phase", {})
+        result = await repository.count_samples_by_field("disease_phase")
         
         assert isinstance(result, dict)
         assert "total" in result
@@ -850,30 +701,11 @@ class TestSampleRepositoryCountByAssociatedDiagnoses:
             AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 0}])))  # missing query
         ])
         
-        result = await repository._count_samples_by_associated_diagnoses({})
+        result = await repository._count_samples_by_associated_diagnoses()
         
         assert "total" in result
         assert "missing" in result
         assert "values" in result
-
-    async def test_count_samples_by_associated_diagnoses_with_filters(self, repository, mock_session):
-        """Test _count_samples_by_associated_diagnoses with filters."""
-        async def async_gen():
-            yield {"value": "Neuroblastoma", "count": 5}
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        
-        mock_session.run = AsyncMock(side_effect=[
-            mock_result,
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"total": 5}]))),
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 0}])))
-        ])
-        
-        result = await repository._count_samples_by_associated_diagnoses({"depositions": "phs002431"})
-        
-        assert "total" in result
-
 
 @pytest.mark.unit
 class TestSampleRepositoryRecordToSample:
@@ -1229,7 +1061,7 @@ class TestSampleRepositoryAdditionalFilters:
             AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 0}])))  # missing query
         ])
         
-        result = await repository.count_samples_by_field("preservation_method", {})
+        result = await repository.count_samples_by_field("preservation_method")
         
         assert "total" in result
 
@@ -1244,7 +1076,7 @@ class TestSampleRepositoryAdditionalFilters:
             AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"total": 2}]))),
             AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 0}])))
         ])
-        result = await repository.count_samples_by_field("tumor_grade", {})
+        result = await repository.count_samples_by_field("tumor_grade")
         assert "total" in result
         assert result["total"] == 2
 
@@ -1259,7 +1091,7 @@ class TestSampleRepositoryAdditionalFilters:
             AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"total": 3}]))),
             AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 0}])))
         ])
-        result = await repository.count_samples_by_field("tumor_classification", {})
+        result = await repository.count_samples_by_field("tumor_classification")
         assert "total" in result
         assert result["total"] == 3
 
@@ -1274,7 +1106,7 @@ class TestSampleRepositoryAdditionalFilters:
             AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"total": 2}]))),
             AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 0}])))
         ])
-        result = await repository.count_samples_by_field("tumor_tissue_morphology", {})
+        result = await repository.count_samples_by_field("tumor_tissue_morphology")
         assert "total" in result
         assert result["total"] == 2
 
@@ -1289,7 +1121,7 @@ class TestSampleRepositoryAdditionalFilters:
             AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"total": 2}]))),
             AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 0}])))
         ])
-        result = await repository.count_samples_by_field("age_at_diagnosis", {})
+        result = await repository.count_samples_by_field("age_at_diagnosis")
         assert "total" in result
         assert result["total"] == 2
 

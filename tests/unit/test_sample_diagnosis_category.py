@@ -218,6 +218,6 @@ async def test_count_samples_by_diagnosis_category_dispatches():
     repo._count_samples_by_diagnosis_category = AsyncMock(
         return_value={"total": 20, "missing": 3, "values": [{"value": "Medulloblastoma", "count": 8}]}
     )
-    result = await repo.count_samples_by_field("diagnosis_category", {})
+    result = await repo.count_samples_by_field("diagnosis_category")
     repo._count_samples_by_diagnosis_category.assert_called_once()
     assert result["total"] == 20

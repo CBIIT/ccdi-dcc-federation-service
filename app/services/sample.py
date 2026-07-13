@@ -183,36 +183,33 @@ class SampleService:
     
     async def count_samples_by_field(
         self,
-        field: str,
-        filters: Dict[str, Any]
+        field: str
     ) -> CountResponse:
         """
         Count samples grouped by a specific field value.
-        
+
+        Counts are always unfiltered: ``GET /sample/by/{field}/count`` rejects
+        every query parameter, so there is no filter state to apply.
+
         Args:
             field: Field to group by and count
-            filters: Additional filters to apply
-            
+
         Returns:
             CountResponse with field counts
         """
-        logger.debug(
-            "Counting samples by field",
-            field=field,
-            filters=filters
-        )
-        
+        logger.debug("Counting samples by field", field=field)
+
         # Check cache first
         cache_key = None
         if self.cache_service:
-            cache_key = self._build_cache_key("sample_count", field, filters)
+            cache_key = self._build_cache_key("sample_count", field, {})
             cached_result = await self.cache_service.get(cache_key)
             if cached_result:
                 logger.debug("Returning cached sample count", field=field)
                 return CountResponse(**cached_result)
-        
+
         # Get counts from repository
-        result = await self.repository.count_samples_by_field(field, filters)
+        result = await self.repository.count_samples_by_field(field)
         
         # Build response
         response = CountResponse(

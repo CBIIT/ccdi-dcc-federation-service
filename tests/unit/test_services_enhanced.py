@@ -323,7 +323,7 @@ class TestSampleServiceEnhanced:
         mock_cache_service.get = AsyncMock(return_value=cached_result)
         service.repository.count_samples_by_field = AsyncMock()
         
-        result = await service.count_samples_by_field("tissue_type", {})
+        result = await service.count_samples_by_field("tissue_type")
         
         assert isinstance(result, CountResponse)
         assert result.total == 100
@@ -339,7 +339,7 @@ class TestSampleServiceEnhanced:
         service.repository.count_samples_by_field = AsyncMock(return_value=mock_count_result)
         mock_cache_service.get = AsyncMock(return_value=None)
         
-        result = await service.count_samples_by_field("tissue_type", {})
+        result = await service.count_samples_by_field("tissue_type")
         
         assert result.total == 50
         mock_cache_service.set.assert_called_once()
@@ -355,7 +355,7 @@ class TestSampleServiceEnhanced:
             return_value=mock_count_result
         )
         
-        result = await service_no_cache.count_samples_by_field("tissue_type", {})
+        result = await service_no_cache.count_samples_by_field("tissue_type")
         
         assert result.total == 50
         service_no_cache.repository.count_samples_by_field.assert_called_once()

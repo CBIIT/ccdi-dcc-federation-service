@@ -248,9 +248,7 @@ class TestSampleRepositoryCartesianProductPrevention:
         mock_session.run = AsyncMock(return_value=mock_result)
         
         await repository.count_samples_by_field(
-            field="disease_phase",
-            filters={}
-        )
+            field="disease_phase")
         
         # Verify query was called
         assert mock_session.run.called
@@ -305,9 +303,7 @@ class TestSampleRepositoryCartesianProductPrevention:
         mock_session.run = AsyncMock(return_value=mock_result)
         
         await repository.count_samples_by_field(
-            field="anatomical_sites",
-            filters={}
-        )
+            field="anatomical_sites")
         
         # Verify query was called
         assert mock_session.run.called

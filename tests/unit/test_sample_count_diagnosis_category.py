@@ -58,7 +58,7 @@ async def test_count_diagnosis_category_basic(repository, mock_session):
         ]),
     ]
 
-    result = await repository._count_samples_by_diagnosis_category({})
+    result = await repository._count_samples_by_diagnosis_category()
 
     assert result["total"] == 100
     assert result["missing"] == 5
@@ -80,7 +80,7 @@ async def test_count_diagnosis_category_empty_results_retries(mock_sleep, reposi
         make_async_result([{"value": "Neuroblastoma", "count": 15}]),
     ]
 
-    result = await repository._count_samples_by_diagnosis_category({})
+    result = await repository._count_samples_by_diagnosis_category()
 
     assert result["total"] == 20
     assert result["missing"] == 2
@@ -100,7 +100,7 @@ async def test_count_diagnosis_category_retry_on_exception(mock_sleep, repositor
         make_async_result([{"value": "Renal Tumors", "count": 10}]),
     ]
 
-    result = await repository._count_samples_by_diagnosis_category({})
+    result = await repository._count_samples_by_diagnosis_category()
 
     assert result["total"] == 42
     assert result["missing"] == 1
@@ -118,7 +118,7 @@ async def test_count_diagnosis_category_exhausted_retries(mock_sleep, repository
     ]
 
     with pytest.raises(Exception, match="failure 2"):
-        await repository._count_samples_by_diagnosis_category({})
+        await repository._count_samples_by_diagnosis_category()
 
     assert mock_sleep.call_count == 2
 
@@ -131,7 +131,7 @@ async def test_count_samples_by_field_routes_to_diagnosis_category(repository, m
         make_async_result([{"value": "Bone Tumors", "count": 9}]),
     ]
 
-    result = await repository.count_samples_by_field("diagnosis_category", {})
+    result = await repository.count_samples_by_field("diagnosis_category")
 
     assert result["total"] == 10
     assert result["missing"] == 1
@@ -153,7 +153,7 @@ async def test_count_diagnosis_category_multiple_values(repository, mock_session
         make_async_result(categories),
     ]
 
-    result = await repository._count_samples_by_diagnosis_category({})
+    result = await repository._count_samples_by_diagnosis_category()
 
     assert result["total"] == 205
     assert result["missing"] == 0

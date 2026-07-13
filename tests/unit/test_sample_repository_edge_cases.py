@@ -95,7 +95,7 @@ class TestSampleRepositoryErrorHandling:
             AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 5}])))  # missing string succeeds
         ])
         
-        result = await repository.count_samples_by_field("anatomical_sites", {})
+        result = await repository.count_samples_by_field("anatomical_sites")
         
         assert "missing" in result
         assert result["missing"] == 5
@@ -144,7 +144,7 @@ class TestSampleRepositoryErrorHandling:
             FailingResultString(),  # missing string query also fails
         ])
         
-        result = await repository.count_samples_by_field("anatomical_sites", {})
+        result = await repository.count_samples_by_field("anatomical_sites")
         
         # Should default missing to 0 when both queries fail
         assert "missing" in result
@@ -205,7 +205,7 @@ class TestSampleRepositoryComplexQueries:
              patch('app.repositories.sample.build_case_mapping_statement', return_value="CASE WHEN molecule_value = 'DNA' THEN 'DNA' END"), \
              patch('app.repositories.sample.build_invalid_value_list_filter', return_value="val <> '-999'"), \
              patch('app.repositories.sample.load_sequencing_file_enum', return_value=None):
-            result = await repository.count_samples_by_field("specimen_molecular_analyte_type", {})
+            result = await repository.count_samples_by_field("specimen_molecular_analyte_type")
             
             assert "total" in result
             assert "missing" in result
@@ -236,7 +236,7 @@ class TestSampleRepositoryComplexQueries:
         
         with patch('app.repositories.sample.build_invalid_value_list_filter', return_value="val <> '-999'"), \
              patch('app.repositories.sample.load_sequencing_file_enum', return_value=["DNA", "RNA"]):
-            result = await repository.count_samples_by_field("library_source_material", {})
+            result = await repository.count_samples_by_field("library_source_material")
             
             assert "total" in result
             assert "missing" in result
@@ -267,31 +267,11 @@ class TestSampleRepositoryComplexQueries:
         
         with patch('app.repositories.sample.build_invalid_value_list_filter', return_value="val <> '-999'"), \
              patch('app.repositories.sample.load_sequencing_file_enum', return_value=["DNA", "RNA"]):
-            result = await repository.count_samples_by_field("library_source_material", {})
+            result = await repository.count_samples_by_field("library_source_material")
             
             assert "total" in result
             assert "missing" in result
             assert "values" in result
-
-    async def test_count_samples_by_field_anatomical_sites_with_filters(self, repository, mock_session):
-        """Test count_samples_by_field for anatomical_sites with base filters."""
-        async def async_gen():
-            yield {"value": "Brain", "count": 5}
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        
-        mock_session.run = AsyncMock(side_effect=[
-            mock_result,  # values query
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"total": 5}]))),  # total query
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 0}])))  # missing query
-        ])
-        
-        result = await repository.count_samples_by_field("anatomical_sites", {"depositions": "phs002431"})
-        
-        assert "total" in result
-        assert "missing" in result
-        assert "values" in result
 
     async def test_count_samples_by_field_anatomical_sites_list_query(self, repository, mock_session):
         """Test count_samples_by_field for anatomical_sites uses list query."""
@@ -307,38 +287,12 @@ class TestSampleRepositoryComplexQueries:
             AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 2}])))  # missing query
         ])
         
-        result = await repository.count_samples_by_field("anatomical_sites", {})
+        result = await repository.count_samples_by_field("anatomical_sites")
         
         assert "total" in result
         # Verify list query was used (check for UNWIND in cypher)
         cypher = mock_session.run.call_args_list[0][0][0]
         assert "UNWIND" in cypher or "valueType" in cypher  # List query indicators
-
-    async def test_count_samples_by_field_with_complex_filters(self, repository, mock_session):
-        """Test count_samples_by_field with multiple complex filters."""
-        async def async_gen():
-            yield {"value": "Tumor", "count": 3}
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        
-        mock_session.run = AsyncMock(side_effect=[
-            mock_result,
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"total": 3}]))),
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 0}])))
-        ])
-        
-        result = await repository.count_samples_by_field(
-            "tissue_type",
-            {
-                "race": "White",
-                "identifiers": "SAMP001 || SAMP002",
-                "depositions": "phs001 || phs002",
-                "_diagnosis_search": "cancer"
-            }
-        )
-        
-        assert "total" in result
 
     async def test_get_samples_summary_with_complex_filters(self, repository, mock_session):
         """Test get_samples_summary with complex filter combinations."""

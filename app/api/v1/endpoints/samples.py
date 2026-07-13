@@ -470,7 +470,7 @@ async def count_samples_by_field(
         service = SampleService(session, allowlist, settings, cache_service)
         
         # Get counts (no filters - returns counts for all samples)
-        result = await service.count_samples_by_field(field, {})
+        result = await service.count_samples_by_field(field)
         
         logger.info(
             "Count samples by field response",

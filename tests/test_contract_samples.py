@@ -93,7 +93,7 @@ def test_sample_count_endpoint_contract_and_math(client, monkeypatch):
         def __init__(self, *args, **kwargs):
             pass
 
-        async def count_samples_by_field(self, field: str, filters: Dict[str, Any]):
+        async def count_samples_by_field(self, field: str):
             return CountResponse(
                 total=10,
                 missing=2,
@@ -108,6 +108,32 @@ def test_sample_count_endpoint_contract_and_math(client, monkeypatch):
     assert body["total"] == 10
     assert body["missing"] == 2
     assert sum(v["count"] for v in body["values"]) + body["missing"] == body["total"]
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "depositions=phs002431",
+        "identifiers=SAMP001",
+        "sex=Female",
+        "race=White",
+        "anatomical_sites=Brain",
+        "not_a_real_param=1",
+    ],
+)
+def test_sample_count_endpoint_rejects_all_query_params(client, query):
+    """/sample/by/{field}/count takes no query parameters at all.
+
+    The count is always unfiltered, so any query param is an InvalidParameters
+    error (400) — never a silently-filtered 200. This is the contract that lets
+    the repository drop its filter handling entirely.
+    """
+    r = client.get(f"/api/v1/sample/by/library_strategy/count?{query}")
+    assert r.status_code == 400
+    errors = r.json()["errors"]
+    assert errors[0]["kind"] == "InvalidParameters"
+    # The parameter name must not be echoed back to the caller.
+    assert query.split("=")[0] not in r.text
 
 
 def test_sample_diagnosis_endpoint_contract(client, monkeypatch):

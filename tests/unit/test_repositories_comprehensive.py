@@ -1223,7 +1223,7 @@ class TestSampleRepositoryInternal:
         ]
         mock_session.run = AsyncMock(side_effect=[total_result, missing_result, values_result])
 
-        result = await repository._count_samples_by_associated_diagnoses({})
+        result = await repository._count_samples_by_associated_diagnoses()
 
         assert result["total"] == 4
         assert result["missing"] == 1
@@ -1231,58 +1231,10 @@ class TestSampleRepositoryInternal:
         assert mock_session.run.call_count == 3
         assert mock_session.run.call_args_list[0][1] == {}
 
-    async def test_count_samples_by_associated_diagnoses_with_identifiers(self, repository, mock_session):
-        """Test _count_samples_by_associated_diagnoses with identifier filter."""
-        total_result = AsyncMock()
-        total_result.__aiter__.return_value = [{"total": 1}]
-        missing_result = AsyncMock()
-        missing_result.__aiter__.return_value = [{"missing": 0}]
-        values_result = AsyncMock()
-        values_result.__aiter__.return_value = [{"value": "Wilms Tumor", "count": 1}]
-        mock_session.run = AsyncMock(side_effect=[total_result, missing_result, values_result])
-
-        filters = {"identifiers": ["P1", "P2"], "sex": "F"}
-        result = await repository._count_samples_by_associated_diagnoses(filters)
-
-        assert result["total"] == 1
-        assert result["missing"] == 0
-        assert result["values"][0]["value"] == "Wilms Tumor"
-        assert mock_session.run.call_count == 3
-        assert mock_session.run.call_args_list[0][0][1]["param_1"] == ["P1", "P2"]
-
-    async def test_count_samples_by_associated_diagnoses_skips_diagnosis_filters(self, repository, mock_session):
-        """Test _count_samples_by_associated_diagnoses ignores diagnosis filters."""
-        total_result = AsyncMock()
-        total_result.__aiter__.return_value = [{"total": 2}]
-        missing_result = AsyncMock()
-        missing_result.__aiter__.return_value = [{"missing": 0}]
-        values_result = AsyncMock()
-        values_result.__aiter__.return_value = [{"value": "Neuroblastoma", "count": 2}]
-        mock_session.run = AsyncMock(side_effect=[total_result, missing_result, values_result])
-
-        filters = {"_diagnosis_search": "cancer", "associated_diagnoses": "x", "sex": "F"}
-        result = await repository._count_samples_by_associated_diagnoses(filters)
-
-        assert result["total"] == 2
-        assert result["values"][0]["value"] == "Neuroblastoma"
-        assert mock_session.run.call_count == 3
-        assert mock_session.run.call_args_list[0][0][1] == {"param_1": "F"}
-
     async def test_count_samples_by_field_unsupported_field(self, repository):
         """Test count_samples_by_field raises for unsupported field."""
         with pytest.raises(UnsupportedFieldError):
-            await repository.count_samples_by_field("invalid_field", {})
-
-    async def test_count_samples_by_field_diagnosis_delegates(self, repository):
-        """Test count_samples_by_field delegates diagnosis to helper."""
-        repository._count_samples_by_associated_diagnoses = AsyncMock(
-            return_value={"total": 1, "missing": 0, "values": []}
-        )
-
-        result = await repository.count_samples_by_field("diagnosis", {"sex": "F"})
-
-        assert result["total"] == 1
-        repository._count_samples_by_associated_diagnoses.assert_called_once()
+            await repository.count_samples_by_field("invalid_field")
 
     async def test_count_samples_by_field_library_source_material_combined(self, repository, mock_session):
         """Test combined query path for library_source_material (one query returns value, count, total, missing)."""
@@ -1297,7 +1249,7 @@ class TestSampleRepositoryInternal:
         with patch("app.repositories.sample.load_sequencing_file_enum", return_value=["GENOMIC"]), \
             patch("app.repositories.sample.map_field_value", side_effect=lambda field, value: value), \
             patch("app.repositories.sample.is_null_mapped_value", return_value=False):
-            result = await repository.count_samples_by_field("library_source_material", {})
+            result = await repository.count_samples_by_field("library_source_material")
 
         assert result["total"] == 3
         assert result["missing"] == 1
@@ -1316,7 +1268,7 @@ class TestSampleRepositoryInternal:
         with patch("app.repositories.sample.load_sequencing_file_enum", return_value=["GENOMIC"]), \
             patch("app.repositories.sample.map_field_value", side_effect=lambda field, value: value), \
             patch("app.repositories.sample.is_null_mapped_value", return_value=False):
-            result = await repository.count_samples_by_field("library_source_material", {})
+            result = await repository.count_samples_by_field("library_source_material")
 
         assert result["total"] == 5
         assert result["missing"] == 2
@@ -1335,7 +1287,7 @@ class TestSampleRepositoryInternal:
 
         with patch("app.repositories.sample.map_field_value", side_effect=lambda field, value: value), \
             patch("app.repositories.sample.is_null_mapped_value", return_value=False):
-            result = await repository.count_samples_by_field("library_selection_method", {})
+            result = await repository.count_samples_by_field("library_selection_method")
 
         assert result["total"] == 3
         assert result["missing"] == 1
@@ -1356,58 +1308,12 @@ class TestSampleRepositoryInternal:
 
         with patch("app.repositories.sample.map_field_value", side_effect=lambda field, value: value), \
             patch("app.repositories.sample.is_null_mapped_value", return_value=False):
-            result = await repository.count_samples_by_field("library_selection_method", {})
+            result = await repository.count_samples_by_field("library_selection_method")
 
         assert result["total"] == 10
         assert result["missing"] == 3
         assert result["values"] == []
         assert mock_session.run.call_count >= 1
-
-    async def test_count_samples_by_field_anatomical_sites_list(self, repository, mock_session):
-        """Test count_samples_by_field handles anatomical_sites list values."""
-        total_result = AsyncMock()
-        total_result.__aiter__.return_value = [{"total": 3}]
-        missing_result = AsyncMock()
-        missing_result.__aiter__.return_value = [{"missing": 1}]
-        values_result = AsyncMock()
-        values_result.__aiter__.return_value = [
-            {"value": "Brain", "count": 2},
-            {"value": "Lung", "count": 1},
-        ]
-        mock_session.run = AsyncMock(side_effect=[total_result, missing_result, values_result])
-
-        result = await repository.count_samples_by_field(
-            "anatomical_sites",
-            {"anatomical_sites": ["Brain", "Lung"]}
-        )
-
-        assert result["values"] == []
-        params = mock_session.run.call_args_list[0][0][1]
-        assert params["param_1"] == ["Brain", "Lung"]
-        assert params["param_1_0"] == "Brain"
-        assert params["param_1_1"] == "Lung"
-
-    async def test_count_samples_by_field_ignores_diagnosis_search_filter(
-        self, repository, mock_session
-    ):
-        """_diagnosis_search is discarded — count endpoint accepts no query parameters."""
-        total_result = AsyncMock()
-        total_result.__aiter__.return_value = [{"total": 1}]
-        missing_result = AsyncMock()
-        missing_result.__aiter__.return_value = [{"missing": 0}]
-        values_result = AsyncMock()
-        values_result.__aiter__.return_value = [{"value": "Tumor", "count": 1}]
-        mock_session.run = AsyncMock(side_effect=[total_result, missing_result, values_result])
-
-        await repository.count_samples_by_field(
-            "tissue_type",
-            {"_diagnosis_search": "leukemia"},
-        )
-
-        query, params = mock_session.run.call_args_list[0][0]
-        assert "diagnosis_search_term" not in params
-        assert "p._diagnosis_search" not in query
-        assert "leukemia" not in params.values()
 
     def test_record_to_sample(self, repository):
         """Test _record_to_sample conversion."""

@@ -24,14 +24,21 @@
       "description": "Maps database values to API values for specimen_molecular_analyte_type field (from library_source_molecule property)",
       "source_property": "library_source_molecule",
       "mappings": {
-        "Transcriptomic": "RNA",
-        "Genomic": "DNA",
-        "Viral RNA": "RNA"
+        "Circulating cell-free DNA": "DNA",
+        "Circulating Tumor-Derived DNA": "DNA",
+        "DNA": "DNA",
+        "MicroRNA": "RNA",
+        "Messenger RNA": "RNA",
+        "Nucleic RNA Sample": "RNA",
+        "Protein": "Protein",
+        "RNA Specimen": "RNA",
+        "Total RNA": "RNA"
       },
-      "null_mappings": ["Not Reported"],
+      "null_mappings": ["Not Reported", "Unknown"],
       "reverse_mappings": {
-        "RNA": ["Transcriptomic", "Viral RNA"],
-        "DNA": "Genomic"
+        "DNA": ["Circulating cell-free DNA", "Circulating Tumor-Derived DNA", "DNA"],
+        "RNA": ["MicroRNA", "Messenger RNA", "Nucleic RNA Sample", "RNA Specimen", "Total RNA"],
+        "Protein": "Protein"
       }
     },
     "library_strategy": {
@@ -57,11 +64,80 @@
       "reverse_mappings": {
         "Relapse": ["Recurrent Disease", "Relapse"]
       }
-    },
+    }
+  },
+  "sample": {
     "tumor_classification": {
       "description": "Maps database values to API values for tumor_classification field",
-      "source_property": "tumor_classification",
-      "null_mappings": ["non-malignant"]
+      "source_property": "tumor_spatial_extent",
+      "mappings": {
+        "Local": "Primary",
+        "Locoregional": "Primary",
+        "Metastatic": "Metastatic",
+        "Not Reported": "Not Reported",
+        "Primary": "Primary",
+        "Regional": "Regional",
+        "Unknown": "Unknown",
+        "Not Applicable": "Unknown"
+      },
+      "null_mappings": [],
+      "reverse_mappings": {
+        "Primary": ["Local", "Locoregional","Primary"],
+        "Metastatic": "Metastatic",
+        "Not Reported": "Not Reported",
+        "Regional": "Regional",
+        "Unknown": ["Unknown", "Not Applicable"]
+      }
+    }
+  },
+  "pathology_file": {
+    "preservation_method": {
+      "description": "Maps pathology_file fixation_embedding_method values to API preservation_method values",
+      "source_property": "fixation_embedding_method",
+      "mappings": {
+        "-80 degrees C": "-80 degrees C",
+        "Cytospin Slide": "Unknown",
+        "Cryopreservation in dry ice (dead tissue)": "Cryopreserved",
+        "Cryopreservation in liquid nitrogen (dead tissue)": "Cryopreserved",
+        "Cryopreservation of live cells in liquid nitrogen": "Cryopreserved",
+        "Cryopreserved": "Cryopreserved",
+        "Formalin fixed - buffered": "Formalin Fixed - Buffered",
+        "Formalin fixed - unbuffered": "Formalin Fixed - Unbuffered",
+        "Formalin fixed paraffin embedded (FFPE)": "FFPE",
+        "Fresh": "Fresh",
+        "Fresh dissociated": "Fresh Dissociated",
+        "Fresh dissociated and single cell sorted": "Fresh Dissociated and Single Cell Sorted",
+        "Fresh dissociated and single cell sorted into plates": "Fresh Dissociated and Single Cell Sorted into Plates",
+        "Frozen": "Frozen",
+        "Liquid nitrogen": "Liquid Nitrogen",
+        "Not Reported": "Not Reported",
+        "OCT": "OCT",
+        "Other": "Unknown",
+        "Snap frozen": "Snap Frozen"
+      },
+      "null_mappings": ["Unknown"],
+      "reverse_mappings": {
+        "-80 degrees C": "-80 degrees C",
+        "Unknown": ["Cytospin Slide", "Other"],
+        "Cryopreserved": [
+          "Cryopreservation in dry ice (dead tissue)",
+          "Cryopreservation in liquid nitrogen (dead tissue)",
+          "Cryopreservation of live cells in liquid nitrogen",
+          "Cryopreserved"
+        ],
+        "Formalin Fixed - Buffered": "Formalin fixed - buffered",
+        "Formalin Fixed - Unbuffered": "Formalin fixed - unbuffered",
+        "FFPE": "Formalin fixed paraffin embedded (FFPE)",
+        "Fresh": "Fresh",
+        "Fresh Dissociated": "Fresh dissociated",
+        "Fresh Dissociated and Single Cell Sorted": "Fresh dissociated and single cell sorted",
+        "Fresh Dissociated and Single Cell Sorted into Plates": "Fresh dissociated and single cell sorted into plates",
+        "Frozen": "Frozen",
+        "Liquid Nitrogen": "Liquid nitrogen",
+        "Not Reported": "Not Reported",
+        "OCT": "OCT",
+        "Snap Frozen": "Snap frozen"
+      }
     }
   },
   "subject": {
@@ -77,18 +153,16 @@
       }
     },
     "sex": {
-      "description": "Maps database sex_at_birth values to normalized API sex values. NOTE: Currently implemented via Settings.sex_value_mappings and hardcoded reverse mapping in subject.py. This entry is for reference/documentation only.",
+      "description": "Maps database sex_at_birth values to normalized API sex values. Female maps to F, Male maps to M, and all other DB values map to U.",
       "source_property": "sex_at_birth",
       "mappings": {
-        "Male": "M",
         "Female": "F",
-        "Not Reported": "U"
+        "Male": "M"
       },
       "null_mappings": [],
       "reverse_mappings": {
-        "M": "Male",
         "F": "Female",
-        "U": "Not Reported"
+        "M": "Male"
       }
     },
     "race": {

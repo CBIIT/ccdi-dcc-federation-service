@@ -97,6 +97,29 @@ class TestSampleConverters:
         assert sample.id.name == "SAMP001"
         assert sample.id.namespace.name == "phs002431"
     
+    def test_record_to_sample_tumor_classification_from_sample_node(self, converter):
+        """tumor_classification (API) is sourced from the sample node."""
+        sa = {"sample_id": "SAMP001", "tumor_spatial_extent": "Local"}
+        p = {"participant_id": "PART001"}
+        st = {"study_id": "phs002431"}
+        diagnoses = [{"diagnosis": "Some Dx"}]
+
+        sample = converter._record_to_sample(sa, p, st, {}, {}, diagnoses)
+
+        assert sample.metadata.tumor_classification is not None
+        assert sample.metadata.tumor_classification.value == "Primary"
+
+    def test_record_to_sample_ignores_diagnosis_tumor_classification_key(self, converter):
+        """The sample field is authoritative, so a diagnosis-shaped value yields null."""
+        sa = {"sample_id": "SAMP001"}
+        p = {"participant_id": "PART001"}
+        st = {"study_id": "phs002431"}
+        diagnoses = [{"diagnosis": "Some Dx", "tumor_classification": "Local"}]
+
+        sample = converter._record_to_sample(sa, p, st, {}, {}, diagnoses)
+
+        assert sample.metadata.tumor_classification is None
+
     def test_record_to_sample_empty_sa(self, converter):
         """Test _record_to_sample raises error when sa is empty."""
         with pytest.raises(ValueError, match="Sample node.*required"):

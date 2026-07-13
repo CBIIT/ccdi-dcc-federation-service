@@ -579,7 +579,7 @@ class TestFileRepositoryInternal:
     def test_record_to_file(self, repository):
         """Test _record_to_file conversion."""
         record = {
-            "id": "file1.bam",
+            "guid": "file1.bam",
             "file_type": "bam",
             "file_size": 123,
             "md5sum": "abc123",
@@ -1117,14 +1117,14 @@ class TestSampleRepositoryInternal:
         """Test reverse query returns samples when records exist."""
         with patch("app.repositories.sample.is_database_only_value", return_value=False), \
             patch("app.repositories.sample.is_null_mapped_value", return_value=False), \
-            patch("app.repositories.sample.reverse_map_field_value", return_value="Transcriptomic"):
+            patch("app.repositories.sample.reverse_map_field_value", return_value="Protein"):
             mock_result = AsyncMock()
             mock_result.__aiter__.return_value = [
                 {
                     "sa": {"sample_id": "S1"},
                     "p": {"participant_id": "P1"},
                     "st": {"study_id": "phs001"},
-                    "sf": {"library_source_molecule": "Transcriptomic"},
+                    "sf": {"library_source_molecule": "Protein"},
                     "pf": {},
                     "diagnoses": {}
                 }
@@ -1135,7 +1135,7 @@ class TestSampleRepositoryInternal:
             repository._record_to_sample = Mock(return_value=Mock())
 
             result = await repository._get_samples_by_sequencing_file_filters(
-                {"specimen_molecular_analyte_type": "RNA"},
+                {"specimen_molecular_analyte_type": "Protein"},
                 offset=0,
                 limit=10
             )

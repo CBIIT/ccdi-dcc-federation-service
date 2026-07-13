@@ -101,18 +101,23 @@ class TestCountForPagination:
         session.run.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_no_filters_uses_collected_study_paths(self):
-        """Pattern 3 count: collect each study path to prevent Cartesian product before size() check."""
+    async def test_no_filters_uses_streaming_exists_count(self):
+        """Pattern 3 count: stream sf and test study reachability via EXISTS.
+
+        The prior collect + count(DISTINCT sf) form materialized a hash set of all
+        ~1.5M matched sf nodes and OOMed the snapshot (>7.65 GiB). EXISTS short-circuits
+        per file and needs no DISTINCT (a sequencing_file maps to at most one sample).
+        """
         repo, session = make_repo()
         session.run = AsyncMock(return_value=_mock_result([{"total_count": 100}]))
 
         await repo.count_for_pagination({})
 
         cypher = session.run.call_args[0][0]
-        assert "collect(DISTINCT st1) AS st1_list" in cypher
-        assert "collect(DISTINCT st2) AS st2_list" in cypher
-        assert "size(st1_list) > 0 OR size(st2_list) > 0" in cypher
-        assert "RETURN count(DISTINCT sf)" in cypher
+        assert cypher.count("EXISTS {") == 2
+        assert "collect(" not in cypher
+        assert "RETURN count(sf)" in cypher
+        assert "count(DISTINCT sf)" not in cypher
 
     @pytest.mark.asyncio
     async def test_raises_on_database_error(self):

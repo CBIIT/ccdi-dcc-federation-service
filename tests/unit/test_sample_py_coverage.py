@@ -670,8 +670,8 @@ class TestGetSamplesMainMethod:
             assert mock_session.run.called
             assert isinstance(result, list)
 
-    async def test_get_samples_case3_node_filters(self, repository, mock_session):
-        """Test get_samples routes to Case 3 (has other node filters)."""
+    async def test_get_samples_sequencing_file_only_uses_optimized_path(self, repository, mock_session):
+        """Sequencing_file-only filters route to the optimized sf-first method, not Case 3."""
         async def async_gen():
             yield {
                 "sa": {"sample_id": "SAMP001"},
@@ -687,16 +687,16 @@ class TestGetSamplesMainMethod:
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
         
-        # Mock the case3 method to verify it's called
-        with patch.object(repository, '_get_samples_case3_with_node_filters', new_callable=AsyncMock) as mock_case3:
-            mock_case3.return_value = []
+        # Sequencing-file-only filters now route to the optimized sf-first method.
+        with patch.object(repository, '_get_samples_by_sequencing_file_filters', new_callable=AsyncMock) as mock_sf:
+            mock_sf.return_value = []
             result = await repository.get_samples(
                 filters={"library_strategy": "WXS"},  # Sequencing file filter
                 offset=0,
                 limit=20
             )
-            
-            mock_case3.assert_called_once()
+
+            mock_sf.assert_called_once()
     
     async def test_get_samples_case3_diagnosis_filter(self, repository, mock_session):
         """Test get_samples routes to Case 3 with diagnosis filter."""
@@ -838,10 +838,10 @@ class TestGetSamplesMainMethod:
         mock_result_list.consume = AsyncMock()
         
         mock_session.run = AsyncMock(side_effect=[
-            Exception("Database error in count query"),
+            Exception("count aggregation failed"),  # non-retryable -> single count attempt
             mock_result_list
         ])
-        
+
         result = await repository.get_samples(
             filters={"tissue_type": "Tumor", "depositions": "phs001"},
             offset=0,
@@ -908,11 +908,13 @@ class TestGetSamplesMainMethod:
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
         
-        # Mock case3 to return None (indicating it can't handle the filters)
+        # Mock case3 to return None (indicating it can't handle the filters).
+        # Use a diagnosis filter so routing still reaches Case 3 (sequencing_file-only
+        # filters now bypass Case 3 via the optimized sf-first method).
         with patch.object(repository, '_get_samples_case3_with_node_filters', new_callable=AsyncMock) as mock_case3:
             mock_case3.return_value = None
             result = await repository.get_samples(
-                filters={"library_strategy": "WXS", "unknown_filter": "value"},  # Case 3 can't handle unknown_filter
+                filters={"diagnosis": "Neuroblastoma", "unknown_filter": "value"},  # routes to Case 3
                 offset=0,
                 limit=20
             )
@@ -1121,7 +1123,7 @@ class TestGetSamplesBySequencingFileFilters:
                 "sa": {"sample_id": "SAMP001"},
                 "p": {},
                 "st": {"study_id": "phs001"},
-                "sf": {"library_source_molecule": "Transcriptomic"},
+                "sf": {"library_source_molecule": "Total RNA"},
                 "pf": {},
                 "diagnoses": {}
             }
@@ -1140,7 +1142,7 @@ class TestGetSamplesBySequencingFileFilters:
         sm.is_database_only_value = lambda field, value: False
         sm.is_null_mapped_value = lambda field, value: False
         sm.reverse_map_field_value = lambda field, value: (
-            ["Transcriptomic", "Viral RNA"] if field == "specimen_molecular_analyte_type" and value == "RNA"
+            ["MicroRNA", "Total RNA"] if field == "specimen_molecular_analyte_type" and value == "RNA"
             else value
         )
         
@@ -1180,18 +1182,18 @@ class TestGetSamplesBySequencingFileFilters:
         mock_result_list.consume = AsyncMock()
         
         mock_session.run = AsyncMock(side_effect=[
-            Exception("Database error in count query"),
+            Exception("count aggregation failed"),  # non-retryable -> single count attempt
             mock_result_list
         ])
-        
+
         import app.repositories.sample as sm
-        
+
         original_is_db_only = sm.is_database_only_value
         original_is_null = sm.is_null_mapped_value
-        
+
         sm.is_database_only_value = lambda field, value: False
         sm.is_null_mapped_value = lambda field, value: False
-        
+
         try:
             result = await repository._get_samples_by_sequencing_file_filters(
                 filters={"library_strategy": "WXS"},
@@ -1522,10 +1524,10 @@ class TestGetSamplesEarlyPaginationAdvanced:
         
         # First call (count) raises exception, second call (list) succeeds
         mock_session.run = AsyncMock(side_effect=[
-            Exception("Database error"),
+            Exception("count aggregation failed"),  # non-retryable -> single count attempt
             mock_result_list
         ])
-        
+
         result = await repository._get_samples_early_pagination_with_filters(
             filters={"depositions": "phs001"},
             offset=0,
@@ -1703,10 +1705,10 @@ class TestGetSamplesByPathologyFileFilters:
         mock_result_list.consume = AsyncMock()
         
         mock_session.run = AsyncMock(side_effect=[
-            Exception("Database error in count query"),
+            Exception("count aggregation failed"),  # non-retryable -> single count attempt
             mock_result_list
         ])
-        
+
         result = await repository._get_samples_by_pathology_file_filters(
             filters={"preservation_method": "FFPE"},
             offset=0,
@@ -1948,7 +1950,7 @@ class TestGetSamplesByCombinedFilters:
                 "sa": {"sample_id": "SAMP001"},
                 "p": {},
                 "st": {"study_id": "phs001"},
-                "sf": {"library_source_molecule": "Transcriptomic"},
+                "sf": {"library_source_molecule": "Total RNA"},
                 "pf": {"fixation_embedding_method": "FFPE"},
                 "diagnoses": {}
             }
@@ -1967,7 +1969,7 @@ class TestGetSamplesByCombinedFilters:
         sm.is_database_only_value = lambda field, value: False
         sm.is_null_mapped_value = lambda field, value: False
         sm.reverse_map_field_value = lambda field, value: (
-            ["Transcriptomic", "Viral RNA"] if field == "specimen_molecular_analyte_type" and value == "RNA"
+            ["MicroRNA", "Total RNA"] if field == "specimen_molecular_analyte_type" and value == "RNA"
             else original_reverse_map(field, value)
         )
         
@@ -2069,18 +2071,18 @@ class TestGetSamplesByCombinedFilters:
         mock_result_list.consume = AsyncMock()
         
         mock_session.run = AsyncMock(side_effect=[
-            Exception("Database error in count query"),
+            Exception("count aggregation failed"),  # non-retryable -> single count attempt
             mock_result_list
         ])
-        
+
         import app.repositories.sample as sm
-        
+
         original_is_db_only = sm.is_database_only_value
         original_is_null = sm.is_null_mapped_value
-        
+
         sm.is_database_only_value = lambda field, value: False
         sm.is_null_mapped_value = lambda field, value: False
-        
+
         try:
             result = await repository._get_samples_by_combined_filters(
                 filters={"library_strategy": "WXS", "preservation_method": "FFPE"},
@@ -2441,7 +2443,7 @@ class TestGetSamplesSummaryReverseQueryInSample:
         sm.is_database_only_value = lambda field, value: False
         sm.is_null_mapped_value = lambda field, value: False
         sm.reverse_map_field_value = lambda field, value: (
-            ["Transcriptomic", "Viral RNA"] if field == "specimen_molecular_analyte_type" and value == "RNA"
+            ["MicroRNA", "Total RNA"] if field == "specimen_molecular_analyte_type" and value == "RNA"
             else value
         )
         

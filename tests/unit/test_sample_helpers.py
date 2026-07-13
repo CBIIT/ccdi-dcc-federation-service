@@ -23,7 +23,8 @@ class TestFilterCategorization:
             "tissue_type": "Tumor",
             "anatomical_sites": "C72.9",
             "age_at_collection": 10,
-            "identifiers": "SAMP001"
+            "identifiers": "SAMP001",
+            "tumor_classification": "Primary"
         }
         
         categorized = SampleHelpers._categorize_filters(filters)
@@ -32,6 +33,7 @@ class TestFilterCategorization:
         assert "anatomical_sites" in categorized["sample"]
         assert "age_at_collection" in categorized["sample"]
         assert "identifiers" in categorized["sample"]
+        assert "tumor_classification" in categorized["sample"]
         
         # Should not be in other categories
         assert len(categorized["study"]) == 0
@@ -57,7 +59,6 @@ class TestFilterCategorization:
             "diagnosis": "Neuroblastoma",
             "disease_phase": "Primary",
             "tumor_grade": "G2",
-            "tumor_classification": "Primary",
             "tumor_tissue_morphology": "Neuroblastoma",
             "age_at_diagnosis": 5,
             "_diagnosis_search": "cancer"
@@ -69,7 +70,6 @@ class TestFilterCategorization:
         assert "diagnosis" in categorized["diagnosis"], "diagnosis filter must be categorized as diagnosis filter"
         assert "disease_phase" in categorized["diagnosis"]
         assert "tumor_grade" in categorized["diagnosis"]
-        assert "tumor_classification" in categorized["diagnosis"]
         assert "tumor_tissue_morphology" in categorized["diagnosis"]
         assert "age_at_diagnosis" in categorized["diagnosis"]
         assert "_diagnosis_search" in categorized["diagnosis"]

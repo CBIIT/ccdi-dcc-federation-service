@@ -118,7 +118,7 @@ class TestCase1DirectCoverage:
             return_total=False,
         )
         query = repository.session.run.call_args[0][0]
-        assert "SPLIT(toString(sa.anatomic_site)" in query
+        assert "any(tok IN coalesce(sa.anatomic_site, [])" in query
         assert "param_1_0" in repository.session.run.call_args[0][1]
 
     @pytest.mark.asyncio
@@ -242,18 +242,14 @@ class TestCase3FilterBranches:
         assert "d.tumor_tissue_morphology" in query
 
     @pytest.mark.asyncio
-    async def test_tumor_classification_null_mapped_uses_false_predicate(self, repository):
+    async def test_tumor_classification_database_only_returns_empty(self, repository):
         repository.session.run = AsyncMock(return_value=_empty_result())
-        cat = _categorized(diagnosis={"tumor_classification": "Not Applicable"})
-        with patch(
-            "app.repositories.sample_query_cases.is_null_mapped_value",
-            return_value=True,
-        ):
-            await repository._get_samples_case3_with_node_filters(
-                {}, cat, offset=0, limit=20, base_url=None, return_total=False
-            )
-        query = repository.session.run.call_args[0][0]
-        assert "(false)" in query
+        cat = _categorized(sample={"tumor_classification": "Local"})
+        result = await repository._get_samples_case3_with_node_filters(
+            {}, cat, offset=0, limit=20, base_url=None, return_total=False
+        )
+        assert result == []
+        repository.session.run.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_diagnosis_text_and_age_at_diagnosis_non_int(self, repository):
@@ -366,13 +362,13 @@ class TestCase3FilterBranches:
         ):
             with patch(
                 "app.repositories.sample_query_cases.reverse_map_field_value",
-                return_value=["Transcriptomic", "Viral RNA"],
+                return_value=["MicroRNA", "Total RNA"],
             ):
                 await repository._get_samples_case3_with_node_filters(
                     {}, cat, offset=0, limit=20, base_url=None, return_total=False
                 )
         query = repository.session.run.call_args[0][0]
-        assert "sf.library_source_molecule IN ['Transcriptomic', 'Viral RNA']" in query
+        assert "sf.library_source_molecule IN ['MicroRNA', 'Total RNA']" in query
 
     @pytest.mark.asyncio
     async def test_pathology_only_enrichment_without_node_filters(self, repository):
@@ -459,7 +455,9 @@ class TestCase3FilterBranches:
         )
         query = repository.session.run.call_args[0][0]
         assert "diag_category_filter" in repository.session.run.call_args[0][1]
-        assert "split(toString" in query
+        # 3.11 list-native: exact-token match iterates the LIST, no SPLIT idiom
+        assert "coalesce(d.diagnosis_category, [])" in query
+        assert "split(toString" not in query
 
     @pytest.mark.asyncio
     async def test_library_selection_fallback_to_raw_value(self, repository):
@@ -504,7 +502,7 @@ class TestCase3FilterBranches:
     async def test_specimen_molecular_analyte_type_scalar_mapping(self, repository):
         repository.session.run = AsyncMock(return_value=_empty_result())
         cat = _categorized(
-            sequencing_file={"specimen_molecular_analyte_type": "DNA"},
+            sequencing_file={"specimen_molecular_analyte_type": "Protein"},
         )
         with patch(
             "app.repositories.sample_query_cases.is_database_only_value",
@@ -512,7 +510,7 @@ class TestCase3FilterBranches:
         ):
             with patch(
                 "app.repositories.sample_query_cases.reverse_map_field_value",
-                return_value="Genomic",
+                return_value="Protein",
             ):
                 await repository._get_samples_case3_with_node_filters(
                     {}, cat, offset=0, limit=20, base_url=None, return_total=False

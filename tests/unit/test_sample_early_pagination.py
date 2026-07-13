@@ -163,8 +163,8 @@ class TestEarlyPagination:
         assert ('WITH sa, st,' in query or 'WITH DISTINCT sa, st' in query or 
                 'WITH DISTINCT sa.sample_id' in query), "Query should paginate at (sample_id, study_id) pair level"
         
-        # Verify Case 3 structure (starts from sample, has OPTIONAL MATCH for sequencing_file)
-        assert 'MATCH (sa:sample)' in query
+        # Sequencing-file-only filters now use the optimized sf-first method (starts from sequencing_file)
+        assert 'MATCH (sf:sequencing_file)' in query
         assert 'OPTIONAL MATCH' in query and ('sf:sequencing_file' in query or 'sequencing_file' in query)
         
         # Verify pagination at pair level: SKIP/LIMIT should come after study collection and UNWIND

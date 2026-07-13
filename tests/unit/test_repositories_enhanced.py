@@ -15,6 +15,7 @@ from app.repositories.sample import SampleRepository
 from app.lib.field_allowlist import FieldAllowlist, EntityType
 from app.models.errors import UnsupportedFieldError
 from app.models.dto import Subject, File, Sample
+from tests.unit.helpers import make_async_result
 
 
 @pytest.mark.unit
@@ -288,25 +289,26 @@ class TestSubjectRepositoryEnhanced:
 
     async def test_count_subjects_by_field_sex(self, repository, mock_session):
         """Test count_subjects_by_field with sex field."""
-        # count_subjects_by_field uses complex query patterns
-        # Mock async iteration for values and single() for totals
-        async def async_gen():
-            yield {"value": "M", "count": 10}
-            yield {"value": "F", "count": 15}
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        mock_result.single = AsyncMock(return_value={"total": 25, "missing": 0})
-        
-        # The method may call run multiple times
-        mock_session.run = AsyncMock(return_value=mock_result)
+        repository.settings.sex_value_mappings = {"Male": "M", "Female": "F"}
+        mock_session.run = AsyncMock(side_effect=[
+            make_async_result([{"total": 30}]),
+            make_async_result([{"missing": 0}]),
+            make_async_result([
+                {"value": "M", "count": 10},
+                {"value": "F", "count": 15},
+                {"value": "U", "count": 5},
+            ]),
+        ])
         
         result = await repository.count_subjects_by_field("sex", {})
         
-        assert isinstance(result, dict)
-        assert "total" in result
-        assert "values" in result
-        assert "missing" in result
+        assert result["total"] == 30
+        assert result["missing"] == 0
+        assert result["values"] == [
+            {"value": "M", "count": 10},
+            {"value": "F", "count": 15},
+            {"value": "U", "count": 5},
+        ]
         assert mock_session.run.called
 
     async def test_count_subjects_by_field_with_filters(self, repository, mock_session):
@@ -508,7 +510,7 @@ class TestSubjectRepositoryEnhanced:
 
         cypher = mock_session.run.call_args.args[0]
         run_params = mock_session.run.call_args.args[1]
-        assert "toString(p.race) CONTAINS" in cypher
+        assert "any(r IN coalesce(p.race, []) WHERE toString(r) CONTAINS" in cypher
         assert any(v == "Hispanic or Latino" for v in run_params.values())
 
     async def test_get_subjects_summary_for_diagnosis_ethnicity_not_reported_predicate(
@@ -524,7 +526,10 @@ class TestSubjectRepositoryEnhanced:
 
         cypher = mock_session.run.call_args.args[0]
         run_params = mock_session.run.call_args.args[1]
-        assert "NOT toString(p.race) CONTAINS" in cypher or "NOT toString(p.race)" in cypher
+        assert (
+            "NOT any(r IN coalesce(p.race, []) WHERE toString(r) CONTAINS" in cypher
+            or "size(coalesce(p.race, [])) = 0" in cypher
+        )
         assert any(v == "Hispanic or Latino" for v in run_params.values())
 
     async def test_get_subjects_summary_for_diagnosis_maps_sex_values(self, repository, mock_session):
@@ -690,19 +695,22 @@ class TestSubjectRepositoryEnhanced:
         mock_result.data = AsyncMock(return_value=[{"total_count": 1}])
         mock_session.run = AsyncMock(return_value=mock_result)
 
-        # Test M -> Male
+        # Test M -> Male (mapped to the DB value and applied as a param)
         await repository.get_subjects_summary_for_diagnosis_endpoint(
             filters={"_diagnosis_search": "Cancer", "sex": "M"}
         )
         _, params_m = mock_session.run.call_args.args
         assert any(v == "Male" for v in params_m.values())
 
-        # Test U -> Not Reported
+        # Test U -> "any sex other than Female/Male". U is not a DB value, so it becomes a
+        # WHERE predicate (NOT IN ['Female','Male']) rather than a param.
         await repository.get_subjects_summary_for_diagnosis_endpoint(
             filters={"_diagnosis_search": "Cancer", "sex": "U"}
         )
-        _, params_u = mock_session.run.call_args.args
-        assert any(v == "Not Reported" for v in params_u.values())
+        cypher_u, params_u = mock_session.run.call_args.args
+        assert "sex_at_birth" in cypher_u
+        assert "IN ['Female', 'Male']" in cypher_u
+        assert not any(v == "Not Reported" for v in params_u.values())
 
     async def test_get_subjects_summary_for_diagnosis_where_clause_hardening(self, repository, mock_session):
         """Test diagnosis-summary path WHERE clause hardening removes malformed fragments."""
@@ -777,10 +785,10 @@ class TestFileRepositoryEnhanced:
             assert "MATCH (sf:sequencing_file)" in query or "MATCH (st:study)" in query
 
     async def test_get_files_depositions_only_early_pagination(self, repository, mock_session):
-        """Test depositions-only query uses early pagination (starts from study, paginates by sf.id)."""
+        """Test depositions-only query uses early pagination (starts from study, paginates by sf.guid)."""
         async def async_gen():
             yield {
-                "sf": {"id": "file1", "file_type": "BAM"},
+                "sf": {"guid": "file1", "file_type": "BAM"},
                 "samples": [{"sample_id": "SAMP001"}],
                 "st": {"study_id": "phs002431"}
             }
@@ -810,16 +818,20 @@ class TestFileRepositoryEnhanced:
         assert "MATCH (st:study)" in query
         assert "WHERE st.study_id" in query
         
-        # Verify it matches files via the path (study <- consent_group <- participant <- sample <- sequencing_file)
+        # Verify it matches files via BOTH study paths so the list matches
+        # count_for_pagination Pattern 2b (which counts both consent_group and cell_line).
         assert "of_consent_group" in query
         assert "of_participant" in query
         assert "of_sample" in query
         assert "of_sequencing_file" in query
-        
-        # Verify pagination by unique file ID (sf.id), not file-study pairs
-        assert "WITH DISTINCT sf.id" in query or "WITH DISTINCT sf.id AS file_id" in query
+        assert "of_cell_line" in query  # cell_line fallback path (was missing -> count>list)
+
+        # Verify pagination by unique file ID (guid), not file-study pairs
+        assert "WITH file_guid, min(sid) AS study_id" in query
+        assert "st.study_id AS study_id" not in query
         assert "ORDER BY" in query
-        assert "ORDER BY file_id" in query or "ORDER BY sf.id" in query
+        # Pagination sorts on the scalar guid alias (file_guid) to keep memory bounded
+        assert "ORDER BY file_guid" in query or "ORDER BY file_id" in query or "ORDER BY sf.guid" in query
         
         # Verify pagination happens BEFORE collecting samples (early pagination)
         skip_limit_pos = query.find("SKIP")

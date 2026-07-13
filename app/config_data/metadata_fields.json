@@ -271,6 +271,15 @@
           "name": "caDSR CDE 11280338 v1.00",
           "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=11280338%20and%20ver_nr=1"
         }
+      },
+      {
+        "harmonized": false,
+        "path": "unharmonized.file_name",
+        "wiki_url": null,
+        "standard": {
+          "name": null,
+          "url": null
+        }
       }
     ]
   }

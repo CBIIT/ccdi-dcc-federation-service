@@ -26,6 +26,7 @@ from app.repositories.subject_diagnosis_cypher import (
     diagnosis_search_predicate,
 )
 from app.repositories.sample_helpers import SD_CAT_MARKER
+from app.utils.cypher_builder import anatomic_site_member_predicate
 
 logger = get_logger(__name__)
 
@@ -35,8 +36,7 @@ logger = get_logger(__name__)
 _DIAG_PROJ = (
     "{diagnosis: d.diagnosis, diagnosis_comment: d.diagnosis_comment, "
     "diagnosis_category: d.diagnosis_category, disease_phase: d.disease_phase, "
-    "tumor_grade: d.tumor_grade, age_at_diagnosis: d.age_at_diagnosis, "
-    "tumor_classification: d.tumor_classification}"
+    "tumor_grade: d.tumor_grade, age_at_diagnosis: d.age_at_diagnosis}"
 )
 
 
@@ -105,6 +105,23 @@ class SampleQueryCases:
             if with_conditions_temp:
                 sample_where_conditions.append(with_conditions_temp[0])
         
+        # Process tumor_classification filter (sample property)
+        if "tumor_classification" in sample_filters:
+            tumor_classification_value = sample_filters["tumor_classification"]
+            if is_null_mapped_value("tumor_classification", tumor_classification_value) or is_database_only_value("tumor_classification", tumor_classification_value):
+                logger.info("Case 1: Invalid tumor_classification filter, returning empty results", value=tumor_classification_value)
+                if return_total:
+                    return ([], 0)
+                return []
+            param_counter += 1
+            tumor_classification_param = f"param_{param_counter}"
+            reverse_mapped = reverse_map_field_value("tumor_classification", tumor_classification_value)
+            params[tumor_classification_param] = reverse_mapped if reverse_mapped else tumor_classification_value
+            if isinstance(params[tumor_classification_param], list):
+                sample_where_conditions.append(f"sa.tumor_spatial_extent IN ${tumor_classification_param}")
+            else:
+                sample_where_conditions.append(f"sa.tumor_spatial_extent = ${tumor_classification_param}")
+
         # Process anatomical_sites filter
         if "anatomical_sites" in sample_filters:
             anatomical_sites_value = sample_filters["anatomical_sites"]
@@ -118,21 +135,15 @@ class SampleQueryCases:
                 for idx, val in enumerate(anatomical_sites_value):
                     val_param = f"{anatomical_sites_param}_{idx}"
                     params[val_param] = val.strip() if isinstance(val, str) else val
-                    or_conditions.append(f"""(
-                        ${val_param} = sa.anatomic_site OR
-                        reduce(found = false, tok IN SPLIT(toString(sa.anatomic_site), ';') | 
-                          CASE WHEN trim(tok) = trim(toString(${val_param})) THEN true ELSE found END
-                        ) = true
-                    )""")
+                    or_conditions.append(
+                        f"({anatomic_site_member_predicate('sa', '$' + val_param)})"
+                    )
                 anatomical_sites_condition = f"""sa.anatomic_site IS NOT NULL AND ({' OR '.join(or_conditions)})"""
             else:
                 # Single value - handle exact match and semicolon-separated string
                 params[anatomical_sites_param] = anatomical_sites_value.strip() if isinstance(anatomical_sites_value, str) else anatomical_sites_value
                 anatomical_sites_condition = f"""sa.anatomic_site IS NOT NULL AND (
-                    ${anatomical_sites_param} = sa.anatomic_site OR
-                    reduce(found = false, tok IN SPLIT(toString(sa.anatomic_site), ';') | 
-                      CASE WHEN trim(tok) = trim(toString(${anatomical_sites_param})) THEN true ELSE found END
-                    ) = true
+                    {anatomic_site_member_predicate('sa', '$' + anatomical_sites_param)}
                 )"""
             sample_where_conditions.append(anatomical_sites_condition)
         
@@ -344,6 +355,23 @@ class SampleQueryCases:
             if with_conditions_temp:
                 sample_where_conditions.append(with_conditions_temp[0])
         
+        # Process tumor_classification filter (sample property)
+        if "tumor_classification" in categorized["sample"]:
+            tumor_classification_value = categorized["sample"]["tumor_classification"]
+            if is_null_mapped_value("tumor_classification", tumor_classification_value) or is_database_only_value("tumor_classification", tumor_classification_value):
+                logger.info("Case 3: Invalid tumor_classification filter, returning empty results", value=tumor_classification_value)
+                if return_total:
+                    return ([], 0)
+                return []
+            param_counter += 1
+            tumor_classification_param = f"param_{param_counter}"
+            reverse_mapped = reverse_map_field_value("tumor_classification", tumor_classification_value)
+            params[tumor_classification_param] = reverse_mapped if reverse_mapped else tumor_classification_value
+            if isinstance(params[tumor_classification_param], list):
+                sample_where_conditions.append(f"sa.tumor_spatial_extent IN ${tumor_classification_param}")
+            else:
+                sample_where_conditions.append(f"sa.tumor_spatial_extent = ${tumor_classification_param}")
+
         # Process anatomical_sites filter
         if "anatomical_sites" in categorized["sample"]:
             anatomical_sites_value = categorized["sample"]["anatomical_sites"]
@@ -355,20 +383,14 @@ class SampleQueryCases:
                 for idx, val in enumerate(anatomical_sites_value):
                     val_param = f"{anatomical_sites_param}_{idx}"
                     params[val_param] = val.strip() if isinstance(val, str) else val
-                    or_conditions.append(f"""(
-                        ${val_param} = sa.anatomic_site OR
-                        reduce(found = false, tok IN SPLIT(toString(sa.anatomic_site), ';') | 
-                          CASE WHEN trim(tok) = trim(toString(${val_param})) THEN true ELSE found END
-                        ) = true
-                    )""")
+                    or_conditions.append(
+                        f"({anatomic_site_member_predicate('sa', '$' + val_param)})"
+                    )
                 anatomical_sites_condition = f"""sa.anatomic_site IS NOT NULL AND ({' OR '.join(or_conditions)})"""
             else:
                 params[anatomical_sites_param] = anatomical_sites_value.strip() if isinstance(anatomical_sites_value, str) else anatomical_sites_value
                 anatomical_sites_condition = f"""sa.anatomic_site IS NOT NULL AND (
-                    ${anatomical_sites_param} = sa.anatomic_site OR
-                    reduce(found = false, tok IN SPLIT(toString(sa.anatomic_site), ';') | 
-                      CASE WHEN trim(tok) = trim(toString(${anatomical_sites_param})) THEN true ELSE found END
-                    ) = true
+                    {anatomic_site_member_predicate('sa', '$' + anatomical_sites_param)}
                 )"""
             sample_where_conditions.append(anatomical_sites_condition)
         
@@ -458,13 +480,6 @@ class SampleQueryCases:
                                 disease_phase_collection_filter = f"d.disease_phase = ${param_name}"
                             else:
                                 diagnosis_conditions.append(f"d.disease_phase = ${param_name}")
-                elif field == "tumor_classification":
-                    if is_null_mapped_value("tumor_classification", value):
-                        diagnosis_conditions.append("false")
-                    else:
-                        reverse_mapped = reverse_map_field_value("tumor_classification", value)
-                        params[param_name] = reverse_mapped if reverse_mapped else value
-                        diagnosis_conditions.append(f"d.tumor_classification = ${param_name}")
                 elif field == "tumor_grade":
                     params[param_name] = value
                     diagnosis_conditions.append(f"d.tumor_grade = ${param_name}")
@@ -600,8 +615,12 @@ class SampleQueryCases:
                 preservation_value = categorized["pathology_file"]["preservation_method"]
                 param_counter += 1
                 pf_param = f"param_{param_counter}"
-                params[pf_param] = preservation_value
-                pf_optional_match_where = f"WHERE pf.fixation_embedding_method = ${pf_param}"
+                reverse_mapped = reverse_map_field_value("preservation_method", preservation_value)
+                params[pf_param] = reverse_mapped if reverse_mapped else preservation_value
+                if isinstance(params[pf_param], list):
+                    pf_optional_match_where = f"WHERE pf.fixation_embedding_method IN ${pf_param}"
+                else:
+                    pf_optional_match_where = f"WHERE pf.fixation_embedding_method = ${pf_param}"
 
         # Step 5.5: pre-UNWIND sf block — when combined_sf_condition is set, matching sf nodes
         # are collected per sample before study collection, avoiding the full samples × studies

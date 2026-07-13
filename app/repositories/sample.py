@@ -10,6 +10,7 @@ from typing import List, Dict, Any, Optional, Tuple, Union
 from neo4j import AsyncSession
 
 from app.core.logging import get_logger
+from app.db.memgraph import run_count_query_with_retry
 from app.lib.field_allowlist import FieldAllowlist
 from app.models.dto import Sample, AssociatedDiagnosisCategoryField
 from app.models.errors import UnsupportedFieldError
@@ -18,6 +19,7 @@ from app.core.field_mappings import map_field_value, reverse_map_field_value, is
 from app.repositories.sample_converters import _build_diagnosis_result
 from app.repositories.sample_diagnosis_search import SampleDiagnosisSearch
 from app.repositories.sample_query_cases import SampleQueryCases
+from app.utils.cypher_builder import anatomic_site_member_predicate
 from app.repositories.sample_helpers import SampleHelpers, SD_CAT_MARKER
 from app.repositories.sample_count import SampleCount
 from app.repositories.sample_summary import SampleSummary
@@ -88,21 +90,15 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
                 for idx, val in enumerate(anatomical_sites_value):
                     val_param = f"_anatomical_sites_{idx}"
                     params[val_param] = val.strip() if isinstance(val, str) else val
-                    or_conditions.append(f"""(
-                        ${val_param} = sa.anatomic_site OR
-                        reduce(found = false, tok IN SPLIT(toString(sa.anatomic_site), ';') | 
-                          CASE WHEN trim(tok) = trim(toString(${val_param})) THEN true ELSE found END
-                        ) = true
-                    )""")
+                    or_conditions.append(
+                        f"({anatomic_site_member_predicate('sa', '$' + val_param)})"
+                    )
                 anatomical_sites_condition = f"""sa.anatomic_site IS NOT NULL AND ({' OR '.join(or_conditions)})"""
             else:
                 # Single value - handle exact match and semicolon-separated string
                 params["_anatomical_sites_param"] = anatomical_sites_value.strip() if isinstance(anatomical_sites_value, str) else anatomical_sites_value
                 anatomical_sites_condition = f"""sa.anatomic_site IS NOT NULL AND (
-                    $_anatomical_sites_param = sa.anatomic_site OR
-                    reduce(found = false, tok IN SPLIT(toString(sa.anatomic_site), ';') | 
-                      CASE WHEN trim(tok) = trim(toString($_anatomical_sites_param)) THEN true ELSE found END
-                    ) = true
+                    {anatomic_site_member_predicate('sa', '$_anatomical_sites_param')}
                 )"""
             early_where_parts.append(anatomical_sites_condition)
         
@@ -122,9 +118,24 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
             if with_conditions_temp:
                 early_where_parts.append(with_conditions_temp[0])
         
-        # This path handles identifiers, depositions, anatomical_sites, and tissue_type (sample properties)
+        # Parse tumor_classification (sample property, can be filtered early)
+        tumor_classification_value = filters.get("tumor_classification")
+        if tumor_classification_value is not None:
+            if is_null_mapped_value("tumor_classification", tumor_classification_value) or is_database_only_value("tumor_classification", tumor_classification_value):
+                logger.info("Early pagination: Invalid tumor_classification filter, returning empty results", value=tumor_classification_value)
+                if return_total:
+                    return ([], 0)
+                return []
+            reverse_mapped = reverse_map_field_value("tumor_classification", tumor_classification_value)
+            params["_tumor_classification_param"] = reverse_mapped if reverse_mapped else tumor_classification_value
+            if isinstance(params["_tumor_classification_param"], list):
+                early_where_parts.append("sa.tumor_spatial_extent IN $_tumor_classification_param")
+            else:
+                early_where_parts.append("sa.tumor_spatial_extent = $_tumor_classification_param")
+
+        # This path handles identifiers, depositions, anatomical_sites, tissue_type, and tumor_classification (sample properties)
         # No other keys allowed (would need to fall through to standard query)
-        allowed = {"identifiers", "depositions", "anatomical_sites", "tissue_type"}
+        allowed = {"identifiers", "depositions", "anatomical_sites", "tissue_type", "tumor_classification"}
         if set(filters.keys()) - allowed:
             return None
         
@@ -185,12 +196,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
             """.strip()
             
             try:
-                result_count = await self.session.run(cypher_count, params)
-                recs = []
-                async for r in result_count:
-                    recs.append(dict(r))
-                await result_count.consume()
-                total_count = recs[0].get("total_count", 0) if recs else 0
+                total_count = await run_count_query_with_retry(self.session, cypher_count, params)
             except Exception as e:
                 logger.warning("Early pagination count query failed", error=str(e), exc_info=True)
                 total_count = 0
@@ -371,7 +377,16 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
             return await self._get_samples_by_pathology_file_filters(
                 categorized["pathology_file"], offset, limit, base_url, return_total
             )
-        
+
+        # Optimization: Sequencing_file-only filters (no other node filters).
+        # Fields such as specimen_molecular_analyte_type live on sequencing_file, so start
+        # from the indexed sequencing_file side instead of scanning all samples (Case 3).
+        if has_sf_filters and not has_diagnosis_filters and not has_pf_filters and not has_sample_filters and not has_study_filters:
+            logger.debug("Using optimized sequencing_file-only filters query path")
+            return await self._get_samples_by_sequencing_file_filters(
+                categorized["sequencing_file"], offset, limit, base_url, return_total
+            )
+
         # Case 3: Has diagnosis/sequencing_file/pathology_file filters
         # Apply filters before pagination, then paginate at sample-study pair level
         logger.info(
@@ -431,7 +446,8 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
             param_counter = len([k for k in params.keys() if k.startswith("param_")])
             param_counter += 1
             preservation_method_param = f"param_{param_counter}"
-            params[preservation_method_param] = filters["preservation_method"]
+            reverse_mapped = reverse_map_field_value("preservation_method", filters["preservation_method"])
+            params[preservation_method_param] = reverse_mapped if reverse_mapped else filters["preservation_method"]
         
         # Extract anatomical_sites condition if present (can be applied early)
         # Note: anatomical_sites_list_condition is already added to early_where_conditions above if early pagination is enabled
@@ -587,7 +603,10 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         pf_optional_match_where = None
         use_pf_early_filter = False
         if preservation_method_param:
-            pf_optional_match_where = f"WHERE pf.fixation_embedding_method = ${preservation_method_param}"
+            if isinstance(params[preservation_method_param], list):
+                pf_optional_match_where = f"WHERE pf.fixation_embedding_method IN ${preservation_method_param}"
+            else:
+                pf_optional_match_where = f"WHERE pf.fixation_embedding_method = ${preservation_method_param}"
             use_pf_early_filter = True
         
         # Build OPTIONAL MATCH clauses
@@ -947,12 +966,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         RETURN count(*) as total_count
         """.strip()
                 try:
-                    result_count = await self.session.run(cypher_early_count, params)
-                    recs = []
-                    async for r in result_count:
-                        recs.append(dict(r))
-                    await result_count.consume()
-                    total_count_early = recs[0].get("total_count", 0) if recs else 0
+                    total_count_early = await run_count_query_with_retry(self.session, cypher_early_count, params)
                 except Exception as e_count:
                     logger.warning("Early-pagination count query failed, total will come from summary if requested", error=str(e_count))
             if use_true_early_pagination:
@@ -1115,12 +1129,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
             if cypher_count_std:
                 try:
                     logger.debug("Standard query count executed")
-                    result_count_std = await self.session.run(cypher_count_std, params)
-                    recs_std = []
-                    async for r in result_count_std:
-                        recs_std.append(dict(r))
-                    await result_count_std.consume()
-                    total_count_std = recs_std[0].get("total_count", 0) if recs_std else 0
+                    total_count_std = await run_count_query_with_retry(self.session, cypher_count_std, params)
                 except Exception as e_count_std:
                     logger.warning("Standard path count query failed, total will come from summary if requested", error=str(e_count_std), exc_info=True)
         
@@ -1418,12 +1427,12 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
                 reverse_mapped = reverse_map_field_value("specimen_molecular_analyte_type", value)
                 if isinstance(reverse_mapped, list):
                     # Multiple DB values (e.g., "RNA" -> ["Transcriptomic", "Viral RNA"])
-                    db_values_str = ", ".join([f"'{v}'" for v in reverse_mapped])
-                    where_conditions.append(f"sf.library_source_molecule IN [{db_values_str}]")
+                    params[param_name] = reverse_mapped
+                    where_conditions.append(f"sf.library_source_molecule IN ${param_name}")
                 else:
                     params[param_name] = reverse_mapped
                     where_conditions.append(f"sf.library_source_molecule = ${param_name}")
-        
+
         # Build WHERE clause
         where_clause = " AND ".join(where_conditions) if where_conditions else "TRUE"
         
@@ -1443,18 +1452,11 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         UNWIND combined AS sid
         WITH sa, sid
         WHERE sid IS NOT NULL
-        MATCH (st:study)
-        WHERE st.study_id = sid
-        WITH DISTINCT sa.sample_id AS sample_id, st.study_id AS study_id
+        WITH DISTINCT sa.sample_id AS sample_id, sid AS study_id
         RETURN count(*) as total_count
         """.strip()
             try:
-                result_count = await self.session.run(cypher_count, params)
-                recs = []
-                async for r in result_count:
-                    recs.append(dict(r))
-                await result_count.consume()
-                total_count_sf = recs[0].get("total_count", 0) if recs else 0
+                total_count_sf = await run_count_query_with_retry(self.session, cypher_count, params)
             except Exception as e_count:
                 logger.error("Error in sequencing_file reverse count query", error=str(e_count), exc_info=True)
                 # Fall through to list query without total_count
@@ -1482,15 +1484,16 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         WHERE size(combined) > 0
         UNWIND combined AS sid
         WITH sa, sf, sid
-        MATCH (st:study)
-        WHERE st.study_id = sid
-        WITH DISTINCT sa, st
-        ORDER BY toString(sa.sample_id), toString(st.study_id)
+        WHERE sid IS NOT NULL
+        WITH DISTINCT sa, sid
+        ORDER BY toString(sa.sample_id), toString(sid)
         SKIP $offset
         LIMIT $limit
-        // Rematch sf after pagination
+        // Resolve study + rematch sf only for the paginated page
+        MATCH (st:study)
+        WHERE st.study_id = sid
         OPTIONAL MATCH (sf_rematched:sequencing_file)-[:of_sequencing_file]->(sa)
-        WHERE {where_clause}
+        WHERE {where_clause.replace("sf.", "sf_rematched.")}
         WITH sa, st, collect(DISTINCT sf_rematched) AS matching_sfs
         WITH sa, st, head(matching_sfs) AS sf
         OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
@@ -1586,8 +1589,12 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
             param_name = f"param_{param_counter}"
             
             if field == "preservation_method":
-                params[param_name] = value
-                where_conditions.append(f"pf.fixation_embedding_method = ${param_name}")
+                reverse_mapped = reverse_map_field_value("preservation_method", value)
+                params[param_name] = reverse_mapped if reverse_mapped else value
+                if isinstance(params[param_name], list):
+                    where_conditions.append(f"pf.fixation_embedding_method IN ${param_name}")
+                else:
+                    where_conditions.append(f"pf.fixation_embedding_method = ${param_name}")
         
         # Build WHERE clause for pathology_file filter
         pf_where_clause = " AND ".join(where_conditions) if where_conditions else "TRUE"
@@ -1616,12 +1623,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         RETURN count(*) as total_count
         """.strip()
             try:
-                result_count = await self.session.run(cypher_count, params)
-                recs = []
-                async for r in result_count:
-                    recs.append(dict(r))
-                await result_count.consume()
-                total_count_pf = recs[0].get("total_count", 0) if recs else 0
+                total_count_pf = await run_count_query_with_retry(self.session, cypher_count, params)
             except Exception as e_count:
                 logger.error("Error in pathology_file reverse count query", error=str(e_count), exc_info=True)
                 # Fall through to list query without total_count
@@ -1804,8 +1806,12 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         if "preservation_method" in filters:
             param_counter += 1
             param_name = f"param_{param_counter}"
-            params[param_name] = filters["preservation_method"]
-            pf_where_conditions.append(f"pf.fixation_embedding_method = ${param_name}")
+            reverse_mapped = reverse_map_field_value("preservation_method", filters["preservation_method"])
+            params[param_name] = reverse_mapped if reverse_mapped else filters["preservation_method"]
+            if isinstance(params[param_name], list):
+                pf_where_conditions.append(f"pf.fixation_embedding_method IN ${param_name}")
+            else:
+                pf_where_conditions.append(f"pf.fixation_embedding_method = ${param_name}")
         
         # Build WHERE conditions for sample node properties (can be applied after reverse query)
         sa_where_conditions = []
@@ -1860,12 +1866,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         RETURN count(*) as total_count
         """.strip()
             try:
-                result_count = await self.session.run(cypher_count, params)
-                recs = []
-                async for r in result_count:
-                    recs.append(dict(r))
-                await result_count.consume()
-                total_count_combined = recs[0].get("total_count", 0) if recs else 0
+                total_count_combined = await run_count_query_with_retry(self.session, cypher_count, params)
             except Exception as e_count:
                 logger.error("Error in combined reverse count query", error=str(e_count), exc_info=True)
                 # Fall through to list query without total_count
@@ -2435,7 +2436,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         disease_phase_value = head_d.get("disease_phase") if head_d else None
         tumor_grade_value = head_d.get("tumor_grade") if head_d else None
         age_at_diagnosis_value = head_d.get("age_at_diagnosis") if head_d else None
-        tumor_classification_value = head_d.get("tumor_classification") if head_d else None
+        tumor_classification_value = sa.get("tumor_spatial_extent") if sa else None
 
         anatomical_sites_value = sa.get("anatomic_site") if sa else None
         library_selection_value = sf.get("library_selection") if sf else None
@@ -2462,7 +2463,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
             library_selection_method=_wrap_value(_map_library_selection_method(_null_if_invalid(library_selection_value))),
             library_strategy=_wrap_value(map_field_value("library_strategy", _null_if_invalid(library_strategy_value))),
             library_source_material=_wrap_value(map_field_value("library_source_material", _null_if_invalid(library_source_material_value))),
-            preservation_method=_wrap_value(_null_if_invalid(preservation_method_value)),
+            preservation_method=_wrap_value(map_field_value("preservation_method", _null_if_invalid(preservation_method_value))),
             tumor_grade=_wrap_value(_null_if_invalid(tumor_grade_value)),
             specimen_molecular_analyte_type=_wrap_value(map_field_value("specimen_molecular_analyte_type", _null_if_invalid(specimen_molecular_analyte_type_value))),
             tissue_type=_wrap_value(_null_if_invalid(tissue_type_value)),

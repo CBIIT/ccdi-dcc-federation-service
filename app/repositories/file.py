@@ -6,17 +6,23 @@ using Cypher queries to Memgraph.
 """
 
 import asyncio
+import re
 from typing import List, Dict, Any, Optional, Tuple
 from neo4j import AsyncSession
 
 from app.core.logging import get_logger
+from app.db.memgraph import run_count_query_with_retry
 from app.core.constants import FileType, load_file_enum
 from app.config_data.file_node_registry import FileNodeConfig, FILE_NODE_REGISTRY
-from app.lib.field_allowlist import FieldAllowlist
+from app.lib.field_allowlist import FieldAllowlist, EntityType
 from app.models.dto import File
-from app.models.errors import UnsupportedFieldError
+from app.models.errors import UnsupportedFieldError, InvalidParametersError
 
 logger = get_logger(__name__)
+
+# Unharmonized filter field names are interpolated into Cypher, so they must be
+# strict identifiers. This is the primary guard against Cypher property-name injection.
+_UNHARMONIZED_FIELD_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # Sentinel returned by _build_count_query when the filter is provably zero (e.g., invalid
 # file_type enum value). Callers check identity (`is _ZERO_COUNT_SENTINEL`) before issuing a
@@ -42,7 +48,23 @@ class FileRepository:
         self.allowlist = allowlist
         # Default to sequencing_file for backwards compatibility
         self.config = config if config is not None else _SEQUENCING_FILE_DEFAULT
-        
+
+    def _validate_unharmonized_file_field(self, db_field_name: str, original_key: str) -> None:
+        """
+        Validate an unharmonized filter field name before it is interpolated into Cypher.
+
+        Raises InvalidParametersError for a malformed name (defense-in-depth against
+        Cypher injection) and UnsupportedFieldError for a well-formed but non-allowlisted
+        name. `file` declares no unharmonized fields in metadata_fields.json, so this
+        default-denies every unharmonized filter on the file endpoints.
+        """
+        if not _UNHARMONIZED_FIELD_NAME_RE.match(db_field_name):
+            logger.warning("Malformed unharmonized filter field name rejected", entity="file")
+            raise InvalidParametersError([original_key])
+        if not self.allowlist.is_unharmonized_field_allowed(EntityType.FILE, db_field_name):
+            logger.warning("Unsupported unharmonized filter field rejected", entity="file")
+            raise UnsupportedFieldError(original_key, "file")
+
     async def get_files(
         self,
         filters: Dict[str, Any],
@@ -135,10 +157,11 @@ class FileRepository:
                 # Extract the actual database field name
                 # e.g., "metadata.unharmonized.file_name" -> "file_name"
                 db_field_name = field.replace("metadata.unharmonized.", "")
-                
+                self._validate_unharmonized_file_field(db_field_name, field)
+
                 param_counter += 1
                 param_name = f"param_{param_counter}"
-                
+
                 if isinstance(value, list):
                     where_conditions.append(f"sf.{db_field_name} IN ${param_name}")
                 else:
@@ -262,25 +285,30 @@ class FileRepository:
             WITH sf, sa, coalesce(st2_list[0], st1_list[0]) AS st
             // Step 3: Filter out nulls
             WHERE st IS NOT NULL
-            // Step 4: Order and paginate
-            WITH sf
-            ORDER BY sf.id
+            // Step 4: Paginate on the SCALAR guid only (avoid sorting full node records in memory)
+            WITH DISTINCT sf.guid AS file_guid
+            ORDER BY file_guid
             SKIP $offset
             LIMIT $limit
-            // Step 5: Collect samples for final results only
+            // Step 5: Re-fetch the full node for just this page via the guid index (point lookups)
+            MATCH (sf:{self.config.node_label})
+            WHERE sf.guid = file_guid
+            // Step 6: Collect samples for final results only
             OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa2:sample)
-            WITH sf, collect(DISTINCT sa2) as samples
-            // Step 6: Get study for response (using multi-hop traversal)
+            WITH file_guid, sf, collect(DISTINCT sa2) as samples
+            // Step 7: Get study for response (using multi-hop traversal)
             OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa3:sample)
             OPTIONAL MATCH (sa3)-[:of_sample]->(:participant)
                        -[:of_participant]->(:consent_group)
                        -[:of_consent_group]->(st3:study)
             WHERE st3.study_id {deposition_operator} ${deposition_param}
-            WITH sf, samples, collect(DISTINCT st3) AS st3_list
+            WITH file_guid, sf, samples, collect(DISTINCT st3) AS st3_list
             OPTIONAL MATCH (sa3)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st4:study)
             WHERE st4.study_id {deposition_operator} ${deposition_param}
-            WITH sf, samples, st3_list, collect(DISTINCT st4) AS st4_list
-            WITH sf, samples, head(collect(DISTINCT coalesce(st3_list[0], st4_list[0]))) as study
+            WITH file_guid, sf, samples, st3_list, collect(DISTINCT st4) AS st4_list
+            WITH file_guid, sf, samples, head(collect(DISTINCT coalesce(st3_list[0], st4_list[0]))) as study
+            // Step 8: Restore deterministic page order (only ~per_page rows here)
+            ORDER BY file_guid
             RETURN sf, samples, study as st
             """.strip()
         elif file_where_conditions:
@@ -289,51 +317,50 @@ class FileRepository:
             # or sample -> cell_line -> study (fallback)
             # Apply file filters FIRST, then traverse to study using multi-hop
             cypher = f"""
-            // Step 1: Match files and apply file property filters FIRST (before any traversals)
+            // Step 1: Match files and apply file property filters FIRST.
+            // Enforce the study-path invariant (same as the count query's WHERE st IS NOT NULL)
+            // WITHOUT materialising full nodes: an EXISTS semi-join keeps pagination on the scalar
+            // guid. Files with no path to any study are excluded, matching count_for_pagination.
+            // (file_where_clause is non-empty in this branch, so appending AND (...) is valid.)
             MATCH (sf:{self.config.node_label})
             {file_where_clause}
-            // Step 2: Find study path using multi-hop traversal (with WITH clauses to prevent cartesian products)
-            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa:sample)
-            // study path 2 — via participant → consent → study (preferred path)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)
-                       -[:of_participant]->(:consent_group)
-                       -[:of_consent_group]->(st2:study)
-            WITH sf, sa, collect(DISTINCT st2) AS st2_list
-            // study path 1 — via cell_line (fallback)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-            WITH sf, sa, st2_list, collect(DISTINCT st1) AS st1_list
-            WITH sf, coalesce(st2_list[0], st1_list[0]) AS st
-            {study_where_clause}
-            // Step 3: Apply pagination early (before collecting samples)
-            WITH sf
-            ORDER BY sf.id
+            AND (EXISTS {{ MATCH (sf)-[:{self.config.rel_name}]->(:sample)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) }}
+              OR EXISTS {{ MATCH (sf)-[:{self.config.rel_name}]->(:sample)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) }})
+            // Step 2: Paginate on the SCALAR guid only (avoid sorting full node records in memory)
+            WITH DISTINCT sf.guid AS file_guid
+            ORDER BY file_guid
             SKIP $offset
             LIMIT $limit
-            // Step 4: Collect samples only for paginated files (much faster!)
+            // Step 3: Re-fetch the full node for just this page via the guid index (point lookups)
+            MATCH (sf:{self.config.node_label})
+            WHERE sf.guid = file_guid
+            // Step 5: Collect samples only for paginated files (much faster!)
             OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa3:sample)
-            WITH sf, collect(DISTINCT sa3) AS samples
-            // Step 5: Get study for response (only for the 20 returned files, using multi-hop traversal)
+            WITH file_guid, sf, collect(DISTINCT sa3) AS samples
+            // Step 6: Get study for response (only for the returned files, using multi-hop traversal)
             OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa4:sample)
             OPTIONAL MATCH (sa4)-[:of_sample]->(:participant)
                        -[:of_participant]->(:consent_group)
                        -[:of_consent_group]->(st4:study)
-            WITH sf, samples, collect(DISTINCT st4) AS st4_list
+            WITH file_guid, sf, samples, collect(DISTINCT st4) AS st4_list
             OPTIONAL MATCH (sa4)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st5:study)
-            WITH sf, samples, st4_list, collect(DISTINCT st5) AS st5_list
-            WITH sf, samples, head(collect(DISTINCT coalesce(st4_list[0], st5_list[0]))) AS st
+            WITH file_guid, sf, samples, st4_list, collect(DISTINCT st5) AS st5_list
+            WITH file_guid, sf, samples, head(collect(DISTINCT coalesce(st4_list[0], st5_list[0]))) AS st
+            // Step 7: Restore deterministic page order (only ~per_page rows here)
+            ORDER BY file_guid
             RETURN sf, samples, st
             """.strip()
         elif has_depositions_filter:
             # PATTERN 2b: CRITICAL FIX - Match files directly without collecting into lists
             # LOGIC: File endpoint - each file (sf) must be connected to both study (st) and sample (sa)
-            # Paginate by unique sf.id only (files are unique, not file-study pairs)
+            # Paginate by unique sf.guid only (files are unique, not file-study pairs)
             # Start from studies (2-10 nodes) instead of files (1M+ nodes)
             # Traverse: study <- consent_group <- participant <- sample <- sequencing_file
             # or: study <- cell_line <- sample <- sequencing_file
             deposition_param = depositions_param_name
             deposition_operator = "=" if len(depositions_list) == 1 else "IN"
             
-            # CRITICAL: Match files that are connected to study via sample, paginate by unique sf.id
+            # CRITICAL: Match files that are connected to study via sample, paginate by unique sf.guid
             # This avoids collecting millions of files into memory
             # Note: This uses path 1 only to avoid memory issues. Path 2 files are excluded.
             # For complete results with both paths, consider using separate queries or cursor pagination.
@@ -341,51 +368,82 @@ class FileRepository:
             // Step 1: Start from study nodes (only a few studies to process!)
             MATCH (st:study)
             WHERE st.study_id {deposition_operator} ${deposition_param}
-            // Step 2: Match files that are connected to study via sample (path 1: via participant -> consent_group)
-            // File (sf) must be connected to both study (st) and sample (sa) - ensures correct relationships
-            MATCH (st)<-[:of_consent_group]-(:consent_group)<-[:of_participant]-(:participant)<-[:of_sample]-(sa:sample)<-[:{self.config.rel_name}]-(sf:{self.config.node_label})
-            // Step 3: Deduplicate by unique file ID (sf.id) only - files are unique, not file-study pairs
-            // Paginate IMMEDIATELY (no intermediate collections!)
-            WITH DISTINCT sf.id AS file_id, sf, st
-            ORDER BY file_id
+            // Step 2: Collect this deposition's file guids via BOTH study paths so the list
+            // matches count_for_pagination Pattern 2b (which counts both). Collecting the
+            // SCALAR guids (not full nodes) keeps memory bounded — the set is capped by the
+            // deposition and both traversals start from the few study nodes.
+            // path 2 — via participant → consent_group (preferred)
+            OPTIONAL MATCH (st)<-[:of_consent_group]-(:consent_group)<-[:of_participant]-(:participant)<-[:of_sample]-(:sample)<-[:{self.config.rel_name}]-(sf1:{self.config.node_label})
+            WITH st, collect(DISTINCT sf1.guid) AS consent_guids
+            // path 1 — via cell_line (fallback)
+            OPTIONAL MATCH (st)<-[:of_cell_line]-(:cell_line)<-[:of_sample]-(:sample)<-[:{self.config.rel_name}]-(sf2:{self.config.node_label})
+            WITH st.study_id AS sid, (consent_guids + collect(DISTINCT sf2.guid)) AS guids
+            UNWIND guids AS file_guid
+            WITH file_guid, sid
+            WHERE file_guid IS NOT NULL
+            // Step 3: Paginate on the unique file guid (one row per file, not per file-study
+            // pair — pairing on study_id would duplicate a file shared across filtered studies
+            // and shrink the page below per_page). Carry min(study_id) as a representative
+            // (already deposition-filtered) study for the indexed point-lookup in Step 4b.
+            WITH file_guid, min(sid) AS study_id
+            ORDER BY file_guid
             SKIP $offset
             LIMIT $limit
-            // Step 4: Collect ALL samples for each paginated file (file can have multiple samples)
+            // Step 4: Re-fetch file + its deposition study for just this page (guid & study_id are indexed)
+            MATCH (sf:{self.config.node_label})
+            WHERE sf.guid = file_guid
+            // Step 4b: Re-resolve the representative deposition study for the response
+            MATCH (st:study)
+            WHERE st.study_id = study_id
+            // Step 5: Collect ALL samples for each paginated file (file can have multiple samples)
             OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa:sample)
-            WITH sf, st, collect(DISTINCT sa) AS samples
+            WITH file_guid, sf, st, collect(DISTINCT sa) AS samples
+            // Step 6: Restore deterministic page order
+            ORDER BY file_guid
             RETURN sf, samples, st
             """.strip()
-            
-            logger.warning(
-                "Using depositions-only query with path 1 only (via participant/consent_group) to prevent crashes. "
-                "Files accessible only via cell_line path are excluded. Consider using cursor pagination for complete results."
-            )
         else:
             # PATTERN 3: SIMPLE QUERY (no filters at all - basic pagination only)
-            # PERFORMANCE OPTIMIZATION: Apply pagination FIRST, then traverse using multi-hop
             # Use multi-hop traversal: sample -> participant -> consent_group -> study (preferred)
             # or sample -> cell_line -> study (fallback)
             cypher = f"""
-            // Step 1: Apply pagination immediately to {self.config.node_label} (no filters)
-            MATCH (sf:{self.config.node_label})
-            WITH sf
-            ORDER BY sf.id
+            // Step 1: Restrict to study-reachable files, then order + paginate on the SCALAR
+            // guid only. The EXISTS study guard MUST be applied BEFORE pagination so the
+            // paginated set matches count_for_pagination (_build_count_query Pattern 3),
+            // which also counts only study-reachable files; without it, the ~187K files with
+            // no study path are paginated + returned with an empty namespace while `all` and
+            // the Link `last` under-report. Same guard as the file-filter branch above.
+            // EXISTS is a scalar semi-join — it does not materialise full nodes, so sorting
+            // scalar guids keeps memory bounded on large file labels (millions of nodes) while
+            // preserving deterministic page/per_page ordering. Full nodes are re-fetched for
+            // the page via the guid index.
+            MATCH (file_page:{self.config.node_label})
+            WHERE file_page.guid IS NOT NULL
+              AND (EXISTS {{ (file_page)-[:{self.config.rel_name}]->(:sample)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) }}
+                OR EXISTS {{ (file_page)-[:{self.config.rel_name}]->(:sample)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) }})
+            WITH file_page.guid AS file_guid
+            ORDER BY file_guid
             SKIP $offset
             LIMIT $limit
-            // Step 2: Now traverse only for the paginated files
+            // Step 2: Re-fetch the full node for just this page (guid is indexed -> point lookups)
+            MATCH (sf:{self.config.node_label})
+            WHERE sf.guid = file_guid
+            // Step 3: Collect samples only for the paginated files
             OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa:sample)
-            WITH sf, collect(DISTINCT sa) AS samples
-            // Step 3: Get study for response (only for paginated files, using multi-hop traversal)
+            WITH file_guid, sf, collect(DISTINCT sa) AS samples
+            // Step 4: Get study for response (multi-hop traversal, only for the page)
             OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa2:sample)
             // study path 2 — via participant → consent → study (preferred path)
             OPTIONAL MATCH (sa2)-[:of_sample]->(:participant)
                        -[:of_participant]->(:consent_group)
                        -[:of_consent_group]->(st2:study)
-            WITH sf, samples, collect(DISTINCT st2) AS st2_list
+            WITH file_guid, sf, samples, collect(DISTINCT st2) AS st2_list
             // study path 1 — via cell_line (fallback)
             OPTIONAL MATCH (sa2)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-            WITH sf, samples, st2_list, collect(DISTINCT st1) AS st1_list
-            WITH sf, samples, head(collect(DISTINCT coalesce(st2_list[0], st1_list[0]))) as study
+            WITH file_guid, sf, samples, st2_list, collect(DISTINCT st1) AS st1_list
+            WITH file_guid, sf, samples, head(collect(DISTINCT coalesce(st2_list[0], st1_list[0]))) as study
+            // Step 5: Restore deterministic page order (only ~per_page rows remain here)
+            ORDER BY file_guid
             RETURN sf, samples, study as st
             """.strip()
         
@@ -469,13 +527,13 @@ class FileRepository:
         )
         
         # Build query to find sequencing_file by identifier
-        # Use sf.id field
+        # Use sf.guid field
         # Only include sequencing_files that have a path to a study
         # Path 1: sequencing_file -> sample -> participant -> consent_group -> study
         # Path 2: sequencing_file -> sample -> cell_line -> study
         cypher = f"""
         MATCH (sf:{self.config.node_label})
-        WHERE sf.id = $name
+        WHERE sf.guid = $name
         MATCH (sf)-[:{self.config.rel_name}]->(sa:sample)
         OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st1:study)
@@ -600,26 +658,27 @@ class FileRepository:
             if filter_field.startswith("metadata.unharmonized."):
                 # Extract the actual database field name
                 db_field_name = filter_field.replace("metadata.unharmonized.", "")
-                
+                self._validate_unharmonized_file_field(db_field_name, filter_field)
+
                 param_counter += 1
                 param_name = f"param_{param_counter}"
-                
+
                 if isinstance(value, list):
                     base_where_conditions.append(f"sf.{db_field_name} IN ${param_name}")
                 else:
                     base_where_conditions.append(f"sf.{db_field_name} = ${param_name}")
                 params[param_name] = value
                 continue
-            
+
             param_counter += 1
             param_name = f"param_{param_counter}"
-            
+
             if isinstance(value, list):
                 base_where_conditions.append(f"sf.{filter_field} IN ${param_name}")
             else:
                 base_where_conditions.append(f"sf.{filter_field} = ${param_name}")
             params[param_name] = value
-        
+
         # Add case-insensitive type filter if present
         if type_filter_param:
             base_where_conditions.append(f"toLower(sf.file_type) = toLower(${type_filter_param})")
@@ -907,26 +966,27 @@ class FileRepository:
             if filter_field.startswith("metadata.unharmonized."):
                 # Extract the actual database field name
                 db_field_name = filter_field.replace("metadata.unharmonized.", "")
-                
+                self._validate_unharmonized_file_field(db_field_name, filter_field)
+
                 param_counter += 1
                 param_name = f"param_{param_counter}"
-                
+
                 if isinstance(value, list):
                     base_where_conditions.append(f"sf.{db_field_name} IN ${param_name}")
                 else:
                     base_where_conditions.append(f"sf.{db_field_name} = ${param_name}")
                 params[param_name] = value
                 continue
-            
+
             param_counter += 1
             param_name = f"param_{param_counter}"
-            
+
             if isinstance(value, list):
                 base_where_conditions.append(f"sf.{filter_field} IN ${param_name}")
             else:
                 base_where_conditions.append(f"sf.{filter_field} = ${param_name}")
             params[param_name] = value
-        
+
         # Build base WHERE clause for file filters
         base_where_clause = "WHERE " + " AND ".join(base_where_conditions) if base_where_conditions else ""
         
@@ -1065,8 +1125,16 @@ class FileRepository:
         filters: Dict[str, Any]
     ) -> Tuple[str, Dict[str, Any]]:
         """
-        Build (cypher, params) for COUNT(DISTINCT sf) with the same filter logic
-        as get_files_summary. Used by count_for_pagination and get_files_summary.
+        Build (cypher, params) for the study-reachable file count with the same
+        filter logic as get_files_summary. Used by count_for_pagination and
+        get_files_summary. Counts sequencing_file that reach a study via
+        participant→consent→study or cell_line→study.
+
+        The no-filter case (Pattern 3) uses streaming EXISTS + count(sf): the prior
+        collect + count(DISTINCT sf) form materialized a hash set of all ~1.5M matched
+        sf nodes and OOMed the snapshot (>7.65 GiB). The filtered cases (Patterns 1, 2,
+        2b) keep the collect form — their filters bound the candidate set, so they do
+        not OOM and the collect form is faster there than EXISTS.
 
         Returns a sentinel query ("RETURN 0 AS total_count", {}) when a filter
         value is provably empty (e.g., an invalid file_type enum value), so callers
@@ -1137,6 +1205,7 @@ class FileRepository:
                 # Extract the actual database field name
                 # e.g., "metadata.unharmonized.file_name" -> "file_name"
                 db_field_name = field.replace("metadata.unharmonized.", "")
+                self._validate_unharmonized_file_field(db_field_name, field)
 
                 param_counter += 1
                 param_name = f"param_{param_counter}"
@@ -1222,6 +1291,9 @@ class FileRepository:
             # PATTERN 1: OPTIMIZED SUMMARY (with file filters + depositions)
             # Use multi-hop traversal: sample -> participant -> consent_group -> study (preferred)
             # or sample -> cell_line -> study (fallback)
+            # NOTE: this collect form is kept (not rewritten to streaming EXISTS like the
+            # no-filter Pattern 3) because the file filters cap the candidate sf set — it
+            # does not OOM here and is ~3x faster than EXISTS on selective filters.
             deposition_param = depositions_param_name
             deposition_operator = "=" if len(depositions_list) == 1 else "IN"
 
@@ -1248,6 +1320,9 @@ class FileRepository:
             # PATTERN 2: OPTIMIZED SUMMARY (with file filters only)
             # Use multi-hop traversal: sample -> participant -> consent_group -> study (preferred)
             # or sample -> cell_line -> study (fallback)
+            # NOTE: collect form kept (not streaming EXISTS) for the same reason as
+            # Pattern 1 — the file filters bound the sf set, so it does not OOM and is
+            # faster than EXISTS on selective filters.
             cypher = f"""
             MATCH (sf:{self.config.node_label})
             {file_where_clause}
@@ -1288,26 +1363,24 @@ class FileRepository:
             RETURN count(DISTINCT sf) as total_count
             """.strip()
         else:
-            # PATTERN 3: SIMPLE SUMMARY (no filters at all)
-            # Collect each study path into a list before the second OPTIONAL MATCH to prevent
-            # a Cartesian product: two bare OPTIONAL MATCHes produce N×M rows when a sample
-            # has N participant→study paths and M cell_line→study paths.
-            # collect(null) → [], so size([]) == 0 correctly excludes samples with no study.
+            # PATTERN 3: no filters at all (the hot /file path).
+            # Stream every sf and count those with any study path via EXISTS. The prior
+            # collect + count(DISTINCT sf) form materialized a hash set of all ~1.5M
+            # matched sf nodes and OOMed on the local snapshot (>7.65 GiB). EXISTS
+            # short-circuits per-file and needs no DISTINCT (a sequencing_file maps to at
+            # most one sample), so peak memory is ~O(1) instead of O(matched files).
             cypher = f"""
-            MATCH (sf:{self.config.node_label})-[:{self.config.rel_name}]->(sa:sample)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st1:study)
-            WITH sf, sa, collect(DISTINCT st1) AS st1_list
-            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st2:study)
-            WITH sf, st1_list, collect(DISTINCT st2) AS st2_list
-            WHERE size(st1_list) > 0 OR size(st2_list) > 0
-            RETURN count(DISTINCT sf) AS total_count
+            MATCH (sf:{self.config.node_label})
+            WHERE EXISTS {{ (sf)-[:{self.config.rel_name}]->(:sample)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) }}
+               OR EXISTS {{ (sf)-[:{self.config.rel_name}]->(:sample)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) }}
+            RETURN count(sf) AS total_count
             """.strip()
 
         return cypher, params
 
     async def count_for_pagination(self, filters: Dict[str, Any]) -> int:
         """
-        Return COUNT(DISTINCT sf) for these filters.
+        Return the study-reachable file count for these filters.
         Used by FileService to split pagination across node types.
 
         Raises database exceptions directly — caller is responsible for handling.
@@ -1317,12 +1390,9 @@ class FileRepository:
         if cypher is _ZERO_COUNT_SENTINEL:
             return 0
         try:
-            result = await self.session.run(cypher, params)
-            records = []
-            async for record in result:
-                records.append(dict(record))
-            await result.consume()
-            return records[0].get("total_count", 0) if records else 0
+            # Retry transient failures (timeout/memory/connection) before propagating,
+            # so a blip on the heavy count query doesn't abort the whole /file response.
+            return await run_count_query_with_retry(self.session, cypher, params)
         except Exception:
             logger.error(
                 "Database error in count_for_pagination",
@@ -1399,8 +1469,8 @@ class FileRepository:
         sf = node_to_dict(record)
         study_dict = node_to_dict(study) if study else {}
         
-        # Get file identifier - use only id field
-        file_id = sf.get("id") or ""
+        # Get file identifier - use only guid field
+        file_id = sf.get("guid") or ""
         study_id = study_dict.get("study_id", "")
         
         # Build file identifier

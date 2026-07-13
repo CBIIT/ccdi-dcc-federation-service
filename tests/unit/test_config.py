@@ -201,7 +201,7 @@ class TestSettings:
         assert isinstance(settings.sex_value_mappings, dict)
         assert settings.sex_value_mappings["Male"] == "M"
         assert settings.sex_value_mappings["Female"] == "F"
-        assert settings.sex_value_mappings["Not Reported"] == "U"
+        assert "Not Reported" not in settings.sex_value_mappings
 
 
 @pytest.mark.unit

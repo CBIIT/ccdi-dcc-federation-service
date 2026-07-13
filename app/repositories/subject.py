@@ -20,6 +20,8 @@ from app.lib.url_builder import build_identifier_server_url
 from app.models.dto import Subject
 from app.models.errors import UnsupportedFieldError
 from app.utils.cypher_builder import combine_where_clauses, append_where_conditions
+from app.db.memgraph import run_count_query_with_retry
+from app.core.pagination import floor_total_to_page_size
 from app.repositories.subject_count import SubjectCount
 from app.repositories.subject_summary import SubjectSummary
 from app.repositories.subject_diagnosis_cypher import (
@@ -200,7 +202,7 @@ class SubjectRepository(SubjectCount, SubjectSummary):
 
                     race_condition = f""",
                     ${race_param} AS race_tokens,
-                    [pt IN SPLIT(COALESCE(p.race, ''), ';') | trim(pt)] AS pr_tokens"""
+                    [pt IN coalesce(p.race, []) | trim(toString(pt))] AS pr_tokens"""
 
                     if includes_not_reported:
                         race_filter_condition = """(reduce(found = false, tok IN race_tokens | found OR tok IN pr_tokens) OR \n                        (size(pr_tokens) > 0 AND reduce(all_hispanic = true, pt IN pr_tokens | all_hispanic AND pt = 'Hispanic or Latino') AND 'Not Reported' IN race_tokens))"""
@@ -289,16 +291,17 @@ class SubjectRepository(SubjectCount, SubjectSummary):
         derived_filters: dict = {}
         derived_conditions: list = []
 
-        # Map API sex values to database values
+        # Map API sex values to database values. U means any DB value other than Female/Male.
         if "sex" in filters and filters["sex"]:
             sex_value = filters["sex"]
             sex_mapping = {
                 "M": "Male",
                 "F": "Female",
-                "U": "Not Reported"
             }
             if sex_value in sex_mapping:
                 filters["sex"] = sex_mapping[sex_value]
+            elif sex_value == "U":
+                filters["sex"] = "__SEX_UNKNOWN__"
 
         # Field name mapping for participant properties
         field_name_mapping = {
@@ -311,6 +314,12 @@ class SubjectRepository(SubjectCount, SubjectSummary):
 
         # Add regular filters (excluding derived fields)
         for field, value in filters.items():
+            if field == "sex" and value == "__SEX_UNKNOWN__":
+                early_participant_filters.append(
+                    "(p.sex_at_birth IS NULL OR NOT (toString(p.sex_at_birth) IN ['Female', 'Male']))"
+                )
+                continue
+
             if field == "ethnicity":
                 desired = str(value).strip() if value is not None else ""
                 desired_lower = desired.lower()
@@ -318,9 +327,9 @@ class SubjectRepository(SubjectCount, SubjectSummary):
                 param_name = f"param_{param_counter}"
                 params[param_name] = "Hispanic or Latino"
                 if desired_lower == "hispanic or latino":
-                    condition = f"(p.race IS NOT NULL AND toString(p.race) CONTAINS ${param_name})"
+                    condition = f"(p.race IS NOT NULL AND any(r IN coalesce(p.race, []) WHERE toString(r) CONTAINS ${param_name}))"
                 else:
-                    condition = f"(p.race IS NULL OR trim(toString(p.race)) = '' OR NOT toString(p.race) CONTAINS ${param_name})"
+                    condition = f"(p.race IS NULL OR size(coalesce(p.race, [])) = 0 OR NOT any(r IN coalesce(p.race, []) WHERE toString(r) CONTAINS ${param_name}))"
                 early_participant_filters.append(condition)
                 continue
 
@@ -652,13 +661,15 @@ WITH {carry},
                     + f"{pair_count_tail}"
                 )
 
+            # The count query is a heavy full-scan aggregation. A transient failure
+            # (timeout, Memgraph memory limit, connection blip) must NOT be silently
+            # reported as 0 while the cheap data query still returns rows -> the
+            # intermittent "all: 0, current: N" the aggregator would merge. Retry on
+            # retryable errors before falling back.
             try:
-                count_result = await self.session.run(count_cypher.strip(), fs.params)
-                count_records = []
-                async for row in count_result:
-                    count_records.append(dict(row))
-                await count_result.consume()
-                total_count = count_records[0].get("total_count", 0) if count_records else 0
+                total_count = await run_count_query_with_retry(
+                    self.session, count_cypher.strip(), fs.params
+                )
             except Exception as exc:
                 logger.warning("return_total count query failed", error=str(exc))
                 total_count = 0
@@ -695,7 +706,7 @@ WITH {carry},
           toString(participant_id) AS name,
           p.race AS race,
           CASE 
-            WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
+            WHEN any(r IN coalesce(p.race, []) WHERE toString(r) = 'Hispanic or Latino') THEN 'Hispanic or Latino'
             ELSE 'Not reported'
           END AS ethnicity,
           NULL AS age_at_vital_status,
@@ -741,7 +752,7 @@ WITH {carry},
           toString(participant_id) AS name,
           p.race AS race,
           CASE 
-            WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
+            WHEN any(r IN coalesce(p.race, []) WHERE toString(r) = 'Hispanic or Latino') THEN 'Hispanic or Latino'
             ELSE 'Not reported'
           END AS ethnicity,
           NULL AS age_at_vital_status,
@@ -779,7 +790,7 @@ WITH {carry},
           toString(participant_id) AS name,
           p.race AS race,
           CASE 
-            WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
+            WHEN any(r IN coalesce(p.race, []) WHERE toString(r) = 'Hispanic or Latino') THEN 'Hispanic or Latino'
             ELSE 'Not reported'
           END AS ethnicity,
           NULL AS age_at_vital_status,
@@ -975,7 +986,7 @@ WITH {carry},
              END) AS final_age_at_vital_status,
              // Calculate ethnicity for filtering
              CASE 
-               WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
+               WHEN any(r IN coalesce(p.race, []) WHERE toString(r) = 'Hispanic or Latino') THEN 'Hispanic or Latino'
                ELSE 'Not reported'
              END AS ethnicity_value
         {derived_where_clause}
@@ -1021,7 +1032,7 @@ WITH {carry},
           toString(participant_id) AS name,
           p.race AS race,
           CASE
-            WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
+            WHEN any(r IN coalesce(p.race, []) WHERE toString(r) = 'Hispanic or Latino') THEN 'Hispanic or Latino'
             ELSE 'Not reported'
           END AS ethnicity,
           CASE WHEN final_age_at_vital_status IS NOT NULL THEN final_age_at_vital_status ELSE -999 END AS age_at_vital_status,
@@ -1116,7 +1127,7 @@ WITH {carry},
              END) AS final_age_at_vital_status,
              // Calculate ethnicity for filtering
              CASE 
-               WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
+               WHEN any(r IN coalesce(p.race, []) WHERE toString(r) = 'Hispanic or Latino') THEN 'Hispanic or Latino'
                ELSE 'Not reported'
              END AS ethnicity_value
         {derived_where_clause}
@@ -1173,7 +1184,7 @@ WITH {carry},
           toString(participant_id) AS name,
           p.race AS race,
           CASE
-            WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
+            WHEN any(r IN coalesce(p.race, []) WHERE toString(r) = 'Hispanic or Latino') THEN 'Hispanic or Latino'
             ELSE 'Not reported'
           END AS ethnicity,
           CASE WHEN final_age_at_vital_status IS NOT NULL THEN final_age_at_vital_status ELSE -999 END AS age_at_vital_status,
@@ -1421,7 +1432,7 @@ WITH {carry},
              END) AS final_age_at_vital_status,
              // Calculate ethnicity for filtering
              CASE 
-               WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
+               WHEN any(r IN coalesce(p.race, []) WHERE toString(r) = 'Hispanic or Latino') THEN 'Hispanic or Latino'
                ELSE 'Not reported'
              END AS ethnicity_value
         {derived_where_clause}
@@ -1450,7 +1461,7 @@ WITH {carry},
           toString(participant_id) AS name,
           p.race AS race,
           CASE 
-            WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
+            WHEN any(r IN coalesce(p.race, []) WHERE toString(r) = 'Hispanic or Latino') THEN 'Hispanic or Latino'
             ELSE 'Not reported'
           END AS ethnicity,
           CASE WHEN final_age_at_vital_status IS NOT NULL THEN final_age_at_vital_status ELSE -999 END AS age_at_vital_status,
@@ -1588,7 +1599,7 @@ WITH {carry},
              END) AS final_age_at_vital_status,
              // Calculate ethnicity for filtering
              CASE 
-               WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
+               WHEN any(r IN coalesce(p.race, []) WHERE toString(r) = 'Hispanic or Latino') THEN 'Hispanic or Latino'
                ELSE 'Not reported'
              END AS ethnicity_value
                 {derived_where_clause}
@@ -1611,7 +1622,7 @@ WITH {carry},
           toString(participant_id) AS name,
           p.race AS race,
           CASE
-            WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
+            WHEN any(r IN coalesce(p.race, []) WHERE toString(r) = 'Hispanic or Latino') THEN 'Hispanic or Latino'
             ELSE 'Not reported'
           END AS ethnicity,
           CASE WHEN final_age_at_vital_status IS NOT NULL THEN final_age_at_vital_status ELSE -999 END AS age_at_vital_status,
@@ -1705,7 +1716,12 @@ WITH {carry},
         )
 
         if return_total:
-            return (subjects, total_count if total_count is not None else 0)
+            # Invariant: the reported total ("all") can never be below the rows actually
+            # returned on this page ("current"). Even if the count query failed after
+            # retries and was zeroed, never emit the absurd all:0 / current:N that the
+            # federation aggregator would merge as a false total. Floored here in the repo
+            # so both /subject and /subject-diagnosis (which reuse get_subjects) inherit it.
+            return (subjects, floor_total_to_page_size(total_count, len(subjects)))
         return subjects
 
     async def get_subject_by_identifier(
@@ -1833,7 +1849,7 @@ WITH {carry},
           toString(participant_id) AS name,
           p.race AS race,
           CASE 
-            WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
+            WHEN any(r IN coalesce(p.race, []) WHERE toString(r) = 'Hispanic or Latino') THEN 'Hispanic or Latino'
             ELSE 'Not reported'
           END AS ethnicity,
           CASE WHEN final_age_at_vital_status IS NOT NULL THEN final_age_at_vital_status ELSE -999 END AS age_at_vital_status,
@@ -1923,7 +1939,7 @@ WITH {carry},
           toString(participant_id) AS name,
           p.race AS race,
           CASE 
-            WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
+            WHEN any(r IN coalesce(p.race, []) WHERE toString(r) = 'Hispanic or Latino') THEN 'Hispanic or Latino'
             ELSE 'Not reported'
           END AS ethnicity,
           CASE WHEN final_age_at_vital_status IS NOT NULL THEN final_age_at_vital_status ELSE -999 END AS age_at_vital_status,
@@ -2155,7 +2171,7 @@ WITH {carry},
                             extracted_diagnoses.append(diag_val)
                 cat = _get_prop(node, "diagnosis_category")
                 if cat is not None and str(cat).strip():
-                    h, u = split_diagnosis_category_tokens(str(cat))
+                    h, u = split_diagnosis_category_tokens(cat)
                     harmonized_categories.extend(h)
                     unharmonized_categories.extend(u)
         if extracted_diagnoses:
@@ -2243,8 +2259,7 @@ WITH {carry},
                         if sex_str in mappings.values():
                             sex_value = sex_str  # Already normalized
                         else:
-                            # Fallback to 'U' if 'Not Reported' exists, otherwise first value
-                            sex_value = mappings.get("Not Reported", "U") if "Not Reported" in mappings else (list(mappings.values())[0] if mappings else "U")
+                            sex_value = "U"
             else:
                 # Fallback to simple logic if no config
                 sex_lower = sex_str.lower()

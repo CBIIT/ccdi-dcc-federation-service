@@ -246,3 +246,41 @@ async def test_query_execution_exception_is_reraised(repository, mock_session):
     mock_session.run.side_effect = Exception("DB connection failed")
     with pytest.raises(Exception, match="DB connection failed"):
         await repository.count_samples_by_field("tissue_type", {})
+
+
+# ---------------------------------------------------------------------------
+# preservation_method: map-then-dedup (no double-count on N:1 collapses)
+# ---------------------------------------------------------------------------
+
+async def test_preservation_count_maps_and_dedups_by_api_value(repository, mock_session):
+    """Regression: preservation_method must map DB->API IN Cypher and dedup by the
+    MAPPED value, not the raw value.
+
+    Deduping on the raw value double-counted a (sample, study) pair holding two
+    distinct raw values that collapse to one API value (e.g. two 'Cryopreservation'
+    variants both -> 'Cryopreserved'): each raw row was counted then summed in Python.
+    """
+    mock_session.run.return_value = make_async_result(
+        [{"value": "Cryopreserved", "count": 10, "total": 100, "missing": 20}]
+    )
+    await repository.count_samples_by_field("preservation_method", {})
+    cypher = mock_session.run.call_args[0][0]
+    # Mapping is applied IN Cypher (a collapsing variant maps to 'Cryopreserved').
+    assert "Cryopreservation in liquid nitrogen (dead tissue)' THEN 'Cryopreserved'" in cypher
+    # Dedup is on the MAPPED value: the CASE mapping precedes the DISTINCT dedup.
+    assert "WITH DISTINCT sample_id, study_id, value" in cypher
+    assert cypher.index("THEN 'Cryopreserved'") < cypher.index("WITH DISTINCT sample_id, study_id, value")
+    # Regression guard: the old raw-value dedup form must be gone from this query.
+    assert "toString(val) as value" not in cypher
+
+
+async def test_preservation_count_keeps_unknown_bucket(repository, mock_session):
+    """preservation's API bucket 'Unknown' (from Cytospin Slide/Other) must survive even
+    though 'Unknown' is also in null_mappings. Since the value is already mapped +
+    null-filtered in Cypher, Python must NOT re-apply is_null_mapped_value to it."""
+    mock_session.run.return_value = make_async_result(
+        [{"value": "Unknown", "count": 7, "total": 100, "missing": 20}]
+    )
+    result = await repository.count_samples_by_field("preservation_method", {})
+    buckets = {v["value"]: v["count"] for v in result["values"]}
+    assert buckets.get("Unknown") == 7  # not dropped by the null_mappings collision

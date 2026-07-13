@@ -24,16 +24,28 @@ def canonical_diagnosis_category_token(token: str) -> str | None:
     return _CANONICAL_BY_LOWER.get(t.lower())
 
 
-def split_diagnosis_category_tokens(raw: str) -> tuple[list[str], list[str]]:
+def split_diagnosis_category_tokens(raw: object) -> tuple[list[str], list[str]]:
     """
-    Split a semicolon-delimited diagnosis_category string into (harmonized, unharmonized) lists.
+    Split a diagnosis_category value into (harmonized, unharmonized) lists.
 
-    Returns deduplicated lists preserving insertion order.
-    diagnosis_category is stored as a semicolon-delimited string in the graph.
+    Accepts either a Memgraph 3.11 LIST property (list/tuple of tokens) or a
+    legacy semicolon-delimited string. Returns deduplicated lists preserving
+    insertion order.
     """
     harmonized: list[str] = []
     unharmonized: list[str] = []
-    for token in str(raw).split(";"):
+    if raw is None:
+        return harmonized, unharmonized
+
+    if isinstance(raw, (list, tuple)):
+        raw_tokens: list[str] = []
+        for element in raw:
+            if element is not None:
+                raw_tokens.extend(str(element).split(";"))
+    else:
+        raw_tokens = str(raw).split(";")
+
+    for token in raw_tokens:
         token = token.strip()
         if not token:
             continue

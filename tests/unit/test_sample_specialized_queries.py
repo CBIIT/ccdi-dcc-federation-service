@@ -233,7 +233,7 @@ class TestSpecializedQueries:
         
         with patch('app.repositories.sample.is_database_only_value', return_value=False):
             with patch('app.repositories.sample.is_null_mapped_value', return_value=False):
-                with patch('app.repositories.sample.reverse_map_field_value', return_value=["Transcriptomic", "Viral RNA"]):
+                with patch('app.repositories.sample.reverse_map_field_value', return_value=["MicroRNA", "Total RNA"]):
                     filters = {"specimen_molecular_analyte_type": "RNA"}
                     result = await repository._get_samples_by_sequencing_file_filters(filters, offset=0, limit=20)
                     
@@ -241,7 +241,7 @@ class TestSpecializedQueries:
                     # Get the query to verify IN clause
                     call_args = mock_session.run.call_args
                     query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
-                    assert 'IN [' in query
+                    assert 'IN $param' in query  # parameterized list matching (not inline IN [...])
                     
                     # Verify early pagination: SKIP/LIMIT after study collection but before final OPTIONAL MATCHes
                     skip_pos = query.find("SKIP")
@@ -345,11 +345,11 @@ class TestSpecializedQueries:
                 query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
                 
                 # Extract positions of key query elements
-                # Query structure: study collection -> UNWIND -> WITH DISTINCT sa, st -> ORDER BY -> SKIP -> LIMIT -> rematch sf -> OPTIONAL MATCHes
+                # Query structure: study collection -> UNWIND -> WITH DISTINCT sa, sid -> ORDER BY -> SKIP -> LIMIT -> resolve study + rematch sf -> OPTIONAL MATCHes
                 order_by_pos = query.find("ORDER BY")
                 skip_pos = query.find("SKIP")
                 limit_pos = query.find("LIMIT")
-                distinct_pos = query.find("WITH DISTINCT sa, st")
+                distinct_pos = query.find("WITH DISTINCT sa, sid")
                 unwind_pos = query.find("UNWIND combined")
                 study_collection_pos = query.find("collect(DISTINCT st1.study_id)")
                 rematch_sf_pos = query.find("sf_rematched:sequencing_file")
@@ -359,7 +359,7 @@ class TestSpecializedQueries:
                 assert order_by_pos != -1, "ORDER BY should be present"
                 assert skip_pos != -1, "SKIP should be present"
                 assert limit_pos != -1, "LIMIT should be present"
-                assert distinct_pos != -1, "WITH DISTINCT sa, st should be present"
+                assert distinct_pos != -1, "WITH DISTINCT sa, sid should be present"
                 assert unwind_pos != -1, "UNWIND should be present"
                 
                 # Verify order: UNWIND -> WITH DISTINCT -> ORDER BY -> SKIP/LIMIT -> rematch sf -> OPTIONAL MATCHes

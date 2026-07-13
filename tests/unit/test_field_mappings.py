@@ -71,6 +71,26 @@ class TestMapFieldValue:
         assert result == "SomeValue"
 
     @patch('app.core.field_mappings._get_field_mappings')
+    def test_map_sex_unknown_db_value_to_u(self, mock_get_mappings):
+        """Sex maps Female/Male explicitly and all other DB values to U."""
+        mock_get_mappings.return_value = {
+            "subject": {
+                "sex": {
+                    "mappings": {
+                        "Female": "F",
+                        "Male": "M",
+                    },
+                    "null_mappings": [],
+                }
+            }
+        }
+
+        assert map_field_value("sex", "Female") == "F"
+        assert map_field_value("sex", "Male") == "M"
+        assert map_field_value("sex", "Not Reported") == "U"
+        assert map_field_value("sex", "Unknown") == "U"
+
+    @patch('app.core.field_mappings._get_field_mappings')
     def test_map_value_field_not_found(self, mock_get_mappings):
         """Test mapping a value for field not in config."""
         mock_get_mappings.return_value = {}

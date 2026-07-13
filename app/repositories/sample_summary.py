@@ -16,6 +16,7 @@ from app.core.field_mappings import (
 from app.repositories.sample_helpers import DIAGNOSIS_SEARCH_COMPATIBLE_FILTERS, SD_CAT_MARKER
 from app.repositories.subject_diagnosis_cypher import add_diagnosis_search_params, diagnosis_search_predicate
 from app.models.errors import UnsupportedFieldError
+from app.utils.cypher_builder import anatomic_site_member_predicate
 
 logger = get_logger(__name__)
 
@@ -77,10 +78,10 @@ class SampleSummary:
 
         # OPTIMIZATION: Specialized summary query for diagnosis-heavy filters (no _diagnosis_search)
         diagnosis_filter_keys = {
-            "disease_phase", "tumor_grade", "tumor_classification",
+            "disease_phase", "tumor_grade",
             "tumor_tissue_morphology", "age_at_diagnosis", "diagnosis"
         }
-        allowed_companion_keys = {"anatomical_sites", "tissue_type", "identifiers", "depositions"}
+        allowed_companion_keys = {"anatomical_sites", "tissue_type", "tumor_classification", "identifiers", "depositions"}
         allowed_diag_heavy_keys = diagnosis_filter_keys | allowed_companion_keys
 
         has_diagnosis_filters = any(k in original_filters_keys for k in diagnosis_filter_keys)
@@ -290,7 +291,8 @@ class SampleSummary:
                 # which is processed later in the query building logic
                 self._validate_library_source_material_filter(value, param_name, params, with_conditions)
             elif field == "preservation_method":
-                params[param_name] = value
+                reverse_mapped = reverse_map_field_value("preservation_method", value)
+                params[param_name] = reverse_mapped if reverse_mapped else value
                 with_conditions.append(("preservation_method", param_name))
             elif field == "tissue_type":
                 # Use helper function to validate tissue_type filter
@@ -298,8 +300,7 @@ class SampleSummary:
                     # Return empty summary dict instead of empty list
                     return {"counts": {"total": 0}}
             elif field == "tumor_classification":
-                # Check if value is in null_mappings (e.g., "non-malignant")
-                if is_null_mapped_value("tumor_classification", value):
+                if is_null_mapped_value("tumor_classification", value) or is_database_only_value("tumor_classification", value):
                     # This value is treated as NULL/missing and is not valid for filtering
                     with_conditions.append("false")
                 else:
@@ -307,8 +308,10 @@ class SampleSummary:
                     reverse_mapped = reverse_map_field_value("tumor_classification", value)
                     # If reverse_mapped is None, use the original value (no mapping needed)
                     params[param_name] = reverse_mapped if reverse_mapped else value
-                    with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_classification IS NOT NULL AND diagnoses.tumor_classification = ${param_name}")
-                    diagnosis_filter_parts_for_search.append(f"d.tumor_classification = ${param_name}")
+                    if isinstance(params[param_name], list):
+                        with_conditions.append(f"sa.tumor_spatial_extent IS NOT NULL AND sa.tumor_spatial_extent IN ${param_name}")
+                    else:
+                        with_conditions.append(f"sa.tumor_spatial_extent IS NOT NULL AND sa.tumor_spatial_extent = ${param_name}")
             elif field == "tumor_grade":
                 with_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_grade IS NOT NULL AND diagnoses.tumor_grade = ${param_name}")
                 diagnosis_filter_parts_for_search.append(f"d.tumor_grade = ${param_name}")
@@ -413,28 +416,19 @@ class SampleSummary:
                     for idx, val in enumerate(param_value):
                         val_param = f"{condition[1]}_{idx}"
                         params[val_param] = val
-                        or_conditions.append(f"""(
-                            ${val_param} = sa.anatomic_site OR
-                            reduce(found = false, tok IN SPLIT(toString(sa.anatomic_site), ';') | 
-                              CASE WHEN trim(tok) = trim(toString(${val_param})) THEN true ELSE found END
-                            ) = true
-                        )""")
+                        or_conditions.append(
+                            f"({anatomic_site_member_predicate('sa', '$' + val_param)})"
+                        )
                     anatomical_sites_list_condition = f"""sa.anatomic_site IS NOT NULL AND ({' OR '.join(or_conditions)})"""
                 else:
                     # Single value - handle both exact match and semicolon-separated string cases
                     anatomical_sites_list_condition = f"""sa.anatomic_site IS NOT NULL AND (
-                        ${condition[1]} = sa.anatomic_site OR
-                        reduce(found = false, tok IN SPLIT(toString(sa.anatomic_site), ';') | 
-                          CASE WHEN trim(tok) = trim(toString(${condition[1]})) THEN true ELSE found END
-                        ) = true
+                        {anatomic_site_member_predicate('sa', '$' + condition[1])}
                     )"""
             elif isinstance(condition, tuple) and condition[0] == "anatomical_sites_string":
                 # String version: handle exact match and semicolon-separated strings
                 anatomical_sites_string_condition = f"""sa.anatomic_site IS NOT NULL AND (
-                    trim(toString(sa.anatomic_site)) = trim(toString(${condition[1]})) OR
-                    reduce(found = false, tok IN SPLIT(toString(sa.anatomic_site), ';') | 
-                      CASE WHEN trim(tok) = trim(toString(${condition[1]})) THEN true ELSE found END
-                    ) = true
+                    {anatomic_site_member_predicate('sa', '$' + condition[1])}
                 )"""
             elif isinstance(condition, tuple) and condition[0] == "specimen_molecular_analyte_type_list":
                 # Store the list of DB values that map to the API value (e.g., ["Transcriptomic", "Viral RNA"] for "RNA")
@@ -527,7 +521,7 @@ class SampleSummary:
         # Note: "diagnosis" filter is handled via optimized query path when alone, but we still need
         # to set needs_diag_collection correctly for the standard query path fallback
         has_diagnosis_filters = any(
-            field in filters for field in ["disease_phase", "tumor_grade", "tumor_tissue_morphology", "tumor_classification", "age_at_diagnosis", "diagnosis"]
+            field in filters for field in ["disease_phase", "tumor_grade", "tumor_tissue_morphology", "age_at_diagnosis", "diagnosis"]
         )
         needs_diag_collection = diagnosis_search_term is not None or has_diagnosis_filters
         
@@ -560,7 +554,7 @@ class SampleSummary:
         # so don't block that branch just because generic needs_diag_collection is True.
         has_non_diagnosis_diag_filters = any(
             field in filters
-            for field in ["disease_phase", "tumor_grade", "tumor_tissue_morphology", "tumor_classification", "age_at_diagnosis"]
+            for field in ["disease_phase", "tumor_grade", "tumor_tissue_morphology", "age_at_diagnosis"]
         )
 
         has_anatomical_sites_filter = (
@@ -732,7 +726,7 @@ RETURN count(*) AS total_count
                         condition_part = condition.replace("diagnoses IS NOT NULL AND ", "").replace("diagnoses.", "d.")
                         diagnosis_filter_conditions.append(f"size([d IN all_diagnoses WHERE d IS NOT NULL AND {condition_part} | d ]) > 0")
                         all_conditions.remove(condition)
-                    elif isinstance(condition, str) and ("diagnoses.tumor_grade" in condition or "diagnoses.tumor_classification" in condition or "diagnoses.tumor_tissue_morphology" in condition or "diagnoses.age_at_diagnosis" in condition):
+                    elif isinstance(condition, str) and ("diagnoses.tumor_grade" in condition or "diagnoses.tumor_tissue_morphology" in condition or "diagnoses.age_at_diagnosis" in condition):
                         # Convert other diagnosis filters similarly
                         condition_part = condition.replace("diagnoses IS NOT NULL AND ", "").replace("diagnoses.", "d.")
                         filter_condition = f"size([d IN all_diagnoses WHERE d IS NOT NULL AND {condition_part} | d ]) > 0"
@@ -782,7 +776,7 @@ RETURN count(*) AS total_count
         ) or any("p." in str(cond) for cond in all_conditions if isinstance(cond, str))
         
         needs_diagnosis = any(
-            field in filters for field in ["disease_phase", "tumor_grade", "tumor_tissue_morphology", "tumor_classification", "age_at_diagnosis", "diagnosis"]
+            field in filters for field in ["disease_phase", "tumor_grade", "tumor_tissue_morphology", "age_at_diagnosis", "diagnosis"]
         ) or any("d." in str(cond) or "diagnoses" in str(cond) or "has_matching_diagnosis" in str(cond) for cond in all_conditions if isinstance(cond, str)) or diagnosis_search_term is not None
         
         needs_pathology_file = any(
@@ -801,7 +795,10 @@ RETURN count(*) AS total_count
         # This avoids collecting all pathology_files then filtering (10-20x faster)
         pf_optional_match_where_summary = None
         if preservation_method_param:
-            pf_optional_match_where_summary = f"WHERE pf.fixation_embedding_method = ${preservation_method_param}"
+            if isinstance(params[preservation_method_param], list):
+                pf_optional_match_where_summary = f"WHERE pf.fixation_embedding_method IN ${preservation_method_param}"
+            else:
+                pf_optional_match_where_summary = f"WHERE pf.fixation_embedding_method = ${preservation_method_param}"
         
         # Build OPTIONAL MATCH clauses
         optional_matches = []
@@ -870,7 +867,7 @@ RETURN count(*) AS total_count
             
             # Handle diagnosis search - check if ANY diagnosis matches
             # IMPORTANT: Only use diagnosis search condition if diagnosis_search_term is actually present
-            # needs_diag_collection can be True for other diagnosis filters (disease_phase, tumor_classification, etc.)
+            # needs_diag_collection can be True for other diagnosis filters (disease_phase, tumor_grade, etc.)
             # but those don't require the diagnosis search parameters
             if needs_diag_collection and diagnosis_search_term is not None:
                 diagnosis_search_base = f"({diagnosis_search_predicate('d')})"
@@ -887,7 +884,7 @@ RETURN count(*) AS total_count
                 second_with_vars.append("head([d IN all_diagnoses WHERE d IS NOT NULL | d]) AS diagnoses")
             elif needs_diag_collection:
                 # needs_diag_collection is True but no diagnosis search - just collect diagnoses
-                # This happens when diagnosis filters (disease_phase, tumor_classification, etc.) are present
+                # This happens when diagnosis filters (disease_phase, tumor_grade, etc.) are present
                 # but no _diagnosis_search filter
                 # CRITICAL: Pass through all_diagnoses so it's available for WHERE clause conditions
                 # that check all_diagnoses collection (e.g., diagnosis filter conversion)
@@ -1345,12 +1342,7 @@ RETURN count(*) AS total_count
                         p = f"param_{param_counter}"
                         params[p] = s
                         or_conditions.append(
-                            f"""(
-                                ${p} = sa.anatomic_site OR
-                                reduce(found = false, tok IN SPLIT(toString(sa.anatomic_site), ';') |
-                                  CASE WHEN trim(tok) = trim(toString(${p})) THEN true ELSE found END
-                                ) = true
-                            )"""
+                            f"({anatomic_site_member_predicate('sa', '$' + p)})"
                         )
                     sa_where_parts.append(f"sa.anatomic_site IS NOT NULL AND ({' OR '.join(or_conditions)})")
                 elif len(site_list) == 1:
@@ -1359,10 +1351,7 @@ RETURN count(*) AS total_count
                     params[p] = site_list[0]
                     sa_where_parts.append(
                         f"""sa.anatomic_site IS NOT NULL AND (
-                            ${p} = sa.anatomic_site OR
-                            reduce(found = false, tok IN SPLIT(toString(sa.anatomic_site), ';') |
-                              CASE WHEN trim(tok) = trim(toString(${p})) THEN true ELSE found END
-                            ) = true
+                            {anatomic_site_member_predicate('sa', '$' + p)}
                         )"""
                     )
             else:
@@ -1371,10 +1360,7 @@ RETURN count(*) AS total_count
                 params[p] = sites
                 sa_where_parts.append(
                     f"""sa.anatomic_site IS NOT NULL AND (
-                        ${p} = sa.anatomic_site OR
-                        reduce(found = false, tok IN SPLIT(toString(sa.anatomic_site), ';') |
-                          CASE WHEN trim(tok) = trim(toString(${p})) THEN true ELSE found END
-                        ) = true
+                        {anatomic_site_member_predicate('sa', '$' + p)}
                     )"""
                 )
 
@@ -1384,6 +1370,20 @@ RETURN count(*) AS total_count
             t_param = f"param_{param_counter}"
             params[t_param] = filters["tissue_type"]
             sa_where_parts.append(f"sa.sample_tumor_status = ${t_param}")
+
+        # tumor_classification -> sample tumor_classification
+        if "tumor_classification" in filters:
+            v = filters["tumor_classification"]
+            if is_null_mapped_value("tumor_classification", v) or is_database_only_value("tumor_classification", v):
+                return {"counts": {"total": 0}}
+            reverse_mapped = reverse_map_field_value("tumor_classification", v)
+            param_counter += 1
+            tc_param = f"param_{param_counter}"
+            params[tc_param] = reverse_mapped if reverse_mapped else v
+            if isinstance(params[tc_param], list):
+                sa_where_parts.append(f"sa.tumor_spatial_extent IN ${tc_param}")
+            else:
+                sa_where_parts.append(f"sa.tumor_spatial_extent = ${tc_param}")
 
         sa_where_clause = " AND ".join(sa_where_parts)
 
@@ -1430,16 +1430,6 @@ RETURN count(*) AS total_count
             p = f"param_{param_counter}"
             params[p] = filters["tumor_grade"]
             dx_conditions.append(f"dx.tumor_grade = ${p}")
-
-        if "tumor_classification" in filters:
-            v = filters["tumor_classification"]
-            if is_null_mapped_value("tumor_classification", v):
-                return {"counts": {"total": 0}}
-            reverse_mapped = reverse_map_field_value("tumor_classification", v)
-            param_counter += 1
-            p = f"param_{param_counter}"
-            params[p] = reverse_mapped if reverse_mapped else v
-            dx_conditions.append(f"dx.tumor_classification = ${p}")
 
         if "tumor_tissue_morphology" in filters:
             param_counter += 1
@@ -1564,12 +1554,12 @@ RETURN count(*) AS total_count
                     return {"counts": {"total": 0}}
                 reverse_mapped = reverse_map_field_value("specimen_molecular_analyte_type", value)
                 if isinstance(reverse_mapped, list):
-                    db_values_str = ", ".join([f"'{v}'" for v in reverse_mapped])
-                    where_conditions.append(f"sf.library_source_molecule IN [{db_values_str}]")
+                    params[param_name] = reverse_mapped
+                    where_conditions.append(f"sf.library_source_molecule IN ${param_name}")
                 else:
                     params[param_name] = reverse_mapped
                     where_conditions.append(f"sf.library_source_molecule = ${param_name}")
-        
+
         where_clause = " AND ".join(where_conditions) if where_conditions else "TRUE"
         
         # Optimized count query

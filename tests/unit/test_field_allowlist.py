@@ -69,11 +69,16 @@ class TestFieldAllowlist:
         assert allowlist.is_unharmonized_field_allowed(EntityType.SUBJECT, "invalid_field") is False
 
     def test_is_unharmonized_field_allowed_after_load(self, allowlist):
-        """Test unharmonized field validation after loading from database."""
+        """After loading, the allowlist reflects metadata_fields.json, not the
+        pre-load COMMON_UNHARMONIZED_PATTERNS placeholders."""
         allowlist.load_from_database()
         assert allowlist._loaded is True
-        # After loading, should still allow common patterns
-        assert allowlist.is_unharmonized_field_allowed(EntityType.SUBJECT, "study_id") is True
+        # Subject exposes exactly the configured unharmonized field...
+        assert allowlist.is_unharmonized_field_allowed(
+            EntityType.SUBJECT, "associated_diagnosis_categories"
+        ) is True
+        # ...and the old placeholder patterns are no longer allowed.
+        assert allowlist.is_unharmonized_field_allowed(EntityType.SUBJECT, "study_id") is False
 
     def test_is_field_allowed_harmonized(self, allowlist):
         """Test is_field_allowed with harmonized fields."""
@@ -115,12 +120,13 @@ class TestFieldAllowlist:
         assert len(fields) == len(COMMON_UNHARMONIZED_PATTERNS)
 
     def test_get_allowed_unharmonized_fields_after_load(self, allowlist):
-        """Test getting unharmonized fields after loading."""
+        """After loading, unharmonized fields come from metadata_fields.json."""
         allowlist.load_from_database()
         fields = allowlist.get_allowed_unharmonized_fields(EntityType.SUBJECT)
         assert isinstance(fields, list)
-        # After loading, should include common patterns
-        assert "study_id" in fields
+        # Configured field is present; old placeholder patterns are gone.
+        assert "associated_diagnosis_categories" in fields
+        assert "study_id" not in fields
 
     def test_add_harmonized_field(self, allowlist):
         """Test adding a harmonized field to allowlist."""

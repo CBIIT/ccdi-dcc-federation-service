@@ -12,6 +12,29 @@ from fastapi import Request
 from pydantic import BaseModel
 
 from app.core.config import get_settings
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
+
+
+def floor_total_to_page_size(total_count: Optional[int], page_size: int) -> int:
+    """Guarantee the reported total ('all') is never below the current page size ('current').
+
+    A transient count-query failure can be swallowed to 0 while the data query still
+    returns rows; without this floor the response body and RFC5988 Link header would
+    report the absurd all:0 / current:N that the federation aggregator merges as a
+    false total. Applied at the service layer so every endpoint that reports counts —
+    and the Link header derived from the same total — uses the floored value.
+    """
+    safe_total = total_count if total_count is not None else 0
+    if safe_total < page_size:
+        logger.warning(
+            "reported total below current page size; flooring to page size",
+            counted_total=safe_total,
+            page_size=page_size,
+        )
+        return page_size
+    return safe_total
 
 
 class PaginationParams(BaseModel):

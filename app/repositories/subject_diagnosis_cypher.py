@@ -3,7 +3,7 @@ Shared Cypher fragments for subject diagnosis filtering.
 
 Used by SubjectRepository list queries and SubjectSummary (diagnosis endpoint).
 Sample diagnosis search reuses `diagnosis_category_contains_predicate` for `/sample-diagnosis`
-`diagnosis_category` (substring on full field, same as this module's subject-diagnosis category filter).
+`diagnosis_category` (element-wise substring over the list, same as this module's subject-diagnosis category filter).
 Aligned with sample diagnosis search: `see diagnosis_comment` sentinel handling.
 """
 
@@ -33,18 +33,22 @@ def diagnosis_search_predicate(var: str) -> str:
 
 
 def diagnosis_category_exact_token_predicate(var: str) -> str:
-    """GET /subject style: exact token after ';' split. Requires $diag_category_filter."""
+    """GET /subject style: exact match against any list element. Requires $diag_category_filter."""
     return (
-        f"any(token IN split(toString(coalesce({var}.diagnosis_category, '')), ';') "
-        f"WHERE toLower(trim(token)) = toLower($diag_category_filter))"
+        f"any(token IN coalesce({var}.diagnosis_category, []) "
+        f"WHERE toLower(trim(toString(token))) = toLower($diag_category_filter))"
     )
 
 
 def diagnosis_category_contains_predicate(var: str) -> str:
-    """Experimental /subject-diagnosis: full-string CONTAINS. Requires $diag_category_contains_term."""
+    """Experimental /subject-diagnosis: element-wise substring. Requires $diag_category_contains_term.
+
+    NOTE: Substring matching is now element-wise (Memgraph 3.11 list-native), so a term spanning
+    the old ';' delimiter (e.g. 'mia;Lym') no longer matches. This is intentional and more correct.
+    """
     return (
-        f"toLower(toString(coalesce({var}.diagnosis_category, ''))) "
-        f"CONTAINS toLower($diag_category_contains_term)"
+        f"any(elem IN coalesce({var}.diagnosis_category, []) "
+        f"WHERE toLower(toString(elem)) CONTAINS toLower($diag_category_contains_term))"
     )
 
 

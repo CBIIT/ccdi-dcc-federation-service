@@ -84,17 +84,21 @@ class SampleDiagnosisSearch:
             params[tg_param] = tumor_grade_value
             additional_diagnosis_filters.append(f"d.tumor_grade = ${tg_param}")
         
-        # Handle tumor_classification filter
+        # Handle tumor_classification filter (sample node)
+        tumor_classification_filter = None
         if "tumor_classification" in filters:
             tumor_classification_value = filters["tumor_classification"]
-            if is_null_mapped_value("tumor_classification", tumor_classification_value):
+            if is_null_mapped_value("tumor_classification", tumor_classification_value) or is_database_only_value("tumor_classification", tumor_classification_value):
                 logger.info("Invalid tumor_classification value - returning empty results", value=tumor_classification_value)
                 return [] if not return_total else ([], 0)
             reverse_mapped = reverse_map_field_value("tumor_classification", tumor_classification_value)
             param_counter += 1
             tc_param = f"param_{param_counter}"
             params[tc_param] = reverse_mapped if reverse_mapped else tumor_classification_value
-            additional_diagnosis_filters.append(f"d.tumor_classification = ${tc_param}")
+            if isinstance(params[tc_param], list):
+                tumor_classification_filter = f"sa.tumor_spatial_extent IN ${tc_param}"
+            else:
+                tumor_classification_filter = f"sa.tumor_spatial_extent = ${tc_param}"
         
         # Handle tumor_tissue_morphology filter
         if "tumor_tissue_morphology" in filters:
@@ -202,6 +206,8 @@ class SampleDiagnosisSearch:
             sa_where_parts = ["sa.sample_id IS NOT NULL"]
             if identifiers_early_filter:
                 sa_where_parts.append(identifiers_early_filter)
+            if tumor_classification_filter:
+                sa_where_parts.append(tumor_classification_filter)
             sa_where_clause = " AND ".join(sa_where_parts)
             
             cypher_count = f"""
@@ -242,6 +248,8 @@ class SampleDiagnosisSearch:
         sa_where_parts = ["sa.sample_id IS NOT NULL", "trim(toString(sa.sample_id)) <> ''"]
         if identifiers_early_filter:
             sa_where_parts.append(identifiers_early_filter)
+        if tumor_classification_filter:
+            sa_where_parts.append(tumor_classification_filter)
         sa_where_clause = " AND ".join(sa_where_parts)
         
         cypher = f"""
@@ -415,17 +423,21 @@ class SampleDiagnosisSearch:
             params[tg_param] = tumor_grade_value
             additional_diagnosis_filters.append(f"dx.tumor_grade = ${tg_param}")
         
-        # Handle tumor_classification filter
+        # Handle tumor_classification filter (sample node)
+        tumor_classification_filter = None
         if "tumor_classification" in filters:
             tumor_classification_value = filters["tumor_classification"]
-            if is_null_mapped_value("tumor_classification", tumor_classification_value):
+            if is_null_mapped_value("tumor_classification", tumor_classification_value) or is_database_only_value("tumor_classification", tumor_classification_value):
                 logger.info("Invalid tumor_classification value - returning empty results", value=tumor_classification_value)
                 return {"counts": {"total": 0}}
             reverse_mapped = reverse_map_field_value("tumor_classification", tumor_classification_value)
             param_counter += 1
             tc_param = f"param_{param_counter}"
             params[tc_param] = reverse_mapped if reverse_mapped else tumor_classification_value
-            additional_diagnosis_filters.append(f"dx.tumor_classification = ${tc_param}")
+            if isinstance(params[tc_param], list):
+                tumor_classification_filter = f"sa.tumor_spatial_extent IN ${tc_param}"
+            else:
+                tumor_classification_filter = f"sa.tumor_spatial_extent = ${tc_param}"
         
         # Handle tumor_tissue_morphology filter
         if "tumor_tissue_morphology" in filters:
@@ -516,6 +528,8 @@ class SampleDiagnosisSearch:
         sa_where_parts = ["sa.sample_id IS NOT NULL", "trim(toString(sa.sample_id)) <> ''"]
         if identifiers_early_filter:
             sa_where_parts.append(identifiers_early_filter)
+        if tumor_classification_filter:
+            sa_where_parts.append(tumor_classification_filter)
         sa_where_clause = " AND ".join(sa_where_parts)
         
         # Build complete diagnosis filter WHERE clause with proper parentheses

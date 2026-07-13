@@ -85,7 +85,7 @@ def _build_diagnosis_result(
             ))
         raw_cat = d.get("diagnosis_category")
         if raw_cat is not None and str(raw_cat).strip():
-            h, u = split_diagnosis_category_tokens(str(raw_cat))
+            h, u = split_diagnosis_category_tokens(raw_cat)
             all_harmonized.extend(h)
             all_unharmonized.extend(u)
 
@@ -377,7 +377,7 @@ class SampleConverters:
         tumor_grade_value = _head_d.get("tumor_grade") if _head_d else None
         age_at_diagnosis_value = _head_d.get("age_at_diagnosis") if _head_d else None
         age_at_collection_value = sa.get("participant_age_at_collection") if sa else None
-        tumor_classification_value = _head_d.get("tumor_classification") if _head_d else None
+        tumor_classification_value = sa.get("tumor_spatial_extent") if sa else None
         tissue_type_value = sa.get("sample_tumor_status") if sa else None
 
         diagnosis_category_field = (
@@ -395,7 +395,7 @@ class SampleConverters:
             library_selection_method=_wrap_value(_map_library_selection_method(_null_if_invalid(library_selection_value))),
             library_strategy=_wrap_value(map_field_value("library_strategy", _null_if_invalid(library_strategy_value))),
             library_source_material=_wrap_value(map_field_value("library_source_material", _null_if_invalid(library_source_material_value))),
-            preservation_method=_wrap_value(_null_if_invalid(preservation_method_value)),
+            preservation_method=_wrap_value(map_field_value("preservation_method", _null_if_invalid(preservation_method_value))),
             tumor_grade=_wrap_value(_null_if_invalid(tumor_grade_value)),
             specimen_molecular_analyte_type=_wrap_value(map_field_value("specimen_molecular_analyte_type", _null_if_invalid(specimen_molecular_analyte_type_value))),
             tissue_type=_wrap_value(_null_if_invalid(tissue_type_value)),

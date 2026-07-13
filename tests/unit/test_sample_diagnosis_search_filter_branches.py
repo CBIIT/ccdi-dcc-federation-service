@@ -213,15 +213,15 @@ class TestSummaryTumorClassificationFilter:
         mock_session.run.assert_called_once()
         call_args = mock_session.run.call_args
         query: str = call_args[0][0]
-        assert "dx.tumor_classification" in query
+        assert "sa.tumor_spatial_extent IN" in query
         assert result["counts"]["total"] == 3
 
     async def test_summary_search_with_invalid_tumor_classification(
         self, repository, mock_session
     ):
-        """'non-malignant' is in null_mappings → early return without calling session."""
+        """DB-only tumor_classification values return early without calling session."""
         result = await repository._get_samples_summary_diagnosis_search(
-            {"_diagnosis_search": "leukemia", "tumor_classification": "non-malignant"}
+            {"_diagnosis_search": "leukemia", "tumor_classification": "Local"}
         )
         assert result == {"counts": {"total": 0}}
         mock_session.run.assert_not_called()
@@ -488,7 +488,7 @@ class TestSummaryAllFiltersCombined:
 
         assert "dx.disease_phase" in query
         assert "dx.tumor_grade" in query
-        assert "dx.tumor_classification" in query
+        assert "sa.tumor_spatial_extent IN" in query
         assert "dx.tumor_tissue_morphology" in query
         assert "toInteger(dx.age_at_diagnosis)" in query
         assert "dx.diagnosis_category" in query
@@ -727,7 +727,7 @@ class TestListTumorClassificationFilter:
     ):
         """null-mapped tumor_classification returns empty list without session call."""
         result = await repository._get_samples_by_diagnosis_search(
-            {"_diagnosis_search": "leukemia", "tumor_classification": "non-malignant"},
+            {"_diagnosis_search": "leukemia", "tumor_classification": "Local"},
             offset=0,
             limit=20,
         )
@@ -747,7 +747,7 @@ class TestListTumorClassificationFilter:
         mock_session.run.assert_called_once()
         call_args = mock_session.run.call_args
         query: str = call_args[0][0]
-        assert "dx.tumor_classification" in query
+        assert "sa.tumor_spatial_extent IN" in query
 
 
 # ---------------------------------------------------------------------------

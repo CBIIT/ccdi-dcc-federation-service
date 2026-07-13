@@ -19,8 +19,10 @@ from app.lib.field_allowlist import FieldAllowlist
 from app.models.dto import File, FileResponse, CountResponse, SummaryResponse
 from app.models.errors import NotFoundError, ValidationError
 from app.repositories.file import FileRepository
+from app.core.pagination import floor_total_to_page_size
 from app.services.materialized_views import MaterializedViewService
 from app.db.memgraph import DatabaseConnectionError
+from neo4j.exceptions import ServiceUnavailable, TransientError, SessionExpired
 
 logger = get_logger(__name__)
 
@@ -107,7 +109,7 @@ class FileService:
                 offset=offset,
                 limit=limit
             )
-            return files, total_count
+            return files, floor_total_to_page_size(total_count, len(files))
 
         except DatabaseConnectionError as e:
             logger.error(
@@ -116,6 +118,22 @@ class FileService:
                 error_type=type(e).__name__,
                 filters=filters,
                 is_database_connection_error=True,
+            )
+            return [], 0
+        except (ServiceUnavailable, TransientError, SessionExpired, ConnectionError, TimeoutError) as e:
+            # Operational DB failure on the count or list query (memory-limit OOM, timeout,
+            # transient, service-unavailable). Per the file-endpoint contract these surface as
+            # HTTP 200 + empty data, NOT a 404 — the aggregator should see empty, not an error
+            # (feedback_db_error_empty_200). Validation errors (InvalidParametersError,
+            # UnsupportedFieldError) are NOT caught here and still surface as 400; genuine
+            # query bugs (ClientError) are not caught either.
+            logger.error(
+                "Operational database error while fetching files - returning empty result",
+                error=str(e),
+                error_type=type(e).__name__,
+                filters=filters,
+                is_operational_db_error=True,
+                aws_cloudwatch_alert=True,
             )
             return [], 0
     

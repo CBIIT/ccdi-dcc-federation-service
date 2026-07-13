@@ -90,7 +90,7 @@ class SubjectSummary:
 
                     race_condition = f""",
                     ${race_param} AS race_tokens,
-                    [pt IN SPLIT(COALESCE(p.race, ''), ';') | trim(pt)] AS pr_tokens"""
+                    [pt IN coalesce(p.race, []) | trim(toString(pt))] AS pr_tokens"""
 
                     if includes_not_reported:
                         # Match either: "Not Reported" in original values OR "Hispanic or Latino" only (which converts to "Not Reported")
@@ -207,17 +207,18 @@ class SubjectSummary:
         diagnosis_search_fragment = diagnosis_row_fragment
         diag_category_fragment = ""
 
-        # Map API sex values to database values (M -> Male, F -> Female, U -> Not Reported)
+        # Map API sex values to database values. U means any DB value other than Female/Male.
         if "sex" in filters and filters["sex"]:
             sex_value = filters["sex"]
             sex_mapping = {
                 "M": "Male",
                 "F": "Female",
-                "U": "Not Reported"
             }
             # If the value is a normalized API value, map it to database value
             if sex_value in sex_mapping:
                 filters["sex"] = sex_mapping[sex_value]
+            elif sex_value == "U":
+                filters["sex"] = "__SEX_UNKNOWN__"
 
         # Field name mapping for participant properties
         # Some API field names don't match the database property names
@@ -232,6 +233,12 @@ class SubjectSummary:
 
         # Add regular filters (excluding derived fields)
         for field, value in filters.items():
+            if field == "sex" and value == "__SEX_UNKNOWN__":
+                where_conditions.append(
+                    "(p.sex_at_birth IS NULL OR NOT (toString(p.sex_at_birth) IN ['Female', 'Male']))"
+                )
+                continue
+
             # Ethnicity is derived from race but can be expressed safely as a predicate on p.race.
             # IMPORTANT: Do not treat it as a derived-field filter here; otherwise fast paths can skip it.
             if field == "ethnicity":
@@ -241,9 +248,9 @@ class SubjectSummary:
                 hisp_param = f"param_{param_counter}"
                 params[hisp_param] = "Hispanic or Latino"
                 if desired_lower == "hispanic or latino":
-                    where_conditions.append(f"(p.race IS NOT NULL AND toString(p.race) CONTAINS ${hisp_param})")
+                    where_conditions.append(f"(p.race IS NOT NULL AND any(r IN coalesce(p.race, []) WHERE toString(r) CONTAINS ${hisp_param}))")
                 else:
-                    where_conditions.append(f"(p.race IS NULL OR trim(toString(p.race)) = '' OR NOT toString(p.race) CONTAINS ${hisp_param})")
+                    where_conditions.append(f"(p.race IS NULL OR size(coalesce(p.race, [])) = 0 OR NOT any(r IN coalesce(p.race, []) WHERE toString(r) CONTAINS ${hisp_param}))")
                 continue
 
             # Skip derived fields - they will be handled after calculation
@@ -513,7 +520,7 @@ class SubjectSummary:
                ELSE max_age
              END AS final_age_at_vital_status,
              CASE
-               WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
+               WHEN any(r IN coalesce(p.race, []) WHERE toString(r) = 'Hispanic or Latino') THEN 'Hispanic or Latino'
                ELSE 'Not reported'
              END AS ethnicity_value
         {derived_where_clause}
@@ -583,7 +590,7 @@ class SubjectSummary:
                ELSE max_age
              END AS final_age_at_vital_status,
              CASE
-               WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
+               WHEN any(r IN coalesce(p.race, []) WHERE toString(r) = 'Hispanic or Latino') THEN 'Hispanic or Latino'
                ELSE 'Not reported'
              END AS ethnicity_value
         {derived_where_clause}
@@ -658,7 +665,7 @@ class SubjectSummary:
                ELSE max_age
              END AS final_age_at_vital_status,
              CASE
-               WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
+               WHEN any(r IN coalesce(p.race, []) WHERE toString(r) = 'Hispanic or Latino') THEN 'Hispanic or Latino'
                ELSE 'Not reported'
              END AS ethnicity_value
         {derived_where_clause}
@@ -745,7 +752,7 @@ class SubjectSummary:
                ELSE max_age
              END AS final_age_at_vital_status,
              CASE
-               WHEN p.race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
+               WHEN any(r IN coalesce(p.race, []) WHERE toString(r) = 'Hispanic or Latino') THEN 'Hispanic or Latino'
                ELSE 'Not reported'
              END AS ethnicity_value
 
@@ -1123,7 +1130,7 @@ class SubjectSummary:
                     includes_not_reported = any(r.strip() == "Not Reported" for r in race_list)
                     race_condition = f""",
                     ${race_param} AS race_tokens,
-                    [pt IN SPLIT(COALESCE(p.race, ''), ';') | trim(pt)] AS pr_tokens"""
+                    [pt IN coalesce(p.race, []) | trim(toString(pt))] AS pr_tokens"""
 
                     if includes_not_reported:
                         race_filter_condition = """(reduce(found = false, tok IN race_tokens | found OR tok IN pr_tokens) OR
@@ -1167,20 +1174,27 @@ class SubjectSummary:
                     params[dep_param] = depositions_list
                     deposition_operator = "IN"
 
-        # Map API sex values to database values (M -> Male, F -> Female, U -> Not Reported)
+        # Map API sex values to database values. U means any DB value other than Female/Male.
         if "sex" in filters and filters["sex"]:
             sex_value = filters["sex"]
             sex_mapping = {
                 "M": "Male",
                 "F": "Female",
-                "U": "Not Reported"
             }
             if sex_value in sex_mapping:
                 filters["sex"] = sex_mapping[sex_value]
+            elif sex_value == "U":
+                filters["sex"] = "__SEX_UNKNOWN__"
         # Handle other filters
         field_name_mapping = {"sex": "sex_at_birth"}
         for field, value in filters.items():
             if field.startswith("_"):
+                continue
+
+            if field == "sex" and value == "__SEX_UNKNOWN__":
+                where_conditions.append(
+                    "(p.sex_at_birth IS NULL OR NOT (toString(p.sex_at_birth) IN ['Female', 'Male']))"
+                )
                 continue
 
             # Ethnicity: same p.race predicates as get_subjects_summary (must not be skipped here).
@@ -1192,11 +1206,11 @@ class SubjectSummary:
                 params[hisp_param] = "Hispanic or Latino"
                 if desired_lower == "hispanic or latino":
                     where_conditions.append(
-                        f"(p.race IS NOT NULL AND toString(p.race) CONTAINS ${hisp_param})"
+                        f"(p.race IS NOT NULL AND any(r IN coalesce(p.race, []) WHERE toString(r) CONTAINS ${hisp_param}))"
                     )
                 else:
                     where_conditions.append(
-                        f"(p.race IS NULL OR trim(toString(p.race)) = '' OR NOT toString(p.race) CONTAINS ${hisp_param})"
+                        f"(p.race IS NULL OR size(coalesce(p.race, [])) = 0 OR NOT any(r IN coalesce(p.race, []) WHERE toString(r) CONTAINS ${hisp_param}))"
                     )
                 continue
 

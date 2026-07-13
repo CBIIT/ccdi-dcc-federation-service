@@ -252,8 +252,12 @@ class SampleSpecializedQueries(SampleValidators):
             param_name = f"param_{param_counter}"
             
             if field == "preservation_method":
-                params[param_name] = value
-                where_conditions.append(f"pf.fixation_embedding_method = ${param_name}")
+                reverse_mapped = reverse_map_field_value("preservation_method", value)
+                params[param_name] = reverse_mapped if reverse_mapped else value
+                if isinstance(params[param_name], list):
+                    where_conditions.append(f"pf.fixation_embedding_method IN ${param_name}")
+                else:
+                    where_conditions.append(f"pf.fixation_embedding_method = ${param_name}")
         
         # Build WHERE clause for pathology_file filter
         pf_where_clause = " AND ".join(where_conditions) if where_conditions else "TRUE"
@@ -449,8 +453,12 @@ class SampleSpecializedQueries(SampleValidators):
         if "preservation_method" in filters:
             param_counter += 1
             param_name = f"param_{param_counter}"
-            params[param_name] = filters["preservation_method"]
-            pf_where_conditions.append(f"pf.fixation_embedding_method = ${param_name}")
+            reverse_mapped = reverse_map_field_value("preservation_method", filters["preservation_method"])
+            params[param_name] = reverse_mapped if reverse_mapped else filters["preservation_method"]
+            if isinstance(params[param_name], list):
+                pf_where_conditions.append(f"pf.fixation_embedding_method IN ${param_name}")
+            else:
+                pf_where_conditions.append(f"pf.fixation_embedding_method = ${param_name}")
         
         # Build WHERE conditions for sample node properties (can be applied after reverse query)
         sa_where_conditions = []

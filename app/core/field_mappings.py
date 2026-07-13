@@ -86,6 +86,9 @@ def map_field_value(field_name: str, db_value: Any) -> Optional[str]:
     value_mappings = field_config.get("mappings", {})
     if str_value in value_mappings:
         return value_mappings[str_value]
+
+    if field_name == "sex":
+        return "U"
     
     # No mapping found, return as-is
     return str_value

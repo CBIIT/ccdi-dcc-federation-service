@@ -54,10 +54,10 @@ def test_get_subjects_summary_includes_race_filter_condition_in_cypher():
     assert session.last_cypher is not None
     cypher = session.last_cypher
 
-    # Evidence of tokenization of DB semicolon values
+    # Evidence of tokenization of DB list-valued race (Memgraph 3.11: p.race is a LIST)
     assert "race_tokens" in cypher
     assert "pr_tokens" in cypher
-    assert "SPLIT(COALESCE(p.race, ''), ';')" in cypher
+    assert "[pt IN coalesce(p.race, []) | trim(toString(pt))]" in cypher
 
     # Evidence of actually applying the filter (this was the missing piece)
     assert "WHERE" in cypher

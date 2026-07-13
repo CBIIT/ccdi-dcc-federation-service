@@ -322,7 +322,10 @@ async def list_samples(
         # - all = total (total count from summary/query)
         # - current = actual items returned in this page (may be less than per_page on last page)
         current_count = len(samples)
-        
+
+        # Note: total_count is already floored to >= current at the service layer
+        # (SampleService.get_samples / get_samples_for_diagnosis_endpoint via
+        # floor_total_to_page_size), so both this body and the Link header above agree.
         result = SamplesResponse(
             summary={
                 "counts": {

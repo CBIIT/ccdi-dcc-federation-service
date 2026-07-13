@@ -17,7 +17,8 @@ from app.lib.field_allowlist import FieldAllowlist
 from app.models.dto import Subject, SubjectResponse, CountResponse, SummaryResponse, SummaryCounts
 from app.models.errors import NotFoundError, ValidationError
 from app.repositories.subject import SubjectRepository
-from app.db.memgraph import DatabaseConnectionError
+from app.db.memgraph import DatabaseConnectionError, is_memory_limit_error
+from neo4j.exceptions import ServiceUnavailable, TransientError, SessionExpired
 
 logger = get_logger(__name__)
 
@@ -116,7 +117,40 @@ class SubjectService:
                     is_database_connection_error=True,
                     will_return_empty=True
                 )
-                # Return empty result instead of raising - API will return 404
+                # Return empty result instead of raising - endpoint builds 200 + empty data
+                if return_total:
+                    return ([], 0)
+                return []
+            except (ServiceUnavailable, TransientError, SessionExpired, ConnectionError, TimeoutError) as e:
+                # Operational DB failure. RETRY the genuinely transient ones first — a connection
+                # blip usually recovers, and returning empty without retrying is how a recoverable
+                # failure turns into silent "no data". A memory-limit OOM is deterministic (retrying
+                # just OOMs again), so it skips retry — same policy as run_count_query_with_retry.
+                # NOTE: catch ConnectionError/TimeoutError, NOT bare OSError — OSError would also
+                # swallow FileNotFoundError/PermissionError (e.g. a missing field_mappings.json)
+                # as "no data" instead of surfacing the misconfiguration.
+                if not is_memory_limit_error(e) and attempt < max_retries:
+                    logger.warning(
+                        "Transient database error, retrying",
+                        attempt=attempt + 1,
+                        max_retries=max_retries,
+                        error=str(e),
+                        error_type=type(e).__name__,
+                    )
+                    await asyncio.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+                    continue
+                # Retries exhausted, or a deterministic OOM -> HTTP 200 + empty data, NOT 404
+                # (aligned with file/sample; feedback_db_error_empty_200). Validation errors
+                # (InvalidParametersError/UnsupportedFieldError) fall through to the generic
+                # handler below and still surface as 400.
+                logger.error(
+                    "Operational database error while fetching subjects - returning empty result",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    filters=filters,
+                    is_operational_db_error=True,
+                    aws_cloudwatch_alert=True,
+                )
                 if return_total:
                     return ([], 0)
                 return []

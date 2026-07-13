@@ -389,16 +389,15 @@ class TestSampleServiceEnhanced:
         mock_cache_service.set.assert_called_once()
 
     async def test_get_samples_summary_database_error(self, service, mock_cache_service):
-        """Test get_samples_summary raises NotFoundError on database connection errors."""
-        from app.models.errors import NotFoundError
+        """Operational DB failure -> empty summary (total 0), HTTP 200 not 404
+        (feedback_db_error_empty_200, aligned with file/subject). Previously raised NotFoundError."""
         service.repository.get_samples_summary = AsyncMock(
             side_effect=DatabaseConnectionError("Connection failed")
         )
         mock_cache_service.get = AsyncMock(return_value=None)
-        
-        with pytest.raises(NotFoundError) as exc_info:
-            await service.get_samples_summary({})
-        assert exc_info.value.entity == "Samples"
+
+        result = await service.get_samples_summary({})
+        assert result.counts.total == 0
 
     async def test_get_samples_summary_no_cache(self, service_no_cache):
         """Test get_samples_summary without cache service."""

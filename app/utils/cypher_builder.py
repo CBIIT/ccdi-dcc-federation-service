@@ -543,6 +543,20 @@ def validate_variable_scope(query: str, required_vars: List[str]) -> tuple[bool,
                     # Check if it's in a WITH clause definition (which is OK)
                     if not (stripped.upper().startswith("WITH") and f"AS {var}" in stripped):
                         return False, f"Variable '{var}' used at line {i+1} before being defined: {line.strip()}"
-    
+
     return True, None
+
+
+def anatomic_site_member_predicate(node_var: str, param_ref: str) -> str:
+    """
+    List-native membership test for the 3.11 `anatomic_site` LIST property.
+
+    Replaces the 3.2 `reduce(... SPLIT(toString(...), ';') ...)` idiom. `param_ref`
+    is the full parameter reference including the leading `$`. Caller keeps its
+    surrounding `{node_var}.anatomic_site IS NOT NULL AND (...)` guard.
+    """
+    return (
+        f"any(tok IN coalesce({node_var}.anatomic_site, []) "
+        f"WHERE trim(toString(tok)) = trim(toString({param_ref})))"
+    )
 

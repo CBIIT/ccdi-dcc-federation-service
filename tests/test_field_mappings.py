@@ -43,9 +43,9 @@ def test_expected_field_mapping_entries_exist():
         ("vital_status", "Not Reported", "Not reported"),
         ("disease_phase", "Recurrent Disease", "Relapse"),
         ("library_strategy", "Archer Fusion", "Other"),
-        ("specimen_molecular_analyte_type", "Transcriptomic", "RNA"),
-        ("specimen_molecular_analyte_type", "Genomic", "DNA"),
-        ("specimen_molecular_analyte_type", "Viral RNA", "RNA"),
+        ("specimen_molecular_analyte_type", "DNA", "DNA"),
+        ("specimen_molecular_analyte_type", "Total RNA", "RNA"),
+        ("specimen_molecular_analyte_type", "Protein", "Protein"),
     ],
 )
 def test_map_field_value_matches_config_examples(field_name: str, db_value: str, expected_api: str):
@@ -57,8 +57,8 @@ def test_map_field_value_matches_config_examples(field_name: str, db_value: str,
     [
         ("vital_status", "Not reported", "Not Reported"),
         ("library_strategy", "Other", "Archer Fusion"),
-        ("specimen_molecular_analyte_type", "DNA", "Genomic"),
-        ("specimen_molecular_analyte_type", "RNA", ["Transcriptomic", "Viral RNA"]),
+        ("specimen_molecular_analyte_type", "DNA", ["Circulating cell-free DNA", "Circulating Tumor-Derived DNA", "DNA"]),
+        ("specimen_molecular_analyte_type", "RNA", ["MicroRNA", "Messenger RNA", "Nucleic RNA Sample", "RNA Specimen", "Total RNA"]),
         ("disease_phase", "Relapse", ["Recurrent Disease", "Relapse"]),
     ],
 )

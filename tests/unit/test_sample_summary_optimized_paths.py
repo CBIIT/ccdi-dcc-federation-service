@@ -219,10 +219,10 @@ class TestDiagnosisFiltersOptimized:
         query = mock_session.run.call_args[0][0]
         assert "tumor_grade" in query
 
-    async def test_diagnosis_optimized_tumor_classification_null_mapped(self, repository, mock_session):
-        """'non-malignant' is null-mapped for tumor_classification → early return 0."""
+    async def test_diagnosis_optimized_tumor_classification_database_only(self, repository, mock_session):
+        """DB-only tumor_classification values are invalid API filters."""
         result = await repository._get_samples_summary_diagnosis_filters_optimized(
-            {"tumor_classification": "non-malignant"}
+            {"tumor_classification": "Local"}
         )
         assert result == {"counts": {"total": 0}}
         mock_session.run.assert_not_called()
@@ -319,7 +319,7 @@ class TestReverseQuery:
         assert "sf.library_selection" in query
 
     async def test_reverse_query_specimen_molecular_analyte_type_list(self, repository, mock_session):
-        """'RNA' reverse-maps to ['Transcriptomic','Viral RNA'] → IN literal list."""
+        """'RNA' reverse-maps to a multi-value list → IN literal list."""
         mock_record = {"total_count": 14}
         mock_session.run = AsyncMock(return_value=make_single_result(mock_record))
 
@@ -329,22 +329,22 @@ class TestReverseQuery:
         assert result == {"counts": {"total": 14}}
         query = mock_session.run.call_args[0][0]
         assert "library_source_molecule" in query
-        assert "Transcriptomic" in query
-        assert "Viral RNA" in query
+        assert "Total RNA" in query
+        assert "Messenger RNA" in query
 
     async def test_reverse_query_specimen_molecular_analyte_type_string(self, repository, mock_session):
-        """'DNA' reverse-maps to 'Genomic' (string) → = $param."""
+        """'Protein' reverse-maps to 'Protein' (single string) → = $param."""
         mock_record = {"total_count": 6}
         mock_session.run = AsyncMock(return_value=make_single_result(mock_record))
 
         result = await repository._get_samples_summary_reverse_query(
-            {"specimen_molecular_analyte_type": "DNA"}
+            {"specimen_molecular_analyte_type": "Protein"}
         )
         assert result == {"counts": {"total": 6}}
         query = mock_session.run.call_args[0][0]
         assert "library_source_molecule" in query
         params = mock_session.run.call_args[0][1]
-        assert "Genomic" in params.values()
+        assert "Protein" in params.values()
 
     async def test_reverse_query_null_mapped_library_source(self, repository, mock_session):
         """'Other' is null-mapped for library_source_material → returns 0 without session."""

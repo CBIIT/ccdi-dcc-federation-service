@@ -10,6 +10,7 @@ from app.core.logging import get_logger
 from app.models.errors import UnsupportedFieldError
 from app.core.diagnosis_category import HARMONIZED_DIAGNOSIS_CATEGORIES
 from app.repositories.sample_helpers import SD_CAT_MARKER
+from app.utils.cypher_builder import anatomic_site_member_predicate
 from app.core.field_mappings import (
     map_field_value,
     reverse_map_field_value,
@@ -94,7 +95,7 @@ class SampleCount:
             "tumor_grade": ("d", "tumor_grade"),  # From diagnosis node
             "specimen_molecular_analyte_type": ("sf", "library_source_molecule"),  # From sequencing_file node
             "tissue_type": ("sa", "sample_tumor_status"),  # From sample node (sample_tumor_status field)
-            "tumor_classification": ("d", "tumor_classification"),  # From diagnosis node
+            "tumor_classification": ("sa", "tumor_spatial_extent"),  # From sample node
             "age_at_diagnosis": ("d", "age_at_diagnosis"),  # From diagnosis node
             "age_at_collection": ("sa", "participant_age_at_collection"),  # From sample node
             "tumor_tissue_morphology": ("d", "tumor_tissue_morphology"),  # From diagnosis node
@@ -131,7 +132,7 @@ class SampleCount:
                     param_counter += 1
                     race_param = f"param_{param_counter}"
                     params[race_param] = race_list
-                    base_where_conditions.append(f"""ANY(tok IN ${race_param} WHERE tok IN [pt IN SPLIT(COALESCE(p.race, ''), ';') | trim(pt)])""")
+                    base_where_conditions.append(f"""ANY(tok IN ${race_param} WHERE tok IN [pt IN coalesce(p.race, []) | trim(toString(pt))])""")
         
         # Handle identifiers parameter
         # Support || separator for OR logic (e.g., "SAMP001 || SAMP002")
@@ -197,12 +198,9 @@ class SampleCount:
                     for idx, val in enumerate(anatomical_sites_value):
                         val_param = f"{param_name}_{idx}"
                         params[val_param] = val.strip() if isinstance(val, str) else val
-                        or_conditions.append(f"""(
-                            ${val_param} = sa.anatomic_site OR 
-                            reduce(found = false, tok IN SPLIT(toString(sa.anatomic_site), ';') | 
-                              CASE WHEN trim(tok) = trim(toString(${val_param})) THEN true ELSE found END
-                            ) = true
-                        )""")
+                        or_conditions.append(
+                            f"({anatomic_site_member_predicate('sa', '$' + val_param)})"
+                        )
                     anatomical_sites_condition = f"""sa.anatomic_site IS NOT NULL AND ({' OR '.join(or_conditions)})"""
                 elif isinstance(anatomical_sites_value, str):
                     anatomical_sites_value = anatomical_sites_value.strip()
@@ -212,18 +210,12 @@ class SampleCount:
                     # For list: use IN operator
                     # For string: split by ';', trim each element, and check if search value matches exactly one element
                     anatomical_sites_condition = f"""sa.anatomic_site IS NOT NULL AND (
-                        ${param_name} = sa.anatomic_site OR 
-                        reduce(found = false, tok IN SPLIT(toString(sa.anatomic_site), ';') | 
-                          CASE WHEN trim(tok) = trim(toString(${param_name})) THEN true ELSE found END
-                        ) = true
+                        {anatomic_site_member_predicate('sa', '$' + param_name)}
                     )"""
                 else:
                     params[param_name] = anatomical_sites_value
                     anatomical_sites_condition = f"""sa.anatomic_site IS NOT NULL AND (
-                        ${param_name} = sa.anatomic_site OR 
-                        reduce(found = false, tok IN SPLIT(toString(sa.anatomic_site), ';') | 
-                          CASE WHEN trim(tok) = trim(toString(${param_name})) THEN true ELSE found END
-                        ) = true
+                        {anatomic_site_member_predicate('sa', '$' + param_name)}
                     )"""
                 base_where_conditions.append(anatomical_sites_condition)
                 logger.debug(
@@ -233,8 +225,7 @@ class SampleCount:
                     condition=anatomical_sites_condition
                 )
         
-        # Handle diagnosis field filters (disease_phase, tumor_grade, tumor_classification, age_at_diagnosis, tumor_tissue_morphology)
-        # These need to reference diagnoses node, not participant node
+        # Handle diagnosis-related filters plus tumor_classification on the sample node.
         diagnosis_filter_fields = ["disease_phase", "tumor_grade", "tumor_classification", "age_at_diagnosis", "tumor_tissue_morphology", "diagnosis"]
         for filter_field in list(filters.keys()):
             if filter_field in diagnosis_filter_fields:
@@ -254,12 +245,15 @@ class SampleCount:
                             params[param_name] = reverse_mapped
                             base_where_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.disease_phase IS NOT NULL AND diagnoses.disease_phase = ${param_name}")
                 elif filter_field == "tumor_classification":
-                    if is_null_mapped_value("tumor_classification", value):
+                    if is_null_mapped_value("tumor_classification", value) or is_database_only_value("tumor_classification", value):
                         base_where_conditions.append("false")
                     else:
                         reverse_mapped = reverse_map_field_value("tumor_classification", value)
                         params[param_name] = reverse_mapped
-                        base_where_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_classification IS NOT NULL AND diagnoses.tumor_classification = ${param_name}")
+                        if isinstance(params[param_name], list):
+                            base_where_conditions.append(f"sa.tumor_spatial_extent IS NOT NULL AND sa.tumor_spatial_extent IN ${param_name}")
+                        else:
+                            base_where_conditions.append(f"sa.tumor_spatial_extent IS NOT NULL AND sa.tumor_spatial_extent = ${param_name}")
                 elif filter_field == "tumor_grade":
                     params[param_name] = value
                     base_where_conditions.append(f"diagnoses IS NOT NULL AND diagnoses.tumor_grade IS NOT NULL AND diagnoses.tumor_grade = ${param_name}")
@@ -349,11 +343,7 @@ class SampleCount:
                 WITH DISTINCT sa.sample_id as sample_id, sa.anatomic_site as sites
                 WHERE sites IS NOT NULL
                 WITH sample_id,
-                     CASE 
-                       WHEN valueType(sites) = 'LIST' THEN sites
-                       WHEN toString(sites) CONTAINS ';' THEN SPLIT(toString(sites), ';')
-                       ELSE [toString(sites)]
-                     END AS site_values
+                     coalesce(sites, []) AS site_values
                 UNWIND site_values AS site_value
                 WITH sample_id, study_id, trim(toString(site_value)) AS trimmed_value
                 WHERE trimmed_value IS NOT NULL 
@@ -373,11 +363,8 @@ class SampleCount:
                 {field_where_clause}
                 WITH sa.sample_id as sample_id, st.study_id as study_id, sa.anatomic_site as sites
                 WHERE sites IS NOT NULL
-                WITH sample_id, study_id, 
-                     CASE 
-                       WHEN toString(sites) CONTAINS ';' THEN SPLIT(toString(sites), ';')
-                       ELSE [toString(sites)]
-                     END AS site_values
+                WITH sample_id, study_id,
+                     coalesce(sites, []) AS site_values
                 UNWIND site_values AS site_value
                 WITH sample_id, study_id, trim(toString(site_value)) AS trimmed_value
                 WHERE trimmed_value IS NOT NULL 
@@ -399,11 +386,7 @@ class SampleCount:
                 WITH sa.sample_id as sample_id, st.study_id as study_id, sa.anatomic_site as sites
                 WHERE sites IS NOT NULL
                 WITH sample_id, study_id,
-                     CASE 
-                       WHEN valueType(sites) = 'LIST' THEN sites
-                       WHEN toString(sites) CONTAINS ';' THEN SPLIT(toString(sites), ';')
-                       ELSE [toString(sites)]
-                     END AS site_values
+                     coalesce(sites, []) AS site_values
                 UNWIND site_values AS site_value
                 WITH sample_id, study_id, trim(toString(site_value)) AS trimmed_value
                 WHERE trimmed_value IS NOT NULL 
@@ -423,11 +406,8 @@ class SampleCount:
                 {field_where_clause}
                 WITH sa.sample_id as sample_id, st.study_id as study_id, sa.anatomic_site as sites
                 WHERE sites IS NOT NULL
-                WITH sample_id, study_id, 
-                     CASE 
-                       WHEN toString(sites) CONTAINS ';' THEN SPLIT(toString(sites), ';')
-                       ELSE [toString(sites)]
-                     END AS site_values
+                WITH sample_id, study_id,
+                     coalesce(sites, []) AS site_values
                 UNWIND site_values AS site_value
                 WITH sample_id, study_id, trim(toString(site_value)) AS trimmed_value
                 WHERE trimmed_value IS NOT NULL 
@@ -865,6 +845,16 @@ class SampleCount:
                     # - Missing: samples without valid values (no pathology_file or all invalid)
                     # - Values: samples with valid values, grouped by method
                     invalid_list_filter = build_invalid_value_list_filter(field)
+                    # Map DB values to API values IN Cypher (like specimen_molecular_analyte_type)
+                    # so we can dedup by the API value and not double-count a (sample, study) pair
+                    # whose raw values collapse to one API value (e.g. Cryopreservation variants
+                    # -> 'Cryopreserved'). ELSE passes unmapped values through unchanged.
+                    case_statement = build_case_mapping_statement(field, "val")
+                    # Guard: build_case_mapping_statement returns "" when the field has no
+                    # `mappings` — interpolating that would render malformed Cypher
+                    # ("WITH ...,  as value"). With no mappings the raw value IS the API value,
+                    # so dedup on it directly (equivalent to the pre-mapping behaviour).
+                    value_expr = case_statement if case_statement else "toString(val)"
                     cypher = f"""
                 MATCH (sa:sample)
                 WHERE sa.sample_id IS NOT NULL
@@ -903,9 +893,14 @@ class SampleCount:
                      total, missing,
                      CASE WHEN size(sample_data.valid_values) = 0 THEN [null] ELSE sample_data.valid_values END as values_to_unwind
                 UNWIND values_to_unwind as val
-                WITH sample_id, study_id, toString(val) as value, total, missing
+                WITH sample_id, study_id, val, total, missing
                 WHERE val IS NOT NULL  // Filter out the null placeholder rows
-                // Deduplicate by (sample_id, study_id, value) before counting
+                // Map raw DB value -> API value, then dedup by (sample_id, study_id, api_value).
+                // Deduping on the RAW value double-counted a pair holding two distinct raw values
+                // that collapse to one API value (e.g. two Cryopreservation variants -> 'Cryopreserved');
+                // mapping-then-dedup counts that pair once per API value.
+                WITH sample_id, study_id, {value_expr} as value, total, missing
+                WHERE value IS NOT NULL
                 WITH DISTINCT sample_id, study_id, value, total, missing
                 WITH value, count(*) as count, total, missing
                 RETURN value, count, total, missing
@@ -1094,7 +1089,9 @@ class SampleCount:
                     missing=missing,
                     records_count=len(records)
                 )
-                # Process values (skip total/missing columns)
+                # Process values (skip total/missing columns). Multiple DB values can
+                # map to the same API value, so aggregate after applying mappings.
+                mapped_counts: Dict[str, int] = {}
                 for record in records:
                     value = record.get("value")
                     count = record.get("count", 0)
@@ -1102,27 +1099,32 @@ class SampleCount:
                     if not value or count == 0:
                         continue
                     
-                    # For specimen_molecular_analyte_type, the value is already mapped in Cypher (API value)
-                    # For other fields, apply field mapping (DB value -> API value)
-                    if field == "specimen_molecular_analyte_type":
-                        mapped_value = value  # Already mapped in Cypher CASE statement
+                    # specimen_molecular_analyte_type and preservation_method are mapped to the API
+                    # value IN Cypher and deduped by (sample, study, api_value); raw null-mapped
+                    # values were already excluded in the query. So take the value as-is and do NOT
+                    # re-apply map_field_value / is_null_mapped_value here — preservation's "Unknown"
+                    # API bucket (from Cytospin Slide/Other) collides with its "Unknown" null_mapping
+                    # and would otherwise be wrongly dropped.
+                    if field in ("specimen_molecular_analyte_type", "preservation_method"):
+                        mapped_value = value  # Already mapped + null-filtered in Cypher
                     else:
                         mapped_value = map_field_value(field, value)
-                    
-                    # If mapping returns None, skip this value (it should be counted as missing)
-                    # Also explicitly check if the original value is in null_mappings as a safeguard
+                        # Explicitly filter values in null_mappings (e.g. "Other" for
+                        # library_source_material) — counted as missing, not a bucket.
+                        if is_null_mapped_value(field, value):
+                            continue
+
+                    # If mapping returns None, skip this value (it should be counted as missing).
                     if mapped_value is None:
                         continue
-                    
-                    # Additional safeguard: explicitly filter out null_mapped values
-                    # This ensures values like "Other" for library_source_material are excluded
-                    if is_null_mapped_value(field, value):
-                        continue
-                    
-                    counts.append({
-                        "value": mapped_value,
-                        "count": count
-                    })
+
+                    mapped_counts[mapped_value] = mapped_counts.get(mapped_value, 0) + count
+
+                counts.extend(
+                    {"value": value, "count": count}
+                    for value, count in mapped_counts.items()
+                )
+                counts.sort(key=lambda x: (-x["count"], x["value"]))
                 
                 # Aggregate counts for fields where multiple DB values map to the same API value
                 aggregated_counts = {}
@@ -1345,9 +1347,9 @@ class SampleCount:
                 WITH sa, (st2_list + st1_list) AS combined
                 UNWIND combined AS sid
                 WITH DISTINCT sa.sample_id as sample_id, sid as study_id, sa.anatomic_site as sites
-                WHERE sites IS NULL 
-                   OR toString(sites) = ''
-                   OR toLower(trim(toString(sites))) = 'invalid value'
+                WHERE sites IS NULL
+                   OR size(sites) = 0
+                   OR ALL(site IN sites WHERE site IS NULL OR toString(site) = '' OR toLower(trim(toString(site))) = 'invalid value')
                 RETURN count(*) as missing
                 """.strip()
             else:
@@ -1384,9 +1386,9 @@ class SampleCount:
                 OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
                 WITH DISTINCT sa.sample_id as sample_id, sid as study_id, p, sa.anatomic_site as sites
                 {base_where_clause.replace('WHERE ', 'WHERE ') if base_where_clause else ''}
-                WHERE sites IS NULL 
-                   OR toString(sites) = ''
-                   OR toLower(trim(toString(sites))) = 'invalid value'
+                WHERE sites IS NULL
+                   OR size(sites) = 0
+                   OR ALL(site IN sites WHERE site IS NULL OR toString(site) = '' OR toLower(trim(toString(site))) = 'invalid value')
                 RETURN count(*) as missing
                 """.strip()
             
@@ -2565,16 +2567,16 @@ WITH sa.sample_id AS sample_id, study_id, collect(d) AS diagnoses
 WHERE size([
     d IN diagnoses WHERE d IS NOT NULL
     AND d.diagnosis_category IS NOT NULL
-    AND toString(d.diagnosis_category) <> ''
-    AND any(tok IN split(toString(d.diagnosis_category), ';')
-            WHERE toLower(trim(tok)) IN $harmonized_pvs_lower)
+    AND size(coalesce(d.diagnosis_category, [])) > 0
+    AND any(tok IN coalesce(d.diagnosis_category, [])
+            WHERE toLower(trim(toString(tok))) IN $harmonized_pvs_lower)
 ]) = 0
 RETURN count(*) AS missing
 """.strip()
 
         values_cypher = """
 MATCH (d:diagnosis)-[:of_diagnosis]->(sa:sample)
-WHERE d.diagnosis_category IS NOT NULL AND toString(d.diagnosis_category) <> ''
+WHERE d.diagnosis_category IS NOT NULL AND size(coalesce(d.diagnosis_category, [])) > 0
 WITH sa, d
 OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
 WITH sa, d, collect(DISTINCT st1.study_id) AS st1_ids
@@ -2582,10 +2584,10 @@ OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_gr
 WITH sa, d, st1_ids, collect(DISTINCT st2.study_id) AS st2_ids
 WITH sa.sample_id AS sample_id,
      [sid IN (st1_ids + st2_ids) WHERE sid IS NOT NULL] AS study_ids,
-     [tok IN split(toString(d.diagnosis_category), ';') WHERE trim(tok) <> ''] AS tokens
+     [tok IN coalesce(d.diagnosis_category, []) WHERE trim(toString(tok)) <> ''] AS tokens
 UNWIND study_ids AS study_id
 UNWIND tokens AS raw_token
-WITH sample_id, study_id, trim(raw_token) AS token
+WITH sample_id, study_id, trim(toString(raw_token)) AS token
 WITH sample_id, study_id, token,
      [pv IN $harmonized_pvs WHERE toLower(pv) = toLower(token)][0] AS matched_pv
 WHERE matched_pv IS NOT NULL

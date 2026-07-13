@@ -244,8 +244,7 @@ class Settings(BaseSettings):
     sex_value_mappings: Dict[str, str] = Field(
         default={
             "Male": "M",
-            "Female": "F",
-            "Not Reported": "U"
+            "Female": "F"
         },
         alias="SEX_VALUE_MAPPINGS",
         description="Mapping of database sex values to normalized output values"

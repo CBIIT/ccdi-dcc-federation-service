@@ -234,7 +234,9 @@ async def list_files(
         # Convert files to dict format (exclude gateways)
         files_dicts = [file.model_dump(exclude={'gateways'}) if hasattr(file, 'model_dump') else {k: v for k, v in (file if isinstance(file, dict) else file.__dict__).items() if k != 'gateways'} for file in files]
         
-        # Build response with summary (counts) and data structure
+        # Note: total_count is already floored to >= current at the service layer
+        # (FileService.get_files via floor_total_to_page_size), so this body and the
+        # Link header above agree.
         result = {
             "summary": {
                 "counts": {
@@ -457,7 +459,8 @@ async def count_files_by_field(
         error_detail = ErrorDetail(
             kind=ErrorKind.INVALID_PARAMETERS,
             entity="Files",
-            message=str(e),
+            # Generic message only — never expose exception text/user input in the response (goes to logs).
+            message="Invalid query parameter(s) provided.",
             reason="Invalid parameter provided."
         )
         raise HTTPException(
@@ -471,7 +474,8 @@ async def count_files_by_field(
         error_detail = ErrorDetail(
             kind=ErrorKind.NOT_FOUND,
             entity="Files",
-            message=str(e),
+            # Generic message only — never expose exception text/user input in the response (goes to logs).
+            message="Unable to find data for your request.",
             reason="Query validation or timeout error."
         )
         raise HTTPException(

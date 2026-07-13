@@ -60,6 +60,68 @@ def is_retryable_error(error: Exception) -> bool:
     return False
 
 
+def is_memory_limit_error(error: Exception) -> bool:
+    """
+    True for Memgraph "Memory limit exceeded" errors.
+
+    These are deterministic for a given query — the query needs more memory than the
+    instance allows, so re-running it just OOMs again. Such errors are technically a
+    `TransientError` (so `is_retryable_error` returns True), but retrying them only
+    multiplies latency before the same failure, so callers should NOT retry them.
+    """
+    return "memory limit" in str(error).lower()
+
+
+async def run_count_query_with_retry(
+    session: AsyncSession,
+    cypher: str,
+    params: Optional[Dict[str, Any]] = None,
+    *,
+    max_retries: int = 2,
+    retry_delay: float = 0.1,
+) -> int:
+    """
+    Execute a `RETURN count(*) AS total_count` query on the given session, retrying
+    transient (retryable) failures before giving up.
+
+    A count query is typically a heavy full-scan aggregation; a transient failure
+    (timeout, connection blip) must not be silently reported as 0 while a paginated
+    data query still returns rows. Retries retryable errors with exponential backoff;
+    re-raises the last error after exhausting retries, or immediately on a
+    non-retryable error, so the caller can apply its own fallback.
+
+    Memgraph "Memory limit exceeded" errors are NOT retried: they are deterministic
+    for a given query (retrying just OOMs again after multiplying latency), so they
+    raise immediately.
+
+    Returns the total_count (0 only if the query legitimately yields no count row).
+    """
+    for attempt in range(max_retries + 1):
+        try:
+            result = await session.run(cypher, params or {})
+            records = []
+            async for row in result:
+                records.append(dict(row))
+            await result.consume()
+            return records[0].get("total_count", 0) if records else 0
+        except Exception as exc:
+            if (
+                is_retryable_error(exc)
+                and not is_memory_limit_error(exc)
+                and attempt < max_retries
+            ):
+                logger.warning(
+                    "Count query transient failure, retrying",
+                    attempt=attempt + 1,
+                    max_retries=max_retries,
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
+                await asyncio.sleep(retry_delay * (attempt + 1))
+                continue
+            raise
+
+
 class MemgraphConnection:
     """Memgraph database connection manager."""
     

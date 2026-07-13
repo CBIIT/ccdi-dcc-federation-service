@@ -59,11 +59,10 @@ class SampleHelpers:
             Each value is a dict of filter_key -> filter_value
         """
         # Define filter categories
-        sample_filters = {"tissue_type", "anatomical_sites", "age_at_collection", "identifiers"}
+        sample_filters = {"tissue_type", "anatomical_sites", "age_at_collection", "identifiers", "tumor_classification"}
         study_filters = {"depositions"}
         diagnosis_filters = {
             "disease_phase",
-            "tumor_classification",
             "tumor_grade",
             "tumor_tissue_morphology",
             "age_at_diagnosis",
@@ -271,8 +270,7 @@ class SampleHelpers:
         for db_value, normalized_value in mappings.items():
             case_parts.append(f"WHEN toString(value) = '{db_value}' OR toString(value) = '{normalized_value}' THEN '{normalized_value}'")
         
-        # Default fallback (prefer 'U' for unknown/Not Reported if available)
-        default_value = mappings.get("Not Reported", "U") if "Not Reported" in mappings else list(mappings.values())[0] if mappings else "U"
+        default_value = "U"
         case_parts.append(f"ELSE '{default_value}'")
         
         return f"CASE {' '.join(case_parts)} END"

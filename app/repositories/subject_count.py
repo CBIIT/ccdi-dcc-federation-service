@@ -78,8 +78,7 @@ class SubjectCount:
         for db_value, normalized_value in mappings.items():
             case_parts.append(f"WHEN toString(value) = '{db_value}' OR toString(value) = '{normalized_value}' THEN '{normalized_value}'")
 
-        # Default fallback (prefer 'U' for unknown/Not Reported if available)
-        default_value = mappings.get("Not Reported", "U") if "Not Reported" in mappings else list(mappings.values())[0] if mappings else "U"
+        default_value = "U"
         case_parts.append(f"ELSE '{default_value}'")
 
         return f"""
@@ -534,8 +533,11 @@ WITH p, d, c, st,
         counts = []
         for record in values_records:
             value = record.get("value")
-            # Apply field mapping if needed (e.g., "Not Reported" -> "Not reported" for vital_status)
-            if value is not None:
+            # Sex is already normalized in Cypher to API values (F/M/U). Mapping it
+            # again would treat F/M as unknown DB values and collapse them to U.
+            if field == "sex":
+                mapped_value = value
+            elif value is not None:
                 mapped_value = map_field_value(field, value)
             else:
                 mapped_value = value
@@ -615,9 +617,7 @@ WITH p, d, c, st,
              // Process race values: split by semicolon, filter Hispanic, validate
              CASE
                  WHEN race_raw IS NULL THEN []
-                 WHEN toString(race_raw) = '' OR trim(toString(race_raw)) = '' THEN []
-                 WHEN toString(race_raw) CONTAINS ';' THEN [r IN SPLIT(toString(race_raw), ';') | trim(r)]
-                 ELSE [trim(toString(race_raw))]
+                 ELSE [r IN coalesce(race_raw, []) | trim(toString(r))]
              END as race_parts
         WITH participant_id, study_id, race_raw, race_parts,
              any(r IN race_parts WHERE r = 'Hispanic or Latino') as had_hispanic,
@@ -647,15 +647,13 @@ WITH p, d, c, st,
         values_cypher = f"""
         MATCH (p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
         WHERE p.race IS NOT NULL
-          AND toString(p.race) <> ''
-          AND trim(toString(p.race)) <> ''
+          AND size(coalesce(p.race, [])) > 0
         WITH DISTINCT p.participant_id AS participant_id, st.study_id AS study_id, p.race as race_raw
         WITH participant_id, study_id, race_raw,
              // Data is always string format with semicolon separator
              CASE
-                 WHEN toString(race_raw) CONTAINS ';' THEN [r IN SPLIT(toString(race_raw), ';') | trim(r)]
-                 WHEN race_raw IS NOT NULL THEN [trim(toString(race_raw))]
-                 ELSE []
+                 WHEN race_raw IS NULL THEN []
+                 ELSE [r IN coalesce(race_raw, []) | trim(toString(r))]
              END as race_parts
         WITH participant_id, study_id, race_raw, race_parts,
              // Check if original race contained "Hispanic or Latino"
@@ -783,7 +781,7 @@ WITH p, d, c, st,
         Count distinct participants by ethnicity (derived from race field).
 
         Ethnicity is determined from race:
-        - If race contains 'Hispanic or Latino' → 'Hispanic or Latino'
+        - If race includes 'Hispanic or Latino' → 'Hispanic or Latino'
         - Otherwise → 'Not reported'
 
         Args:
@@ -909,10 +907,10 @@ WITH p, d, c, st,
         OPTIONAL MATCH (p)-[:of_participant]->(c:consent_group)-[:of_consent_group]->(st:study)
         WITH p, s, d, c, st{identifiers_condition}
         {combined_where_values}
-        WITH p.participant_id AS participant_id, st.study_id AS study_id, toString(p.race) as race
+        WITH p.participant_id AS participant_id, st.study_id AS study_id, p.race as race
         WITH participant_id, study_id, race,
              CASE
-               WHEN race CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
+               WHEN any(r IN coalesce(race, []) WHERE toString(r) = 'Hispanic or Latino') THEN 'Hispanic or Latino'
                ELSE 'Not reported'
              END as ethnicity_value
         WITH DISTINCT participant_id, study_id, ethnicity_value
@@ -927,7 +925,7 @@ WITH p, d, c, st,
         WITH p.participant_id AS participant_id, st.study_id AS study_id, p.race as race_raw
         WITH participant_id, study_id, race_raw,
              CASE
-               WHEN toString(race_raw) CONTAINS 'Hispanic or Latino' THEN 'Hispanic or Latino'
+               WHEN any(r IN coalesce(race_raw, []) WHERE toString(r) = 'Hispanic or Latino') THEN 'Hispanic or Latino'
                ELSE 'Not reported'
              END as ethnicity_value
         WITH DISTINCT participant_id, study_id, ethnicity_value
@@ -1280,8 +1278,8 @@ WITH p.participant_id AS participant_id, st.study_id AS study_id, collect(d) AS 
 WHERE size([
     d IN diagnoses WHERE d IS NOT NULL
     AND d.diagnosis_category IS NOT NULL
-    AND any(tok IN split(toString(d.diagnosis_category), ';')
-            WHERE toLower(trim(tok)) IN $harmonized_pvs_lower)
+    AND any(tok IN coalesce(d.diagnosis_category, [])
+            WHERE toLower(trim(toString(tok))) IN $harmonized_pvs_lower)
 ]) = 0
 RETURN count(*) AS missing
 """.strip()
@@ -1291,9 +1289,9 @@ MATCH (d:diagnosis)-[:of_diagnosis]->(p:participant)
 WHERE d.diagnosis_category IS NOT NULL
 MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
 WITH p.participant_id AS participant_id, st.study_id AS study_id,
-     [tok IN split(toString(d.diagnosis_category), ';') WHERE trim(tok) <> ''] AS tokens
+     [tok IN coalesce(d.diagnosis_category, []) WHERE trim(toString(tok)) <> ''] AS tokens
 UNWIND tokens AS raw_token
-WITH participant_id, study_id, trim(raw_token) AS token
+WITH participant_id, study_id, trim(toString(raw_token)) AS token
 WITH participant_id, study_id, token,
      [pv IN $harmonized_pvs WHERE toLower(pv) = toLower(token)][0] AS matched_pv
 WHERE matched_pv IS NOT NULL

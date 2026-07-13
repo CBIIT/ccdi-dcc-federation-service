@@ -36,13 +36,15 @@ def test_diagnosis_search_predicate_preserves_comment_branch_structure():
     assert "toLower(toString(d.diagnosis_comment)) CONTAINS $diagnosis_search_term_lower" in result
 
 
-def test_diagnosis_category_exact_token_predicate_already_safe():
-    """Confirm this predicate already uses coalesce — should not be touched."""
+def test_diagnosis_category_exact_token_predicate_is_list_native():
+    """3.11: predicate iterates the LIST via coalesce(..., []), no toString on the whole list."""
     result = diagnosis_category_exact_token_predicate("d")
-    assert "coalesce(d.diagnosis_category, '')" in result
+    assert "coalesce(d.diagnosis_category, [])" in result
+    assert "split(toString" not in result
 
 
-def test_diagnosis_category_contains_predicate_already_safe():
-    """Confirm this predicate already uses coalesce — should not be touched."""
+def test_diagnosis_category_contains_predicate_is_list_native():
+    """3.11: element-wise substring over the LIST via coalesce(..., [])."""
     result = diagnosis_category_contains_predicate("d")
-    assert "coalesce(d.diagnosis_category, '')" in result
+    assert "coalesce(d.diagnosis_category, [])" in result
+    assert "toString(coalesce(d.diagnosis_category, ''))" not in result

@@ -435,8 +435,12 @@ class TestFileRepository:
             assert "of_consent_group" in query or "of_participant" in query
             assert "of_sequencing_file" in query
             
-            # Verify early pagination: DISTINCT sf.id before SKIP/LIMIT
-            assert "WITH DISTINCT sf.id" in query or "WITH DISTINCT sf.id AS file_id" in query
+            # Verify early pagination: unique file guid (grouping) before SKIP/LIMIT,
+            # not the (guid, study_id) pair which would duplicate shared files.
+            assert "WITH file_guid, min(sid) AS study_id" in query
+            # Both study paths so the list matches count_for_pagination Pattern 2b (counts both).
+            assert "of_cell_line" in query
+            assert "st.study_id AS study_id" not in query
             assert "ORDER BY" in query
             assert "SKIP" in query
             assert "LIMIT" in query

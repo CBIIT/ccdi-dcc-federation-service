@@ -92,9 +92,9 @@ class TestCaseMappingStatement:
 
     @patch("app.core.field_mappings._find_field_config")
     def test_build_case_mapping_statement_with_mappings(self, mock_find):
-        mock_find.return_value = ("sample", {"mappings": {"Transcriptomic": "RNA"}})
+        mock_find.return_value = ("sample", {"mappings": {"Total RNA": "RNA"}})
         result = build_case_mapping_statement("specimen_molecular_analyte_type", "value")
-        assert "WHEN value = 'Transcriptomic' THEN 'RNA'" in result
+        assert "WHEN value = 'Total RNA' THEN 'RNA'" in result
         assert "ELSE value" in result
 
     @patch("app.core.field_mappings._find_field_config")

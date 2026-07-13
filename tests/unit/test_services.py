@@ -142,9 +142,55 @@ class TestSubjectService:
         service.repository.get_subjects = AsyncMock(
             side_effect=ValueError("Invalid filter")
         )
-        
+
         with pytest.raises(ValueError):
             await service.get_subjects(filters={}, offset=0, limit=20)
+
+    async def test_get_subjects_operational_error_returns_empty(self, service):
+        """Memory-limit OOM -> 200 + empty data, not 404 (feedback_db_error_empty_200), and NOT
+        retried: an OOM is deterministic, so re-running the same query just OOMs again."""
+        from neo4j.exceptions import TransientError
+        service.repository.get_subjects = AsyncMock(
+            side_effect=TransientError("Memgraph.TransientError: Memory limit exceeded")
+        )
+
+        result = await service.get_subjects(filters={}, offset=0, limit=20, return_total=True)
+        assert result == ([], 0)
+        assert service.repository.get_subjects.call_count == 1  # deterministic -> no retry
+
+    async def test_get_subjects_transient_error_is_retried_and_recovers(self, service):
+        """Regression: a genuinely transient failure (ServiceUnavailable) must be RETRIED, not
+        turned into empty data on the first failure. Returning empty without retrying is how a
+        recoverable connection blip becomes a silent 'no data' result."""
+        from neo4j.exceptions import ServiceUnavailable
+        service.repository.get_subjects = AsyncMock(
+            side_effect=[
+                ServiceUnavailable("Failed to read from defunct connection"),
+                ([Mock(spec=Subject)], 7),
+            ]
+        )
+
+        with patch('asyncio.sleep', new_callable=AsyncMock):
+            subjects, total = await service.get_subjects(
+                filters={}, offset=0, limit=20, return_total=True
+            )
+
+        assert service.repository.get_subjects.call_count == 2  # retried
+        assert total == 7                                       # and recovered with real data
+        assert len(subjects) == 1
+
+    async def test_get_subjects_transient_error_empty_only_after_retries_exhausted(self, service):
+        """Only once retries are exhausted does a transient failure fall back to 200 + empty."""
+        from neo4j.exceptions import ServiceUnavailable
+        service.repository.get_subjects = AsyncMock(
+            side_effect=ServiceUnavailable("Failed to read from defunct connection")
+        )
+
+        with patch('asyncio.sleep', new_callable=AsyncMock):
+            result = await service.get_subjects(filters={}, offset=0, limit=20, return_total=True)
+
+        assert result == ([], 0)
+        assert service.repository.get_subjects.call_count == 3  # initial + 2 retries
 
     async def test_get_subject_by_identifier_success(self, service):
         """Test get_subject_by_identifier with successful lookup."""
@@ -526,15 +572,24 @@ class TestSampleService:
         assert call_args[0][2] == 100  # limit parameter
 
     async def test_get_samples_database_connection_error(self, service):
-        """Test get_samples raises NotFoundError on database connection errors."""
-        from app.models.errors import NotFoundError
+        """Operational DB failure -> 200 + empty data, not 404 (feedback_db_error_empty_200,
+        aligned with file/subject). Previously sample deliberately raised NotFoundError."""
         service.repository.get_samples = AsyncMock(
             side_effect=DatabaseConnectionError("Connection failed")
         )
-        
-        with pytest.raises(NotFoundError) as exc_info:
-            await service.get_samples(filters={}, offset=0, limit=20)
-        assert exc_info.value.entity == "Samples"
+
+        result = await service.get_samples(filters={}, offset=0, limit=20)
+        assert result == []
+
+    async def test_get_samples_operational_error_returns_empty_with_total(self, service):
+        """With return_total=True an operational failure returns ([], 0)."""
+        from neo4j.exceptions import TransientError
+        service.repository.get_samples = AsyncMock(
+            side_effect=TransientError("Memgraph.TransientError: Memory limit exceeded")
+        )
+
+        result = await service.get_samples(filters={}, offset=0, limit=20, return_total=True)
+        assert result == ([], 0)
 
     async def test_get_sample_by_identifier_success(self, service):
         """Test get_sample_by_identifier with successful lookup."""

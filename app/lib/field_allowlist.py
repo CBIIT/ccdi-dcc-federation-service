@@ -195,21 +195,44 @@ class FieldAllowlist:
     
     def load_from_database(self) -> None:
         """
-        Load allowed fields from the metadata repository.
-        
-        This method should be called during application startup to populate
-        the allowlist with fields discovered from the database.
+        Load allowed unharmonized fields from the metadata field config.
+
+        Source of truth: app/config_data/metadata_fields.json. A field is an
+        allowed unharmonized filter for an endpoint iff it appears there with a
+        path of the form "unharmonized.<name>". Endpoints that declare none
+        (currently `file`) default-deny all unharmonized filters.
         """
-        # TODO: Implement database loading
-        # This would query the metadata repository to discover available fields
-        # For now, we'll use the common patterns
-        
-        for entity_type in EntityType:
-            for field in COMMON_UNHARMONIZED_PATTERNS:
-                self.add_unharmonized_field(entity_type, field)
-        
+        import json
+        from pathlib import Path
+
+        config_path = Path(__file__).resolve().parents[1] / "config_data" / "metadata_fields.json"
+        # metadata_fields.json endpoint key -> EntityType
+        key_to_entity = {
+            "subjects": EntityType.SUBJECT,
+            "samples": EntityType.SAMPLE,
+            "file": EntityType.FILE,
+        }
+        try:
+            with config_path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            for endpoint_key, entity_type in key_to_entity.items():
+                for field in data.get(endpoint_key, {}).get("fields", []):
+                    path = field.get("path", "")
+                    if path.startswith("unharmonized."):
+                        name = path.split("unharmonized.", 1)[1]
+                        if name:
+                            self.add_unharmonized_field(entity_type, name)
+        except Exception as exc:
+            # Fail closed: any load/parse/structure error -> no unharmonized fields
+            # allowed anywhere (default-deny), rather than falling back to the
+            # permissive COMMON_UNHARMONIZED_PATTERNS defaults.
+            logger.warning(f"Could not load metadata field config; unharmonized filters default-denied: {exc}")
+            self._unharmonized_fields = {entity_type: set() for entity_type in EntityType}
+            self._loaded = True
+            return
+
         self._loaded = True
-        logger.info("Loaded field allowlist from database")
+        logger.info("Loaded field allowlist from metadata field config")
     
     def validate_count_field(self, entity_type: EntityType, field: str) -> None:
         """

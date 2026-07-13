@@ -211,3 +211,33 @@ class TestFileServiceMerge:
             ):
                 with pytest.raises(ValidationError, match="timeout"):
                     await svc.count_files_by_field("type", {})
+
+    @pytest.mark.asyncio
+    async def test_get_files_operational_db_error_returns_empty_not_404(self):
+        """Operational DB failure on the count query -> (list, 0), so the endpoint returns
+        200 + empty data, not 404 (feedback_db_error_empty_200)."""
+        from neo4j.exceptions import TransientError
+
+        svc = make_service()
+        repo = AsyncMock()
+        repo.count_for_pagination = AsyncMock(
+            side_effect=TransientError("Memgraph.TransientError: Memory limit exceeded")
+        )
+        with patch.object(svc, "_repos", [repo]):
+            files, total = await svc.get_files({}, offset=0, limit=10)
+        assert files == []
+        assert total == 0
+
+    @pytest.mark.asyncio
+    async def test_get_files_validation_error_still_propagates(self):
+        """Validation errors (bad filter) must NOT be swallowed as empty — they surface as 400."""
+        from app.models.errors import InvalidParametersError
+
+        svc = make_service()
+        repo = AsyncMock()
+        repo.count_for_pagination = AsyncMock(
+            side_effect=InvalidParametersError(["metadata.unharmonized.bad;field"])
+        )
+        with patch.object(svc, "_repos", [repo]):
+            with pytest.raises(InvalidParametersError):
+                await svc.get_files({"metadata.unharmonized.bad;field": "x"}, offset=0, limit=10)

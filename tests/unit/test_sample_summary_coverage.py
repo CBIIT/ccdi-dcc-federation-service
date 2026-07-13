@@ -295,7 +295,7 @@ class TestGetSamplesSummaryCoverage:
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
         
-        with patch('app.core.field_mappings.reverse_map_field_value', return_value=["Transcriptomic", "Viral RNA"]):
+        with patch('app.core.field_mappings.reverse_map_field_value', return_value=["MicroRNA", "Total RNA"]):
             with patch('app.core.field_mappings.is_database_only_value', return_value=False):
                 with patch('app.core.field_mappings.is_null_mapped_value', return_value=False):
                     result = await repository.get_samples_summary({"specimen_molecular_analyte_type": "RNA"})
@@ -791,7 +791,7 @@ class TestGetSamplesSummaryCoverage:
         
         def mock_reverse_map(field, value):
             if field == "specimen_molecular_analyte_type" and value == "RNA":
-                return ["Transcriptomic", "Viral RNA"]
+                return ["MicroRNA", "Total RNA"]
             elif field == "library_source_material" and value == "DNA":
                 return "DNA"  # Return valid mapped value
             return real_reverse_map(field, value)
@@ -943,8 +943,10 @@ class TestGetSamplesSummaryReverseQueryCoverage:
     async def test_get_samples_summary_reverse_query_specimen_molecular_analyte_type_database_only(self, repository, mock_session):
         """Test _get_samples_summary_reverse_query with database-only specimen_molecular_analyte_type."""
         with patch('app.core.field_mappings.is_database_only_value', return_value=True):
-            result = await repository._get_samples_summary_reverse_query({"specimen_molecular_analyte_type": "Transcriptomic"})
-            
+            # "Total RNA" is a database-only value under the current config (a DB value that
+            # maps to API "RNA" but is not itself an API value in reverse_mappings).
+            result = await repository._get_samples_summary_reverse_query({"specimen_molecular_analyte_type": "Total RNA"})
+
             assert result == {"counts": {"total": 0}}
             # Should return early without calling session.run
             mock_session.run.assert_not_called()
@@ -968,7 +970,7 @@ class TestGetSamplesSummaryReverseQueryCoverage:
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
         
-        with patch('app.core.field_mappings.reverse_map_field_value', return_value=["Transcriptomic", "Viral RNA"]):
+        with patch('app.core.field_mappings.reverse_map_field_value', return_value=["MicroRNA", "Total RNA"]):
             with patch('app.core.field_mappings.is_database_only_value', return_value=False):
                 with patch('app.core.field_mappings.is_null_mapped_value', return_value=False):
                     result = await repository._get_samples_summary_reverse_query({"specimen_molecular_analyte_type": "RNA"})

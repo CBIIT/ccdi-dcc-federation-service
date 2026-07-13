@@ -62,6 +62,8 @@ class TestBuildCountQuery:
 
     @pytest.mark.asyncio
     async def test_file_type_only_uses_multihop_count(self):
+        # Pattern 2 (file filters only) keeps the collect form — bounded by the file
+        # filter, it does not OOM and is faster than EXISTS on selective filters.
         repo, _ = make_repo()
         cypher, params = await repo._build_count_query({"file_type": "BAM"})
         assert "toLower(sf.file_type)" in cypher
@@ -71,6 +73,7 @@ class TestBuildCountQuery:
 
     @pytest.mark.asyncio
     async def test_file_type_and_depositions_pattern_one(self):
+        # Pattern 1 (file filters + depositions) keeps the collect form (see Pattern 2).
         repo, _ = make_repo()
         cypher, params = await repo._build_count_query(
             {"file_type": "FASTQ", "depositions": "phs001"}
@@ -92,15 +95,20 @@ class TestBuildCountQuery:
         session.run.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_no_filters_simple_count_pattern(self):
-        # No-filter summary uses two OPTIONAL MATCHes + IS NOT NULL filter — no collect.
+    async def test_no_filters_streaming_exists_count(self):
+        # Pattern 3 (hot /file path): stream every sf and count those with any study
+        # path via EXISTS. The prior collect + count(DISTINCT sf) form built a hash set
+        # of all ~1.5M matched sf nodes and OOMed the snapshot (>7.65 GiB); EXISTS
+        # short-circuits per file and needs no DISTINCT.
         repo, _ = make_repo()
         cypher, _ = await repo._build_count_query({})
         assert f"MATCH (sf:{repo.config.node_label})" in cypher
-        assert "WHERE" in cypher
+        assert cypher.count("EXISTS {") == 2
         assert "participant" in cypher
         assert "cell_line" in cypher
-        assert "RETURN count(DISTINCT sf)" in cypher
+        assert "RETURN count(sf)" in cypher
+        assert "count(DISTINCT sf)" not in cypher
+        assert "collect(" not in cypher
 
     @pytest.mark.asyncio
     async def test_single_md5sum_or_checksum_value(self):
@@ -155,7 +163,14 @@ class TestGetFilesCypherPatterns:
         cypher = session.run.call_args[0][0]
         params = session.run.call_args[0][1]
         assert "MATCH (st:study)" in cypher
-        assert "WITH DISTINCT sf.id" in cypher
+        # Both study paths, so the list matches count_for_pagination Pattern 2b (counts both).
+        # Regression: dropping cell_line here made the list under-return vs the count.
+        assert "of_consent_group" in cypher   # participant/consent path
+        assert "of_cell_line" in cypher        # cell_line fallback path
+        # Paginate on the unique file guid (grouping), carrying one representative study_id.
+        assert "WITH file_guid, min(sid) AS study_id" in cypher
+        # Regression: must NOT paginate on the (guid, study_id) pair (duplicates shared files).
+        assert "st.study_id AS study_id" not in cypher
         assert "of_sequencing_file" in cypher
         assert params["offset"] == 5
         assert params["limit"] == 10
@@ -194,6 +209,47 @@ class TestGetFilesCypherPatterns:
         assert "toLower(sf.file_type)" in cypher
         assert "MATCH (sf:sequencing_file)" in cypher
         assert "MATCH (st:study)" not in cypher.split("OPTIONAL")[0]
+
+    @pytest.mark.asyncio
+    async def test_file_filter_only_enforces_study_path_before_pagination(self):
+        """File-filter-only branch must exclude files with no study path (matches count query).
+
+        Regression: the branch dropped the study-existence invariant, leaking ~10% orphan
+        files (null study) while _build_count_query still excluded them -> count/list divergence.
+        Restored via an EXISTS semi-join over both study paths, applied before pagination.
+        """
+        repo, session = make_repo()
+        session.run = AsyncMock(return_value=_empty_async_result())
+        await repo.get_files({"file_type": "FASTQ"}, offset=0, limit=10)
+        cypher = session.run.call_args[0][0]
+        # Study-path guard present via EXISTS subquery over both traversal paths.
+        assert "EXISTS {" in cypher
+        assert "of_consent_group" in cypher  # participant/consent path
+        assert "of_cell_line" in cypher       # cell_line fallback path
+        # Guard is applied before the scalar-guid pagination.
+        assert cypher.index("EXISTS {") < cypher.index("WITH DISTINCT sf.guid")
+
+    @pytest.mark.asyncio
+    async def test_no_filters_enforces_study_path_before_pagination(self):
+        """No-filter branch must paginate only study-reachable files (matches count query).
+
+        Regression: the no-filter branch paginated every sequencing_file with a guid but
+        _build_count_query Pattern 3 counts only study-reachable files -> count/list
+        divergence: `all` and the Link `last` under-reported by ~187K files, which were
+        still returned with an empty namespace. Fixed by applying the same EXISTS study
+        guard (both traversal paths) before the scalar-guid pagination.
+        """
+        repo, session = make_repo()
+        session.run = AsyncMock(return_value=_empty_async_result())
+        await repo.get_files({}, offset=0, limit=10)
+        cypher = session.run.call_args[0][0]
+        # Both study-path EXISTS subqueries present on the no-filter (file_page) scan.
+        assert cypher.count("EXISTS {") == 2
+        assert "of_consent_group" in cypher  # participant/consent path
+        assert "of_cell_line" in cypher       # cell_line fallback path
+        # Guard applied before the scalar-guid pagination (file_page is the no-filter var).
+        assert cypher.index("EXISTS {") < cypher.index("WITH file_page.guid")
+        assert cypher.index("EXISTS {") < cypher.index("SKIP $offset")
 
     @pytest.mark.asyncio
     async def test_md5sum_filter_in_get_files(self):
@@ -256,7 +312,7 @@ class TestGetFileByIdentifierCypher:
         async def one_row():
             yield {
                 "sf": {
-                    "id": "f1",
+                    "guid": "f1",
                     "file_type": "BAM",
                     "file_name": "f1.bam",
                     "md5sum": "abc",
@@ -524,7 +580,7 @@ class TestGetFilesRetry:
     def _file_row(self):
         return {
             "sf": {
-                "id": "f1.bam",
+                "guid": "f1.bam",
                 "file_type": "BAM",
                 "file_name": "f1.bam",
                 "md5sum": "abc",

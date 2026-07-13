@@ -16,7 +16,9 @@ from app.lib.field_allowlist import FieldAllowlist
 from app.models.dto import Sample, CountResponse, SummaryResponse
 from app.models.errors import NotFoundError, ValidationError
 from app.repositories.sample import SampleRepository
+from app.core.pagination import floor_total_to_page_size
 from app.db.memgraph import DatabaseConnectionError
+from neo4j.exceptions import ServiceUnavailable, TransientError, SessionExpired
 
 logger = get_logger(__name__)
 
@@ -81,19 +83,22 @@ class SampleService:
             result = await self.repository.get_samples(
                 filters, offset, limit, base_url=base_url, return_total=return_total
             )
-        except DatabaseConnectionError as e:
-            # Database connection error - log and raise so API returns 404 (No data found), not empty data
+        except (DatabaseConnectionError, ServiceUnavailable, TransientError, SessionExpired, ConnectionError, TimeoutError) as e:
+            # Operational DB failure (connection lost, memory-limit OOM, timeout, transient) ->
+            # HTTP 200 + empty data, NOT 404 (aligned with file/subject; feedback_db_error_empty_200).
+            # Validation errors (InvalidParametersError/UnsupportedFieldError) are NOT caught here
+            # and still surface as 400; genuine query bugs (ClientError) are not caught either.
             logger.error(
-                "Database connection error while fetching samples - raising NotFoundError",
+                "Operational database error while fetching samples - returning empty result",
                 error=str(e),
                 error_type=type(e).__name__,
                 filters=filters,
                 offset=offset,
                 limit=limit,
-                is_database_connection_error=True,
-                exc_info=True
+                is_operational_db_error=True,
+                aws_cloudwatch_alert=True,
             )
-            raise NotFoundError("Samples")
+            return ([], 0) if return_total else []
         
         if return_total and isinstance(result, tuple):
             samples, total_count = result
@@ -104,7 +109,7 @@ class SampleService:
                 offset=offset,
                 limit=limit
             )
-            return (samples, total_count)
+            return (samples, floor_total_to_page_size(total_count, len(samples)))
         if return_total:
             # Repository did not return total (e.g. sequencing_file-only path); fall back to summary
             summary_result = await self.get_samples_summary(filters)
@@ -117,7 +122,7 @@ class SampleService:
                 offset=offset,
                 limit=limit
             )
-            return (samples, total_count)
+            return (samples, floor_total_to_page_size(total_count, len(samples)))
         samples = result
         logger.info(
             "Retrieved samples",
@@ -261,17 +266,19 @@ class SampleService:
         # Get summary from repository
         try:
             summary_data = await self.repository.get_samples_summary(filters)
-        except DatabaseConnectionError as e:
-            # Database connection error - log and raise so API returns 404 (No data found), not empty data
+        except (DatabaseConnectionError, ServiceUnavailable, TransientError, SessionExpired, ConnectionError, TimeoutError) as e:
+            # Operational DB failure -> empty summary (total 0) so the endpoint returns HTTP 200,
+            # NOT 404 (aligned with file/subject; feedback_db_error_empty_200).
+            from app.models.dto import SummaryCounts
             logger.error(
-                "Database connection error while fetching samples summary - raising NotFoundError",
+                "Operational database error while fetching samples summary - returning empty summary",
                 error=str(e),
                 error_type=type(e).__name__,
                 filters=filters,
-                is_database_connection_error=True,
-                exc_info=True
+                is_operational_db_error=True,
+                aws_cloudwatch_alert=True,
             )
-            raise NotFoundError("Samples")
+            return SummaryResponse(counts=SummaryCounts(total=0))
         
         # Transform repository format to response format
         from app.models.dto import SummaryCounts
@@ -326,7 +333,7 @@ class SampleService:
                 limit=limit,
                 base_url=base_url,
             )
-            return samples, total_count
+            return samples, floor_total_to_page_size(total_count, len(samples))
         except DatabaseConnectionError as e:
             logger.error(
                 "Database connection error while fetching diagnosis samples",

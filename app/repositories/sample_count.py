@@ -27,6 +27,53 @@ _HARMONIZED_PVS_SORTED: list[str] = sorted(HARMONIZED_DIAGNOSIS_CATEGORIES)
 _HARMONIZED_PVS_LOWER: list[str] = [pv.lower() for pv in _HARMONIZED_PVS_SORTED]
 
 
+def check_count_invariant(total: int, values_sum: int, missing: int) -> list[str]:
+    """Return the count-invariant violations for a field; empty list means the counts are sound.
+
+    Counts are per ``(sample_id, study_id)`` pair, and every pair is either missing or
+    carries at least one value. That yields three checks which hold whatever the field's
+    cardinality:
+
+    * ``0 <= missing <= total``
+    * ``values_sum >= total - missing`` -- each non-missing pair contributes >= 1 value
+    * ``values_sum == 0`` exactly when every pair is missing
+
+    ``total == values_sum + missing`` is deliberately NOT asserted. It is false *by design*
+    for any field where one pair can hold several values -- a list property such as
+    ``anatomical_sites``, or a 1:N related node (a sample has many sequencing_files,
+    pathology_files and diagnoses). Gating the check on a hand-maintained list of
+    single- vs multi-value fields would go stale as the data model changes; the three
+    checks above need no such list.
+
+    Args:
+        total: Count of (sample_id, study_id) pairs.
+        values_sum: Sum of the per-value counts.
+        missing: Count of pairs carrying no valid value.
+
+    Returns:
+        Human-readable descriptions of each violation, empty if the counts are consistent.
+    """
+    violations: list[str] = []
+
+    if missing < 0 or missing > total:
+        violations.append(f"missing ({missing}) outside [0, total ({total})]")
+
+    non_missing = total - missing
+    if values_sum < non_missing:
+        violations.append(
+            f"values_sum ({values_sum}) < non-missing pairs ({non_missing}): "
+            "every non-missing pair must contribute at least one value"
+        )
+
+    if (values_sum == 0) != (missing == total):
+        violations.append(
+            f"values_sum ({values_sum}) and missing ({missing}) disagree on whether "
+            f"every pair is missing (total {total})"
+        )
+
+    return violations
+
+
 class SampleCount:
     """Mixin class providing count methods for SampleRepository."""
 
@@ -1160,60 +1207,24 @@ class SampleCount:
                 missing = missing_records[0].get("missing", 0) if missing_records else 0
             # else: missing already extracted from combined query
 
-        # Verify: total should equal sum of values + missing
-        # IMPORTANT: Skip adjustment for combined queries (library_source_material, library_strategy, preservation_method)
-        # because missing count comes directly from the database query and is correct
-        # IMPORTANT: For fields where samples can have multiple values (e.g., library_strategy),
-        # the formula Total = Values sum + Missing doesn't hold because:
-        # - Total = unique (sample_id, study_id) pairs
-        # - Values sum = sum of all (sample_id, study_id, value) combinations
-        # - Missing = unique (sample_id, study_id) pairs with no valid values
-        # So we keep the original missing count from the database query
-        if not is_combined_query:
-            values_sum = sum(item["count"] for item in counts)
-            if total != values_sum + missing:
-                # Fields where samples can have multiple values per (sample_id, study_id) pair
-                multi_value_fields = {"library_strategy", "library_selection_method", "anatomical_sites"}
-                if field in multi_value_fields:
-                    # For multi-value fields, Total can be < Values sum + Missing
-                    # This is expected when samples have multiple values
-                    logger.debug(
-                        "Total count relationship for multi-value field",
-                        field=field,
-                        total=total,
-                        values_sum=values_sum,
-                        missing=missing,
-                        difference=total - (values_sum + missing),
-                        note="For multi-value fields, Total = unique samples, Values sum = sum of (sample, value) combinations"
-                    )
-                else:
-                    # For single-value fields, log warning but don't adjust
-                    logger.warning(
-                        "Total count mismatch for field",
-                        field=field,
-                        total=total,
-                        values_sum=values_sum,
-                        missing=missing,
-                        difference=total - (values_sum + missing),
-                        values_count=len(counts),
-                        note="Keeping original missing count from database query"
-                    )
-                # Do NOT adjust missing count - keep the original from database query
-                # The missing count is correct and should not be modified
-        else:
-            # For combined queries, just log the verification without adjusting
-            values_sum = sum(item["count"] for item in counts)
-            if total != values_sum + missing:
-                logger.warning(
-                    "Total count mismatch for combined query (should not happen)",
-                    field=field,
-                    total=total,
-                    values_sum=values_sum,
-                    missing=missing,
-                    difference=total - (values_sum + missing),
-                    values_count=len(counts),
-                    note="Missing count comes from database query and should be correct"
-                )
+        # Sanity-check the counts. Never adjust them -- they come straight from the
+        # database queries. See check_count_invariant for why the old
+        # `total == values_sum + missing` identity is not asserted: it is false by design
+        # for every multi-value field, which made this warning fire on each request for 4
+        # of the 15 fields and drowned out any genuine mismatch.
+        values_sum = sum(item["count"] for item in counts)
+        violations = check_count_invariant(total, values_sum, missing)
+        if violations:
+            logger.warning(
+                "Sample count invariant violated",
+                field=field,
+                total=total,
+                values_sum=values_sum,
+                missing=missing,
+                non_missing=total - missing,
+                values_count=len(counts),
+                violations=violations,
+            )
 
         logger.debug(
             "Completed sample count by field",
@@ -1426,6 +1437,19 @@ class SampleCount:
         # Sort by count descending, then by value ascending
         counts.sort(key=lambda x: (-x["count"], x["value"]))
 
+        values_sum = sum(item["count"] for item in counts)
+        violations = check_count_invariant(total_count, values_sum, missing_count)
+        if violations:
+            logger.warning(
+                "Sample count invariant violated",
+                field="diagnosis",
+                total=total_count,
+                values_sum=values_sum,
+                missing=missing_count,
+                non_missing=total_count - missing_count,
+                violations=violations,
+            )
+
         logger.info(
             "Completed sample count by associated diagnoses",
             total=total_count,
@@ -1560,6 +1584,19 @@ ORDER BY count DESC, value ASC
             {"value": r.get("value"), "count": r.get("count", 0)}
             for r in values_records
         ]
+
+        values_sum = sum(item["count"] for item in counts)
+        violations = check_count_invariant(total_count, values_sum, missing_count)
+        if violations:
+            logger.warning(
+                "Sample count invariant violated",
+                field="diagnosis_category",
+                total=total_count,
+                values_sum=values_sum,
+                missing=missing_count,
+                non_missing=total_count - missing_count,
+                violations=violations,
+            )
 
         logger.info(
             "Completed sample count by diagnosis_category",

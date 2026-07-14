@@ -1003,73 +1003,34 @@ class SampleCount:
             # Missing: samples without the field value (NULL or missing relationship)
             # No filters - count samples with NULL field
             if is_sample_metadata_field:
-                node_alias, _ = sample_metadata_field_mapping[field]
-                optional_matches = []
-                # Only add OPTIONAL MATCH if field is on a related node (not on sample node itself)
-                # If node_alias == "sa", no joins needed - field is directly on sample node
-                if node_alias == "sf":
-                    optional_matches.append("OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)")
-                if node_alias == "pf":
-                    optional_matches.append("OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)")
+                # For diagnosis fields (d.*): a pair is missing when the sample has no
+                # diagnosis carrying a valid value -- every diagnosis is NULL/empty/-999,
+                # or there is no diagnosis at all.
                 if node_alias == "d":
-                    optional_matches.append("OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)")
-                if node_alias == "st":
-                    optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)")
-                # For fields on sample node (sa), we still need study paths to match summary
-                if node_alias == "sa":
-                    # Add participant and study paths if not already included
-                    if not any("p:participant" in match for match in optional_matches):
-                        optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
-                    if not any("st1:study" in match for match in optional_matches):
-                        optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)")
-                    if not any("st2:study" in match for match in optional_matches):
-                        optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)")
-
-                # For all related node fields (sf, pf, d, st), need to include study paths in missing query
-                # to match the values and total queries (only count samples WITH studies)
-                if node_alias in ["sf", "pf", "d", "st"]:
-                    # Add study paths if not already included
-                    if not any("st1" in match for match in optional_matches):
-                        optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)")
-                    if not any("st2" in match for match in optional_matches):
-                        # Check if participant is already included
-                        if not any("p:participant" in match for match in optional_matches):
-                            optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
-                        optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p3:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)")
-
-                # For diagnosis fields (d.*), we need to check if ALL diagnoses have NULL/empty values
-                # For other fields, check if the field is NULL/empty
-                if node_alias == "d":
-                    # Diagnosis fields: count as missing if sample has NO diagnoses with valid values
-                    # i.e., all diagnoses have NULL/empty, OR no diagnoses exist
-                    # IMPORTANT: Must match values query structure - only count samples WITH studies
-                    # Need to ensure study paths are included in optional_matches
-                    # Add study paths if not already included
-                    if not any("st1:study" in match for match in optional_matches):
-                        optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)")
-                    if not any("st2:study" in match for match in optional_matches):
-                        if not any("p:participant" in match for match in optional_matches):
-                            optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
-                        optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p3:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)")
-
-                    optional_matches_str = "\n                ".join(optional_matches) if optional_matches else ""
-
-                    # Build invalid value conditions based on null_mappings for this field
                     invalid_all_clause = build_invalid_value_all_clause(field)
+                    # Counts (sample_id, study_id) PAIRS, the same unit as the total and
+                    # values queries. Counting sample nodes instead (count(DISTINCT sa))
+                    # under-reports `missing` for any sample node reaching two studies:
+                    # that node owns two pairs, both missing, but would be counted once.
+                    # UNWINDing the study set also enforces "only samples with a study",
+                    # which the total query requires -- a sample with no study yields no rows.
                     missing_cypher = f"""
             MATCH (sa:sample)
             WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-            {optional_matches_str}
-            WITH sa, d, p,
-                 size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
-                 size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
-            WHERE has_study1 > 0 OR has_study2 > 0
-            WITH DISTINCT sa, collect(DISTINCT {node_field}) as all_values
+            OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
+            WITH sa, collect(DISTINCT {node_field}) as all_values
             WITH sa,
                  [val IN all_values WHERE val IS NOT NULL] as non_null_values
             WHERE size(non_null_values) = 0
                OR ALL(val IN non_null_values WHERE {invalid_all_clause})
-            RETURN count(DISTINCT sa) as missing
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+            WITH sa, (st2_list + st1_list) AS combined
+            UNWIND combined AS sid
+            WITH DISTINCT sa.sample_id as sample_id, sid as study_id
+            RETURN count(*) as missing
             """.strip()
                 else:
                     # Non-diagnosis fields: check if field is NULL/empty or "-999"

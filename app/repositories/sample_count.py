@@ -5,30 +5,26 @@ This module contains methods for counting samples by field values.
 """
 
 import asyncio
-from typing import Dict, Any, List
-from app.core.logging import get_logger
-from app.models.errors import UnsupportedFieldError
+from typing import Any
+
 from app.core.diagnosis_category import HARMONIZED_DIAGNOSIS_CATEGORIES
-from app.repositories.sample_helpers import SD_CAT_MARKER
-from app.utils.cypher_builder import anatomic_site_member_predicate
 from app.core.field_mappings import (
-    map_field_value,
-    reverse_map_field_value,
-    is_null_mapped_value,
-    is_database_only_value,
+    build_case_mapping_statement,
+    build_invalid_value_all_clause,
     build_invalid_value_filter,
     build_invalid_value_list_filter,
-    build_invalid_value_all_clause,
-    build_case_mapping_statement,
     get_mapped_db_values,
-    load_sample_enum,
-    load_sequencing_file_enum
+    is_null_mapped_value,
+    load_sequencing_file_enum,
+    map_field_value,
 )
+from app.core.logging import get_logger
+from app.models.errors import UnsupportedFieldError
 
 logger = get_logger(__name__)
 
-_HARMONIZED_PVS_SORTED: List[str] = sorted(HARMONIZED_DIAGNOSIS_CATEGORIES)
-_HARMONIZED_PVS_LOWER: List[str] = [pv.lower() for pv in _HARMONIZED_PVS_SORTED]
+_HARMONIZED_PVS_SORTED: list[str] = sorted(HARMONIZED_DIAGNOSIS_CATEGORIES)
+_HARMONIZED_PVS_LOWER: list[str] = [pv.lower() for pv in _HARMONIZED_PVS_SORTED]
 
 
 class SampleCount:
@@ -37,7 +33,7 @@ class SampleCount:
     async def count_samples_by_field(
         self,
         field: str
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Count samples grouped by a specific field value.
 
@@ -78,7 +74,7 @@ class SampleCount:
                 field=field,
                 entity_type="sample"
             )
-        
+
         # Sample metadata field mapping - maps to the actual node and property
         sample_metadata_field_mapping = {
             "disease_phase": ("d", "disease_phase"),  # From diagnosis node
@@ -97,7 +93,7 @@ class SampleCount:
             "depositions": ("st", "study_id"),  # From study node
             "diagnosis": ("d", "diagnosis")  # From diagnosis node
         }
-        
+
         is_sample_metadata_field = field in sample_metadata_field_mapping
 
         # Flag to track if we're using a combined query (total + missing + values in one query)
@@ -106,149 +102,51 @@ class SampleCount:
 
         node_alias, property_name = sample_metadata_field_mapping[field]
         node_field = f"{node_alias}.{property_name}"
-        
+
         # Counts are always unfiltered: GET /sample/by/{field}/count rejects every
         # query parameter with InvalidParametersError, so no filter state reaches here.
-        # These stay empty; the branches still reading them are dead and get removed next.
-        base_where_conditions: List[str] = []
-        base_where_clause = ""
-        params: Dict[str, Any] = {}
-        
+        params: dict[str, Any] = {}
+
         # Standard field handling
         if field == "anatomical_sites":
-            # Special handling for anatomical_sites - it's an array field in sample node
-            # Need to unwind the array and count each value
-            # Build WHERE clause - always include anatomic_site check and study path check
-            field_where_conditions = [
-                "sa.anatomic_site IS NOT NULL",
-                "st IS NOT NULL",  # Ensure sample has a path to a study
-            ]
-            field_where_clause = "WHERE " + " AND ".join(field_where_conditions)
-
-            # Study paths, both required so a sample without one is excluded:
+            # anatomic_site is a list property on the sample node: unwind it and count
+            # each value. Counting unit is the (sample_id, study_id) pair -- the same unit
+            # used by this field's total/missing queries and by every other counted field.
+            # Two study paths are collected:
             #   sample -> cell_line -> study
             #   sample -> participant -> consent_group -> study
-            # No base filters - simpler query but still need study paths
-            # Query 1: Assume it's a list
-            cypher_list = f"""
+            # `st2_list + st1_list` is list CONCATENATION, not union: a sample reaching the
+            # same study via BOTH paths yields that study twice. The `WITH DISTINCT` below
+            # is what collapses that (and the second one collapses to pair+value), so the
+            # count stays pair-unit. Do not drop either DISTINCT.
+            # A sample with no path to a study is excluded.
+            cypher = """
             MATCH (sa:sample)
+            WHERE sa.sample_id IS NOT NULL
+              AND sa.sample_id <> ''
             OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-            OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-            WITH sa, coalesce(st1, st2) AS st
-            {field_where_clause}
-            WITH sa.sample_id as sample_id, st.study_id as study_id, sa.anatomic_site as sites
+            WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+            WITH sa, (st2_list + st1_list) AS combined
+            UNWIND combined AS sid
+            WITH DISTINCT sa.sample_id AS sample_id, sid AS study_id, sa.anatomic_site AS sites
             WHERE sites IS NOT NULL
-            WITH sample_id, study_id,
-                 coalesce(sites, []) AS site_values
-            UNWIND site_values AS site_value
+            UNWIND sites AS site_value
             WITH sample_id, study_id, trim(toString(site_value)) AS trimmed_value
-            WHERE trimmed_value IS NOT NULL 
-              AND trimmed_value <> ''
+            WHERE trimmed_value <> ''
               AND toLower(trimmed_value) <> 'invalid value'
-            WITH sample_id, study_id, trimmed_value
+            WITH DISTINCT sample_id, study_id, trimmed_value
             RETURN trimmed_value as value, count(*) AS count
             ORDER BY count DESC, value ASC
             """.strip()
-            
-            # Query 2: Assume it's a string
-            cypher_string = f"""
-            MATCH (sa:sample)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-            OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-            WITH sa, coalesce(st1, st2) AS st
-            {field_where_clause}
-            WITH sa.sample_id as sample_id, st.study_id as study_id, sa.anatomic_site as sites
-            WHERE sites IS NOT NULL
-            WITH sample_id, study_id,
-                 coalesce(sites, []) AS site_values
-            UNWIND site_values AS site_value
-            WITH sample_id, study_id, trim(toString(site_value)) AS trimmed_value
-            WHERE trimmed_value IS NOT NULL 
-              AND trimmed_value <> ''
-              AND toLower(trimmed_value) <> 'invalid value'
-            WITH sample_id, study_id, trimmed_value
-            RETURN trimmed_value as value, count(*) AS count
-            ORDER BY count DESC, value ASC
-            """.strip()
-        
-            # Store both queries as a tuple for anatomical_sites (will be handled in execution)
-            cypher = (cypher_list, cypher_string)
         else:
-            # Other standard fields (vital_status, age_at_vital_status, or sample metadata fields)
-            # Use similar pattern to sex: group by sample_id to get one value per sample
-            field_where_conditions = base_where_conditions.copy() if base_where_conditions else []
-            field_where_conditions.append(f"{node_field} IS NOT NULL")
-            
-            # Build combined WHERE clause - include study path check
-            all_where_conditions = [
-                "sa.sample_id IS NOT NULL",
-                "toString(sa.sample_id) <> ''",
-                "st IS NOT NULL"  # Ensure sample has a path to a study
-            ]
-            all_where_conditions.extend(field_where_conditions)
-            combined_where_clause = "WHERE " + " AND ".join(all_where_conditions)
-            
-            # For sample metadata fields, we need to include OPTIONAL MATCH for related nodes
+            # Every remaining countable field lives on the diagnosis (d), sample (sa),
+            # sequencing_file (sf) or pathology_file (pf) node -- see
+            # sample_metadata_field_mapping. `depositions` (st) is rejected above as an
+            # unsupported count field and `diagnosis` is diverted to its own method, so
+            # the node_alias branches below are exhaustive.
             if is_sample_metadata_field:
-                node_alias, _ = sample_metadata_field_mapping[field]
-                # Build query with necessary OPTIONAL MATCH clauses
-                optional_matches = []
-                
-                # Check if base filters need participant or study nodes
-                needs_participant = any("p." in cond for cond in base_where_conditions) if base_where_conditions else False
-                needs_study = any("st." in cond for cond in base_where_conditions) if base_where_conditions else False
-                
-                # Always include the node needed for the field
-                if node_alias == "sf":  # sequencing_file
-                    optional_matches.append("OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)")
-                if node_alias == "pf":  # pathology_file
-                    optional_matches.append("OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)")
-                if node_alias == "d":  # diagnosis
-                    optional_matches.append("OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)")
-                if node_alias == "st":  # study
-                    optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)")
-                
-                # Include participant if needed for base filters or for fields on sample node (for consistency with summary)
-                if needs_participant or node_alias == "sa":
-                    optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
-                
-                # Always include study paths to ensure samples have a path to a study
-                # Path 1: sample -> cell_line -> study
-                # Path 2: sample -> participant -> consent_group -> study
-                if node_alias != "st":
-                    # Only add if not already included above
-                    optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)")
-                    if not needs_study:
-                        optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p3:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)")
-                    else:
-                        # If st was already included, we still need st2 for the coalesce
-                        optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p3:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)")
-                else:
-                    # st was already included, but we need both paths for coalesce
-                    optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)")
-                
-                optional_matches_str = "\n            ".join(optional_matches) if optional_matches else ""
-                
-                # Use coalesce for study if we have both paths
-                study_var = "coalesce(st1, st2) AS st" if node_alias == "st" or (not needs_study and node_alias != "st") else "coalesce(st, st1) AS st" if node_alias != "st" and needs_study else "st"
-                
-                # Build WITH clause to include all needed variables
-                with_vars = ["sa"]
-                # Include the node for the field (sf, pf, d, or st)
-                if node_alias == "sf":
-                    with_vars.append("sf")
-                elif node_alias == "pf":
-                    with_vars.append("pf")
-                elif node_alias == "d":
-                    with_vars.append("d")
-                # Include participant if needed (always include for consistency with summary)
-                if needs_participant or node_alias == "sa":
-                    with_vars.append("p")
-                # Always include study (needed for st IS NOT NULL check in combined_where_clause)
-                with_vars.append(study_var)
-                
-                with_clause = ", ".join(with_vars)
-                
                 # For specimen_molecular_analyte_type, use a different query structure:
                 # 1. First find samples with valid study
                 # 2. Then find sequencing_file associated with these samples
@@ -274,8 +172,6 @@ class SampleCount:
                         # No mappings configured, return empty results
                         cypher = "RETURN '' as value, 0 AS count LIMIT 0"
                     else:
-                        # Build IN clause from mapped DB values (escape single quotes by doubling them)
-                        db_values_str = ", ".join([f"'{val.replace(chr(39), chr(39) + chr(39))}'" for val in mapped_db_values])
                         # Build CASE statement dynamically from mappings
                         case_statement = build_case_mapping_statement(field, "molecule_value")
                         if not case_statement:
@@ -308,8 +204,8 @@ class SampleCount:
                      // Filter to only mapped DB values using parameterized query
                      [val IN molecule_values WHERE val IS NOT NULL AND val IN $mapped_db_values] as mapped_db_values_list,
                      // For MISSING: Check if no valid values (NULL/empty/-999/null_mappings)
-                     CASE WHEN size([val IN molecule_values WHERE val IS NOT NULL 
-                                     AND {invalid_list_filter}]) = 0 
+                     CASE WHEN size([val IN molecule_values WHERE val IS NOT NULL
+                                     AND {invalid_list_filter}]) = 0
                           THEN 1 ELSE 0 END as is_missing
                 // Calculate total and missing counts (aggregate across all samples)
                 // IMPORTANT: Calculate BEFORE unwinding to get correct totals
@@ -338,7 +234,7 @@ class SampleCount:
                 """.strip()
                             # Mark this as a combined query so we can handle it differently
                             is_combined_query = True
-                elif node_alias == "sf" and not base_where_clause:
+                elif node_alias == "sf":
                     # Special handling for library_source_material: Combined query (total + missing + values)
                     # For other sequencing_file fields: Use separate queries
                     if field == "library_source_material":
@@ -362,7 +258,7 @@ class SampleCount:
                                         dangerous_chars=[char for char in dangerous_chars if char in str(enum_val)]
                                     )
                                     raise ValueError(f"Enum value '{enum_val}' contains dangerous characters")
-                            
+
                             # Use parameterized query instead of string interpolation for security
                             # Pass enum_values as a parameter to prevent Cypher injection
                             params["enum_values"] = enum_values
@@ -388,15 +284,15 @@ class SampleCount:
                 WITH sample_id, study_id, field_values,
                      // For VALUES: Filter for valid enum values AND exclude null_mappings
                      // Use parameterized query ($enum_values) instead of string interpolation for security
-                     [val IN field_values WHERE val IS NOT NULL 
+                     [val IN field_values WHERE val IS NOT NULL
                       AND {invalid_list_filter}
                       AND val IN $enum_values] as valid_values,
                      // For MISSING: Only check if no valid values (NULL/empty/-999/null_mappings), WITHOUT enum check
                      // This matches the original missing query logic
                      // IMPORTANT: null_mappings like "Other" are excluded by invalid_list_filter (val <> 'Other')
                      // So samples with only "Other" will have empty filtered list → size = 0 → counted as missing ✓
-                     CASE WHEN size([val IN field_values WHERE val IS NOT NULL 
-                                     AND {invalid_list_filter}]) = 0 
+                     CASE WHEN size([val IN field_values WHERE val IS NOT NULL
+                                     AND {invalid_list_filter}]) = 0
                           THEN 1 ELSE 0 END as is_missing
                 // Calculate total and missing counts (aggregate across all samples)
                 // IMPORTANT: The original missing query filters samples WHERE size(...) = 0
@@ -409,7 +305,7 @@ class SampleCount:
                 // IMPORTANT: total and missing are calculated per (sample_id, study_id) pair
                 // and should be preserved through UNWIND
                 UNWIND all_samples as sample_data
-                WITH sample_data.sample_id as sample_id, 
+                WITH sample_data.sample_id as sample_id,
                      sample_data.study_id as study_id,
                      sample_data.valid_values as valid_values,
                      total, missing,
@@ -442,10 +338,10 @@ class SampleCount:
                      toString(st.study_id) AS study_id,
                      collect(DISTINCT {node_field}) as field_values
                 WITH sample_id, study_id, field_values,
-                     [val IN field_values WHERE val IS NOT NULL 
+                     [val IN field_values WHERE val IS NOT NULL
                       AND {invalid_list_filter}] as valid_values,
-                     CASE WHEN size([val IN field_values WHERE val IS NOT NULL 
-                                     AND {invalid_list_filter}]) = 0 
+                     CASE WHEN size([val IN field_values WHERE val IS NOT NULL
+                                     AND {invalid_list_filter}]) = 0
                           THEN 1 ELSE 0 END as is_missing
                 // Calculate total and missing counts (aggregate across all samples)
                 WITH count(*) as total,
@@ -453,7 +349,7 @@ class SampleCount:
                      collect({{sample_id: sample_id, study_id: study_id, valid_values: valid_values}}) as all_samples
                 // Now unwind valid values to count by value
                 UNWIND all_samples as sample_data
-                WITH sample_data.sample_id as sample_id, 
+                WITH sample_data.sample_id as sample_id,
                      sample_data.study_id as study_id,
                      sample_data.valid_values as valid_values,
                      total, missing,
@@ -499,11 +395,11 @@ class SampleCount:
                      collect(DISTINCT {node_field}) as field_values
                 WITH sample_id, study_id, field_values,
                      // For VALUES: Filter for valid values (not null, not empty, not -999)
-                     [val IN field_values WHERE val IS NOT NULL 
+                     [val IN field_values WHERE val IS NOT NULL
                       AND {invalid_list_filter}] as valid_values,
                      // For MISSING: Check if no valid values exist
-                     CASE WHEN size([val IN field_values WHERE val IS NOT NULL 
-                                     AND {invalid_list_filter}]) = 0 
+                     CASE WHEN size([val IN field_values WHERE val IS NOT NULL
+                                     AND {invalid_list_filter}]) = 0
                           THEN 1 ELSE 0 END as is_missing
                 // Calculate total and missing counts (aggregate across all samples)
                 WITH count(*) as total,
@@ -513,7 +409,7 @@ class SampleCount:
                 // IMPORTANT: total and missing are calculated per (sample_id, study_id) pair
                 // and should be preserved through UNWIND
                 UNWIND all_samples as sample_data
-                WITH sample_data.sample_id as sample_id, 
+                WITH sample_data.sample_id as sample_id,
                      sample_data.study_id as study_id,
                      sample_data.valid_values as valid_values,
                      total, missing,
@@ -558,11 +454,11 @@ class SampleCount:
                      collect(DISTINCT {node_field}) as field_values
                 WITH sample_id, study_id, field_values,
                      // For VALUES: Filter for valid values (not null, not empty, not -999, not null_mappings)
-                     [val IN field_values WHERE val IS NOT NULL 
+                     [val IN field_values WHERE val IS NOT NULL
                       AND {invalid_list_filter}] as valid_values,
                      // For MISSING: Check if no valid values exist
-                     CASE WHEN size([val IN field_values WHERE val IS NOT NULL 
-                                     AND {invalid_list_filter}]) = 0 
+                     CASE WHEN size([val IN field_values WHERE val IS NOT NULL
+                                     AND {invalid_list_filter}]) = 0
                           THEN 1 ELSE 0 END as is_missing
                 // Calculate total and missing counts (aggregate across all samples)
                 WITH count(*) as total,
@@ -572,7 +468,7 @@ class SampleCount:
                 // IMPORTANT: total and missing are calculated per (sample_id, study_id) pair
                 // and should be preserved through UNWIND
                 UNWIND all_samples as sample_data
-                WITH sample_data.sample_id as sample_id, 
+                WITH sample_data.sample_id as sample_id,
                      sample_data.study_id as study_id,
                      sample_data.valid_values as valid_values,
                      total, missing,
@@ -588,7 +484,7 @@ class SampleCount:
                 """.strip()
                             # Mark this as a combined query so we can handle it differently
                             is_combined_query = True
-                elif node_alias == "pf" and not base_where_clause:
+                elif node_alias == "pf":
                     # COMBINED QUERY for pathology_file fields (preservation_method):
                     # Returns total, missing, and values in one pass
                     # This avoids running 3 separate queries and processes samples once
@@ -626,11 +522,11 @@ class SampleCount:
                      collect(DISTINCT {node_field}) as field_values
                 WITH sample_id, study_id, field_values,
                      // For VALUES: Filter for valid values (not null, not empty, not -999)
-                     [val IN field_values WHERE val IS NOT NULL 
+                     [val IN field_values WHERE val IS NOT NULL
                       AND {invalid_list_filter}] as valid_values,
                      // For MISSING: Check if no valid values exist
-                     CASE WHEN size([val IN field_values WHERE val IS NOT NULL 
-                                     AND {invalid_list_filter}]) = 0 
+                     CASE WHEN size([val IN field_values WHERE val IS NOT NULL
+                                     AND {invalid_list_filter}]) = 0
                           THEN 1 ELSE 0 END as is_missing
                 // Calculate total and missing counts (aggregate across all samples)
                 WITH count(*) as total,
@@ -640,7 +536,7 @@ class SampleCount:
                 // IMPORTANT: total and missing are calculated per (sample_id, study_id) pair
                 // and should be preserved through UNWIND
                 UNWIND all_samples as sample_data
-                WITH sample_data.sample_id as sample_id, 
+                WITH sample_data.sample_id as sample_id,
                      sample_data.study_id as study_id,
                      sample_data.valid_values as valid_values,
                      total, missing,
@@ -661,7 +557,7 @@ class SampleCount:
                 """.strip()
                     # Mark this as a combined query so we can handle it differently
                     is_combined_query = True
-                elif node_alias == "d" and not base_where_clause:
+                elif node_alias == "d":
                     # Optimized query for diagnosis fields (disease_phase, tumor_grade, etc.):
                     # 1. Start from diagnosis (more selective) and filter invalid values early
                     # 2. Match to sample and check study path
@@ -697,7 +593,7 @@ class SampleCount:
                 RETURN toString(value) as value, count(*) AS count
                 ORDER BY count DESC, value ASC
                 """.strip()
-                elif node_alias == "sa" and not base_where_clause:
+                else:  # node_alias == "sa"
                     # Optimized query for sample node fields (tissue_type, age_at_collection):
                     # 1. Filter invalid values early
                     # 2. Group by field value and count distinct samples
@@ -724,94 +620,32 @@ class SampleCount:
                 RETURN toString(value) as value, count(*) AS count
                 ORDER BY count DESC, value ASC
                 """.strip()
-                else:
-                    # For other fields, use the standard query structure
-                    additional_where = ""
-                    cypher = f"""
-                MATCH (sa:sample)
-                {optional_matches_str}
-                WITH {with_clause}
-                {combined_where_clause}
-                WITH DISTINCT sa, 
-                     head(collect(DISTINCT {node_field})) as value
-                WHERE value IS NOT NULL
-                  AND toString(value) <> ''
-                  AND trim(toString(value)) <> ''
-                  AND toString(value) <> '-999'
-                  AND trim(toString(value)) <> '-999'{additional_where}
-                RETURN toString(value) as value, count(DISTINCT sa) AS count
-                ORDER BY count DESC, value ASC
-                """.strip()
 
         logger.info(
             "Executing count_samples_by_field Cypher query",
-            cypher=cypher[:200] if isinstance(cypher, str) else "multiple queries",
+            cypher=cypher[:200],
             params=params,
             field=field
         )
-        
+
         # Execute query with proper result consumption
-        # For anatomical_sites, try list query first, fallback to string query if it fails
         records = []
-        if field == "anatomical_sites" and isinstance(cypher, tuple):
-            cypher_list, cypher_string = cypher
-            try:
-                # Try list query first
-                result = await self.session.run(cypher_list, params)
-                async for record in result:
-                    records.append(dict(record))
-                logger.debug("Successfully executed anatomical_sites query as list")
-            except Exception as e:
-                error_msg = str(e).lower()
-                if "unwind" in error_msg and ("list" in error_msg or "string" in error_msg):
-                    # It's a string, try the string query
-                    logger.debug("List query failed, trying string query for anatomical_sites")
-                    try:
-                        result = await self.session.run(cypher_string, params)
-                        async for record in result:
-                            records.append(dict(record))
-                        logger.debug("Successfully executed anatomical_sites query as string")
-                    except Exception as e2:
-                        logger.error(
-                            "Error executing count_samples_by_field Cypher query (both list and string failed)",
-                            error=str(e2),
-                            error_type=type(e2).__name__,
-                            field=field,
-                            cypher=cypher_string[:500],
-                            params=params,
-                            exc_info=True
-                        )
-                        raise
-                else:
-                    # Different error, re-raise
-                    logger.error(
-                        "Error executing count_samples_by_field Cypher query",
-                        error=str(e),
-                        error_type=type(e).__name__,
-                        field=field,
-                        cypher=cypher_list[:500],
-                        params=params,
-                        exc_info=True
-                    )
-                    raise
-        else:
-            # Regular query execution
-            try:
-                result = await self.session.run(cypher, params)
-                async for record in result:
-                    records.append(dict(record))
-            except Exception as e:
-                logger.error(
-                    "Error executing count_samples_by_field Cypher query",
-                    error=str(e),
-                    error_type=type(e).__name__,
-                    field=field,
-                    cypher=cypher[:500] if isinstance(cypher, str) else str(cypher)[:500],
-                    params=params,
-                    exc_info=True
-                )
-                raise
-        
+        try:
+            result = await self.session.run(cypher, params)
+            async for record in result:
+                records.append(dict(record))
+        except Exception as e:
+            logger.error(
+                "Error executing count_samples_by_field Cypher query",
+                error=str(e),
+                error_type=type(e).__name__,
+                field=field,
+                cypher=cypher[:500],
+                params=params,
+                exc_info=True
+            )
+            raise
+
         logger.info(
             "Count query results",
             field=field,
@@ -819,10 +653,10 @@ class SampleCount:
             sample_records=records[:5] if records else [],
             query=cypher[:500] if field == "anatomical_sites" else None
         )
-        
+
         # Format results
         counts = []
-        
+
         # Special handling for combined query (library_source_material)
         # Combined query returns: value, count, total, missing
         # Extract total and missing from first row, then process values
@@ -844,14 +678,14 @@ class SampleCount:
                 )
                 # Process values (skip total/missing columns). Multiple DB values can
                 # map to the same API value, so aggregate after applying mappings.
-                mapped_counts: Dict[str, int] = {}
+                mapped_counts: dict[str, int] = {}
                 for record in records:
                     value = record.get("value")
                     count = record.get("count", 0)
-                    
+
                     if not value or count == 0:
                         continue
-                    
+
                     # specimen_molecular_analyte_type and preservation_method are mapped to the API
                     # value IN Cypher and deduped by (sample, study, api_value); raw null-mapped
                     # values were already excluded in the query. So take the value as-is and do NOT
@@ -878,7 +712,7 @@ class SampleCount:
                     for value, count in mapped_counts.items()
                 )
                 counts.sort(key=lambda x: (-x["count"], x["value"]))
-                
+
                 # Aggregate counts for fields where multiple DB values map to the same API value
                 aggregated_counts = {}
                 for item in counts:
@@ -919,7 +753,7 @@ class SampleCount:
                     node_alias = "sf"
                     relationship = "-[:of_sequencing_file]->"
                     node_type = "sequencing_file"
-                
+
                 # Determine the correct node_field based on field name
                 if field == "specimen_molecular_analyte_type":
                     node_field = "sf.library_source_molecule"
@@ -930,7 +764,7 @@ class SampleCount:
                 else:
                     # Fallback
                     node_field = f"{node_alias}.{sample_metadata_field_mapping.get(field, ('', field))[1]}"
-                
+
                 fallback_cypher = f"""
                 MATCH (sa:sample)
                 WHERE sa.sample_id IS NOT NULL
@@ -948,8 +782,8 @@ class SampleCount:
                      toString(st.study_id) AS study_id,
                      collect(DISTINCT {node_field}) as field_values
                 WITH count(*) as total,
-                     sum(CASE WHEN size([val IN field_values WHERE val IS NOT NULL 
-                                         AND {invalid_list_filter}]) = 0 
+                     sum(CASE WHEN size([val IN field_values WHERE val IS NOT NULL
+                                         AND {invalid_list_filter}]) = 0
                               THEN 1 ELSE 0 END) as missing
                 RETURN total, missing
                 """.strip()
@@ -968,7 +802,7 @@ class SampleCount:
                         field=field,
                         exc_info=True
                     )
-        
+
         # Special handling for specimen_molecular_analyte_type
         # Query now returns aggregated results (value, count) with mapping done in Cypher
         # This eliminates Python-side processing overhead and reduces returned rows significantly
@@ -979,10 +813,10 @@ class SampleCount:
             for record in records:
                 value = record.get("value")
                 count = record.get("count", 0)
-                
+
                 if not value or count == 0:
                     continue
-                
+
                 counts.append({
                     "value": value,
                     "count": count
@@ -998,20 +832,20 @@ class SampleCount:
                     # Filter out "-999" for age fields (sentinel value for missing data)
                     if str(value) == "-999" or (isinstance(value, str) and value.strip() == "-999"):
                         continue  # Skip "-999" values
-                    
+
                     # Apply field mapping (DB value -> API value) using centralized mappings
                     mapped_value = map_field_value(field, value)
-                    
+
                     # If mapping returns None, skip this value (it should be counted as missing)
                     # This handles null_mappings (e.g., "Not Reported" for specimen_molecular_analyte_type)
                     if mapped_value is None:
                         continue
-                    
+
                     counts.append({
                         "value": mapped_value,
                         "count": record.get("count", 0)
                     })
-            
+
             # Aggregate counts for fields where multiple DB values map to the same API value
             # (e.g., disease_phase: "Recurrent Disease" and "Relapse" both map to "Relapse")
             # Note: specimen_molecular_analyte_type is handled above, so this is for other fields
@@ -1026,7 +860,7 @@ class SampleCount:
             # Rebuild counts list and sort
             counts = [{"value": val, "count": cnt} for val, cnt in aggregated_counts.items()]
             counts.sort(key=lambda x: (-x["count"], x["value"]))
-        
+
         # Calculate total and missing counts
         # Total: count of all distinct samples matching filters
         # IMPORTANT: Total must match /sample/summary, which only counts samples with a path to a study
@@ -1035,399 +869,8 @@ class SampleCount:
             # Total and missing already extracted from combined query above
             pass
         elif field == "anatomical_sites":
-            # Total: all samples with a path to a study (matching /sample/summary - 50211 when no filters)
-            if not base_where_clause:
-                # No filters - count all samples with a path to a study (matches /sample/summary)
-                # Use the same query structure as get_samples_summary - always include participant
-                total_cypher = """
-                MATCH (sa:sample)
-                WHERE sa.sample_id IS NOT NULL
-                  AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
-                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
-                WITH sa, (st2_list + st1_list) AS combined
-                UNWIND combined AS sid
-                WITH DISTINCT sa.sample_id as sample_id, sid as study_id
-                RETURN count(*) as total
-                """.strip()
-            else:
-                # Has filters - need to include study paths and require st IS NOT NULL
-                total_cypher = f"""
-                MATCH (sa:sample)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                WITH sa, p,
-                     size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
-                     size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
-                WHERE has_study1 > 0 OR has_study2 > 0
-                {base_where_clause.replace('WHERE ', 'AND ') if base_where_clause else ''}
-                RETURN count(DISTINCT sa.sample_id) as total
-                """.strip()
-            
-            # Missing: samples with NULL or empty anatomical_sites, or all values are "Invalid value"
-            # Handle both list and string cases without APOC
-            # Build two queries: one for list, one for string
-            if not base_where_clause:
-                # No base filters - build queries for both list and string cases
-                # IMPORTANT: Must match values query structure - only count samples WITH studies
-                missing_cypher_list = """
-                MATCH (sa:sample)
-                WHERE sa.sample_id IS NOT NULL
-                  AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
-                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
-                WITH sa, (st2_list + st1_list) AS combined
-                UNWIND combined AS sid
-                WITH DISTINCT sa.sample_id as sample_id, sid as study_id, sa.anatomic_site as sites
-                WHERE sites IS NULL 
-                   OR size(sites) = 0
-                   OR ALL(site IN sites WHERE site IS NULL OR toString(site) = '' OR toLower(trim(toString(site))) = 'invalid value')
-                RETURN count(*) as missing
-                """.strip()
-                
-                missing_cypher_string = """
-                MATCH (sa:sample)
-                WHERE sa.sample_id IS NOT NULL
-                  AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
-                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
-                WITH sa, (st2_list + st1_list) AS combined
-                UNWIND combined AS sid
-                WITH DISTINCT sa.sample_id as sample_id, sid as study_id, sa.anatomic_site as sites
-                WHERE sites IS NULL
-                   OR size(sites) = 0
-                   OR ALL(site IN sites WHERE site IS NULL OR toString(site) = '' OR toLower(trim(toString(site))) = 'invalid value')
-                RETURN count(*) as missing
-                """.strip()
-            else:
-                # Has base filters - build queries for both list and string cases
-                missing_cypher_list = f"""
-                MATCH (sa:sample)
-                WHERE sa.sample_id IS NOT NULL
-                  AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
-                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
-                WITH sa, (st2_list + st1_list) AS combined
-                UNWIND combined AS sid
-                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                WITH DISTINCT sa.sample_id as sample_id, sid as study_id, p, sa.anatomic_site as sites
-                {base_where_clause.replace('WHERE ', 'WHERE ') if base_where_clause else ''}
-                WHERE sites IS NULL 
-                   OR size(sites) = 0
-                   OR ALL(site IN sites WHERE site IS NULL OR toString(site) = '' OR toLower(trim(toString(site))) = 'invalid value')
-                RETURN count(*) as missing
-                """.strip()
-                
-                missing_cypher_string = f"""
-                MATCH (sa:sample)
-                WHERE sa.sample_id IS NOT NULL
-                  AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
-                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
-                WITH sa, (st2_list + st1_list) AS combined
-                UNWIND combined AS sid
-                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                WITH DISTINCT sa.sample_id as sample_id, sid as study_id, p, sa.anatomic_site as sites
-                {base_where_clause.replace('WHERE ', 'WHERE ') if base_where_clause else ''}
-                WHERE sites IS NULL
-                   OR size(sites) = 0
-                   OR ALL(site IN sites WHERE site IS NULL OR toString(site) = '' OR toLower(trim(toString(site))) = 'invalid value')
-                RETURN count(*) as missing
-                """.strip()
-            
-            # Store both queries as a tuple (will be handled in execution)
-            missing_cypher = (missing_cypher_list, missing_cypher_string)
-            
-            # Execute total and missing queries
-            total_result = await self.session.run(total_cypher, params)
-            total_records = []
-            async for record in total_result:
-                total_records.append(dict(record))
-            total = total_records[0].get("total", 0) if total_records else 0
-            
-            # For anatomical_sites, try list query first, fallback to string query if it fails
-            missing = 0
-            if isinstance(missing_cypher, tuple):
-                missing_cypher_list, missing_cypher_string = missing_cypher
-                try:
-                    # Try list query first
-                    missing_result = await self.session.run(missing_cypher_list, params)
-                    missing_records = []
-                    async for record in missing_result:
-                        missing_records.append(dict(record))
-                    missing = missing_records[0].get("missing", 0) if missing_records else 0
-                    logger.debug("Successfully executed anatomical_sites missing query as list")
-                except Exception as e:
-                    error_msg = str(e).lower()
-                    if "all" in error_msg and ("list" in error_msg or "string" in error_msg):
-                        # It's a string, try the string query
-                        logger.debug("List missing query failed, trying string query for anatomical_sites")
-                        try:
-                            missing_result = await self.session.run(missing_cypher_string, params)
-                            missing_records = []
-                            async for record in missing_result:
-                                missing_records.append(dict(record))
-                            missing = missing_records[0].get("missing", 0) if missing_records else 0
-                            logger.debug("Successfully executed anatomical_sites missing query as string")
-                        except Exception as e2:
-                            logger.error(
-                                "Error executing anatomical_sites missing query (both list and string failed)",
-                                error=str(e2),
-                                error_type=type(e2).__name__,
-                                field=field,
-                                exc_info=True
-                            )
-                            # Default to 0 if both fail
-                            missing = 0
-                    else:
-                        logger.error(
-                            "Error executing anatomical_sites missing query",
-                            error=str(e),
-                            error_type=type(e).__name__,
-                            field=field,
-                            exc_info=True
-                        )
-                        # Default to 0 on error
-                        missing = 0
-            else:
-                # Regular missing query execution
-                missing_result = await self.session.run(missing_cypher, params)
-                missing_records = []
-                async for record in missing_result:
-                    missing_records.append(dict(record))
-                missing = missing_records[0].get("missing", 0) if missing_records else 0
-        else:
-            # For other standard fields (vital_status, age_at_vital_status, or sample metadata fields)
-            # Total: all samples with a path to a study (matching /sample/summary - 50211 when no filters)
-            # For specimen_molecular_analyte_type, total should only count samples with sequencing_file nodes
-            if field == "specimen_molecular_analyte_type" and not base_where_clause:
-                # For specimen_molecular_analyte_type: count all samples matching to a study
-                # This is the total - all samples with a study path (matching /sample/summary - 50211 when no filters)
-                # Use the same query structure as other fields to ensure consistency
-                # Use toString() for consistency with other queries
-                total_cypher = """
-                MATCH (sa:sample)
-                WHERE sa.sample_id IS NOT NULL
-                  AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
-                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
-                WITH sa, (st2_list + st1_list) AS combined
-                UNWIND combined AS sid
-                WITH DISTINCT toString(sa.sample_id) AS sample_id, toString(sid) AS study_id
-                RETURN count(*) as total
-                """.strip()
-            elif not base_where_clause:
-                # No filters - count all samples with a path to a study (matches /sample/summary)
-                # Use the same query structure as get_samples_summary - always include participant
-                # Use toString() for consistency with other queries
-                total_cypher = """
-                MATCH (sa:sample)
-                WHERE sa.sample_id IS NOT NULL
-                  AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
-                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
-                WITH sa, (st2_list + st1_list) AS combined
-                UNWIND combined AS sid
-                WITH DISTINCT toString(sa.sample_id) AS sample_id, toString(sid) AS study_id
-                RETURN count(*) as total
-                """.strip()
-            else:
-                # Has filters - need to apply them
-                if is_sample_metadata_field:
-                    # For specimen_molecular_analyte_type, use a different query structure:
-                    # 1. First find samples with valid study
-                    # 2. Then find sequencing_file associated with these samples
-                    # 3. Count all samples (for total)
-                    node_alias, _ = sample_metadata_field_mapping[field]
-                    if field == "specimen_molecular_analyte_type":
-                        # For specimen_molecular_analyte_type: count all samples matching to a study
-                        # This is the total - all samples with a study path (matching /sample/summary - 50211 when no filters)
-                        # Use toString() for consistency with other queries
-                        total_cypher = f"""
-                MATCH (sa:sample)
-                WHERE sa.sample_id IS NOT NULL
-                  AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
-                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
-                WITH sa, (st2_list + st1_list) AS combined
-                UNWIND combined AS sid
-                WITH DISTINCT toString(sa.sample_id) AS sample_id, toString(sid) AS study_id
-                RETURN count(*) as total
-                """.strip()
-                    else:
-                        # For other sample metadata fields, use standard approach
-                        optional_matches = []
-                        if node_alias == "sf":
-                            optional_matches.append("OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)")
-                        if node_alias == "pf":
-                            optional_matches.append("OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)")
-                        if node_alias == "d":
-                            optional_matches.append("OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)")
-                        if node_alias == "st":
-                            optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)")
-                        # Also include participant for filters that might reference it
-                        optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
-                        
-                        # Always include study paths to ensure samples have a path to a study
-                        # Check if study paths are already included
-                        has_study_paths = any("st1" in match or "st2" in match for match in optional_matches)
-                        if not has_study_paths:
-                            # Add study paths
-                            optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)")
-                            optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p3:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)")
-                        
-                        optional_matches_str = "\n                ".join(optional_matches) if optional_matches else ""
-                        
-                        # For fields on related nodes (sf, pf, d), we need to ensure the sample has a path to a study
-                        # For diagnosis fields (d), total should count ALL samples with study paths, not just samples with diagnoses
-                        if node_alias == "d":
-                            # Diagnosis fields: count ALL samples with study paths (including those without diagnoses)
-                            if base_where_clause:
-                                # Has filters - need to apply them
-                                # Build optional matches for filters that need them
-                                filter_optional_matches = []
-                                if any("p." in cond for cond in base_where_conditions):
-                                    filter_optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
-                                if any("d." in cond or "diagnoses" in cond for cond in base_where_conditions):
-                                    filter_optional_matches.append("OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)")
-                                filter_optional_matches_str = "\n                ".join(filter_optional_matches) if filter_optional_matches else ""
-                                
-                                total_cypher = f"""
-                MATCH (sa:sample)
-                WHERE sa.sample_id IS NOT NULL
-                  AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
-                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
-                WITH sa, (st2_list + st1_list) AS combined
-                UNWIND combined AS sid
-                MATCH (st:study)
-                WHERE st.study_id = sid
-                {filter_optional_matches_str}
-                WITH sa, p, d
-                {base_where_clause.replace('WHERE ', 'AND ') if base_where_clause else ''}
-                RETURN count(DISTINCT sa.sample_id) as total
-                """.strip()
-                            else:
-                                # No filters - count ALL samples with study paths (matches values query structure)
-                                # Use toString() for consistency with other queries
-                                total_cypher = """
-                MATCH (sa:sample)
-                WHERE sa.sample_id IS NOT NULL
-                  AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
-                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
-                WITH sa, (st2_list + st1_list) AS combined
-                UNWIND combined AS sid
-                WITH DISTINCT toString(sa.sample_id) AS sample_id, toString(sid) AS study_id
-                RETURN count(*) as total
-                """.strip()
-                        elif node_alias in ["sf", "pf"]:
-                            # For other related nodes (sf, pf), count ALL samples with study paths
-                            # (not just samples with the node, to match missing query which includes samples without the node)
-                            # Requirements:
-                            # - Count ALL samples with path to a study
-                            # - Use (sample_id + study_id) as unique identifier
-                            # Skip total query for combined query fields (handled by combined query)
-                            if field in ["preservation_method", "library_source_material", "library_strategy", "library_selection_method"] and not base_where_clause:
-                                # Total count is already included in combined query
-                                total_cypher = None
-                            elif base_where_clause:
-                                # Has filters - need to apply them
-                                # Build optional matches for filters that need them
-                                filter_optional_matches = []
-                                if any("p." in cond for cond in base_where_conditions):
-                                    filter_optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
-                                if any(f"{node_alias}." in cond for cond in base_where_conditions):
-                                    if node_alias == "sf":
-                                        filter_optional_matches.append("OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)")
-                                    elif node_alias == "pf":
-                                        filter_optional_matches.append("OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)")
-                                filter_optional_matches_str = "\n                ".join(filter_optional_matches) if filter_optional_matches else ""
-                                
-                                total_cypher = f"""
-                MATCH (sa:sample)
-                WHERE sa.sample_id IS NOT NULL
-                  AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
-                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
-                WITH sa, (st2_list + st1_list) AS combined
-                UNWIND combined AS sid
-                MATCH (st:study)
-                WHERE st.study_id = sid
-                {filter_optional_matches_str}
-                WITH sa, p, {node_alias}, sa.sample_id as sample_id, st.study_id as study_id
-                {base_where_clause.replace('WHERE ', 'AND ') if base_where_clause else ''}
-                WITH DISTINCT sample_id, study_id
-                RETURN count(*) as total
-                """.strip()
-                            else:
-                                # No filters - count ALL samples with study paths (matches values/missing query structure)
-                                # Count by unique (sample_id + study_id) pairs
-                                total_cypher = """
-                MATCH (sa:sample)
-                WHERE sa.sample_id IS NOT NULL
-                  AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
-                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
-                WITH sa, (st2_list + st1_list) AS combined
-                UNWIND combined AS sid
-                WITH DISTINCT sa.sample_id as sample_id, sid as study_id
-                RETURN count(*) as total
-                """.strip()
-                        else:
-                            # For fields on sample node or study node, just require study path
-                            if base_where_clause:
-                                # Has filters - need to apply them
-                                # Build optional matches for filters that need them
-                                filter_optional_matches = []
-                                if any("p." in cond for cond in base_where_conditions):
-                                    filter_optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
-                                filter_optional_matches_str = "\n                ".join(filter_optional_matches) if filter_optional_matches else ""
-                                
-                                total_cypher = f"""
-                MATCH (sa:sample)
-                WHERE sa.sample_id IS NOT NULL
-                  AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
-                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
-                WITH sa, (st2_list + st1_list) AS combined
-                UNWIND combined AS sid
-                MATCH (st:study)
-                WHERE st.study_id = sid
-                {filter_optional_matches_str}
-                WITH sa, p
-                {base_where_clause.replace('WHERE ', 'AND ') if base_where_clause else ''}
-                RETURN count(DISTINCT sa.sample_id) as total
-                """.strip()
-                            else:
-                                # No filters - use multi-hop traversal (consistent with values query)
-                                total_cypher = """
+            # Total: every (sample_id, study_id) pair with a path to a study.
+            total_cypher = """
                 MATCH (sa:sample)
                 WHERE sa.sample_id IS NOT NULL
                   AND sa.sample_id <> ''
@@ -1441,398 +884,265 @@ class SampleCount:
                 RETURN count(*) as total
                 """.strip()
 
+            # Missing: pairs whose anatomic_site is NULL/empty, or whose values are all
+            # "Invalid value".
+            # NOTE: the DISTINCT below keys on (sample_id, study_id, sites), not just the
+            # pair, so it only agrees with the pair-unit total while a given
+            # (sample_id, study_id) is carried by a single sample node -- true today. Two
+            # nodes sharing a pair but differing in anatomic_site would be counted twice.
+            # `st2_list + st1_list` is list concatenation, not union: a sample reaching one
+            # study via BOTH paths yields that study twice, and the DISTINCT is what
+            # collapses it. There are 0 such samples today; do not drop the DISTINCT.
+            missing_cypher = """
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL
+                  AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+                WITH sa, (st2_list + st1_list) AS combined
+                UNWIND combined AS sid
+                WITH DISTINCT sa.sample_id as sample_id, sid as study_id, sa.anatomic_site as sites
+                WHERE sites IS NULL
+                   OR size(sites) = 0
+                   OR ALL(site IN sites WHERE site IS NULL OR toString(site) = '' OR toLower(trim(toString(site))) = 'invalid value')
+                RETURN count(*) as missing
+                """.strip()
+
+            # Execute total and missing queries
+            total_result = await self.session.run(total_cypher, params)
+            total_records = []
+            async for record in total_result:
+                total_records.append(dict(record))
+            total = total_records[0].get("total", 0) if total_records else 0
+
+            # A failed missing query degrades to 0 rather than failing the whole count.
+            missing = 0
+            try:
+                missing_result = await self.session.run(missing_cypher, params)
+                missing_records = []
+                async for record in missing_result:
+                    missing_records.append(dict(record))
+                missing = missing_records[0].get("missing", 0) if missing_records else 0
+            except Exception as e:
+                logger.error(
+                    "Error executing anatomical_sites missing query",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    field=field,
+                    exc_info=True
+                )
+                missing = 0
+        else:
+            # For other standard fields (vital_status, age_at_vital_status, or sample metadata fields)
+            # Total: all samples with a path to a study (matching /sample/summary - 50211 when no filters)
+            # For specimen_molecular_analyte_type, total should only count samples with sequencing_file nodes
+            # Total: every (sample_id, study_id) pair with a path to a study.
+            total_cypher = """
+                MATCH (sa:sample)
+                WHERE sa.sample_id IS NOT NULL
+                  AND sa.sample_id <> ''
+                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+                WITH sa, (st2_list + st1_list) AS combined
+                UNWIND combined AS sid
+                WITH DISTINCT toString(sa.sample_id) AS sample_id, toString(sid) AS study_id
+                RETURN count(*) as total
+                """.strip()
+
             # Missing: samples without the field value (NULL or missing relationship)
-            if not base_where_clause:
-                # No filters - count samples with NULL field
-                if is_sample_metadata_field:
-                    node_alias, _ = sample_metadata_field_mapping[field]
-                    optional_matches = []
-                    # Only add OPTIONAL MATCH if field is on a related node (not on sample node itself)
-                    # If node_alias == "sa", no joins needed - field is directly on sample node
-                    if node_alias == "sf":
-                        optional_matches.append("OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)")
-                    if node_alias == "pf":
-                        optional_matches.append("OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)")
-                    if node_alias == "d":
-                        optional_matches.append("OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)")
-                    if node_alias == "st":
-                        optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)")
-                    # For fields on sample node (sa), we still need study paths to match summary
-                    if node_alias == "sa":
-                        # Add participant and study paths if not already included
+            # No filters - count samples with NULL field
+            if is_sample_metadata_field:
+                node_alias, _ = sample_metadata_field_mapping[field]
+                optional_matches = []
+                # Only add OPTIONAL MATCH if field is on a related node (not on sample node itself)
+                # If node_alias == "sa", no joins needed - field is directly on sample node
+                if node_alias == "sf":
+                    optional_matches.append("OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)")
+                if node_alias == "pf":
+                    optional_matches.append("OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)")
+                if node_alias == "d":
+                    optional_matches.append("OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)")
+                if node_alias == "st":
+                    optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)")
+                # For fields on sample node (sa), we still need study paths to match summary
+                if node_alias == "sa":
+                    # Add participant and study paths if not already included
+                    if not any("p:participant" in match for match in optional_matches):
+                        optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
+                    if not any("st1:study" in match for match in optional_matches):
+                        optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)")
+                    if not any("st2:study" in match for match in optional_matches):
+                        optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)")
+
+                # For all related node fields (sf, pf, d, st), need to include study paths in missing query
+                # to match the values and total queries (only count samples WITH studies)
+                if node_alias in ["sf", "pf", "d", "st"]:
+                    # Add study paths if not already included
+                    if not any("st1" in match for match in optional_matches):
+                        optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)")
+                    if not any("st2" in match for match in optional_matches):
+                        # Check if participant is already included
                         if not any("p:participant" in match for match in optional_matches):
                             optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
-                        if not any("st1:study" in match for match in optional_matches):
-                            optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)")
-                        if not any("st2:study" in match for match in optional_matches):
-                            optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)")
-                    
-                    # For all related node fields (sf, pf, d, st), need to include study paths in missing query
-                    # to match the values and total queries (only count samples WITH studies)
-                    if node_alias in ["sf", "pf", "d", "st"]:
-                        # Add study paths if not already included
-                        if not any("st1" in match for match in optional_matches):
-                            optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)")
-                        if not any("st2" in match for match in optional_matches):
-                            # Check if participant is already included
-                            if not any("p:participant" in match for match in optional_matches):
-                                optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
-                            optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p3:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)")
-                    
-                    # Build optional_matches_str AFTER adding study paths
+                        optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p3:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)")
+
+                # For diagnosis fields (d.*), we need to check if ALL diagnoses have NULL/empty values
+                # For other fields, check if the field is NULL/empty
+                if node_alias == "d":
+                    # Diagnosis fields: count as missing if sample has NO diagnoses with valid values
+                    # i.e., all diagnoses have NULL/empty, OR no diagnoses exist
+                    # IMPORTANT: Must match values query structure - only count samples WITH studies
+                    # Need to ensure study paths are included in optional_matches
+                    # Add study paths if not already included
+                    if not any("st1:study" in match for match in optional_matches):
+                        optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)")
+                    if not any("st2:study" in match for match in optional_matches):
+                        if not any("p:participant" in match for match in optional_matches):
+                            optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
+                        optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p3:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)")
+
                     optional_matches_str = "\n                ".join(optional_matches) if optional_matches else ""
-                    
-                    # For diagnosis fields (d.*), we need to check if ALL diagnoses have NULL/empty values
-                    # For other fields, check if the field is NULL/empty
-                    if node_alias == "d":
-                        # Diagnosis fields: count as missing if sample has NO diagnoses with valid values
-                        # i.e., all diagnoses have NULL/empty, OR no diagnoses exist
-                        # IMPORTANT: Must match values query structure - only count samples WITH studies
-                        # Need to ensure study paths are included in optional_matches
-                        # Add study paths if not already included
-                        if not any("st1:study" in match for match in optional_matches):
-                            optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)")
-                        if not any("st2:study" in match for match in optional_matches):
-                            if not any("p:participant" in match for match in optional_matches):
-                                optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
-                            optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p3:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)")
-                        
-                        optional_matches_str = "\n                ".join(optional_matches) if optional_matches else ""
-                        
-                        # Build invalid value conditions based on null_mappings for this field
-                        invalid_all_clause = build_invalid_value_all_clause(field)
+
+                    # Build invalid value conditions based on null_mappings for this field
+                    invalid_all_clause = build_invalid_value_all_clause(field)
+                    missing_cypher = f"""
+            MATCH (sa:sample)
+            WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
+            {optional_matches_str}
+            WITH sa, d, p,
+                 size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
+                 size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
+            WHERE has_study1 > 0 OR has_study2 > 0
+            WITH DISTINCT sa, collect(DISTINCT {node_field}) as all_values
+            WITH sa,
+                 [val IN all_values WHERE val IS NOT NULL] as non_null_values
+            WHERE size(non_null_values) = 0
+               OR ALL(val IN non_null_values WHERE {invalid_all_clause})
+            RETURN count(DISTINCT sa) as missing
+            """.strip()
+                else:
+                    # Non-diagnosis fields: check if field is NULL/empty or "-999"
+                    # For fields on sample node, also need to check st IS NOT NULL to match summary
+                    # For specimen_molecular_analyte_type, use a different query structure:
+                    # 1. First find samples with valid study
+                    # 2. Then find sequencing_file associated with these samples
+                    # 3. Count as missing if value is invalid/Not Reported (but NOT if sequencing_file is NULL, because those samples shouldn't be in the total)
+                    if field == "specimen_molecular_analyte_type":
+                        # Missing: samples with study path that either:
+                        # 1. Don't have any sequencing_file, OR
+                        # 2. Have sequencing_file(s) but all have null/invalid/Not Reported values
+                        invalid_list_filter = build_invalid_value_list_filter("specimen_molecular_analyte_type")
                         missing_cypher = f"""
-                MATCH (sa:sample)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                {optional_matches_str}
-                WITH sa, d, p,
-                     size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
-                     size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
-                WHERE has_study1 > 0 OR has_study2 > 0
-                WITH DISTINCT sa, collect(DISTINCT {node_field}) as all_values
-                WITH sa,
-                     [val IN all_values WHERE val IS NOT NULL] as non_null_values
-                WHERE size(non_null_values) = 0 
-                   OR ALL(val IN non_null_values WHERE {invalid_all_clause})
-                RETURN count(DISTINCT sa) as missing
-                """.strip()
-                    else:
-                        # Non-diagnosis fields: check if field is NULL/empty or "-999"
-                        optional_matches_str = "\n                ".join(optional_matches) if optional_matches else ""
-                        
-                        # Build WITH clause to include the node variable if needed
-                        # For fields on sample node (sa), we still need study paths to match summary
-                        if node_alias == "sa":
-                            # Field is on sample node itself, but we need study paths for consistency with summary
-                            # Note: This with_clause is not used for node_alias == "sa" (separate query is built)
-                            with_clause = f"sa.sample_id as sample_id, p, {node_field} as field_value"
+            MATCH (sa:sample)
+            WHERE sa.sample_id IS NOT NULL
+              AND sa.sample_id <> ''
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+            WITH sa, (st2_list + st1_list) AS combined
+            UNWIND combined AS sid
+            MATCH (st:study)
+            WHERE st.study_id = sid
+            OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
+            WITH toString(sa.sample_id) AS sample_id,
+                 toString(st.study_id) AS study_id,
+                 collect(DISTINCT sf.library_source_molecule) as molecule_values
+            WHERE size([val IN molecule_values WHERE val IS NOT NULL
+                         AND {invalid_list_filter}]) = 0
+            RETURN count(*) as missing
+            """.strip()
+                    elif node_alias == "sf":
+                        # Skip missing query for combined query fields (handled by combined query)
+                        if field in ["library_source_material", "library_strategy", "library_selection_method"]:
+                            # Missing count is already included in combined query
+                            missing_cypher = None
                         else:
-                            # Field is on a related node, need to include it in WITH clause
-                            with_vars = ["sa.sample_id as sample_id"]
-                            if node_alias == "sf":
-                                with_vars.append("sf")
-                            elif node_alias == "pf":
-                                with_vars.append("pf")
-                            elif node_alias == "d":
-                                with_vars.append("d")
-                            elif node_alias == "st":
-                                with_vars.append("st")
-                            with_vars.append(f"{node_field} as field_value")
-                            
-                            # For specimen_molecular_analyte_type, include study paths
-                            if field == "specimen_molecular_analyte_type" and node_alias == "sf":
-                                with_vars.append("coalesce(st1, st2) AS st")
-                            
-                            with_clause = ", ".join(with_vars)
-                        
-                        # For fields on sample node, also need to check st IS NOT NULL to match summary
-                        # For specimen_molecular_analyte_type, use a different query structure:
-                        # 1. First find samples with valid study
-                        # 2. Then find sequencing_file associated with these samples
-                        # 3. Count as missing if value is invalid/Not Reported (but NOT if sequencing_file is NULL, because those samples shouldn't be in the total)
-                        if field == "specimen_molecular_analyte_type":
+                            # Optimized missing count for other sequencing_file fields
                             # Missing: samples with study path that either:
                             # 1. Don't have any sequencing_file, OR
-                            # 2. Have sequencing_file(s) but all have null/invalid/Not Reported values
-                            invalid_list_filter = build_invalid_value_list_filter("specimen_molecular_analyte_type")
-                            missing_cypher = f"""
-                MATCH (sa:sample)
-                WHERE sa.sample_id IS NOT NULL
-                  AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
-                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
-                WITH sa, (st2_list + st1_list) AS combined
-                UNWIND combined AS sid
-                MATCH (st:study)
-                WHERE st.study_id = sid
-                OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
-                WITH toString(sa.sample_id) AS sample_id,
-                     toString(st.study_id) AS study_id,
-                     collect(DISTINCT sf.library_source_molecule) as molecule_values
-                WHERE size([val IN molecule_values WHERE val IS NOT NULL 
-                             AND {invalid_list_filter}]) = 0
-                RETURN count(*) as missing
-                """.strip()
-                        elif node_alias == "sf" and not base_where_clause:
-                            # Skip missing query for combined query fields (handled by combined query)
-                            if field in ["library_source_material", "library_strategy", "library_selection_method"]:
-                                # Missing count is already included in combined query
-                                missing_cypher = None
-                            else:
-                                # Optimized missing count for other sequencing_file fields
-                                # Missing: samples with study path that either:
-                                # 1. Don't have any sequencing_file, OR
-                                # 2. Have sequencing_file(s) but all have null/invalid values (based on null_mappings)
-                                # Performance: Collect only field values (strings), not nodes - this is more efficient
-                                # OPTIMIZATION: Collect DISTINCT field values per (sample_id, study_id) pair
-                                # Then filter invalid values in WHERE clause - avoids scanning all sequencing_file records
-                                invalid_list_filter = build_invalid_value_list_filter(field)
-                                missing_cypher = f"""
-                MATCH (sa:sample)
-                WHERE sa.sample_id IS NOT NULL
-                  AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
-                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
-                WITH sa, (st2_list + st1_list) AS combined
-                UNWIND combined AS sid
-                MATCH (st:study)
-                WHERE st.study_id = sid
-                OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
-                WITH toString(sa.sample_id) AS sample_id,
-                     toString(st.study_id) AS study_id,
-                     collect(DISTINCT {node_field}) as field_values
-                WHERE size([val IN field_values WHERE val IS NOT NULL 
-                             AND {invalid_list_filter}]) = 0
-                RETURN count(*) as missing
-                """.strip()
-                        elif node_alias == "pf" and not base_where_clause:
-                            # Skip missing query for preservation_method (handled by combined query)
-                            if field == "preservation_method":
-                                # Missing count is already included in combined query
-                                missing_cypher = None
-                            else:
-                                # Optimized missing count for other pathology_file fields
-                                # Missing: samples with study path that either:
-                                # 1. Don't have any pathology_file, OR
-                                # 2. Have pathology_file(s) but all have null/invalid values (based on null_mappings)
-                                # IMPORTANT: When OPTIONAL MATCH doesn't find a pathology_file, pf is NULL
-                                # collect(DISTINCT pf.fixation_embedding_method) on NULL returns [null]
-                                # So samples without pathology_file will have field_values = [null] and size([val IN [null] WHERE val IS NOT NULL ...]) = 0, counted as missing ✅
-                                # Counts unique (sample_id + study_id) pairs (consistent with values query)
-                                invalid_list_filter = build_invalid_value_list_filter(field)
-                                missing_cypher = f"""
-                MATCH (sa:sample)
-                WHERE sa.sample_id IS NOT NULL
-                  AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
-                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
-                WITH sa, (st2_list + st1_list) AS combined
-                UNWIND combined AS sid
-                MATCH (st:study)
-                WHERE st.study_id = sid
-                OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)
-                WITH toString(sa.sample_id) AS sample_id,
-                     toString(st.study_id) AS study_id,
-                     collect(DISTINCT {node_field}) as field_values
-                WHERE size([val IN field_values WHERE val IS NOT NULL 
-                             AND {invalid_list_filter}]) = 0
-                RETURN count(*) as missing
-                """.strip()
-                        elif node_alias == "d" and not base_where_clause:
-                            # Optimized missing count for diagnosis fields
-                            # Missing: samples with study path that either:
-                            # 1. Don't have any diagnosis, OR
-                            # 2. Have diagnosis(es) but all have null/invalid values (based on null_mappings)
-                            # Note: When OPTIONAL MATCH doesn't find a diagnosis, d is NULL
-                            # collect(DISTINCT d.disease_phase) on NULL returns empty list []
-                            # So samples without diagnoses will have field_values = [] and size([]) = 0, counted as missing ✅
+                            # 2. Have sequencing_file(s) but all have null/invalid values (based on null_mappings)
+                            # Performance: Collect only field values (strings), not nodes - this is more efficient
+                            # OPTIMIZATION: Collect DISTINCT field values per (sample_id, study_id) pair
+                            # Then filter invalid values in WHERE clause - avoids scanning all sequencing_file records
                             invalid_list_filter = build_invalid_value_list_filter(field)
                             missing_cypher = f"""
-                MATCH (sa:sample)
-                WHERE sa.sample_id IS NOT NULL
-                  AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
-                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
-                WITH sa, (st2_list + st1_list) AS combined
-                UNWIND combined AS sid
-                MATCH (st:study)
-                WHERE st.study_id = sid
-                OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
-                WITH toString(sa.sample_id) AS sample_id,
-                     toString(st.study_id) AS study_id,
-                     collect(DISTINCT {node_field}) as all_values
-                WITH sample_id, study_id,
-                     [val IN all_values WHERE val IS NOT NULL] as non_null_values
-                WHERE size(non_null_values) = 0 
-                   OR size([val IN non_null_values WHERE {invalid_list_filter}]) = 0
-                RETURN count(*) as missing
-                """.strip()
+            MATCH (sa:sample)
+            WHERE sa.sample_id IS NOT NULL
+              AND sa.sample_id <> ''
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+            WITH sa, (st2_list + st1_list) AS combined
+            UNWIND combined AS sid
+            MATCH (st:study)
+            WHERE st.study_id = sid
+            OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
+            WITH toString(sa.sample_id) AS sample_id,
+                 toString(st.study_id) AS study_id,
+                 collect(DISTINCT {node_field}) as field_values
+            WHERE size([val IN field_values WHERE val IS NOT NULL
+                         AND {invalid_list_filter}]) = 0
+            RETURN count(*) as missing
+            """.strip()
+                    elif node_alias == "pf":
+                        # Skip missing query for preservation_method (handled by combined query)
+                        if field == "preservation_method":
+                            # Missing count is already included in combined query
+                            missing_cypher = None
                         else:
-                            # For other fields, build missing_where and missing_cypher
-                            # IMPORTANT: All fields must check for study paths to match values and total queries
-                            # Note: Study path check is now done via pattern comprehension in the query itself
-                            missing_where = "(field_value IS NULL OR toString(field_value) = '' OR trim(toString(field_value)) = '' OR toString(field_value) = '-999' OR trim(toString(field_value)) = '-999')"
-                            
-                            # For fields on sample node (sa), ensure the query structure matches the total query
-                            if node_alias == "sa":
-                                missing_cypher = f"""
-                MATCH (sa:sample)
-                WHERE sa.sample_id IS NOT NULL
-                  AND sa.sample_id <> ''
-                  AND ({node_field} IS NULL OR toString({node_field}) = '' OR trim(toString({node_field})) = '' OR toString({node_field}) = '-999' OR trim(toString({node_field})) = '-999')
-                OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-                WITH sa, collect(DISTINCT st1.study_id) AS st1_list
-                OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-                WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
-                WITH sa, (st2_list + st1_list) AS combined
-                UNWIND combined AS sid
-                WITH DISTINCT sa.sample_id as sample_id, sid as study_id
-                RETURN count(*) as missing
-                """.strip()
-                            else:
-                                # For fields on related nodes, include pattern comprehension for study paths
-                                # Add pattern comprehension to with_clause
-                                with_clause_updated = f"{with_clause}, size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1, size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2"
-                                
-                                # Update missing_where to include study path check
-                                missing_where_updated = f"has_study1 > 0 OR has_study2 > 0 AND {missing_where}"
-                                
-                                missing_cypher = f"""
-                MATCH (sa:sample)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                {optional_matches_str}
-                WITH {with_clause_updated}
-                WHERE {missing_where_updated}
-                RETURN count(DISTINCT sample_id) as missing
-                """.strip()
-                else:
-                    # Participant fields
-                    missing_cypher = f"""
-                MATCH (sa:sample)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                WITH sa, p,
-                     size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
-                     size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
-                WHERE has_study1 > 0 OR has_study2 > 0
-                WITH DISTINCT sa, p, {node_field} as field_value
-                WHERE p IS NULL 
-                   OR field_value IS NULL 
-                   OR toString(field_value) = '' 
-                   OR trim(toString(field_value)) = ''
-                   OR toString(field_value) = '-999'
-                   OR trim(toString(field_value)) = '-999'
-                RETURN count(DISTINCT sa) as missing
-                """.strip()
-            else:
-                # Has filters - apply them, but also check for missing field
-                if is_sample_metadata_field:
-                    node_alias, _ = sample_metadata_field_mapping[field]
-                    optional_matches = []
-                    if node_alias == "sf":
-                        optional_matches.append("OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)")
-                    if node_alias == "pf":
-                        optional_matches.append("OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)")
-                    if node_alias == "d":
-                        optional_matches.append("OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)")
-                    if node_alias == "st":
-                        optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)")
-                    optional_matches.append("OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)")
-                    optional_matches_str = "\n                ".join(optional_matches) if optional_matches else ""
-                    
-                    # For diagnosis fields (d.*), we need to check if ALL diagnoses have NULL/empty values
-                    # For other fields, check if the field is NULL/empty
-                    if node_alias == "d":
-                        # Diagnosis fields: count as missing if sample has NO diagnoses with valid values
-                        # i.e., all diagnoses have NULL/empty, OR no diagnoses exist
-                        missing_where_conditions = base_where_conditions.copy() if base_where_conditions else []
-                        missing_where_clause = "WHERE " + " AND ".join(missing_where_conditions) if missing_where_conditions else ""
-                        
+                            # Optimized missing count for other pathology_file fields
+                            # Missing: samples with study path that either:
+                            # 1. Don't have any pathology_file, OR
+                            # 2. Have pathology_file(s) but all have null/invalid values (based on null_mappings)
+                            # IMPORTANT: When OPTIONAL MATCH doesn't find a pathology_file, pf is NULL
+                            # collect(DISTINCT pf.fixation_embedding_method) on NULL returns [null]
+                            # So samples without pathology_file will have field_values = [null] and size([val IN [null] WHERE val IS NOT NULL ...]) = 0, counted as missing ✅
+                            # Counts unique (sample_id + study_id) pairs (consistent with values query)
+                            invalid_list_filter = build_invalid_value_list_filter(field)
+                            missing_cypher = f"""
+            MATCH (sa:sample)
+            WHERE sa.sample_id IS NOT NULL
+              AND sa.sample_id <> ''
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+            WITH sa, (st2_list + st1_list) AS combined
+            UNWIND combined AS sid
+            MATCH (st:study)
+            WHERE st.study_id = sid
+            OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)
+            WITH toString(sa.sample_id) AS sample_id,
+                 toString(st.study_id) AS study_id,
+                 collect(DISTINCT {node_field}) as field_values
+            WHERE size([val IN field_values WHERE val IS NOT NULL
+                         AND {invalid_list_filter}]) = 0
+            RETURN count(*) as missing
+            """.strip()
+                    else:  # node_alias == "sa"
+                        # Field lives on the sample node: same (sample_id, study_id)
+                        # unit as the total query.
                         missing_cypher = f"""
-                MATCH (sa:sample)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                {optional_matches_str}
-                WITH sa, d, p,
-                     size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
-                     size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
-                WHERE has_study1 > 0 OR has_study2 > 0
-                {missing_where_clause.replace('WHERE ', 'AND ') if missing_where_clause else ''}
-                WITH DISTINCT sa, collect(DISTINCT {node_field}) as field_values
-                WHERE size(field_values) = 0 
-                   OR ALL(val IN field_values WHERE val IS NULL OR toString(val) = '' OR trim(toString(val)) = '' OR toString(val) = '-999' OR trim(toString(val)) = '-999')
-                RETURN count(DISTINCT sa) as missing
-                """.strip()
-                    else:
-                        # Non-diagnosis fields: check if field is NULL/empty or "-999"
-                        missing_where_conditions = base_where_conditions.copy() if base_where_conditions else []
-                        missing_where_conditions.append(f"({node_field} IS NULL OR toString({node_field}) = '' OR trim(toString({node_field})) = '' OR toString({node_field}) = '-999' OR trim(toString({node_field})) = '-999')")
-                        missing_where_clause = "WHERE " + " AND ".join(missing_where_conditions) if missing_where_conditions else f"WHERE ({node_field} IS NULL OR toString({node_field}) = '' OR trim(toString({node_field})) = '')"
-                        
-                        # Build WITH clause to include the node variable if needed
-                        # For missing count with filters, we need to include the node variable in WITH before applying WHERE
-                        # Also need to ensure study paths are included
-                        needs_participant = any("p." in cond for cond in base_where_conditions)
-                        needs_study = any("st." in cond for cond in base_where_conditions)
-                        
-                        # Build WITH clause - always include sa, then add related nodes
-                        with_vars = ["sa"]
-                        if node_alias == "sf":
-                            with_vars.append("sf")
-                        elif node_alias == "pf":
-                            with_vars.append("pf")
-                        elif node_alias == "d":
-                            with_vars.append("d")
-                        # Include participant if needed for filters
-                        if needs_participant:
-                            with_vars.append("p")
-                        # Add pattern comprehension for study paths
-                        with_vars.append("size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1")
-                        with_vars.append("size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2")
-                        
-                        with_clause = f"WITH {', '.join(with_vars)}\n                " if with_vars else ""
-                        
-                        # Add study path check to WHERE clause
-                        study_where = "has_study1 > 0 OR has_study2 > 0"
-                        if missing_where_clause:
-                            missing_where_clause_updated = f"WHERE {study_where} AND {missing_where_clause.replace('WHERE ', '')}"
-                        else:
-                            missing_where_clause_updated = f"WHERE {study_where}"
-                        
-                        missing_cypher = f"""
-                MATCH (sa:sample)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                {optional_matches_str}
-                {with_clause}{missing_where_clause_updated}
-                RETURN count(DISTINCT sa.sample_id) as missing
-                """.strip()
-                else:
-                    # Participant fields
-                    missing_where_conditions = base_where_conditions.copy() if base_where_conditions else []
-                    # Count as missing: no participant OR NULL or empty string or "-999"
-                    missing_where_conditions.append(f"(p IS NULL OR {node_field} IS NULL OR toString({node_field}) = '' OR trim(toString({node_field})) = '' OR toString({node_field}) = '-999' OR trim(toString({node_field})) = '-999')")
-                    missing_where_clause = "WHERE " + " AND ".join(missing_where_conditions) if missing_where_conditions else f"WHERE (p IS NULL OR {node_field} IS NULL OR toString({node_field}) = '' OR trim(toString({node_field})) = '' OR toString({node_field}) = '-999' OR trim(toString({node_field})) = '-999')"
-                    
-                    missing_cypher = f"""
-                MATCH (sa:sample)
-                WHERE sa.sample_id IS NOT NULL AND sa.sample_id <> ''
-                OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-                WITH sa, p,
-                     size([(sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(:study) | 1]) AS has_study1,
-                     size([(sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(:study) | 1]) AS has_study2
-                WHERE has_study1 > 0 OR has_study2 > 0
-                {missing_where_clause.replace('WHERE ', 'AND ') if missing_where_clause.startswith('WHERE ') else missing_where_clause}
-                WITH DISTINCT sa
-                RETURN count(DISTINCT sa) as missing
-                """.strip()
-            
+            MATCH (sa:sample)
+            WHERE sa.sample_id IS NOT NULL
+              AND sa.sample_id <> ''
+              AND ({node_field} IS NULL OR toString({node_field}) = '' OR trim(toString({node_field})) = '' OR toString({node_field}) = '-999' OR trim(toString({node_field})) = '-999')
+            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+            WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+            WITH sa, (st2_list + st1_list) AS combined
+            UNWIND combined AS sid
+            WITH DISTINCT sa.sample_id as sample_id, sid as study_id
+            RETURN count(*) as missing
+            """.strip()
+
             # Execute total and missing queries (skip if using combined query)
             if total_cypher is not None:
                 total_result = await self.session.run(total_cypher, params)
@@ -1841,7 +1151,7 @@ class SampleCount:
                     total_records.append(dict(record))
                 total = total_records[0].get("total", 0) if total_records else 0
             # else: total already extracted from combined query
-            
+
             if missing_cypher is not None:
                 missing_result = await self.session.run(missing_cypher, params)
                 missing_records = []
@@ -1849,7 +1159,7 @@ class SampleCount:
                     missing_records.append(dict(record))
                 missing = missing_records[0].get("missing", 0) if missing_records else 0
             # else: missing already extracted from combined query
-        
+
         # Verify: total should equal sum of values + missing
         # IMPORTANT: Skip adjustment for combined queries (library_source_material, library_strategy, preservation_method)
         # because missing count comes directly from the database query and is correct
@@ -1904,7 +1214,7 @@ class SampleCount:
                     values_count=len(counts),
                     note="Missing count comes from database query and should be correct"
                 )
-        
+
         logger.debug(
             "Completed sample count by field",
             field=field,
@@ -1913,7 +1223,7 @@ class SampleCount:
             missing=missing,
             values_sum=sum(item["count"] for item in counts)
         )
-        
+
         # Per SAMPLE_ENDPOINT_RULES rule 2: counts are by (sample_id, study_id) per value.
         # One (sample_id, study_id) can contribute to multiple value buckets, so
         # sum(value counts) + missing may be greater than total. This is expected.
@@ -1922,12 +1232,12 @@ class SampleCount:
             "missing": missing,
             "values": counts  # counts already has format [{"value": ..., "count": ...}]
         }
-    
+
     # REMOVED: _count_samples_by_race and _count_samples_by_ethnicity methods
     # These are not needed because sex, race, and ethnicity are not valid sample count fields.
     # The validation at line 1787-1791 rejects these fields before these methods can be called.
-    
-    async def _count_samples_by_associated_diagnoses(self) -> Dict[str, Any]:
+
+    async def _count_samples_by_associated_diagnoses(self) -> dict[str, Any]:
         """
         Count distinct samples by associated diagnoses.
 
@@ -1941,127 +1251,63 @@ class SampleCount:
         """
         logger.debug("Counting samples by associated diagnoses")
 
-        params: Dict[str, Any] = {}
-        where_clause = ""
+        params: dict[str, Any] = {}
 
         # Query 1: Get total count of all unique samples matching filters
         # Use multi-hop traversal for study paths
-        if not where_clause:
-            total_cypher = """
-            MATCH (sa:sample)
-            WHERE sa.sample_id IS NOT NULL
-              AND sa.sample_id <> ''
-            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-            WITH sa, collect(DISTINCT st1.study_id) AS st1_list
-            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-            WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
-            WITH sa, (st2_list + st1_list) AS combined
-            UNWIND combined AS sid
-            WITH DISTINCT toString(sa.sample_id) AS sample_id, toString(sid) AS study_id
-            RETURN count(*) as total
-            """.strip()
-        else:
-            total_cypher = f"""
-            MATCH (sa:sample)
-            WHERE sa.sample_id IS NOT NULL
-              AND sa.sample_id <> ''
-            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-            WITH sa, collect(DISTINCT st1.study_id) AS st1_list
-            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-            WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
-            WITH sa, (st2_list + st1_list) AS combined
-            UNWIND combined AS sid
-            MATCH (st:study)
-            WHERE st.study_id = sid
-            OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-            OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
-            WITH sa, p, d, st
-            {where_clause.replace('WHERE ', 'AND ') if where_clause else ''}
-            WITH DISTINCT sa
-            RETURN count(DISTINCT sa) as total
-            """.strip()
-        
+        total_cypher = """
+        MATCH (sa:sample)
+        WHERE sa.sample_id IS NOT NULL
+          AND sa.sample_id <> ''
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+        WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+        WITH sa, (st2_list + st1_list) AS combined
+        UNWIND combined AS sid
+        WITH DISTINCT toString(sa.sample_id) AS sample_id, toString(sid) AS study_id
+        RETURN count(*) as total
+        """.strip()
         # Query 2: Get count of samples with no valid diagnoses (missing)
         # Only count samples with a study path (matching summary endpoint)
         # Missing = samples with no diagnoses OR ALL diagnoses are invalid
         # IMPORTANT: Check ALL diagnoses, not just the first one
         # Use multi-hop traversal for study paths
-        if not where_clause:
-            missing_cypher = """
-            MATCH (sa:sample)
-            WHERE sa.sample_id IS NOT NULL
-              AND sa.sample_id <> ''
-            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-            WITH sa, collect(DISTINCT st1.study_id) AS st1_list
-            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-            WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
-            WITH sa, (st2_list + st1_list) AS combined
-            UNWIND combined AS sid
-            MATCH (st:study)
-            WHERE st.study_id = sid
-            OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
-            WITH toString(sa.sample_id) AS sample_id,
-                 toString(st.study_id) AS study_id,
-                 collect(d) as diagnoses
-            WITH sample_id, study_id,
-                 [d IN diagnoses WHERE d IS NOT NULL | 
-                   CASE 
-                     WHEN toLower(trim(toString(d.diagnosis))) = 'see diagnosis_comment' 
-                          AND d.diagnosis_comment IS NOT NULL 
-                          AND trim(toString(d.diagnosis_comment)) <> ''
-                     THEN d.diagnosis_comment
-                     WHEN toLower(trim(toString(d.diagnosis))) = 'see diagnosis_comment'
-                     THEN null
-                     ELSE d.diagnosis
-                   END
-                 ] as diagnosis_values
-            WITH sample_id, study_id,
-                 [val IN diagnosis_values WHERE val IS NOT NULL 
-                  AND toString(val) <> '' 
-                  AND trim(toString(val)) <> ''] as valid_values
-            WHERE size(valid_values) = 0
-            RETURN count(*) as missing
-            """.strip()
-        else:
-            missing_cypher = f"""
-            MATCH (sa:sample)
-            WHERE sa.sample_id IS NOT NULL
-              AND sa.sample_id <> ''
-            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-            WITH sa, collect(DISTINCT st1.study_id) AS st1_list
-            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-            WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
-            WITH sa, (st2_list + st1_list) AS combined
-            UNWIND combined AS sid
-            MATCH (st:study)
-            WHERE st.study_id = sid
-            OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-            OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
-            WITH sa, p, d, st
-            {where_clause.replace('WHERE ', 'AND ') if where_clause else ''}
-            WITH toString(sa.sample_id) AS sample_id,
-                 toString(st.study_id) AS study_id,
-                 collect(d) as diagnoses
-            WITH sample_id, study_id,
-                 [d IN diagnoses WHERE d IS NOT NULL | 
-                   CASE 
-                     WHEN toLower(trim(toString(d.diagnosis))) = 'see diagnosis_comment' 
-                          AND d.diagnosis_comment IS NOT NULL 
-                          AND trim(toString(d.diagnosis_comment)) <> ''
-                     THEN d.diagnosis_comment
-                     WHEN toLower(trim(toString(d.diagnosis))) = 'see diagnosis_comment'
-                     THEN null
-                     ELSE d.diagnosis
-                   END
-                 ] as diagnosis_values
-            WITH sample_id, study_id,
-                 [val IN diagnosis_values WHERE val IS NOT NULL 
-                  AND toString(val) <> '' 
-                  AND trim(toString(val)) <> ''] as valid_values
-            WHERE size(valid_values) = 0
-            RETURN count(*) as missing
-            """.strip()
-        
+        missing_cypher = """
+        MATCH (sa:sample)
+        WHERE sa.sample_id IS NOT NULL
+          AND sa.sample_id <> ''
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+        WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+        WITH sa, (st2_list + st1_list) AS combined
+        UNWIND combined AS sid
+        MATCH (st:study)
+        WHERE st.study_id = sid
+        OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
+        WITH toString(sa.sample_id) AS sample_id,
+             toString(st.study_id) AS study_id,
+             collect(d) as diagnoses
+        WITH sample_id, study_id,
+             [d IN diagnoses WHERE d IS NOT NULL |
+               CASE
+                 WHEN toLower(trim(toString(d.diagnosis))) = 'see diagnosis_comment'
+                      AND d.diagnosis_comment IS NOT NULL
+                      AND trim(toString(d.diagnosis_comment)) <> ''
+                 THEN d.diagnosis_comment
+                 WHEN toLower(trim(toString(d.diagnosis))) = 'see diagnosis_comment'
+                 THEN null
+                 ELSE d.diagnosis
+               END
+             ] as diagnosis_values
+        WITH sample_id, study_id,
+             [val IN diagnosis_values WHERE val IS NOT NULL
+              AND toString(val) <> ''
+              AND trim(toString(val)) <> ''] as valid_values
+        WHERE size(valid_values) = 0
+        RETURN count(*) as missing
+        """.strip()
         # Query 3: Count by diagnosis values
         # Check ALL diagnoses of each sample (not just first)
         # d.diagnosis can be a STRING or LIST - handle both
@@ -2070,99 +1316,56 @@ class SampleCount:
         # If diagnosis is "see diagnosis_comment", use diagnosis_comment as the value
         # Filter out "see diagnosis_comment" if diagnosis_comment is NULL or empty
         # Use multi-hop traversal for study paths
-        if not where_clause:
-            values_cypher = """
-            MATCH (sa:sample)
-            WHERE sa.sample_id IS NOT NULL
-              AND sa.sample_id <> ''
-            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-            WITH sa, collect(DISTINCT st1.study_id) AS st1_list
-            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-            WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
-            WITH sa, (st2_list + st1_list) AS combined
-            UNWIND combined AS sid
-            MATCH (st:study)
-            WHERE st.study_id = sid
-            OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
-            WITH toString(sa.sample_id) AS sample_id,
-                 toString(st.study_id) AS study_id,
-                 collect(d) as diagnoses
-            // UNWIND all diagnoses to count each one
-            UNWIND diagnoses AS diag_node
-            WITH sample_id, study_id, diag_node
-            WHERE diag_node IS NOT NULL
-            WITH sample_id, study_id,
-                 CASE 
-                   WHEN toLower(trim(toString(diag_node.diagnosis))) = 'see diagnosis_comment' 
-                        AND diag_node.diagnosis_comment IS NOT NULL 
-                        AND trim(toString(diag_node.diagnosis_comment)) <> ''
-                   THEN diag_node.diagnosis_comment
-                   WHEN toLower(trim(toString(diag_node.diagnosis))) = 'see diagnosis_comment'
-                   THEN null
-                   ELSE diag_node.diagnosis
-                 END AS diagnosis_value
-            WHERE diagnosis_value IS NOT NULL 
-              AND toString(diagnosis_value) <> '' 
-              AND trim(toString(diagnosis_value)) <> ''
-            WITH DISTINCT sample_id, study_id, toString(diagnosis_value) as value
-            RETURN value, count(*) as count
-            ORDER BY count DESC, value ASC
-            """.strip()
-        else:
-            values_cypher = f"""
-            MATCH (sa:sample)
-            WHERE sa.sample_id IS NOT NULL
-              AND sa.sample_id <> ''
-            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-            WITH sa, collect(DISTINCT st1.study_id) AS st1_list
-            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-            WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
-            WITH sa, (st2_list + st1_list) AS combined
-            UNWIND combined AS sid
-            MATCH (st:study)
-            WHERE st.study_id = sid
-            OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
-            OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
-            WITH sa, p, d, st
-            {where_clause.replace('WHERE ', 'AND ') if where_clause else ''}
-            WITH toString(sa.sample_id) AS sample_id,
-                 toString(st.study_id) AS study_id,
-                 collect(d) as diagnoses
-            // UNWIND all diagnoses to count each one
-            UNWIND diagnoses AS diag_node
-            WITH sample_id, study_id, diag_node
-            WHERE diag_node IS NOT NULL
-            WITH sample_id, study_id,
-                 CASE 
-                   WHEN toLower(trim(toString(diag_node.diagnosis))) = 'see diagnosis_comment' 
-                        AND diag_node.diagnosis_comment IS NOT NULL 
-                        AND trim(toString(diag_node.diagnosis_comment)) <> ''
-                   THEN diag_node.diagnosis_comment
-                   WHEN toLower(trim(toString(diag_node.diagnosis))) = 'see diagnosis_comment'
-                   THEN null
-                   ELSE diag_node.diagnosis
-                 END AS diagnosis_value
-            WHERE diagnosis_value IS NOT NULL 
-              AND toString(diagnosis_value) <> '' 
-              AND trim(toString(diagnosis_value)) <> ''
-            WITH DISTINCT sample_id, study_id, toString(diagnosis_value) as value
-            RETURN value, count(*) as count
-            ORDER BY count DESC, value ASC
-            """.strip()
-        
+        values_cypher = """
+        MATCH (sa:sample)
+        WHERE sa.sample_id IS NOT NULL
+          AND sa.sample_id <> ''
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        WITH sa, collect(DISTINCT st1.study_id) AS st1_list
+        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+        WITH sa, st1_list, collect(DISTINCT st2.study_id) AS st2_list
+        WITH sa, (st2_list + st1_list) AS combined
+        UNWIND combined AS sid
+        MATCH (st:study)
+        WHERE st.study_id = sid
+        OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
+        WITH toString(sa.sample_id) AS sample_id,
+             toString(st.study_id) AS study_id,
+             collect(d) as diagnoses
+        // UNWIND all diagnoses to count each one
+        UNWIND diagnoses AS diag_node
+        WITH sample_id, study_id, diag_node
+        WHERE diag_node IS NOT NULL
+        WITH sample_id, study_id,
+             CASE
+               WHEN toLower(trim(toString(diag_node.diagnosis))) = 'see diagnosis_comment'
+                    AND diag_node.diagnosis_comment IS NOT NULL
+                    AND trim(toString(diag_node.diagnosis_comment)) <> ''
+               THEN diag_node.diagnosis_comment
+               WHEN toLower(trim(toString(diag_node.diagnosis))) = 'see diagnosis_comment'
+               THEN null
+               ELSE diag_node.diagnosis
+             END AS diagnosis_value
+        WHERE diagnosis_value IS NOT NULL
+          AND toString(diagnosis_value) <> ''
+          AND trim(toString(diagnosis_value)) <> ''
+        WITH DISTINCT sample_id, study_id, toString(diagnosis_value) as value
+        RETURN value, count(*) as count
+        ORDER BY count DESC, value ASC
+        """.strip()
         logger.info(
             "Executing count_samples_by_associated_diagnoses Cypher queries",
             params_count=len(params),
             values_query=values_cypher
         )
-        
+
         # Execute all three queries with proper result consumption and retry logic
         max_retries = 2
         retry_count = 0
         total_count = 0
         missing_count = 0
         values_records = []
-        
+
         while retry_count <= max_retries:
             try:
                 total_result = await self.session.run(total_cypher, params)
@@ -2171,24 +1374,24 @@ class SampleCount:
                     total_records.append(dict(record))
                 await total_result.consume()
                 total_count = total_records[0].get("total", 0) if total_records else 0
-                
+
                 missing_result = await self.session.run(missing_cypher, params)
                 missing_records = []
                 async for record in missing_result:
                     missing_records.append(dict(record))
                 await missing_result.consume()
                 missing_count = missing_records[0].get("missing", 0) if missing_records else 0
-                
+
                 values_result = await self.session.run(values_cypher, params)
                 values_records = []
                 async for record in values_result:
                     values_records.append(dict(record))
                 await values_result.consume()
-                
+
                 # If we got results or it's the last retry, break out of retry loop
                 if (total_count > 0 or len(values_records) > 0) or retry_count >= max_retries:
                     break
-                
+
                 # If no results and not the last retry, wait a bit and retry
                 if retry_count < max_retries:
                     await asyncio.sleep(0.1 * (retry_count + 1))  # Exponential backoff: 0.1s, 0.2s
@@ -2202,7 +1405,7 @@ class SampleCount:
                 else:
                     logger.error("Error in count_samples_by_field query after retries", error=str(e), exc_info=True)
                     raise
-        
+
         # Format results and filter out any "see diagnosis_comment" that might have slipped through
         counts = []
         for record in values_records:
@@ -2219,24 +1422,24 @@ class SampleCount:
                 "value": value,
                 "count": record.get("count", 0)
             })
-        
+
         # Sort by count descending, then by value ascending
         counts.sort(key=lambda x: (-x["count"], x["value"]))
-        
+
         logger.info(
             "Completed sample count by associated diagnoses",
             total=total_count,
             missing=missing_count,
             values_count=len(counts)
         )
-        
+
         return {
             "total": total_count,
             "missing": missing_count,
             "values": counts
         }
 
-    async def _count_samples_by_diagnosis_category(self) -> Dict[str, Any]:
+    async def _count_samples_by_diagnosis_category(self) -> dict[str, Any]:
         """
         Count distinct (sample, study) combinations by harmonized diagnosis_category.
 
@@ -2249,7 +1452,7 @@ class SampleCount:
         """
         logger.debug("Counting samples by diagnosis_category")
 
-        params: Dict[str, Any] = {
+        params: dict[str, Any] = {
             "harmonized_pvs": _HARMONIZED_PVS_SORTED,
             "harmonized_pvs_lower": _HARMONIZED_PVS_LOWER,
         }
@@ -2313,7 +1516,7 @@ ORDER BY count DESC, value ASC
         retry_count = 0
         total_count = 0
         missing_count = 0
-        values_records: List[Dict[str, Any]] = []
+        values_records: list[dict[str, Any]] = []
 
         while retry_count <= max_retries:
             try:

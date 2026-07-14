@@ -5,13 +5,14 @@ This module focuses on testing error handling, retry logic, and complex
 query paths that are currently under-tested.
 """
 
-import pytest
 from unittest.mock import AsyncMock, Mock, patch
+
+import pytest
 from neo4j import AsyncSession
 
-from app.repositories.sample import SampleRepository
-from app.lib.field_allowlist import FieldAllowlist
 from app.core.config import Settings
+from app.lib.field_allowlist import FieldAllowlist
+from app.repositories.sample import SampleRepository
 
 
 @pytest.mark.unit
@@ -44,10 +45,10 @@ class TestSampleRepositoryErrorHandling:
         """Test get_samples exception handling - exceptions are re-raised."""
         # Exception during query execution - early pagination path raises immediately
         mock_session.run = AsyncMock(side_effect=Exception("Database error"))
-        
+
         with pytest.raises(Exception, match="Database error"):
             await repository.get_samples(filters={}, offset=0, limit=20)
-        
+
         # Exception is raised immediately in early pagination path (no retry for exceptions in early pagination)
         assert mock_session.run.called
 
@@ -56,99 +57,84 @@ class TestSampleRepositoryErrorHandling:
         # Query succeeds with anatomical_sites filter
         async def async_gen():
             yield {"sa": {"sample_id": "SAMP001", "anatomic_site": "Brain"}, "p": {}, "st": {"study_id": "phs001"}, "sf": {}, "pf": {}, "diagnoses": {}}
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())  # Properly set up async iterator
         mock_result.consume = AsyncMock()
-        
+
         # Query succeeds
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         result = await repository.get_samples(
             filters={"anatomical_sites": "Brain"},
             offset=0,
             limit=20
         )
-        
+
         # Should execute query successfully
         assert mock_session.run.called
         assert isinstance(result, list)
 
-    async def test_count_samples_by_field_anatomical_sites_missing_fallback(self, repository, mock_session):
-        """Test count_samples_by_field falls back to string query when list query fails for anatomical_sites missing."""
-        async def async_gen():
-            yield {"value": "Brain", "count": 5}
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        
-        # Order: values, total (single record), missing list (fails), missing string (succeeds)
-        class FailingResult:
+    async def test_count_samples_by_field_anatomical_sites_issues_one_query_each(self, repository, mock_session):
+        """anatomical_sites runs a single values/total/missing query -- no list/string fallback.
+
+        anatomic_site is list-native, so the two variants of each query became identical
+        and the try-list-then-string machinery was removed. Three session.run calls, in
+        order: values, total, missing.
+        """
+        mock_session.run = AsyncMock(side_effect=[
+            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"value": "Brain", "count": 5}]))),
+            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"total": 12}]))),
+            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 3}]))),
+        ])
+
+        result = await repository.count_samples_by_field("anatomical_sites")
+
+        assert mock_session.run.call_count == 3
+        assert result["total"] == 12
+        assert result["missing"] == 3
+        assert {"value": "Brain", "count": 5} in result["values"]
+
+        # Every query is a plain string counting per (sample_id, study_id) pair,
+        # never a (list_query, string_query) tuple.
+        for call in mock_session.run.call_args_list:
+            cypher = call.args[0]
+            assert isinstance(cypher, str)
+            assert "study_id" in cypher
+
+    async def test_count_samples_by_field_anatomical_sites_missing_failure_defaults_zero(self, repository, mock_session):
+        """A failing missing-query degrades `missing` to 0 without failing the whole count.
+
+        anatomical_sites issues exactly three queries: values, total, missing. Only the
+        third one fails here, so `values` and `total` must survive intact.
+        """
+        # Fails the way a real driver does: mid-stream, while the result is async-iterated.
+        # The code under test consumes results with `async for`, so the fake must too --
+        # a fake exposing only data()/consume() would never raise and the test would pass
+        # vacuously.
+        class FailingMissingResult:
             def __aiter__(self):
                 return self
-            async def __anext__(self):
-                raise Exception("all list string error")
-        
-        mock_session.run = AsyncMock(side_effect=[
-            mock_result,  # values query
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"total": 5}]))),  # total query
-            FailingResult(),  # missing list query fails
-            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 5}])))  # missing string succeeds
-        ])
-        
-        result = await repository.count_samples_by_field("anatomical_sites")
-        
-        assert "missing" in result
-        assert result["missing"] == 5
-        assert result["total"] == 5
 
-    async def test_count_samples_by_field_anatomical_sites_missing_both_fail(self, repository, mock_session):
-        """Test count_samples_by_field handles case when both list and string queries fail for anatomical_sites missing."""
-        async def async_gen():
-            yield {"value": "Brain", "count": 10}
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        
-        # Mock TWO_QUERY_APPROACH for total count
-        mock_result_path2 = AsyncMock()
-        mock_result_path2.data = AsyncMock(return_value=[
-            {"sample_id": "S1", "study_id": "ST1"}
-        ])
-        mock_result_path2.consume = AsyncMock()
-        
-        mock_result_path1 = AsyncMock()
-        mock_result_path1.data = AsyncMock(return_value=[
-            {"sample_id": "S2", "study_id": "ST1"}
-        ])
-        mock_result_path1.consume = AsyncMock()
-        
-        # Create failing results for missing queries
-        class FailingResultList:
-            async def data(self):
-                raise Exception("all list string error")
-            async def consume(self):
-                pass
-        
-        class FailingResultString:
-            async def data(self):
-                raise Exception("string query also fails")
-            async def consume(self):
-                pass
-        
-        # values query, total query (TWO_QUERY_APPROACH - 2 calls), missing list query fails, missing string query also fails
+            async def __anext__(self):
+                raise RuntimeError("missing query failed")
+
         mock_session.run = AsyncMock(side_effect=[
-            mock_result,  # values query
-            mock_result_path2,  # total query - path 2
-            mock_result_path1,  # total query - path 1
-            FailingResultList(),  # missing list query fails
-            FailingResultString(),  # missing string query also fails
+            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"value": "Brain", "count": 10}]))),
+            AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"total": 12}]))),
+            FailingMissingResult(),  # missing query blows up
         ])
-        
+
         result = await repository.count_samples_by_field("anatomical_sites")
-        
-        # Should default missing to 0 when both queries fail
-        assert "missing" in result
+
+        assert mock_session.run.call_count == 3
+
+        # total == 12 is the anti-vacuity assertion: it can only hold if call 2 was really
+        # consumed, which pins call 3 as the missing query -- so missing == 0 below proves
+        # the except branch ran, rather than an empty mock silently yielding nothing.
+        assert result["total"] == 12
         assert result["missing"] == 0
+        assert {"value": "Brain", "count": 10} in result["values"]
 
 
 @pytest.mark.unit
@@ -181,10 +167,10 @@ class TestSampleRepositoryComplexQueries:
         """Test count_samples_by_field uses separate queries for specimen_molecular_analyte_type (combined query disabled)."""
         async def async_gen():
             yield {"value": "DNA", "count": 10}
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
-        
+
         # Mock TWO_QUERY_APPROACH for total count (2 queries) + missing query
         mock_result_path2 = AsyncMock()
         mock_result_path2.data = AsyncMock(return_value=[
@@ -193,20 +179,20 @@ class TestSampleRepositoryComplexQueries:
         ])
         mock_result_path1 = AsyncMock()
         mock_result_path1.data = AsyncMock(return_value=[])
-        
+
         mock_session.run = AsyncMock(side_effect=[
             mock_result,  # values query
             mock_result_path2,  # total query path2
             mock_result_path1,  # total query path1
             AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 2}])))  # missing query
         ])
-        
+
         with patch('app.repositories.sample.get_mapped_db_values', return_value=["DNA", "RNA"]), \
              patch('app.repositories.sample.build_case_mapping_statement', return_value="CASE WHEN molecule_value = 'DNA' THEN 'DNA' END"), \
              patch('app.repositories.sample.build_invalid_value_list_filter', return_value="val <> '-999'"), \
              patch('app.repositories.sample.load_sequencing_file_enum', return_value=None):
             result = await repository.count_samples_by_field("specimen_molecular_analyte_type")
-            
+
             assert "total" in result
             assert "missing" in result
             assert "values" in result
@@ -215,10 +201,10 @@ class TestSampleRepositoryComplexQueries:
         """Test count_samples_by_field uses separate queries for library_source_material (combined query disabled)."""
         async def async_gen():
             yield {"value": "DNA", "count": 15}
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
-        
+
         # Mock TWO_QUERY_APPROACH for total count (2 queries) + missing query
         mock_result_path2 = AsyncMock()
         mock_result_path2.data = AsyncMock(return_value=[
@@ -226,18 +212,18 @@ class TestSampleRepositoryComplexQueries:
         ])
         mock_result_path1 = AsyncMock()
         mock_result_path1.data = AsyncMock(return_value=[])
-        
+
         mock_session.run = AsyncMock(side_effect=[
             mock_result,  # values query
             mock_result_path2,  # total query path2
             mock_result_path1,  # total query path1
             AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 3}])))  # missing query
         ])
-        
+
         with patch('app.repositories.sample.build_invalid_value_list_filter', return_value="val <> '-999'"), \
              patch('app.repositories.sample.load_sequencing_file_enum', return_value=["DNA", "RNA"]):
             result = await repository.count_samples_by_field("library_source_material")
-            
+
             assert "total" in result
             assert "missing" in result
             assert "values" in result
@@ -246,10 +232,10 @@ class TestSampleRepositoryComplexQueries:
         """Test count_samples_by_field uses separate queries for library_source_material (combined query disabled)."""
         async def async_gen():
             yield {"value": "DNA", "count": 10}
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
-        
+
         # Mock TWO_QUERY_APPROACH for total count (2 queries) + missing query
         mock_result_path2 = AsyncMock()
         mock_result_path2.data = AsyncMock(return_value=[
@@ -257,18 +243,18 @@ class TestSampleRepositoryComplexQueries:
         ])
         mock_result_path1 = AsyncMock()
         mock_result_path1.data = AsyncMock(return_value=[])
-        
+
         mock_session.run = AsyncMock(side_effect=[
             mock_result,  # values query
             mock_result_path2,  # total query path2
             mock_result_path1,  # total query path1
             AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 2}])))  # missing query
         ])
-        
+
         with patch('app.repositories.sample.build_invalid_value_list_filter', return_value="val <> '-999'"), \
              patch('app.repositories.sample.load_sequencing_file_enum', return_value=["DNA", "RNA"]):
             result = await repository.count_samples_by_field("library_source_material")
-            
+
             assert "total" in result
             assert "missing" in result
             assert "values" in result
@@ -277,18 +263,18 @@ class TestSampleRepositoryComplexQueries:
         """Test count_samples_by_field for anatomical_sites uses list query."""
         async def async_gen():
             yield {"value": "Brain", "count": 8}
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
-        
+
         mock_session.run = AsyncMock(side_effect=[
             mock_result,  # values query (list version)
             AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"total": 8}]))),  # total query
             AsyncMock(__aiter__=Mock(return_value=async_gen_from_list([{"missing": 2}])))  # missing query
         ])
-        
+
         result = await repository.count_samples_by_field("anatomical_sites")
-        
+
         assert "total" in result
         # Verify list query was used (check for UNWIND in cypher)
         cypher = mock_session.run.call_args_list[0][0][0]
@@ -298,18 +284,18 @@ class TestSampleRepositoryComplexQueries:
         """Test get_samples_summary with complex filter combinations."""
         async def async_gen():
             yield {"total_count": 15}
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())  # Properly set up async iterator
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         result = await repository.get_samples_summary({
             "identifiers": "SAMP001 || SAMP002",
             "depositions": "phs001",
             "anatomical_sites": ["Brain", "Liver"]
         })
-        
+
         assert "counts" in result
         assert "total" in result["counts"]
 
@@ -318,17 +304,17 @@ class TestSampleRepositoryComplexQueries:
         async def async_gen():
             if False:
                 yield  # Makes this an async generator, but never executes
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())  # Properly set up async iterator
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         result = await repository.get_samples(
             filters={"anatomical_sites": ["Brain", "Liver", "Lung"]},
             offset=0,
             limit=20
         )
-        
+
         assert isinstance(result, list)
         # Verify the query was built with OR conditions for multiple values
         assert mock_session.run.called
@@ -372,21 +358,21 @@ class TestSampleRepositoryQueryBuilding:
                 "pf": {},
                 "diagnoses": {"disease_phase": "Primary"}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())  # Properly set up async iterator
         mock_result.consume = AsyncMock()
-        
+
         # Query execution succeeds (no CALL subquery to fail - we removed CALL {} subqueries)
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         with patch('app.repositories.sample.reverse_map_field_value', return_value="Primary"):
             result = await repository.get_samples(
                 filters={"disease_phase": "Primary"},
                 offset=0,
                 limit=20
             )
-        
+
         # Query should execute successfully
         assert mock_session.run.called
         assert isinstance(result, list)
@@ -402,21 +388,21 @@ class TestSampleRepositoryQueryBuilding:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())  # Properly set up async iterator
         mock_result.consume = AsyncMock()
-        
+
         # Query execution succeeds (no CALL subquery to fail)
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         with patch('app.repositories.sample.load_sample_enum', return_value=["Tumor", "Normal"]):
             result = await repository.get_samples(
                 filters={"tissue_type": "Tumor"},
                 offset=0,
                 limit=20
             )
-        
+
         # Should execute query successfully (no CALL subquery, so no fallback needed)
         assert mock_session.run.called
         assert isinstance(result, list)
@@ -427,17 +413,17 @@ class TestSampleRepositoryQueryBuilding:
             async def async_gen():
                 if False:
                     yield  # Makes this an async generator, but never executes
-            
+
             mock_result = AsyncMock()
             mock_result.__aiter__ = Mock(return_value=async_gen())
             mock_session.run = AsyncMock(return_value=mock_result)
-            
+
             result = await repository.get_samples(
                 filters={"disease_phase": "Relapse"},
                 offset=0,
                 limit=20
             )
-            
+
             assert isinstance(result, list)
             # Verify OR condition was used for multiple mapped values
             cypher = mock_session.run.call_args[0][0]
@@ -449,17 +435,17 @@ class TestSampleRepositoryQueryBuilding:
             async def async_gen():
                 if False:
                     yield  # Makes this an async generator, but never executes
-            
+
             mock_result = AsyncMock()
             mock_result.__aiter__ = Mock(return_value=async_gen())
             mock_session.run = AsyncMock(return_value=mock_result)
-            
+
             result = await repository.get_samples(
                 filters={"tumor_classification": "non-malignant"},
                 offset=0,
                 limit=20
             )
-            
+
             assert isinstance(result, list)
             assert result == []
             # Null-mapped values trigger early return (no query run); if a query were run it would contain "false"
@@ -475,23 +461,23 @@ class TestSampleRepositoryQueryBuilding:
                 offset=0,
                 limit=20
             )
-            
+
             # Database-only values should return empty results
             assert isinstance(result, list)
             assert len(result) == 0
 
     async def test_get_samples_summary_reverse_query_error_handling(self, repository, mock_session):
         """Test get_samples_summary reverse query error handling."""
-        mock_session.run = AsyncMock(side_effect=Exception("Database error"))
-        
-        with pytest.raises(Exception):
+        mock_session.run = AsyncMock(side_effect=RuntimeError("Database error"))
+
+        with pytest.raises(RuntimeError, match="Database error"):
             await repository._get_samples_summary_reverse_query({"library_strategy": "WXS"})
 
     async def test_get_samples_by_sequencing_file_filters_error_handling(self, repository, mock_session):
         """Test _get_samples_by_sequencing_file_filters error handling."""
-        mock_session.run = AsyncMock(side_effect=Exception("Database error"))
-        
-        with pytest.raises(Exception):
+        mock_session.run = AsyncMock(side_effect=RuntimeError("Database error"))
+
+        with pytest.raises(RuntimeError, match="Database error"):
             await repository._get_samples_by_sequencing_file_filters(
                 {"library_strategy": "WXS"},
                 offset=0,
@@ -509,17 +495,17 @@ class TestSampleRepositoryQueryBuilding:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())  # Properly set up async iterator
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         result = await repository.get_samples(filters={}, offset=0, limit=20)
-        
+
         assert mock_session.run.called
         assert isinstance(result, list)
-        
+
         # Verify query executes successfully and handles study relationships
         # The null study_id filtering may happen in various ways (list comprehension, WHERE clauses, etc.)
         # The important thing is that the query executes and returns results
@@ -543,18 +529,18 @@ class TestSampleRepositoryQueryBuilding:
                 "pf": {},
                 "diagnoses": {"disease_phase": "Not Reported"}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())  # Properly set up async iterator
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         with patch('app.repositories.sample.reverse_map_field_value', return_value="Not Reported"):
             await repository.get_samples(filters={"disease_phase": "Not Reported"}, offset=0, limit=20)
-        
+
         call_args = mock_session.run.call_args
         query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
-        
+
         # Verify WHERE clause is properly formatted (not multi-line with AND on separate line)
         query_lines = query.split('\n')
         where_found = False
@@ -568,7 +554,7 @@ class TestSampleRepositoryQueryBuilding:
                     assert not (next_line.startswith('AND') and len(next_line) > 3), \
                         "WHERE clause should not have AND on separate line"
                 break
-        
+
         assert where_found, "WHERE clause should be present"
 
     async def test_get_samples_no_filters_returns_correct_structure(self, repository, mock_session):
@@ -582,14 +568,14 @@ class TestSampleRepositoryQueryBuilding:
                 "pf": {"file_id": "PF001"},
                 "diagnoses": {"disease_phase": "Primary"}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())  # Properly set up async iterator
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         result = await repository.get_samples(filters={}, offset=0, limit=20)
-        
+
         assert mock_session.run.called
         assert isinstance(result, list)
         # Should have converted records to Sample objects
@@ -606,20 +592,20 @@ class TestSampleRepositoryQueryBuilding:
                 "pf": {},
                 "diagnoses": {"disease_phase": "Not Reported"}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())  # Properly set up async iterator
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         with patch('app.repositories.sample.reverse_map_field_value', return_value="Not Reported"):
             await repository.get_samples(filters={"disease_phase": "Not Reported"}, offset=0, limit=20)
-        
+
         call_args = mock_session.run.call_args
         query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
-        
+
         # Verify diagnosis collection pattern is used (may vary)
-        assert ('head(collect(DISTINCT d))' in query or 
+        assert ('head(collect(DISTINCT d))' in query or
                 'head(collect(DISTINCT diagnoses))' in query or
                 'collect(DISTINCT d)' in query or
                 'collect(DISTINCT diagnoses)' in query or
@@ -636,19 +622,19 @@ class TestSampleRepositoryQueryBuilding:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())  # Properly set up async iterator
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
-        result = await repository.get_samples(filters={"depositions": "phs001"}, offset=0, limit=20)
-        
+
+        await repository.get_samples(filters={"depositions": "phs001"}, offset=0, limit=20)
+
         assert mock_session.run.called
         call_args = mock_session.run.call_args
         query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
         params = call_args[0][1] if len(call_args[0]) > 1 else call_args.kwargs.get('params', {})
-        
+
         # Verify depositions filter is applied
         assert 'phs001' in str(params.values()) or 'study_id' in query
 

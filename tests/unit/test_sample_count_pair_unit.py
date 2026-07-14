@@ -81,3 +81,41 @@ class TestSampleCountPairUnit:
         """No count query for any field may fall back to counting sample nodes."""
         for query in await self._queries_for(repository, mock_session, field):
             assert "count(DISTINCT sa)" not in query, f"{field} counts sample nodes"
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "disease_phase",
+            "tumor_grade",
+            "age_at_diagnosis",
+            "tumor_tissue_morphology",
+            "tissue_type",
+            "tumor_classification",
+            "age_at_collection",
+            "anatomical_sites",
+            "library_strategy",
+            "library_selection_method",
+            "library_source_material",
+            "specimen_molecular_analyte_type",
+            "preservation_method",
+            "diagnosis",
+            "diagnosis_category",
+        ],
+    )
+    async def test_every_unwound_study_set_is_deduped(self, repository, mock_session, field):
+        """After UNWINDing the study list, every query must collapse duplicate pairs.
+
+        `st2_list + st1_list` is list CONCATENATION, not union: a sample reaching one study
+        via BOTH the cell_line path and the participant path yields that study twice. Each
+        query must collapse that -- with `WITH DISTINCT`, or a `collect()` grouped by the
+        pair -- or it counts one pair as two.
+        """
+        for query in await self._queries_for(repository, mock_session, field):
+            for unwind in ("UNWIND combined AS sid", "UNWIND study_ids AS study_id"):
+                if unwind not in query:
+                    continue
+                after = query.split(unwind, 1)[1]
+                assert "WITH DISTINCT" in after or "collect(" in after, (
+                    f"{field}: query UNWINDs the study set but never dedupes the pair, "
+                    f"so a both-path sample would be counted twice"
+                )

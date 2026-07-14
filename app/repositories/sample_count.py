@@ -663,7 +663,7 @@ class SampleCount:
                 UNWIND combined AS sid
                 MATCH (st:study)
                 WHERE st.study_id = sid
-                WITH sa.sample_id as sample_id, st.study_id as study_id, {node_field} as value
+                WITH DISTINCT sa.sample_id as sample_id, st.study_id as study_id, {node_field} as value
                 RETURN toString(value) as value, count(*) AS count
                 ORDER BY count DESC, value ASC
                 """.strip()
@@ -1451,6 +1451,7 @@ OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_gr
 WITH sa, st1_ids, collect(DISTINCT st2.study_id) AS st2_ids
 WITH sa, [sid IN (st1_ids + st2_ids) WHERE sid IS NOT NULL] AS study_ids
 UNWIND study_ids AS study_id
+WITH DISTINCT sa.sample_id AS sample_id, study_id
 RETURN count(*) AS total
 """.strip()
 

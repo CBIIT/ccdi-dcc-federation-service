@@ -53,12 +53,33 @@ class TestBuildCountQuery:
 
     @pytest.mark.asyncio
     async def test_depositions_only_reverse_traversal_pattern(self):
+        """Pattern 2b streams the files and counts them; it must not collect them into a list.
+
+        A single deposition can reach ~758K files. Materialising them needed ~768MB;
+        streaming needs <=128MB and is ~2x faster. Collecting the scalar guids instead is
+        worse still (~1280MB) -- the guids materialise as strings, and count(DISTINCT
+        <string>) hashes strings rather than node ids.
+        """
         repo, _ = make_repo()
         cypher, params = await repo._build_count_query({"depositions": "phs002431"})
+
         assert "MATCH (st:study)" in cypher
         assert "st.study_id =" in cypher
-        assert "sf_list_path2" in cypher
         assert params and "phs002431" in params.values()
+
+        # Streams both study paths, deduping once at the count.
+        assert "CALL {" in cypher
+        assert "UNION ALL" in cypher
+        assert "RETURN count(DISTINCT sf) as total_count" in cypher
+
+        # The file set must never be materialised -- neither as nodes nor as guids.
+        assert "collect(" not in cypher
+        assert "sf_list_path2" not in cypher
+        assert "sf_list_path1" not in cypher
+
+        # Both study paths must remain, or the count silently drops files.
+        assert ":of_consent_group]-(:consent_group)" in cypher
+        assert ":of_cell_line]-(:cell_line)" in cypher
 
     @pytest.mark.asyncio
     async def test_file_type_only_uses_multihop_count(self):

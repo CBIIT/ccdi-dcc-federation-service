@@ -1348,18 +1348,32 @@ class FileRepository:
             deposition_param = depositions_param_name
             deposition_operator = "=" if len(depositions_list) == 1 else "IN"
 
+            # Stream the files from both study paths and let count(DISTINCT) dedupe them.
+            # Do NOT collect the file set into a list first: a single deposition can reach
+            # ~758K files, and materialising them needed ~768MB. Streaming needs <=128MB and
+            # is ~2x faster. Collecting the scalar guids instead of the nodes is *worse*, not
+            # better (~1280MB): a node in a list is a lightweight handle, whereas the guids
+            # materialise as strings and count(DISTINCT <string>) hashes strings rather than
+            # node ids. The scalar-guid form in get_files Pattern 2b earns its keep by letting
+            # pagination skip re-fetching nodes -- a count materialises no rows, so it gains
+            # nothing from it.
+            # UNION ALL, not UNION: count(DISTINCT sf) already dedupes, so UNION would dedupe
+            # twice (measured 2.59s/256MB vs 1.81s/128MB).
             cypher = f"""
             // Start from study nodes (only a few studies)
             MATCH (st:study)
             WHERE st.study_id {deposition_operator} ${deposition_param}
-            // Collect files using multi-hop traversal (path 2 - preferred)
-            OPTIONAL MATCH (st)<-[:of_consent_group]-(:consent_group)<-[:of_participant]-(:participant)<-[:of_sample]-(sa:sample)<-[:{self.config.rel_name}]-(sf:{self.config.node_label})
-            WITH st, collect(DISTINCT sf) AS sf_list_path2
-            // Collect files using multi-hop traversal (path 1 - fallback)
-            OPTIONAL MATCH (st)<-[:of_cell_line]-(:cell_line)<-[:of_sample]-(sa2:sample)<-[:{self.config.rel_name}]-(sf2:{self.config.node_label})
-            WITH st, sf_list_path2, collect(DISTINCT sf2) AS sf_list_path1
-            // Combine files from both paths and count distinct
-            UNWIND [sf IN sf_list_path2 WHERE sf IS NOT NULL | sf] + [sf IN sf_list_path1 WHERE sf IS NOT NULL] AS sf
+            CALL {{
+              // path 2 - via participant -> consent_group (preferred)
+              WITH st
+              MATCH (st)<-[:of_consent_group]-(:consent_group)<-[:of_participant]-(:participant)<-[:of_sample]-(:sample)<-[:{self.config.rel_name}]-(sf:{self.config.node_label})
+              RETURN sf
+              UNION ALL
+              // path 1 - via cell_line (fallback)
+              WITH st
+              MATCH (st)<-[:of_cell_line]-(:cell_line)<-[:of_sample]-(:sample)<-[:{self.config.rel_name}]-(sf:{self.config.node_label})
+              RETURN sf
+            }}
             RETURN count(DISTINCT sf) as total_count
             """.strip()
         else:

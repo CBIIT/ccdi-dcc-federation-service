@@ -289,7 +289,10 @@ class SampleCount:
                         # This avoids running 3 separate queries and processes samples once
                         # IMPORTANT: Missing check should NOT include enum validation - only check for NULL/empty/-999/null_mappings
                         # Values check SHOULD include enum validation to only count valid enum values
+                        # Map DB→API first (e.g. Other → Not Reported) so mapped values pass the enum filter
                         invalid_list_filter = build_invalid_value_list_filter(field)
+                        case_statement = build_case_mapping_statement(field, "raw_val")
+                        mapped_expr = case_statement if case_statement else "raw_val"
                         # Load enum values to filter FOR valid values in the values query
                         enum_values = load_sequencing_file_enum("library_source_material")
                         if enum_values:
@@ -310,8 +313,9 @@ class SampleCount:
                             # Pass enum_values as a parameter to prevent Cypher injection
                             params["enum_values"] = enum_values
                             # Separate logic:
-                            # - valid_values: Filter for enum values AND exclude null_mappings (for counting values)
+                            # - valid_values: Map DB→API, then keep enum values (exclude null_mappings)
                             # - is_missing: Only check if no valid values exist (NULL/empty/-999/null_mappings), WITHOUT enum check
+                            #   DB "Other" maps to API "Not Reported" and is NOT missing (empty null_mappings)
                             cypher = f"""
                 MATCH (sa:sample)
                 WHERE sa.sample_id IS NOT NULL
@@ -329,15 +333,11 @@ class SampleCount:
                      toString(st.study_id) AS study_id,
                      collect(DISTINCT {node_field}) as field_values
                 WITH sample_id, study_id, field_values,
-                     // For VALUES: Filter for valid enum values AND exclude null_mappings
-                     // Use parameterized query ($enum_values) instead of string interpolation for security
-                     [val IN field_values WHERE val IS NOT NULL
-                      AND {invalid_list_filter}
+                     // Map DB→API (e.g. Other → Not Reported), then keep valid enum values
+                     [val IN [raw_val IN field_values WHERE raw_val IS NOT NULL | {mapped_expr}]
+                      WHERE {invalid_list_filter}
                       AND val IN $enum_values] as valid_values,
                      // For MISSING: Only check if no valid values (NULL/empty/-999/null_mappings), WITHOUT enum check
-                     // This matches the original missing query logic
-                     // IMPORTANT: null_mappings like "Other" are excluded by invalid_list_filter (val <> 'Other')
-                     // So samples with only "Other" will have empty filtered list → size = 0 → counted as missing ✓
                      CASE WHEN size([val IN field_values WHERE val IS NOT NULL
                                      AND {invalid_list_filter}]) = 0
                           THEN 1 ELSE 0 END as is_missing
@@ -733,18 +733,22 @@ class SampleCount:
                     if not value or count == 0:
                         continue
 
-                    # specimen_molecular_analyte_type and preservation_method are mapped to the API
-                    # value IN Cypher and deduped by (sample, study, api_value); raw null-mapped
-                    # values were already excluded in the query. So take the value as-is and do NOT
-                    # re-apply map_field_value / is_null_mapped_value here — preservation's "Unknown"
-                    # API bucket (from Cytospin Slide/Other) collides with its "Unknown" null_mapping
-                    # and would otherwise be wrongly dropped.
-                    if field in ("specimen_molecular_analyte_type", "preservation_method"):
+                    # specimen_molecular_analyte_type, preservation_method, and
+                    # library_source_material are mapped to the API value IN Cypher and
+                    # deduped by (sample, study, api_value); raw null-mapped values were
+                    # already excluded in the query. So take the value as-is and do NOT
+                    # re-apply map_field_value / is_null_mapped_value here — preservation's
+                    # "Unknown" API bucket (from Cytospin Slide/Other) collides with its
+                    # "Unknown" null_mapping and would otherwise be wrongly dropped.
+                    if field in (
+                        "specimen_molecular_analyte_type",
+                        "preservation_method",
+                        "library_source_material",
+                    ):
                         mapped_value = value  # Already mapped + null-filtered in Cypher
                     else:
                         mapped_value = map_field_value(field, value)
-                        # Explicitly filter values in null_mappings (e.g. "Other" for
-                        # library_source_material) — counted as missing, not a bucket.
+                        # Explicitly filter values in null_mappings — counted as missing, not a bucket.
                         if is_null_mapped_value(field, value):
                             continue
 

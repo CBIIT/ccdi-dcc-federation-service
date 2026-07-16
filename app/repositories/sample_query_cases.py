@@ -579,13 +579,15 @@ class SampleQueryCases:
                         params[param_name] = value
                         sf_conditions.append(f"sf.library_strategy = ${param_name}")
                 elif field == "library_source_material":
-                    # Check if value is in null_mappings (e.g., "Other")
-                    if is_null_mapped_value("library_source_material", value):
-                        logger.info("Case 3: Invalid library_source_material filter (null-mapped), returning empty results", library_source_material=value)
+                    # Reject null-mapped or DB-only values (e.g. "Other" is DB-only → API "Not Reported")
+                    if is_null_mapped_value("library_source_material", value) or is_database_only_value(
+                        "library_source_material", value
+                    ):
+                        logger.info("Case 3: Invalid library_source_material filter, returning empty results", library_source_material=value)
                         if return_total:
                             return ([], 0)
                         return []
-                    # Apply reverse mapping for the filter value to get DB value
+                    # Apply reverse mapping for the filter value to get DB value(s)
                     reverse_mapped = reverse_map_field_value("library_source_material", value)
                     if isinstance(reverse_mapped, list):
                         params[param_name] = reverse_mapped

@@ -469,7 +469,7 @@ class SampleSummary:
                 regular_conditions.append(condition)
         
         # PERFORMANCE FIX: Early return for invalid filter values
-        # If any filter has an invalid value (e.g., "Other" for library_source_material),
+        # If any filter has an invalid value (e.g., DB-only "Other" for library_source_material),
         # return empty results immediately without hitting the database
         if (specimen_molecular_analyte_type_single_param == "invalid" or
             library_selection_method_param == "invalid" or
@@ -1522,11 +1522,17 @@ RETURN count(*) AS total_count
             param_name = f"param_{param_counter}"
             
             if field == "library_source_material":
-                if is_null_mapped_value("library_source_material", value):
+                if is_null_mapped_value("library_source_material", value) or is_database_only_value(
+                    "library_source_material", value
+                ):
                     return {"counts": {"total": 0}}
                 reverse_mapped = reverse_map_field_value("library_source_material", value)
-                params[param_name] = reverse_mapped
-                where_conditions.append(f"sf.library_source_material = ${param_name}")
+                if isinstance(reverse_mapped, list):
+                    params[param_name] = reverse_mapped
+                    where_conditions.append(f"sf.library_source_material IN ${param_name}")
+                else:
+                    params[param_name] = reverse_mapped if reverse_mapped else value
+                    where_conditions.append(f"sf.library_source_material = ${param_name}")
                 
             elif field == "library_strategy":
                 if is_database_only_value("library_strategy", value):

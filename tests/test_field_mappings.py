@@ -43,6 +43,7 @@ def test_expected_field_mapping_entries_exist():
         ("vital_status", "Not Reported", "Not reported"),
         ("disease_phase", "Recurrent Disease", "Relapse"),
         ("library_strategy", "Archer Fusion", "Other"),
+        ("library_source_material", "Other", "Not Reported"),
         ("specimen_molecular_analyte_type", "DNA", "DNA"),
         ("specimen_molecular_analyte_type", "Total RNA", "RNA"),
         ("specimen_molecular_analyte_type", "Protein", "Protein"),
@@ -57,6 +58,7 @@ def test_map_field_value_matches_config_examples(field_name: str, db_value: str,
     [
         ("vital_status", "Not reported", "Not Reported"),
         ("library_strategy", "Other", "Archer Fusion"),
+        ("library_source_material", "Not Reported", ["Other", "Not Reported"]),
         ("specimen_molecular_analyte_type", "DNA", ["Circulating cell-free DNA", "Circulating Tumor-Derived DNA", "DNA"]),
         ("specimen_molecular_analyte_type", "RNA", ["MicroRNA", "Messenger RNA", "Nucleic RNA Sample", "RNA Specimen", "Total RNA"]),
         ("disease_phase", "Relapse", ["Recurrent Disease", "Relapse"]),
@@ -68,13 +70,21 @@ def test_reverse_map_field_value_matches_config_examples(field_name: str, api_va
 
 def test_null_mappings_are_treated_as_null():
     # From field_mappings.json:
-    # - sequencing_file.library_source_material: null_mappings ["Other"]
     # - sequencing_file.specimen_molecular_analyte_type: null_mappings ["Not Reported"]
-    assert is_null_mapped_value("library_source_material", "Other") is True
-    assert map_field_value("library_source_material", "Other") is None
+    # library_source_material no longer null-maps "Other" (maps Other → Not Reported instead)
+    assert is_null_mapped_value("library_source_material", "Other") is False
+    assert map_field_value("library_source_material", "Other") == "Not Reported"
 
     assert is_null_mapped_value("specimen_molecular_analyte_type", "Not Reported") is True
     assert map_field_value("specimen_molecular_analyte_type", "Not Reported") is None
+
+
+def test_library_source_material_other_is_database_only():
+    """DB-only 'Other' is not a valid API filter; use 'Not Reported' instead."""
+    from app.core.field_mappings import is_database_only_value
+
+    assert is_database_only_value("library_source_material", "Other") is True
+    assert is_database_only_value("library_source_material", "Not Reported") is False
 
 
 def test_reverse_mappings_are_consistent_with_forward_mappings_for_tracked_fields():

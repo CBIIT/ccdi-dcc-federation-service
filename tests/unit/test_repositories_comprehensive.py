@@ -1028,9 +1028,9 @@ class TestSampleRepositoryInternal:
         assert isinstance(result, dict)
         mock_session.run.assert_called()
 
-    async def test_get_samples_summary_reverse_query_library_source_material_null(self, repository, mock_session):
-        """Test _get_samples_summary_reverse_query returns zero for null-mapped value."""
-        with patch("app.repositories.sample.is_null_mapped_value", return_value=True):
+    async def test_get_samples_summary_reverse_query_library_source_material_db_only(self, repository, mock_session):
+        """Test _get_samples_summary_reverse_query returns zero for DB-only value."""
+        with patch("app.repositories.sample.is_database_only_value", return_value=True):
             result = await repository._get_samples_summary_reverse_query(
                 {"library_source_material": "Other"}
             )
@@ -1203,8 +1203,8 @@ class TestSampleRepositoryInternal:
         assert params[identifiers_param] == ["S1", "S2"]
 
     async def test_get_samples_invalid_library_source_material_early_return(self, repository, mock_session):
-        """Test invalid library_source_material returns empty without DB call."""
-        with patch("app.repositories.sample.is_null_mapped_value", return_value=True):
+        """Test invalid (DB-only) library_source_material returns empty without DB call."""
+        with patch("app.repositories.sample.is_database_only_value", return_value=True):
             result = await repository.get_samples({"library_source_material": "Other"}, offset=0, limit=10)
 
         assert result == []

@@ -481,22 +481,30 @@ class TestCase3FilterBranches:
         assert params.get("param_1") == "PCR"
 
     @pytest.mark.asyncio
-    async def test_library_source_material_null_mapped_early_exit(self, repository):
+    async def test_library_source_material_db_only_early_exit(self, repository):
         cat = _categorized(
             sequencing_file={"library_source_material": "Other"},
         )
-        with patch(
-            "app.repositories.sample_query_cases.is_database_only_value",
-            return_value=False,
-        ):
-            with patch(
-                "app.repositories.sample_query_cases.is_null_mapped_value",
-                return_value=True,
-            ):
-                result = await repository._get_samples_case3_with_node_filters(
-                    {}, cat, offset=0, limit=20, base_url=None, return_total=False
-                )
+        # Real is_database_only_value: "Other" is DB-only (maps to API "Not Reported")
+        result = await repository._get_samples_case3_with_node_filters(
+            {}, cat, offset=0, limit=20, base_url=None, return_total=False
+        )
         assert result == []
+        repository.session.run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_library_source_material_not_reported_uses_in(self, repository):
+        repository.session.run = AsyncMock(return_value=_empty_result())
+        cat = _categorized(
+            sequencing_file={"library_source_material": "Not Reported"},
+        )
+        await repository._get_samples_case3_with_node_filters(
+            {}, cat, offset=0, limit=20, base_url=None, return_total=False
+        )
+        query = repository.session.run.call_args[0][0]
+        params = repository.session.run.call_args[0][1]
+        assert "sf.library_source_material IN $" in query
+        assert ["Other", "Not Reported"] in params.values()
 
     @pytest.mark.asyncio
     async def test_specimen_molecular_analyte_type_scalar_mapping(self, repository):

@@ -53,13 +53,19 @@ class SampleSpecializedQueries(SampleValidators):
             param_name = f"param_{param_counter}"
             
             if field == "library_source_material":
-                # Check if invalid value
-                if is_null_mapped_value("library_source_material", value):
+                # Check if invalid value (null-mapped or DB-only like "Other")
+                if is_null_mapped_value("library_source_material", value) or is_database_only_value(
+                    "library_source_material", value
+                ):
                     logger.info("Invalid library_source_material value - returning empty results", value=value)
                     return []
                 reverse_mapped = reverse_map_field_value("library_source_material", value)
-                params[param_name] = reverse_mapped
-                where_conditions.append(f"sf.library_source_material = ${param_name}")
+                if isinstance(reverse_mapped, list):
+                    params[param_name] = reverse_mapped
+                    where_conditions.append(f"sf.library_source_material IN ${param_name}")
+                else:
+                    params[param_name] = reverse_mapped if reverse_mapped else value
+                    where_conditions.append(f"sf.library_source_material = ${param_name}")
                 
             elif field == "library_strategy":
                 # Check if invalid value
@@ -408,13 +414,18 @@ class SampleSpecializedQueries(SampleValidators):
             param_name = f"param_{param_counter}"
             
             if field == "library_source_material":
-                if is_null_mapped_value("library_source_material", value):
+                if is_null_mapped_value("library_source_material", value) or is_database_only_value(
+                    "library_source_material", value
+                ):
                     logger.info("Invalid library_source_material value - returning empty results", value=value)
                     return [] if not return_total else ([], 0)
                 reverse_mapped = reverse_map_field_value("library_source_material", value)
-                # If reverse_mapped is None, use the original value (no mapping needed)
-                params[param_name] = reverse_mapped if reverse_mapped else value
-                sf_where_conditions.append(f"sf.library_source_material = ${param_name}")
+                if isinstance(reverse_mapped, list):
+                    params[param_name] = reverse_mapped
+                    sf_where_conditions.append(f"sf.library_source_material IN ${param_name}")
+                else:
+                    params[param_name] = reverse_mapped if reverse_mapped else value
+                    sf_where_conditions.append(f"sf.library_source_material = ${param_name}")
             elif field == "library_strategy":
                 if is_database_only_value("library_strategy", value):
                     logger.info("Invalid library_strategy value - returning empty results", value=value)
@@ -622,12 +633,18 @@ class SampleSpecializedQueries(SampleValidators):
             param_name = f"param_{param_counter}"
             
             if field == "library_source_material":
-                if is_null_mapped_value("library_source_material", value):
+                if is_null_mapped_value("library_source_material", value) or is_database_only_value(
+                    "library_source_material", value
+                ):
                     return {"counts": {"total": 0}}
                 reverse_mapped = reverse_map_field_value("library_source_material", value)
-                # If reverse_mapped is None, use the original value (no mapping needed)
-                params[param_name] = reverse_mapped if reverse_mapped else value
-                where_conditions.append(f"sf.library_source_material = ${param_name}")
+                if isinstance(reverse_mapped, list):
+                    params[param_name] = reverse_mapped
+                    where_conditions.append(f"sf.library_source_material IN ${param_name}")
+                else:
+                    # If reverse_mapped is None, use the original value (no mapping needed)
+                    params[param_name] = reverse_mapped if reverse_mapped else value
+                    where_conditions.append(f"sf.library_source_material = ${param_name}")
                 
             elif field == "library_strategy":
                 if is_database_only_value("library_strategy", value):

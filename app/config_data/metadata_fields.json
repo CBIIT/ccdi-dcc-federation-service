@@ -277,8 +277,8 @@
         "path": "unharmonized.file_name",
         "wiki_url": null,
         "standard": {
-          "name": null,
-          "url": null
+          "name": "caDSR CDE 11284037 v3.0",
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=11284037%20and%20ver_nr=3"
         }
       }
     ]

@@ -1198,35 +1198,35 @@ RETURN count(*) AS total_count
         retry_count = 0
         records = []
         
-        while retry_count <= max_retries:
-            try:
-                result = await self.session.run(cypher, params)
-                records = []
-                async for record in result:
-                    records.append(dict(record))
-                
-                # Ensure result is fully consumed
-                await result.consume()
-                
-                # If we got results or it's the last retry, break out of retry loop
-                if records or retry_count >= max_retries:
-                    break
-                
-                # If no results and not the last retry, wait a bit and retry
-                if retry_count < max_retries:
-                    await asyncio.sleep(0.1 * (retry_count + 1))  # Exponential backoff: 0.1s, 0.2s
-                    retry_count += 1
-                    logger.debug(f"Retrying get_samples_summary query (attempt {retry_count + 1})")
-            except Exception as e:
-                if retry_count < max_retries:
-                    await asyncio.sleep(0.1 * (retry_count + 1))
-                    retry_count += 1
-                    logger.warning(f"Error in get_samples_summary query, retrying (attempt {retry_count + 1})", error=str(e))
-                else:
-                    # Re-raise to be handled by outer try-except
-                    raise
-        
         try:
+            while retry_count <= max_retries:
+                try:
+                    result = await self.session.run(cypher, params)
+                    records = []
+                    async for record in result:
+                        records.append(dict(record))
+                    
+                    # Ensure result is fully consumed
+                    await result.consume()
+                    
+                    # If we got results or it's the last retry, break out of retry loop
+                    if records or retry_count >= max_retries:
+                        break
+                    
+                    # If no results and not the last retry, wait a bit and retry
+                    if retry_count < max_retries:
+                        await asyncio.sleep(0.1 * (retry_count + 1))  # Exponential backoff: 0.1s, 0.2s
+                        retry_count += 1
+                        logger.debug(f"Retrying get_samples_summary query (attempt {retry_count + 1})")
+                except Exception as e:
+                    if retry_count < max_retries:
+                        await asyncio.sleep(0.1 * (retry_count + 1))
+                        retry_count += 1
+                        logger.warning(f"Error in get_samples_summary query, retrying (attempt {retry_count + 1})", error=str(e))
+                    else:
+                        # Re-raise to be handled by outer try-except (anatomical_sites string fallback)
+                        raise
+            
             logger.debug(
                 "Query executed successfully",
                 records_count=len(records),

@@ -319,7 +319,7 @@ class TestReverseQuery:
         assert "sf.library_selection" in query
 
     async def test_reverse_query_specimen_molecular_analyte_type_list(self, repository, mock_session):
-        """'RNA' reverse-maps to a multi-value list → IN literal list."""
+        """'RNA' reverse-maps to a multi-value list → IN $param."""
         mock_record = {"total_count": 14}
         mock_session.run = AsyncMock(return_value=make_single_result(mock_record))
 
@@ -328,9 +328,11 @@ class TestReverseQuery:
         )
         assert result == {"counts": {"total": 14}}
         query = mock_session.run.call_args[0][0]
+        params = mock_session.run.call_args[0][1]
         assert "library_source_molecule" in query
-        assert "Total RNA" in query
-        assert "Messenger RNA" in query
+        assert "IN $param_1" in query
+        assert "Total RNA" in params["param_1"]
+        assert "Messenger RNA" in params["param_1"]
 
     async def test_reverse_query_specimen_molecular_analyte_type_string(self, repository, mock_session):
         """'Protein' reverse-maps to 'Protein' (single string) → = $param."""

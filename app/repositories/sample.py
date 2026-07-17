@@ -454,6 +454,73 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
                 preservation_method_param = f"param_{param_counter}"
                 reverse_mapped = reverse_map_field_value("preservation_method", filters["preservation_method"])
                 params[preservation_method_param] = reverse_mapped if reverse_mapped else filters["preservation_method"]
+
+        # Process sequencing_file filters (legacy standard-path fallthrough)
+        if "specimen_molecular_analyte_type" in filters:
+            smat_val = filters["specimen_molecular_analyte_type"]
+            if is_database_only_value("specimen_molecular_analyte_type", smat_val) or is_null_mapped_value(
+                "specimen_molecular_analyte_type", smat_val
+            ):
+                specimen_molecular_analyte_type_single_param = "invalid"
+            else:
+                reverse_mapped = reverse_map_field_value("specimen_molecular_analyte_type", smat_val)
+                if isinstance(reverse_mapped, list):
+                    specimen_molecular_analyte_type_list = reverse_mapped
+                else:
+                    param_counter = len([k for k in params.keys() if k.startswith("param_")])
+                    param_counter += 1
+                    specimen_molecular_analyte_type_single_param = f"param_{param_counter}"
+                    params[specimen_molecular_analyte_type_single_param] = (
+                        reverse_mapped if reverse_mapped else smat_val
+                    )
+
+        if "library_selection_method" in filters:
+            lsm_val = filters["library_selection_method"]
+            if is_database_only_value("library_selection_method", lsm_val):
+                library_selection_method_param = "invalid"
+            else:
+                param_counter = len([k for k in params.keys() if k.startswith("param_")])
+                param_counter += 1
+                library_selection_method_param = f"param_{param_counter}"
+                params[library_selection_method_param] = self._reverse_map_library_selection_method_static(
+                    lsm_val
+                )
+
+        if "library_strategy" in filters:
+            ls_val = filters["library_strategy"]
+            if is_database_only_value("library_strategy", ls_val):
+                library_strategy_param = "invalid"
+            else:
+                reverse_mapped = reverse_map_field_value("library_strategy", ls_val)
+                param_counter = len([k for k in params.keys() if k.startswith("param_")])
+                param_counter += 1
+                if isinstance(reverse_mapped, list):
+                    library_strategy_param = f"param_{param_counter}"
+                    params[library_strategy_param] = reverse_mapped
+                elif reverse_mapped and reverse_mapped != ls_val:
+                    param_counter += 1
+                    library_strategy_param = (
+                        f"param_{param_counter - 1}",
+                        f"param_{param_counter}",
+                    )
+                    params[library_strategy_param[0]] = reverse_mapped
+                    params[library_strategy_param[1]] = ls_val
+                else:
+                    library_strategy_param = f"param_{param_counter}"
+                    params[library_strategy_param] = reverse_mapped if reverse_mapped else ls_val
+
+        if "library_source_material" in filters:
+            lsrc_val = filters["library_source_material"]
+            if is_null_mapped_value("library_source_material", lsrc_val) or is_database_only_value(
+                "library_source_material", lsrc_val
+            ):
+                library_source_material_param = "invalid"
+            else:
+                param_counter = len([k for k in params.keys() if k.startswith("param_")])
+                param_counter += 1
+                library_source_material_param = f"param_{param_counter}"
+                reverse_mapped = reverse_map_field_value("library_source_material", lsrc_val)
+                params[library_source_material_param] = reverse_mapped if reverse_mapped else lsrc_val
         
         # Extract anatomical_sites condition if present (can be applied early)
         # Note: anatomical_sites_list_condition is already added to early_where_conditions above if early pagination is enabled
@@ -529,6 +596,15 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         ) or any("sf." in str(cond) for cond in all_conditions if isinstance(cond, str))
         # Always include sequencing_file for metadata fields
         needs_sequencing_file = True
+
+        # Whether any sequencing_file filter was resolved for this fallthrough path
+        needs_sf_collection = (
+            specimen_molecular_analyte_type_list
+            or specimen_molecular_analyte_type_single_param
+            or library_selection_method_param is not None
+            or library_strategy_param is not None
+            or library_source_material_param is not None
+        )
         
         # OPTIMIZATION: When sequencing file filters exist, apply them EARLY in OPTIONAL MATCH WHERE clause
         # This avoids collecting all files then filtering (10-20x faster)
@@ -642,11 +718,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         # Build WITH clause - always include diagnosis, pathology_file, and sequencing_file for metadata
         # NOTE: Participant will be added AFTER pagination for performance
         with_vars = ["sa"]  # Participant added after pagination
-        # For sequencing_file fields, collect ALL sequencing_files first to check if ANY match
-        needs_sf_collection = (specimen_molecular_analyte_type_list or specimen_molecular_analyte_type_single_param or
-                              library_selection_method_param is not None or
-                              library_strategy_param is not None or
-                              library_source_material_param is not None)
+        # needs_sf_collection already computed above for early OPTIONAL MATCH filters
         # For diagnosis search, collect ALL diagnoses first to check if ANY match
         # OPTIMIZATION Phase 3: When sequencing file filters exist (with or without identifiers),
         # use head(collect(DISTINCT sf)) directly instead of collect(DISTINCT sf) AS all_sfs
@@ -2103,117 +2175,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         logger.debug("Found sample", organization=organization, namespace=namespace, name=name)
         
         return sample
-    
-    
-    async def _get_samples_summary_reverse_query(
-        self,
-        filters: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """
-        Optimized summary query for sequencing_file-only filters.
-        Uses reverse query starting from sequencing_file.
-        """
-        params = {}
-        where_conditions = []
-        param_counter = 0
-        
-        # Build WHERE conditions - same as _get_samples_by_sequencing_file_filters
-        for field, value in filters.items():
-            param_counter += 1
-            param_name = f"param_{param_counter}"
-            
-            if field == "library_source_material":
-                if is_null_mapped_value("library_source_material", value) or is_database_only_value(
-                    "library_source_material", value
-                ):
-                    return {"counts": {"total": 0}}
-                reverse_mapped = reverse_map_field_value("library_source_material", value)
-                if isinstance(reverse_mapped, list):
-                    params[param_name] = reverse_mapped
-                    where_conditions.append(f"sf.library_source_material IN ${param_name}")
-                else:
-                    params[param_name] = reverse_mapped if reverse_mapped else value
-                    where_conditions.append(f"sf.library_source_material = ${param_name}")
-                
-            elif field == "library_strategy":
-                if is_database_only_value("library_strategy", value):
-                    return {"counts": {"total": 0}}
-                reverse_mapped = reverse_map_field_value("library_strategy", value)
-                if reverse_mapped and reverse_mapped != value:
-                    param_counter += 1
-                    param_name2 = f"param_{param_counter}"
-                    params[param_name] = reverse_mapped if isinstance(reverse_mapped, str) else reverse_mapped[0]
-                    params[param_name2] = value
-                    where_conditions.append(f"(sf.library_strategy = ${param_name} OR sf.library_strategy = ${param_name2})")
-                else:
-                    params[param_name] = value
-                    where_conditions.append(f"sf.library_strategy = ${param_name}")
-                    
-            elif field == "library_selection_method":
-                if is_database_only_value("library_selection_method", value):
-                    return {"counts": {"total": 0}}
-                db_value = SampleRepository._reverse_map_library_selection_method_static(value)
-                params[param_name] = db_value
-                where_conditions.append(f"sf.library_selection = ${param_name}")
-                
-            elif field == "specimen_molecular_analyte_type":
-                if is_database_only_value("specimen_molecular_analyte_type", value) or is_null_mapped_value("specimen_molecular_analyte_type", value):
-                    return {"counts": {"total": 0}}
-                reverse_mapped = reverse_map_field_value("specimen_molecular_analyte_type", value)
-                if isinstance(reverse_mapped, list):
-                    db_values_str = ", ".join([f"'{v}'" for v in reverse_mapped])
-                    where_conditions.append(f"sf.library_source_molecule IN [{db_values_str}]")
-                else:
-                    params[param_name] = reverse_mapped
-                    where_conditions.append(f"sf.library_source_molecule = ${param_name}")
-        
-        where_clause = " AND ".join(where_conditions) if where_conditions else "TRUE"
-        
-        # Optimized count query
-        # PERFORMANCE: use multi-hop traversal for sample->study lookup and count unique (sample_id, study_id).
-        cypher = f"""
-        MATCH (sf:sequencing_file)
-        WHERE {where_clause}
-        MATCH (sf)-[:of_sequencing_file]->(sa:sample)
-        WHERE sa.sample_id IS NOT NULL
-        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-        WITH sa, sf, collect(DISTINCT st1.study_id) AS st1_list
-        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-        WITH sa, sf, st1_list, collect(DISTINCT st2.study_id) AS st2_list
-        WITH sa, sf, (st2_list + st1_list) AS combined
-        UNWIND combined AS sid
-        WITH sa, sf, sid
-        WHERE sid IS NOT NULL
-        WITH DISTINCT sa.sample_id AS sample_id, sid AS study_id
-        RETURN count(*) as total_count
-        """.strip()
-        
-        logger.info(
-            "Executing optimized reverse summary query",
-            cypher=cypher[:300],
-            params=params
-        )
-        
-        try:
-            result = await self.session.run(cypher, params)
-            record = await result.single()
-            await result.consume()
-            
-            total_count = record["total_count"] if record else 0
-            
-            logger.debug("Reverse summary query executed successfully", total_count=total_count)
-            
-            # Return in the expected format for the service layer
-            return {
-                "counts": {
-                    "total": total_count
-                }
-            }
-            
-        except Exception as e:
-            logger.error("Error executing reverse summary query", error=str(e), exc_info=True)
-            raise
-    
+
     def _record_to_sample(
         self, 
         sa: Dict[str, Any], 

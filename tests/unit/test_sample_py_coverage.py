@@ -2366,13 +2366,15 @@ class TestGetSamplesSummaryReverseQueryInSample:
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
         
-        import app.repositories.sample as sm
+        import app.repositories.sample_summary as ss
         
-        original_is_null = sm.is_null_mapped_value
-        original_reverse_map = sm.reverse_map_field_value
+        original_is_null = ss.is_null_mapped_value
+        original_reverse_map = ss.reverse_map_field_value
+        original_is_db = ss.is_database_only_value
         
-        sm.is_null_mapped_value = lambda field, value: False
-        sm.reverse_map_field_value = lambda field, value: "DNA" if field == "library_source_material" else value
+        ss.is_null_mapped_value = lambda field, value: False
+        ss.is_database_only_value = lambda field, value: False
+        ss.reverse_map_field_value = lambda field, value: "DNA" if field == "library_source_material" else value
         
         try:
             result = await repository._get_samples_summary_reverse_query({"library_source_material": "DNA"})
@@ -2381,23 +2383,24 @@ class TestGetSamplesSummaryReverseQueryInSample:
             assert result == {"counts": {"total": 5}}
             mock_session.run.assert_called_once()
         finally:
-            sm.is_null_mapped_value = original_is_null
-            sm.reverse_map_field_value = original_reverse_map
+            ss.is_null_mapped_value = original_is_null
+            ss.reverse_map_field_value = original_reverse_map
+            ss.is_database_only_value = original_is_db
 
     async def test_get_samples_summary_reverse_query_library_strategy_with_reverse_mapping(self, repository, mock_session):
-        """Test _get_samples_summary_reverse_query with library_strategy reverse mapping (line 3529-3534)."""
+        """Test _get_samples_summary_reverse_query with library_strategy reverse mapping."""
         mock_result = AsyncMock()
         mock_result.single = AsyncMock(return_value={"total_count": 3})
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
         
-        import app.repositories.sample as sm
+        import app.repositories.sample_summary as ss
         
-        original_is_db_only = sm.is_database_only_value
-        original_reverse_map = sm.reverse_map_field_value
+        original_is_db_only = ss.is_database_only_value
+        original_reverse_map = ss.reverse_map_field_value
         
-        sm.is_database_only_value = lambda field, value: False
-        sm.reverse_map_field_value = lambda field, value: (
+        ss.is_database_only_value = lambda field, value: False
+        ss.reverse_map_field_value = lambda field, value: (
             "WXS" if field == "library_strategy" and value == "Other" else value
         )
         
@@ -2406,13 +2409,12 @@ class TestGetSamplesSummaryReverseQueryInSample:
             
             assert isinstance(result, dict)
             assert result == {"counts": {"total": 3}}
-            # Verify query has OR condition for both mapped and original values
             call_args = mock_session.run.call_args
             query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
             assert 'OR' in query or 'param_1' in query or 'param_2' in query
         finally:
-            sm.is_database_only_value = original_is_db_only
-            sm.reverse_map_field_value = original_reverse_map
+            ss.is_database_only_value = original_is_db_only
+            ss.reverse_map_field_value = original_reverse_map
 
     async def test_get_samples_summary_reverse_query_library_selection_method(self, repository, mock_session):
         """Test _get_samples_summary_reverse_query with library_selection_method filter."""
@@ -2421,11 +2423,11 @@ class TestGetSamplesSummaryReverseQueryInSample:
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
         
-        import app.repositories.sample as sm
+        import app.repositories.sample_summary as ss
         
-        original_is_db_only = sm.is_database_only_value
+        original_is_db_only = ss.is_database_only_value
         
-        sm.is_database_only_value = lambda field, value: False
+        ss.is_database_only_value = lambda field, value: False
         
         try:
             result = await repository._get_samples_summary_reverse_query({"library_selection_method": "PCR"})
@@ -2434,24 +2436,24 @@ class TestGetSamplesSummaryReverseQueryInSample:
             assert result == {"counts": {"total": 2}}
             mock_session.run.assert_called_once()
         finally:
-            sm.is_database_only_value = original_is_db_only
+            ss.is_database_only_value = original_is_db_only
 
     async def test_get_samples_summary_reverse_query_specimen_molecular_analyte_type_list(self, repository, mock_session):
-        """Test _get_samples_summary_reverse_query with specimen_molecular_analyte_type list mapping (line 3550-3552)."""
+        """Test _get_samples_summary_reverse_query with specimen_molecular_analyte_type list mapping."""
         mock_result = AsyncMock()
         mock_result.single = AsyncMock(return_value={"total_count": 4})
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
         
-        import app.repositories.sample as sm
+        import app.repositories.sample_summary as ss
         
-        original_is_db_only = sm.is_database_only_value
-        original_is_null = sm.is_null_mapped_value
-        original_reverse_map = sm.reverse_map_field_value
+        original_is_db_only = ss.is_database_only_value
+        original_is_null = ss.is_null_mapped_value
+        original_reverse_map = ss.reverse_map_field_value
         
-        sm.is_database_only_value = lambda field, value: False
-        sm.is_null_mapped_value = lambda field, value: False
-        sm.reverse_map_field_value = lambda field, value: (
+        ss.is_database_only_value = lambda field, value: False
+        ss.is_null_mapped_value = lambda field, value: False
+        ss.reverse_map_field_value = lambda field, value: (
             ["MicroRNA", "Total RNA"] if field == "specimen_molecular_analyte_type" and value == "RNA"
             else value
         )
@@ -2461,33 +2463,32 @@ class TestGetSamplesSummaryReverseQueryInSample:
             
             assert isinstance(result, dict)
             assert result == {"counts": {"total": 4}}
-            # Verify query uses IN clause for list
             call_args = mock_session.run.call_args
             query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
             assert 'IN [' in query or 'IN' in query
         finally:
-            sm.is_database_only_value = original_is_db_only
-            sm.is_null_mapped_value = original_is_null
-            sm.reverse_map_field_value = original_reverse_map
+            ss.is_database_only_value = original_is_db_only
+            ss.is_null_mapped_value = original_is_null
+            ss.reverse_map_field_value = original_reverse_map
 
     async def test_get_samples_summary_reverse_query_exception_handling(self, repository, mock_session):
         """Test _get_samples_summary_reverse_query exception handling."""
         mock_session.run = AsyncMock(side_effect=Exception("Database error"))
         
-        import app.repositories.sample as sm
+        import app.repositories.sample_summary as ss
         
-        original_is_db_only = sm.is_database_only_value
-        original_is_null = sm.is_null_mapped_value
+        original_is_db_only = ss.is_database_only_value
+        original_is_null = ss.is_null_mapped_value
         
-        sm.is_database_only_value = lambda field, value: False
-        sm.is_null_mapped_value = lambda field, value: False
+        ss.is_database_only_value = lambda field, value: False
+        ss.is_null_mapped_value = lambda field, value: False
         
         try:
             with pytest.raises(Exception, match="Database error"):
                 await repository._get_samples_summary_reverse_query({"library_strategy": "WXS"})
         finally:
-            sm.is_database_only_value = original_is_db_only
-            sm.is_null_mapped_value = original_is_null
+            ss.is_database_only_value = original_is_db_only
+            ss.is_null_mapped_value = original_is_null
 
     async def test_get_samples_summary_reverse_query_no_record(self, repository, mock_session):
         """Test _get_samples_summary_reverse_query when query returns no record."""
@@ -2496,13 +2497,13 @@ class TestGetSamplesSummaryReverseQueryInSample:
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
         
-        import app.repositories.sample as sm
+        import app.repositories.sample_summary as ss
         
-        original_is_db_only = sm.is_database_only_value
-        original_is_null = sm.is_null_mapped_value
+        original_is_db_only = ss.is_database_only_value
+        original_is_null = ss.is_null_mapped_value
         
-        sm.is_database_only_value = lambda field, value: False
-        sm.is_null_mapped_value = lambda field, value: False
+        ss.is_database_only_value = lambda field, value: False
+        ss.is_null_mapped_value = lambda field, value: False
         
         try:
             result = await repository._get_samples_summary_reverse_query({"library_strategy": "WXS"})
@@ -2510,24 +2511,24 @@ class TestGetSamplesSummaryReverseQueryInSample:
             assert isinstance(result, dict)
             assert result == {"counts": {"total": 0}}
         finally:
-            sm.is_database_only_value = original_is_db_only
-            sm.is_null_mapped_value = original_is_null
+            ss.is_database_only_value = original_is_db_only
+            ss.is_null_mapped_value = original_is_null
 
     async def test_get_samples_summary_reverse_query_library_strategy_no_reverse_mapping(self, repository, mock_session):
-        """Test _get_samples_summary_reverse_query with library_strategy that has no reverse mapping (line 3535-3537)."""
+        """Test _get_samples_summary_reverse_query with library_strategy that has no reverse mapping."""
         mock_result = AsyncMock()
         mock_result.single = AsyncMock(return_value={"total_count": 7})
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
         
-        import app.repositories.sample as sm
+        import app.repositories.sample_summary as ss
         
-        original_is_db_only = sm.is_database_only_value
-        original_reverse_map = sm.reverse_map_field_value
+        original_is_db_only = ss.is_database_only_value
+        original_reverse_map = ss.reverse_map_field_value
         
-        sm.is_database_only_value = lambda field, value: False
-        sm.reverse_map_field_value = lambda field, value: (
-            None if field == "library_strategy" and value == "WXS" else value  # No reverse mapping
+        ss.is_database_only_value = lambda field, value: False
+        ss.reverse_map_field_value = lambda field, value: (
+            None if field == "library_strategy" and value == "WXS" else value
         )
         
         try:
@@ -2537,5 +2538,5 @@ class TestGetSamplesSummaryReverseQueryInSample:
             assert result == {"counts": {"total": 7}}
             mock_session.run.assert_called_once()
         finally:
-            sm.is_database_only_value = original_is_db_only
-            sm.reverse_map_field_value = original_reverse_map
+            ss.is_database_only_value = original_is_db_only
+            ss.reverse_map_field_value = original_reverse_map

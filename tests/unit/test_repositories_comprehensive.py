@@ -1030,7 +1030,7 @@ class TestSampleRepositoryInternal:
 
     async def test_get_samples_summary_reverse_query_library_source_material_db_only(self, repository, mock_session):
         """Test _get_samples_summary_reverse_query returns zero for DB-only value."""
-        with patch("app.repositories.sample.is_database_only_value", return_value=True):
+        with patch("app.repositories.sample_summary.is_database_only_value", return_value=True):
             result = await repository._get_samples_summary_reverse_query(
                 {"library_source_material": "Other"}
             )
@@ -1040,7 +1040,7 @@ class TestSampleRepositoryInternal:
 
     async def test_get_samples_summary_reverse_query_library_strategy_database_only(self, repository, mock_session):
         """Test _get_samples_summary_reverse_query returns zero for database-only value."""
-        with patch("app.repositories.sample.is_database_only_value", return_value=True):
+        with patch("app.repositories.sample_summary.is_database_only_value", return_value=True):
             result = await repository._get_samples_summary_reverse_query(
                 {"library_strategy": "DB_ONLY"}
             )
@@ -1055,8 +1055,8 @@ class TestSampleRepositoryInternal:
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
 
-        with patch("app.repositories.sample.is_database_only_value", return_value=False), \
-            patch("app.repositories.sample.reverse_map_field_value", return_value="RNA_DB"):
+        with patch("app.repositories.sample_summary.is_database_only_value", return_value=False), \
+            patch("app.repositories.sample_summary.reverse_map_field_value", return_value="RNA_DB"):
             result = await repository._get_samples_summary_reverse_query(
                 {"library_strategy": "RNA-Seq"}
             )
@@ -1067,22 +1067,24 @@ class TestSampleRepositoryInternal:
         assert params["param_2"] == "RNA-Seq"
 
     async def test_get_samples_summary_reverse_query_specimen_molecular_analyte_type_list(self, repository, mock_session):
-        """Test _get_samples_summary_reverse_query handles list reverse mapping."""
+        """Test _get_samples_summary_reverse_query handles list reverse mapping via params."""
         mock_result = AsyncMock()
         mock_result.single = AsyncMock(return_value={"total_count": 2})
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
 
-        with patch("app.repositories.sample.is_database_only_value", return_value=False), \
-            patch("app.repositories.sample.is_null_mapped_value", return_value=False), \
-            patch("app.repositories.sample.reverse_map_field_value", return_value=["m1", "m2"]):
+        with patch("app.repositories.sample_summary.is_database_only_value", return_value=False), \
+            patch("app.repositories.sample_summary.is_null_mapped_value", return_value=False), \
+            patch("app.repositories.sample_summary.reverse_map_field_value", return_value=["m1", "m2"]):
             result = await repository._get_samples_summary_reverse_query(
                 {"specimen_molecular_analyte_type": "DNA"}
             )
 
         assert result == {"counts": {"total": 2}}
         cypher = mock_session.run.call_args[0][0]
-        assert "IN ['m1', 'm2']" in cypher
+        params = mock_session.run.call_args[0][1]
+        assert "IN $param_1" in cypher
+        assert params["param_1"] == ["m1", "m2"]
 
     async def test_get_samples_summary_reverse_query_library_selection_method(self, repository, mock_session):
         """Test _get_samples_summary_reverse_query handles library_selection_method."""
@@ -1091,7 +1093,7 @@ class TestSampleRepositoryInternal:
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
 
-        with patch("app.repositories.sample.is_database_only_value", return_value=False), \
+        with patch("app.repositories.sample_summary.is_database_only_value", return_value=False), \
             patch.object(SampleRepository, "_reverse_map_library_selection_method_static", return_value="Selection_DB"):
             result = await repository._get_samples_summary_reverse_query(
                 {"library_selection_method": "Selection"}

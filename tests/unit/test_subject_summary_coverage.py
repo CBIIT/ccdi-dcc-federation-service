@@ -354,6 +354,28 @@ async def test_summary_diagnosis_category_filters(repository, mock_session):
 
 @pytest.mark.asyncio
 @pytest.mark.unit
+async def test_summary_associated_diagnosis_categories_lowered_filters(
+    repository, mock_session
+):
+    """Exact associated_diagnosis_categories filter sets lowercased $diag_category_filters."""
+    mock_session.run.return_value = make_async_result([_count_record(3)])
+
+    result = await repository.get_subjects_summary(
+        {"associated_diagnosis_categories": "Myeloid Leukemia"}
+    )
+
+    assert result.get("total_count") == 3
+    params = mock_session.run.call_args[0][1]
+    assert params["diag_category_filters"] == [
+        "myeloid leukemias",
+        "myeloid leukemia",
+    ]
+    query = mock_session.run.call_args[0][0]
+    assert "IN $diag_category_filters" in query
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
 async def test_summary_raises_after_session_retries_exhausted(repository, mock_session):
     """Session.run keeps failing: retry loop exhausts then re-raises."""
     mock_session.run.side_effect = RuntimeError("bolt error")

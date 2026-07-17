@@ -501,6 +501,73 @@ class TestCase3FilterBranches:
         repository.session.run.assert_not_called()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "categorized,expected",
+        [
+            (
+                {"diagnosis": {"disease_phase": "Not Applicable"}},
+                ([], 0),
+            ),
+            (
+                {"diagnosis": {"disease_phase": "Recurrent Disease"}},
+                ([], 0),
+            ),
+            (
+                {"pathology_file": {"preservation_method": "Cytospin Slide"}},
+                ([], 0),
+            ),
+            (
+                {"pathology_file": {"preservation_method": "Other"}},
+                ([], 0),
+            ),
+            (
+                {"sequencing_file": {"specimen_molecular_analyte_type": "Total RNA"}},
+                ([], 0),
+            ),
+            (
+                {"sequencing_file": {"library_source_material": "Other"}},
+                ([], 0),
+            ),
+            (
+                {"sequencing_file": {"library_strategy": "Archer Fusion"}},
+                ([], 0),
+            ),
+        ],
+    )
+    async def test_case3_db_only_return_total_tuple(self, repository, categorized, expected):
+        """DB-only / invalid filters with return_total=True must return ([], 0), not []."""
+        cat = _categorized(**categorized)
+        result = await repository._get_samples_case3_with_node_filters(
+            {}, cat, offset=0, limit=20, base_url=None, return_total=True
+        )
+        assert result == expected
+        repository.session.run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_disease_phase_relapse_uses_in_clause(self, repository):
+        """API 'Relapse' reverse-maps to Recurrent Disease + Relapse → IN clause."""
+        repository.session.run = AsyncMock(return_value=_empty_result())
+        cat = _categorized(diagnosis={"disease_phase": "Relapse"})
+        await repository._get_samples_case3_with_node_filters(
+            {}, cat, offset=0, limit=20, base_url=None, return_total=False
+        )
+        params = repository.session.run.call_args[0][1]
+        query = repository.session.run.call_args[0][0]
+        assert "d.disease_phase IN" in query
+        assert ["Recurrent Disease", "Relapse"] in params.values()
+
+    @pytest.mark.asyncio
+    async def test_diagnosis_category_low_grade_gliomas_lowered(self, repository):
+        """Canonical Low-Grade Gliomas expands to lowercased DB alias spellings."""
+        repository.session.run = AsyncMock(return_value=_empty_result())
+        cat = _categorized(diagnosis={"diagnosis_category": "Low-Grade Gliomas"})
+        await repository._get_samples_case3_with_node_filters(
+            {}, cat, offset=0, limit=20, base_url=None, return_total=False
+        )
+        params = repository.session.run.call_args[0][1]
+        assert params["diag_category_filters"] == ["low-grade gliomas"]
+
+    @pytest.mark.asyncio
     async def test_disease_phase_null_mapped_with_search(self, repository):
         repository.session.run = AsyncMock(return_value=_empty_result())
         cat = _categorized(

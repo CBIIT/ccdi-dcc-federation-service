@@ -1223,6 +1223,50 @@ class TestSampleRepositoryInternal:
         assert samples == [sample_obj]
         assert total == 1
 
+    async def test_get_samples_by_combined_filters_count_fail_still_tuple(
+        self, repository, mock_session
+    ):
+        """combined sf+pf reverse path: count failure still returns (samples, len) tuple."""
+        sample_obj = Mock()
+        mock_list_result = AsyncMock()
+        mock_list_result.__aiter__.return_value = [
+            {
+                "sa": {"sample_id": "S1"},
+                "p": {},
+                "st": {"study_id": "phs001"},
+                "sf": {"library_strategy": "WGS"},
+                "pf": {"fixation_embedding_method": "OCT"},
+                "diagnoses": {},
+            }
+        ]
+        mock_list_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_list_result)
+        repository._record_to_sample = Mock(return_value=sample_obj)
+
+        with patch("app.repositories.sample.is_database_only_value", return_value=False), patch(
+            "app.repositories.sample.is_null_mapped_value", return_value=False
+        ), patch(
+            "app.repositories.sample.reverse_map_field_value",
+            side_effect=lambda field, value: value,
+        ), patch(
+            "app.repositories.sample.SampleRepository._reverse_map_library_selection_method_static",
+            return_value="WGS",
+        ), patch(
+            "app.repositories.sample.run_count_query_with_retry",
+            AsyncMock(side_effect=RuntimeError("count failed")),
+        ):
+            result = await repository._get_samples_by_combined_filters(
+                {"library_strategy": "WGS", "preservation_method": "OCT"},
+                offset=0,
+                limit=10,
+                return_total=True,
+            )
+
+        assert isinstance(result, tuple)
+        samples, total = result
+        assert samples == [sample_obj]
+        assert total == 1
+
     async def test_get_samples_by_sequencing_file_filters_success(self, repository, mock_session):
         """Test reverse query returns samples when records exist."""
         with patch("app.repositories.sample.is_database_only_value", return_value=False), \
@@ -1329,6 +1373,18 @@ class TestSampleRepositoryInternal:
         assert result == []
         assert not mock_session.run.called
 
+    async def test_pathology_file_only_invalid_preservation_return_total(self, repository, mock_session):
+        """DB-only preservation with return_total=True returns ([], 0), not []."""
+        result = await repository._get_samples_by_pathology_file_filters(
+            {"preservation_method": "Cytospin Slide"},
+            offset=0,
+            limit=10,
+            return_total=True,
+        )
+
+        assert result == ([], 0)
+        assert not mock_session.run.called
+
     async def test_combined_filters_invalid_preservation_method_early_return(self, repository, mock_session):
         """DB-only 'Other' returns empty without a DB call (combined sf+pf path)."""
         result = await repository._get_samples_by_combined_filters(
@@ -1338,6 +1394,32 @@ class TestSampleRepositoryInternal:
         )
 
         assert result == []
+        assert not mock_session.run.called
+
+    async def test_combined_filters_invalid_preservation_return_total(self, repository, mock_session):
+        """Combined path: DB-only preservation with return_total=True returns ([], 0)."""
+        result = await repository._get_samples_by_combined_filters(
+            {"library_source_material": "Not Reported", "preservation_method": "Other"},
+            offset=0,
+            limit=10,
+            return_total=True,
+        )
+
+        assert result == ([], 0)
+        assert not mock_session.run.called
+
+    async def test_combined_filters_invalid_library_source_material_return_total(
+        self, repository, mock_session
+    ):
+        """Combined path: DB-only library_source_material=Other with return_total → ([], 0)."""
+        result = await repository._get_samples_by_combined_filters(
+            {"library_source_material": "Other", "preservation_method": "OCT"},
+            offset=0,
+            limit=10,
+            return_total=True,
+        )
+
+        assert result == ([], 0)
         assert not mock_session.run.called
 
     async def test_count_samples_by_associated_diagnoses_no_filters(self, repository, mock_session):

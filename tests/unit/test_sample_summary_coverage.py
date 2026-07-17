@@ -636,6 +636,22 @@ class TestGetSamplesSummaryCoverage:
         assert result == {"counts": {"total": 3}}
         mock_session.run.assert_called_once()
 
+    async def test_get_samples_summary_disease_phase_unknown_uses_in(self, repository, mock_session):
+        """API Unknown reverse-maps to multiple DB spellings in the summary query."""
+        async def async_gen():
+            yield {"total_count": 4}
+
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        result = await repository.get_samples_summary({"disease_phase": "Unknown"})
+
+        assert result == {"counts": {"total": 4}}
+        params = mock_session.run.call_args[0][1]
+        assert ["Not Applicable", "Prior Primary", "Synchronous", "Unknown"] in params.values()
+
     async def test_get_samples_summary_library_source_material_database_only(self, repository, mock_session):
         """DB-only 'Other' is rejected via the real _validate_library_source_material_filter
         (sample_helpers.py), not just the enum-membership side effect."""

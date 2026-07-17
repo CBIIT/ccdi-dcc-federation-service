@@ -256,6 +256,35 @@ class TestSubjectRepository:
             "race filter_condition must be forced to an impossible predicate for a DB-only value"
         )
 
+    async def test_get_subjects_associated_diagnosis_categories_lowered_filters(
+        self, repository, mock_session
+    ):
+        """associated_diagnosis_categories expands reverse-maps and lowercases for Cypher IN."""
+        async def async_gen():
+            return
+            yield
+
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        result = await repository.get_subjects(
+            filters={"associated_diagnosis_categories": "Myeloid Leukemia"},
+            offset=0,
+            limit=20,
+        )
+
+        assert isinstance(result, list)
+        assert mock_session.run.called
+        params = mock_session.run.call_args[0][1]
+        assert params["diag_category_filters"] == [
+            "myeloid leukemias",
+            "myeloid leukemia",
+        ]
+        query = mock_session.run.call_args[0][0]
+        assert "$diag_category_filters" in query
+        assert "IN $diag_category_filters" in query
+
     async def test_get_subjects_with_depositions_filter(self, repository, mock_session):
         """Test get_subjects with depositions filter."""
         async def async_gen():

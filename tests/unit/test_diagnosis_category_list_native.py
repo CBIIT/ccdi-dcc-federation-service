@@ -93,6 +93,20 @@ class TestDiagnosisCategoryFilterDbValues:
 
         assert diagnosis_category_filter_db_values("Neuroblastoma") == ["neuroblastoma"]
 
+    def test_empty_and_none_return_empty_list(self):
+        from app.core.diagnosis_category import diagnosis_category_filter_db_values
+
+        assert diagnosis_category_filter_db_values(None) == []
+        assert diagnosis_category_filter_db_values("") == []
+        assert diagnosis_category_filter_db_values("   ") == []
+
+    def test_low_grade_gliomas_alias_expands_lowered(self):
+        from app.core.diagnosis_category import diagnosis_category_filter_db_values
+
+        vals = diagnosis_category_filter_db_values("Low-Grade Gliomas")
+        assert vals == ["low-grade gliomas"]
+        assert all(v == v.lower() for v in vals)
+
 
 @pytest.mark.unit
 class TestBuildDiagnosisResultListNative:

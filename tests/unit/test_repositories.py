@@ -232,6 +232,30 @@ class TestSubjectRepository:
         
         assert isinstance(result, list)
 
+    async def test_get_subjects_with_race_database_only_value(self, repository, mock_session):
+        """DB-only 'Not Allowed to Collect' is rejected; clients must use the API PV
+        'Not allowed to collect' -- forces an impossible race_filter_condition."""
+        async def async_gen():
+            return
+            yield
+
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        result = await repository.get_subjects(
+            filters={"race": "Not Allowed to Collect"},  # DB spelling, not the API PV
+            offset=0,
+            limit=20
+        )
+
+        assert isinstance(result, list)
+        assert mock_session.run.called
+        queries = [call_args[0][0] for call_args in mock_session.run.call_args_list]
+        assert any("false" in query for query in queries), (
+            "race filter_condition must be forced to an impossible predicate for a DB-only value"
+        )
+
     async def test_get_subjects_with_depositions_filter(self, repository, mock_session):
         """Test get_subjects with depositions filter."""
         async def async_gen():

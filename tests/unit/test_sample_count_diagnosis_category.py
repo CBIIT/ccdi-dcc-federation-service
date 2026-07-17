@@ -158,3 +158,22 @@ async def test_count_diagnosis_category_multiple_values(repository, mock_session
     assert result["total"] == 205
     assert result["missing"] == 0
     assert result["values"] == [{"value": c["value"], "count": c["count"]} for c in categories]
+
+
+async def test_count_diagnosis_category_cypher_maps_aliases(repository, mock_session):
+    """Values/missing queries apply field_mappings aliases before PV match."""
+    mock_session.run.side_effect = [
+        make_async_result([{"total": 1}]),
+        make_async_result([{"missing": 0}]),
+        make_async_result([{"value": "Myeloid Leukemia", "count": 1}]),
+    ]
+
+    await repository._count_samples_by_diagnosis_category()
+
+    missing_query = mock_session.run.call_args_list[1][0][0]
+    values_query = mock_session.run.call_args_list[2][0][0]
+    for query in (missing_query, values_query):
+        assert "Myeloid leukemias" in query
+        assert "Myeloid Leukemia" in query
+        assert "Low-grade Gliomas" in query
+        assert "Low-Grade Gliomas" in query

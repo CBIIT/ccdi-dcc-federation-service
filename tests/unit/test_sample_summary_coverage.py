@@ -614,6 +614,36 @@ class TestGetSamplesSummaryCoverage:
         
         assert result == {"counts": {"total": 12}}
 
+    async def test_get_samples_summary_preservation_method_database_only(self, repository, mock_session):
+        """DB-only 'Cytospin Slide' is rejected; clients must filter by API PV 'Unknown'."""
+        result = await repository.get_samples_summary({"preservation_method": "Cytospin Slide"})
+
+        assert result == {"counts": {"total": 0}}
+        assert not mock_session.run.called
+
+    async def test_get_samples_summary_preservation_method_unknown_is_valid(self, repository, mock_session):
+        """'Unknown' is null-mapped for responses but must still be accepted as a filter."""
+        async def async_gen():
+            yield {"total_count": 3}
+
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        result = await repository.get_samples_summary({"preservation_method": "Unknown"})
+
+        assert result == {"counts": {"total": 3}}
+        mock_session.run.assert_called_once()
+
+    async def test_get_samples_summary_library_source_material_database_only(self, repository, mock_session):
+        """DB-only 'Other' is rejected via the real _validate_library_source_material_filter
+        (sample_helpers.py), not just the enum-membership side effect."""
+        result = await repository.get_samples_summary({"library_source_material": "Other"})
+
+        assert result == {"counts": {"total": 0}}
+        assert not mock_session.run.called
+
     async def test_get_samples_summary_tumor_grade_filter(self, repository, mock_session):
         """Test get_samples_summary with tumor_grade filter."""
         async def async_gen():
@@ -800,7 +830,6 @@ class TestGetSamplesSummaryCoverage:
         # so the query doesn't return early - these functions return True on success, None on failure
         # Also patch the field mapping functions to ensure they work correctly
         import app.repositories.sample_summary as sm_module
-        import app.repositories.sample_validators as sv_module
         import app.core.field_mappings as fm_module
         
         def mock_validate_library_source_material(value, param_name, params, with_conditions):
@@ -814,8 +843,6 @@ class TestGetSamplesSummaryCoverage:
              patch.object(sm_module, 'is_database_only_value', new=mock_is_database_only), \
              patch.object(sm_module, 'is_null_mapped_value', new=mock_is_null_mapped), \
              patch.object(sm_module, 'reverse_map_field_value', new=mock_reverse_map), \
-             patch.object(sv_module, 'is_null_mapped_value', new=mock_is_null_mapped), \
-             patch.object(sv_module, 'reverse_map_field_value', new=mock_reverse_map), \
              patch.object(fm_module, 'is_null_mapped_value', new=mock_is_null_mapped), \
              patch.object(fm_module, 'reverse_map_field_value', new=mock_reverse_map):
             result = await repository.get_samples_summary({

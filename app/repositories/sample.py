@@ -443,11 +443,17 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         # Process filters for early filter optimization
         # Process preservation_method filter (pathology_file node)
         if "preservation_method" in filters:
-            param_counter = len([k for k in params.keys() if k.startswith("param_")])
-            param_counter += 1
-            preservation_method_param = f"param_{param_counter}"
-            reverse_mapped = reverse_map_field_value("preservation_method", filters["preservation_method"])
-            params[preservation_method_param] = reverse_mapped if reverse_mapped else filters["preservation_method"]
+            # Reject DB-only spellings (e.g. Cytospin Slide, Other); "Unknown" is
+            # null-mapped for responses but is a valid API filter, so only
+            # is_database_only_value gates this -- not is_null_mapped_value.
+            if is_database_only_value("preservation_method", filters["preservation_method"]):
+                preservation_method_param = "invalid"
+            else:
+                param_counter = len([k for k in params.keys() if k.startswith("param_")])
+                param_counter += 1
+                preservation_method_param = f"param_{param_counter}"
+                reverse_mapped = reverse_map_field_value("preservation_method", filters["preservation_method"])
+                params[preservation_method_param] = reverse_mapped if reverse_mapped else filters["preservation_method"]
         
         # Extract anatomical_sites condition if present (can be applied early)
         # Note: anatomical_sites_list_condition is already added to early_where_conditions above if early pagination is enabled
@@ -603,7 +609,9 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         pf_optional_match_where = None
         use_pf_early_filter = False
         if preservation_method_param:
-            if isinstance(params[preservation_method_param], list):
+            if preservation_method_param == "invalid":
+                pf_optional_match_where = "WHERE false"
+            elif isinstance(params[preservation_method_param], list):
                 pf_optional_match_where = f"WHERE pf.fixation_embedding_method IN ${preservation_method_param}"
             else:
                 pf_optional_match_where = f"WHERE pf.fixation_embedding_method = ${preservation_method_param}"
@@ -1594,13 +1602,19 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
             param_name = f"param_{param_counter}"
             
             if field == "preservation_method":
+                # Reject DB-only spellings (e.g. Cytospin Slide, Other); "Unknown" is
+                # null-mapped for responses but is a valid API filter, so only
+                # is_database_only_value gates this -- not is_null_mapped_value.
+                if is_database_only_value("preservation_method", value):
+                    logger.info("Invalid preservation_method value (database-only), returning empty results", value=value)
+                    return ([], 0) if return_total else []
                 reverse_mapped = reverse_map_field_value("preservation_method", value)
                 params[param_name] = reverse_mapped if reverse_mapped else value
                 if isinstance(params[param_name], list):
                     where_conditions.append(f"pf.fixation_embedding_method IN ${param_name}")
                 else:
                     where_conditions.append(f"pf.fixation_embedding_method = ${param_name}")
-        
+
         # Build WHERE clause for pathology_file filter
         pf_where_clause = " AND ".join(where_conditions) if where_conditions else "TRUE"
         
@@ -1815,6 +1829,12 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
         
         # Build WHERE conditions for pathology_file properties
         if "preservation_method" in filters:
+            # Reject DB-only spellings (e.g. Cytospin Slide, Other); "Unknown" is
+            # null-mapped for responses but is a valid API filter, so only
+            # is_database_only_value gates this -- not is_null_mapped_value.
+            if is_database_only_value("preservation_method", filters["preservation_method"]):
+                logger.info("Invalid preservation_method value (database-only), returning empty results", value=filters["preservation_method"])
+                return [] if not return_total else ([], 0)
             param_counter += 1
             param_name = f"param_{param_counter}"
             reverse_mapped = reverse_map_field_value("preservation_method", filters["preservation_method"])

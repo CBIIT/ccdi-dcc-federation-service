@@ -6,6 +6,7 @@ from typing import Any, Dict
 
 from app.core.logging import get_logger
 from app.core.field_mappings import reverse_map_field_value, is_database_only_value
+from app.core.diagnosis_category import diagnosis_category_filter_db_values
 from app.utils.cypher_builder import combine_where_clauses
 from app.repositories.subject_diagnosis_cypher import (
     add_diagnosis_search_params,
@@ -92,7 +93,15 @@ class SubjectSummary:
                     ${race_param} AS race_tokens,
                     [pt IN coalesce(p.race, []) | trim(toString(pt))] AS pr_tokens"""
 
-                    if includes_not_reported:
+                    # Reject DB-only spellings (e.g. "Not Allowed to Collect"); clients
+                    # must use the API PV ("Not allowed to collect"). race_condition stays
+                    # populated so downstream processing still engages this path -- only
+                    # the match predicate is forced to always-false.
+                    invalid_race_values = [r for r in race_list if is_database_only_value("race", r)]
+                    if invalid_race_values:
+                        logger.info("Invalid race filter (database-only), returning empty results", value=invalid_race_values)
+                        race_filter_condition = "false"
+                    elif includes_not_reported:
                         # Match either: "Not Reported" in original values OR "Hispanic or Latino" only (which converts to "Not Reported")
                         race_filter_condition = """(reduce(found = false, tok IN race_tokens | found OR tok IN pr_tokens) OR
                         (size(pr_tokens) > 0 AND reduce(all_hispanic = true, pt IN pr_tokens | all_hispanic AND pt = 'Hispanic or Latino') AND 'Not Reported' IN race_tokens))"""
@@ -173,7 +182,9 @@ class SubjectSummary:
             raw_cat = filters.pop("associated_diagnosis_categories")
             if isinstance(raw_cat, str) and raw_cat.strip():
                 diag_category_filter = raw_cat.strip()
-                params["diag_category_filter"] = diag_category_filter
+                params["diag_category_filters"] = diagnosis_category_filter_db_values(
+                    diag_category_filter
+                )
 
         needs_diagnosis_node_filter = bool(
             diagnosis_search_term or diag_category_filter or diagnosis_category_contains
@@ -1132,7 +1143,15 @@ class SubjectSummary:
                     ${race_param} AS race_tokens,
                     [pt IN coalesce(p.race, []) | trim(toString(pt))] AS pr_tokens"""
 
-                    if includes_not_reported:
+                    # Reject DB-only spellings (e.g. "Not Allowed to Collect"); clients
+                    # must use the API PV ("Not allowed to collect"). race_condition stays
+                    # populated so downstream processing still engages this path -- only
+                    # the match predicate is forced to always-false.
+                    invalid_race_values = [r for r in race_list if is_database_only_value("race", r)]
+                    if invalid_race_values:
+                        logger.info("Invalid race filter (database-only), returning empty results", value=invalid_race_values)
+                        race_filter_condition = "false"
+                    elif includes_not_reported:
                         race_filter_condition = """(reduce(found = false, tok IN race_tokens | found OR tok IN pr_tokens) OR
                         (size(pr_tokens) > 0 AND reduce(all_hispanic = true, pt IN pr_tokens | all_hispanic AND pt = 'Hispanic or Latino') AND 'Not Reported' IN race_tokens))"""
                     else:

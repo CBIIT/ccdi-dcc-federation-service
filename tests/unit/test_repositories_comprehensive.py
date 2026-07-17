@@ -1210,6 +1210,26 @@ class TestSampleRepositoryInternal:
         assert result == []
         assert not mock_session.run.called
 
+    async def test_pathology_file_only_invalid_preservation_method_early_return(self, repository, mock_session):
+        """DB-only 'Cytospin Slide' returns empty without a DB call (pathology_file-only path)."""
+        result = await repository._get_samples_by_pathology_file_filters(
+            {"preservation_method": "Cytospin Slide"}, offset=0, limit=10
+        )
+
+        assert result == []
+        assert not mock_session.run.called
+
+    async def test_combined_filters_invalid_preservation_method_early_return(self, repository, mock_session):
+        """DB-only 'Other' returns empty without a DB call (combined sf+pf path)."""
+        result = await repository._get_samples_by_combined_filters(
+            {"library_source_material": "Not Reported", "preservation_method": "Other"},
+            offset=0,
+            limit=10,
+        )
+
+        assert result == []
+        assert not mock_session.run.called
+
     async def test_count_samples_by_associated_diagnoses_no_filters(self, repository, mock_session):
         """Test _count_samples_by_associated_diagnoses with no filters."""
         total_result = AsyncMock()

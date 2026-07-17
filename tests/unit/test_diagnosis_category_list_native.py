@@ -63,6 +63,36 @@ class TestSplitDiagnosisCategoryTokens:
         assert harmonized == [HARMONIZED_PV]
         assert unharmonized == []
 
+    def test_mapped_aliases_become_harmonized(self):
+        """DB spellings from field_mappings.json land in the harmonized PV bucket."""
+        harmonized, unharmonized = split_diagnosis_category_tokens(
+            ["Low-grade Gliomas", "Myeloid leukemias"]
+        )
+        assert harmonized == ["Low-Grade Gliomas", "Myeloid Leukemia"]
+        assert unharmonized == []
+
+    def test_mapped_alias_case_fold_still_works(self):
+        """Existing case-insensitive enum match still applies after mapping."""
+        harmonized, unharmonized = split_diagnosis_category_tokens(["low-grade gliomas"])
+        assert harmonized == ["Low-Grade Gliomas"]
+        assert unharmonized == []
+
+
+@pytest.mark.unit
+class TestDiagnosisCategoryFilterDbValues:
+    def test_myeloid_leukemia_expands_aliases(self):
+        from app.core.diagnosis_category import diagnosis_category_filter_db_values
+
+        assert diagnosis_category_filter_db_values("Myeloid Leukemia") == [
+            "Myeloid leukemias",
+            "Myeloid Leukemia",
+        ]
+
+    def test_unmapped_value_passthrough(self):
+        from app.core.diagnosis_category import diagnosis_category_filter_db_values
+
+        assert diagnosis_category_filter_db_values("Neuroblastoma") == ["Neuroblastoma"]
+
 
 @pytest.mark.unit
 class TestBuildDiagnosisResultListNative:

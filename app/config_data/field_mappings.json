@@ -62,11 +62,28 @@
       "description": "Maps database values to API values for disease_phase field",
       "source_property": "disease_phase",
       "mappings": {
-        "Recurrent Disease": "Relapse"
+        "Not Applicable": "Unknown",
+        "Prior Primary": "Unknown",
+        "Recurrent Disease": "Relapse",
+        "Synchronous": "Unknown"
       },
       "null_mappings": [],
       "reverse_mappings": {
-        "Relapse": ["Recurrent Disease", "Relapse"]
+        "Relapse": ["Recurrent Disease", "Relapse"],
+        "Unknown": ["Not Applicable", "Prior Primary", "Synchronous", "Unknown"]
+      }
+    },
+    "diagnosis_category": {
+      "description": "Maps alternate DB diagnosis_category spellings to canonical harmonized PVs",
+      "source_property": "diagnosis_category",
+      "mappings": {
+        "Low-grade Gliomas": "Low-Grade Gliomas",
+        "Myeloid leukemias": "Myeloid Leukemia"
+      },
+      "null_mappings": [],
+      "reverse_mappings": {
+        "Low-Grade Gliomas": ["Low-grade Gliomas", "Low-Grade Gliomas"],
+        "Myeloid Leukemia": ["Myeloid leukemias", "Myeloid Leukemia"]
       }
     }
   },

@@ -10,7 +10,7 @@ def test_exact_token_predicate_is_list_native():
     assert "SPLIT" not in pred.upper()
     assert "split(toString(coalesce(dg.diagnosis_category, '')), ';')" not in pred
     assert "coalesce(dg.diagnosis_category, [])" in pred
-    assert "$diag_category_filter" in pred
+    assert "$diag_category_filters" in pred
 
 
 def test_contains_predicate_is_element_wise_list_native():

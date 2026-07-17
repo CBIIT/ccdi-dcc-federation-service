@@ -291,9 +291,15 @@ class SampleSummary:
                 # which is processed later in the query building logic
                 self._validate_library_source_material_filter(value, param_name, params, with_conditions)
             elif field == "preservation_method":
-                reverse_mapped = reverse_map_field_value("preservation_method", value)
-                params[param_name] = reverse_mapped if reverse_mapped else value
-                with_conditions.append(("preservation_method", param_name))
+                # Reject DB-only spellings (e.g. Cytospin Slide, Other); "Unknown" is
+                # null-mapped for responses but is a valid API filter, so only
+                # is_database_only_value gates this -- not is_null_mapped_value.
+                if is_database_only_value("preservation_method", value):
+                    with_conditions.append(("preservation_method_invalid", "invalid"))
+                else:
+                    reverse_mapped = reverse_map_field_value("preservation_method", value)
+                    params[param_name] = reverse_mapped if reverse_mapped else value
+                    with_conditions.append(("preservation_method", param_name))
             elif field == "tissue_type":
                 # Use helper function to validate tissue_type filter
                 if self._validate_tissue_type_filter(value, param_name, params, with_conditions) is None:
@@ -465,6 +471,9 @@ class SampleSummary:
             elif isinstance(condition, tuple) and condition[0] == "preservation_method":
                 preservation_method_param = condition[1]
                 # Don't add to regular_conditions - will be applied in OPTIONAL MATCH WHERE clause (early filter optimization)
+            elif isinstance(condition, tuple) and condition[0] == "preservation_method_invalid":
+                # Invalid value (database-only value) - set impossible condition
+                preservation_method_param = "invalid"
             else:
                 regular_conditions.append(condition)
         
@@ -474,7 +483,8 @@ class SampleSummary:
         if (specimen_molecular_analyte_type_single_param == "invalid" or
             library_selection_method_param == "invalid" or
             library_strategy_param == "invalid" or
-            library_source_material_param == "invalid"):
+            library_source_material_param == "invalid" or
+            preservation_method_param == "invalid"):
             logger.info("Invalid filter value detected in summary query - returning empty results")
             return {"counts": {"total": 0}}
         

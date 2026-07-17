@@ -10,6 +10,7 @@ from app.core.logging import get_logger
 from app.core.field_mappings import (
     reverse_map_field_value,
     is_null_mapped_value,
+    is_database_only_value,
     load_sequencing_file_enum,
     load_sample_enum
 )
@@ -212,16 +213,19 @@ class SampleHelpers:
             None if validation fails (value is in null_mappings - caller should handle invalid case)
             True if validation succeeds (condition and param have been added)
         """
-        # Reject null-mapped values (treated as missing; not valid for filtering)
-        if is_null_mapped_value("library_source_material", value):
+        # Reject null-mapped or database-only values (e.g. DB-only "Other" is not a
+        # valid API filter -- rejected here explicitly rather than relying on the
+        # enum-membership check below, which only catches it by coincidence.
+        if is_null_mapped_value("library_source_material", value) or is_database_only_value(
+            "library_source_material", value
+        ):
             with_conditions.append(("library_source_material_invalid", "invalid"))
             return None
-        
+
         # Load enum values and use IN clause for filtering
         enum_values = load_sequencing_file_enum("library_source_material")
         if enum_values:
             # Validate that the value is in the enum (case-sensitive).
-            # DB-only values like "Other" (mapped to API "Not Reported") are rejected here.
             if value not in enum_values:
                 # Value not in enum - treat as invalid
                 logger.warning(

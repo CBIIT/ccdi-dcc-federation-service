@@ -13,7 +13,11 @@ from neo4j import AsyncSession
 
 from app.core.logging import get_logger
 from app.core.constants import Race
-from app.core.diagnosis_category import canonical_diagnosis_category_token, split_diagnosis_category_tokens
+from app.core.diagnosis_category import (
+    canonical_diagnosis_category_token,
+    diagnosis_category_filter_db_values,
+    split_diagnosis_category_tokens,
+)
 from app.core.field_mappings import map_field_value, reverse_map_field_value, is_database_only_value, build_case_mapping_statement
 from app.lib.field_allowlist import FieldAllowlist
 from app.lib.url_builder import build_identifier_server_url
@@ -204,7 +208,15 @@ class SubjectRepository(SubjectCount, SubjectSummary):
                     ${race_param} AS race_tokens,
                     [pt IN coalesce(p.race, []) | trim(toString(pt))] AS pr_tokens"""
 
-                    if includes_not_reported:
+                    # Reject DB-only spellings (e.g. "Not Allowed to Collect"); clients
+                    # must use the API PV ("Not allowed to collect"). race_condition stays
+                    # populated so needs_race_processing still engages this path -- only
+                    # the match predicate is forced to always-false.
+                    invalid_race_values = [r for r in race_list if is_database_only_value("race", r)]
+                    if invalid_race_values:
+                        logger.info("Invalid race filter (database-only), returning empty results", value=invalid_race_values)
+                        race_filter_condition = "false"
+                    elif includes_not_reported:
                         race_filter_condition = """(reduce(found = false, tok IN race_tokens | found OR tok IN pr_tokens) OR \n                        (size(pr_tokens) > 0 AND reduce(all_hispanic = true, pt IN pr_tokens | all_hispanic AND pt = 'Hispanic or Latino') AND 'Not Reported' IN race_tokens))"""
                     else:
                         race_filter_condition = "reduce(found = false, tok IN race_tokens | found OR (tok IN pr_tokens AND tok <> 'Hispanic or Latino'))"
@@ -285,7 +297,9 @@ class SubjectRepository(SubjectCount, SubjectSummary):
             raw_cat = filters.pop("associated_diagnosis_categories")
             if raw_cat and str(raw_cat).strip():
                 diag_category_filter = str(raw_cat).strip()
-                params["diag_category_filter"] = diag_category_filter
+                params["diag_category_filters"] = diagnosis_category_filter_db_values(
+                    diag_category_filter
+                )
 
         # Separate derived fields from direct participant fields
         derived_filters: dict = {}

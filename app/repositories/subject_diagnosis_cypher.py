@@ -33,10 +33,16 @@ def diagnosis_search_predicate(var: str) -> str:
 
 
 def diagnosis_category_exact_token_predicate(var: str) -> str:
-    """GET /subject style: exact match against any list element. Requires $diag_category_filter."""
+    """GET /subject|/sample style: exact match against any list element.
+
+    Requires $diag_category_filters (list of strings). Match is case-insensitive and
+    accepts multiple DB spellings from reverse_mappings (e.g. Myeloid Leukemia and
+    Myeloid leukemias).
+    """
     return (
         f"any(token IN coalesce({var}.diagnosis_category, []) "
-        f"WHERE toLower(trim(toString(token))) = toLower($diag_category_filter))"
+        f"WHERE any(f IN $diag_category_filters "
+        f"WHERE toLower(trim(toString(token))) = toLower(toString(f))))"
     )
 
 

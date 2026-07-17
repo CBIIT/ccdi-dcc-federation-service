@@ -7,7 +7,10 @@ This module contains methods for counting samples by field values.
 import asyncio
 from typing import Any
 
-from app.core.diagnosis_category import HARMONIZED_DIAGNOSIS_CATEGORIES
+from app.core.diagnosis_category import (
+    HARMONIZED_DIAGNOSIS_CATEGORIES,
+    diagnosis_category_token_case_expr,
+)
 from app.core.field_mappings import (
     build_case_mapping_statement,
     build_invalid_value_all_clause,
@@ -1441,6 +1444,9 @@ class SampleCount:
         """
         logger.debug("Counting samples by diagnosis_category")
 
+        token_mapped = diagnosis_category_token_case_expr("token")
+        tok_mapped = diagnosis_category_token_case_expr("trim(toString(tok))")
+
         params: dict[str, Any] = {
             "harmonized_pvs": _HARMONIZED_PVS_SORTED,
             "harmonized_pvs_lower": _HARMONIZED_PVS_LOWER,
@@ -1459,7 +1465,7 @@ WITH DISTINCT sa.sample_id AS sample_id, study_id
 RETURN count(*) AS total
 """.strip()
 
-        missing_cypher = """
+        missing_cypher = f"""
 MATCH (sa:sample)
 WHERE sa.sample_id IS NOT NULL AND trim(toString(sa.sample_id)) <> ''
 OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
@@ -1475,12 +1481,12 @@ WHERE size([
     AND d.diagnosis_category IS NOT NULL
     AND size(coalesce(d.diagnosis_category, [])) > 0
     AND any(tok IN coalesce(d.diagnosis_category, [])
-            WHERE toLower(trim(toString(tok))) IN $harmonized_pvs_lower)
+            WHERE [pv IN $harmonized_pvs WHERE toLower(pv) = toLower({tok_mapped})][0] IS NOT NULL)
 ]) = 0
 RETURN count(*) AS missing
 """.strip()
 
-        values_cypher = """
+        values_cypher = f"""
 MATCH (d:diagnosis)-[:of_diagnosis]->(sa:sample)
 WHERE d.diagnosis_category IS NOT NULL AND size(coalesce(d.diagnosis_category, [])) > 0
 WITH sa, d
@@ -1494,8 +1500,9 @@ WITH sa.sample_id AS sample_id,
 UNWIND study_ids AS study_id
 UNWIND tokens AS raw_token
 WITH sample_id, study_id, trim(toString(raw_token)) AS token
-WITH sample_id, study_id, token,
-     [pv IN $harmonized_pvs WHERE toLower(pv) = toLower(token)][0] AS matched_pv
+WITH sample_id, study_id, {token_mapped} AS mapped_token
+WITH sample_id, study_id, mapped_token,
+     [pv IN $harmonized_pvs WHERE toLower(pv) = toLower(mapped_token)][0] AS matched_pv
 WHERE matched_pv IS NOT NULL
 WITH DISTINCT sample_id, study_id, matched_pv
 RETURN matched_pv AS value, count(*) AS count

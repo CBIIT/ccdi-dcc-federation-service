@@ -294,6 +294,18 @@ async def test_summary_vital_status_database_only_filter_value(
 
 @pytest.mark.asyncio
 @pytest.mark.unit
+async def test_summary_race_database_only_filter_value(repository, mock_session):
+    """DB-only 'Not Allowed to Collect' is rejected; clients must use the API PV
+    'Not allowed to collect' -- forces an impossible race_filter_condition."""
+    mock_session.run.return_value = make_async_result([_count_record(0)])
+
+    result = await repository.get_subjects_summary({"race": "Not Allowed to Collect"})
+
+    assert result.get("total_count") == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
 async def test_summary_invalid_age_at_vital_status_warns(repository, mock_session):
     """Non-integer age_at_vital_status triggers logger.warning and keeps value as-is."""
     mock_session.run.return_value = make_async_result([_count_record(3)])
@@ -604,6 +616,20 @@ async def test_diagnosis_endpoint_race_not_reported_expanded_filter(
     )
 
     assert result.get("total_count") == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_diagnosis_endpoint_race_database_only(repository, mock_session):
+    """Diagnosis summary: DB-only race 'Not Allowed to Collect' forces an impossible predicate."""
+    mock_result = make_async_result([_count_record(0)])
+    mock_session.run.return_value = mock_result
+
+    result = await repository.get_subjects_summary_for_diagnosis_endpoint(
+        {"_diagnosis_search": "leukemia", "race": "Not Allowed to Collect"}
+    )
+
+    assert result.get("total_count") == 0
 
 
 @pytest.mark.asyncio

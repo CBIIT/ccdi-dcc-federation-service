@@ -1202,8 +1202,11 @@ class TestGetSamplesBySequencingFileFilters:
                 return_total=True
             )
             
-            # Should still return results with total_count=None (falls through)
-            assert isinstance(result, list)
+            # Count failed: still return (samples, len(samples)) so callers get a usable total
+            assert isinstance(result, tuple)
+            samples, total = result
+            assert isinstance(samples, list)
+            assert total == len(samples)
             assert mock_session.run.call_count == 2
         finally:
             sm.is_database_only_value = original_is_db_only
@@ -1716,8 +1719,11 @@ class TestGetSamplesByPathologyFileFilters:
             return_total=True
         )
         
-        # Should still return results with total_count=None (falls through)
-        assert isinstance(result, list)
+        # Count failed: still return (samples, len(samples)) so callers get a usable total
+        assert isinstance(result, tuple)
+        samples, total = result
+        assert isinstance(samples, list)
+        assert total == len(samples)
         assert mock_session.run.call_count == 2
 
     async def test_pathology_file_record_conversion_exception(self, repository, mock_session):
@@ -2091,8 +2097,11 @@ class TestGetSamplesByCombinedFilters:
                 return_total=True
             )
             
-            # Should still return results with total_count=None (falls through)
-            assert isinstance(result, list)
+            # Count failed: still return (samples, len(samples)) so callers get a usable total
+            assert isinstance(result, tuple)
+            samples, total = result
+            assert isinstance(samples, list)
+            assert total == len(samples)
             assert mock_session.run.call_count == 2
         finally:
             sm.is_database_only_value = original_is_db_only

@@ -199,7 +199,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
                 total_count = await run_count_query_with_retry(self.session, cypher_count, params)
             except Exception as e:
                 logger.warning("Early pagination count query failed", error=str(e), exc_info=True)
-                total_count = 0
+                total_count = None
         
         if has_only_depositions:
             # Depositions-only: start from study for better performance
@@ -298,8 +298,11 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
                 logger.warning("Error converting sample record in early-pagination path: %s", e, exc_info=True)
                 continue
         
-        if return_total:
-            return (samples, total_count if total_count is not None else len(samples))
+        # When return_total but the count query failed: return a bare list so
+        # SampleService can fall back to summary instead of reporting total=0
+        # while samples still has real rows.
+        if return_total and total_count is not None:
+            return (samples, total_count)
         return samples
 
     async def get_samples(
@@ -1638,14 +1641,11 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
                     logger.error("Error converting record to sample", error=str(e), record=str(record)[:200])
                     continue
             
-            # Always return a tuple when return_total so callers never see a bare list
-            # (SampleService summary fallback / sample-diagnosis total=0 undercount).
-            # If the count query failed, use len(samples) as a lower bound (same as early-pagination).
-            if return_total:
-                return (
-                    samples,
-                    total_count_sf if total_count_sf is not None else len(samples),
-                )
+            # When return_total but count failed: return a bare list so SampleService
+            # and get_samples_for_diagnosis_endpoint can fall back to summary instead
+            # of treating len(samples) as the full matching total (page-size undercount).
+            if return_total and total_count_sf is not None:
+                return (samples, total_count_sf)
             return samples
             
         except Exception as e:
@@ -1819,11 +1819,8 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
                     logger.error("Error converting record to sample", error=str(e), record=str(record)[:200])
                     continue
             
-            if return_total:
-                return (
-                    samples,
-                    total_count_pf if total_count_pf is not None else len(samples),
-                )
+            if return_total and total_count_pf is not None:
+                return (samples, total_count_pf)
             return samples
             
         except Exception as e:
@@ -2068,11 +2065,8 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
                     logger.error("Error converting record to sample", error=str(e), record=str(record)[:200])
                     continue
             
-            if return_total:
-                return (
-                    samples,
-                    total_count_combined if total_count_combined is not None else len(samples),
-                )
+            if return_total and total_count_combined is not None:
+                return (samples, total_count_combined)
             return samples
             
         except Exception as e:

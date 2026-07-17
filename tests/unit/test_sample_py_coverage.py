@@ -483,11 +483,11 @@ class TestGetSamplesMainMethod:
             limit=20,
             return_total=True
         )
-        
-        # Should still return results with total_count=0 (falls through)
-        assert isinstance(result, tuple)
-        assert len(result) == 2
-        assert result[1] == 0  # Exception sets total_count to 0
+
+        # Count failed: bare list, not a fabricated total=0, so SampleService can
+        # fall back to a summary recompute instead of undercounting.
+        assert isinstance(result, list)
+        assert len(result) == 1
 
     async def test_get_samples_case3_record_conversion_exception(self, repository, mock_session):
         """Test Case 3 exception handling during record conversion."""
@@ -814,11 +814,11 @@ class TestGetSamplesMainMethod:
             limit=20,
             return_total=True
         )
-        
-        # Should still return results with total_count=0 (exception sets it to 0)
-        assert isinstance(result, tuple)
-        assert len(result) == 2
-        assert result[1] == 0  # Exception sets total_count to 0
+
+        # Count failed: bare list, not a fabricated total=0, so SampleService can
+        # fall back to a summary recompute instead of undercounting.
+        assert isinstance(result, list)
+        assert len(result) == 1
 
     async def test_get_samples_case2_count_query_exception(self, repository, mock_session):
         """Test Case 2 exception handling in count query."""
@@ -848,11 +848,11 @@ class TestGetSamplesMainMethod:
             limit=20,
             return_total=True
         )
-        
-        # Should still return results with total_count=0 (exception sets it to 0)
-        assert isinstance(result, tuple)
-        assert len(result) == 2
-        assert result[1] == 0  # Exception sets total_count to 0
+
+        # Count failed: bare list, not a fabricated total=0, so SampleService can
+        # fall back to a summary recompute instead of undercounting.
+        assert isinstance(result, list)
+        assert len(result) == 1
 
     async def test_get_samples_case2_with_return_total(self, repository, mock_session):
         """Test Case 2 with return_total=True."""
@@ -1202,11 +1202,10 @@ class TestGetSamplesBySequencingFileFilters:
                 return_total=True
             )
             
-            # Count failed: still return (samples, len(samples)) so callers get a usable total
-            assert isinstance(result, tuple)
-            samples, total = result
-            assert isinstance(samples, list)
-            assert total == len(samples)
+            # Count failed: return bare list so SampleService / diagnosis endpoint
+            # can fall back to summary instead of a page-size undercount.
+            assert isinstance(result, list)
+            assert len(result) == 1
             assert mock_session.run.call_count == 2
         finally:
             sm.is_database_only_value = original_is_db_only
@@ -1537,11 +1536,11 @@ class TestGetSamplesEarlyPaginationAdvanced:
             limit=20,
             return_total=True
         )
-        
-        # Should still return results with total_count=0
-        assert isinstance(result, tuple)
-        assert len(result) == 2
-        assert result[1] == 0
+
+        # Count failed: bare list, not a fabricated total=0, so SampleService can
+        # fall back to a summary recompute instead of undercounting.
+        assert isinstance(result, list)
+        assert len(result) == 1
 
     async def test_depositions_only_list_query(self, repository, mock_session):
         """Test depositions-only list query path (line 199-227)."""
@@ -1719,11 +1718,9 @@ class TestGetSamplesByPathologyFileFilters:
             return_total=True
         )
         
-        # Count failed: still return (samples, len(samples)) so callers get a usable total
-        assert isinstance(result, tuple)
-        samples, total = result
-        assert isinstance(samples, list)
-        assert total == len(samples)
+        # Count failed: return bare list so callers can fall back to summary
+        assert isinstance(result, list)
+        assert len(result) == 1
         assert mock_session.run.call_count == 2
 
     async def test_pathology_file_record_conversion_exception(self, repository, mock_session):
@@ -2097,11 +2094,9 @@ class TestGetSamplesByCombinedFilters:
                 return_total=True
             )
             
-            # Count failed: still return (samples, len(samples)) so callers get a usable total
-            assert isinstance(result, tuple)
-            samples, total = result
-            assert isinstance(samples, list)
-            assert total == len(samples)
+            # Count failed: return bare list so callers can fall back to summary
+            assert isinstance(result, list)
+            assert len(result) == 1
             assert mock_session.run.call_count == 2
         finally:
             sm.is_database_only_value = original_is_db_only

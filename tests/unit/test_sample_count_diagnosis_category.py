@@ -53,8 +53,8 @@ async def test_count_diagnosis_category_basic(repository, mock_session):
         make_async_result([{"total": 100}]),
         make_async_result([{"missing": 5}]),
         make_async_result([
-            {"value": "Leukemia", "count": 50},
-            {"value": "Lymphoma", "count": 30},
+            {"value": "Myeloid Leukemia", "count": 50},
+            {"value": "Hodgkin Lymphoma", "count": 30},
         ]),
     ]
 
@@ -63,8 +63,47 @@ async def test_count_diagnosis_category_basic(repository, mock_session):
     assert result["total"] == 100
     assert result["missing"] == 5
     assert result["values"] == [
-        {"value": "Leukemia", "count": 50},
-        {"value": "Lymphoma", "count": 30},
+        {"value": "Myeloid Leukemia", "count": 50},
+        {"value": "Hodgkin Lymphoma", "count": 30},
+    ]
+
+
+@patch("asyncio.sleep", new_callable=AsyncMock)
+async def test_count_diagnosis_category_values_canonicalize_lower(mock_sleep, repository, mock_session):
+    """Values query returns lowercased keys; Python maps them to canonical PV casing."""
+    mock_session.run.side_effect = [
+        make_async_result([{"total": 10}]),
+        make_async_result([{"missing": 0}]),
+        make_async_result([{"value": "myeloid leukemia", "count": 7}]),
+    ]
+
+    result = await repository._count_samples_by_diagnosis_category()
+
+    assert result["values"] == [{"value": "Myeloid Leukemia", "count": 7}]
+
+
+@patch("asyncio.sleep", new_callable=AsyncMock)
+async def test_count_diagnosis_category_values_resort_after_canonicalize(
+    mock_sleep, repository, mock_session
+):
+    """After remapping, values are sorted by (-count, canonical value)."""
+    mock_session.run.side_effect = [
+        make_async_result([{"total": 6}]),
+        make_async_result([{"missing": 0}]),
+        # Lowercased keys arrive in arbitrary Cypher ASC order among ties
+        make_async_result(
+            [
+                {"value": "renal tumors", "count": 3},
+                {"value": "myeloid leukemia", "count": 3},
+            ]
+        ),
+    ]
+
+    result = await repository._count_samples_by_diagnosis_category()
+
+    assert result["values"] == [
+        {"value": "Myeloid Leukemia", "count": 3},
+        {"value": "Renal Tumors", "count": 3},
     ]
 
 
@@ -128,24 +167,24 @@ async def test_count_samples_by_field_routes_to_diagnosis_category(repository, m
     mock_session.run.side_effect = [
         make_async_result([{"total": 10}]),
         make_async_result([{"missing": 1}]),
-        make_async_result([{"value": "Bone Tumors", "count": 9}]),
+        make_async_result([{"value": "Osteosarcoma", "count": 9}]),
     ]
 
     result = await repository.count_samples_by_field("diagnosis_category")
 
     assert result["total"] == 10
     assert result["missing"] == 1
-    assert result["values"] == [{"value": "Bone Tumors", "count": 9}]
+    assert result["values"] == [{"value": "Osteosarcoma", "count": 9}]
 
 
 async def test_count_diagnosis_category_multiple_values(repository, mock_session):
     """All returned diagnosis_category rows appear in result['values'] in order."""
     categories = [
-        {"value": "Leukemia", "count": 80},
-        {"value": "Brain Tumors", "count": 60},
+        {"value": "Myeloid Leukemia", "count": 80},
+        {"value": "Medulloblastoma", "count": 60},
         {"value": "Neuroblastoma", "count": 40},
         {"value": "Renal Tumors", "count": 20},
-        {"value": "Bone Tumors", "count": 5},
+        {"value": "Osteosarcoma", "count": 5},
     ]
     mock_session.run.side_effect = [
         make_async_result([{"total": 205}]),
@@ -177,8 +216,9 @@ async def test_count_diagnosis_category_cypher_maps_aliases(repository, mock_ses
     assert "[pv IN $harmonized_pvs WHERE" not in missing_query
     assert "Myeloid leukemias" in missing_query
     assert "Myeloid Leukemia" in missing_query
-    # Values: still CASE-map then resolve canonical casing via PV list
-    assert "[pv IN $harmonized_pvs WHERE" in values_query
+    assert "IN $harmonized_pvs_lower" in values_query
+    assert "[pv IN $harmonized_pvs WHERE" not in values_query
+    assert "toLower(mapped_token) AS mapped_lower" in values_query
     assert "Myeloid leukemias" in values_query
     assert "Low-grade Gliomas" in values_query
     assert "Low-Grade Gliomas" in values_query

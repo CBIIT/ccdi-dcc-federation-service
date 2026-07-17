@@ -9,6 +9,7 @@ from typing import Any
 
 from app.core.diagnosis_category import (
     HARMONIZED_DIAGNOSIS_CATEGORIES,
+    _CANONICAL_BY_LOWER,
     diagnosis_category_token_case_expr,
 )
 from app.core.field_mappings import (
@@ -1448,7 +1449,6 @@ class SampleCount:
         tok_mapped = diagnosis_category_token_case_expr("trim(toString(tok))")
 
         params: dict[str, Any] = {
-            "harmonized_pvs": _HARMONIZED_PVS_SORTED,
             "harmonized_pvs_lower": _HARMONIZED_PVS_LOWER,
         }
 
@@ -1501,11 +1501,10 @@ UNWIND study_ids AS study_id
 UNWIND tokens AS raw_token
 WITH sample_id, study_id, trim(toString(raw_token)) AS token
 WITH sample_id, study_id, {token_mapped} AS mapped_token
-WITH sample_id, study_id, mapped_token,
-     [pv IN $harmonized_pvs WHERE toLower(pv) = toLower(mapped_token)][0] AS matched_pv
-WHERE matched_pv IS NOT NULL
-WITH DISTINCT sample_id, study_id, matched_pv
-RETURN matched_pv AS value, count(*) AS count
+WITH sample_id, study_id, toLower(mapped_token) AS mapped_lower
+WHERE mapped_lower IN $harmonized_pvs_lower
+WITH DISTINCT sample_id, study_id, mapped_lower
+RETURN mapped_lower AS value, count(*) AS count
 ORDER BY count DESC, value ASC
 """.strip()
 
@@ -1554,9 +1553,15 @@ ORDER BY count DESC, value ASC
                     raise
 
         counts = [
-            {"value": r.get("value"), "count": r.get("count", 0)}
+            {
+                "value": _CANONICAL_BY_LOWER[str(r.get("value") or "").lower()],
+                "count": r.get("count", 0),
+            }
             for r in values_records
         ]
+        # Re-sort after remapping lowercase Cypher keys → canonical PV casing
+        # (ORDER BY value ASC on lowercased keys would not match API casing order).
+        counts.sort(key=lambda x: (-x["count"], x["value"]))
 
         values_sum = sum(item["count"] for item in counts)
         violations = check_count_invariant(total_count, values_sum, missing_count)

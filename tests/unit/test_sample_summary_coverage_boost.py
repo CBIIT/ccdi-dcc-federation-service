@@ -68,7 +68,7 @@ class TestSampleSummaryCoverageBoost:
                     "app.repositories.sample_summary.reverse_map_field_value",
                     return_value=["Relapse", "Recurrent Disease"],
                 ):
-                    # disease_phase alone routes to diagnosis-optimized; add tissue_type? 
+                    # disease_phase alone routes to diagnosis-optimized; add tissue_type?
                     # tissue_type is companion for diag-heavy. Use anatomical_sites to stay on main path
                     # actually diag-heavy allows tissue_type. Add library_strategy to force main builder.
                     result = await repository.get_samples_summary(

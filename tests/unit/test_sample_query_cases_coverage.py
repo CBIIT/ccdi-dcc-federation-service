@@ -122,7 +122,12 @@ class TestCase1DirectCoverage:
         assert "param_1_0" in repository.session.run.call_args[0][1]
 
     @pytest.mark.asyncio
-    async def test_count_query_failure_defaults_total_to_zero(self, repository):
+    async def test_count_query_failure_returns_bare_list(self, repository):
+        """Count query failure must not report total=0 while samples has real rows.
+
+        Returning a bare list signals SampleService to fall back to a summary
+        recompute instead of surfacing a fabricated zero total.
+        """
         repository.session.run = AsyncMock(
             side_effect=[Exception("count failed"), _empty_result()]
         )
@@ -133,8 +138,8 @@ class TestCase1DirectCoverage:
             base_url=None,
             return_total=True,
         )
-        assert isinstance(result, tuple)
-        assert result[1] == 0
+        assert isinstance(result, list)
+        assert len(result) == 1
 
 
 @pytest.mark.unit
@@ -448,7 +453,12 @@ class TestCase3FilterBranches:
         assert result[1] == 15
 
     @pytest.mark.asyncio
-    async def test_count_query_failure_defaults_to_zero(self, repository):
+    async def test_count_query_failure_returns_bare_list(self, repository):
+        """Count query failure must not report total=0 while samples has real rows.
+
+        Returning a bare list signals SampleService to fall back to a summary
+        recompute instead of surfacing a fabricated zero total.
+        """
         repository.session.run = AsyncMock(
             side_effect=[Exception("count boom"), _empty_result()]
         )
@@ -456,7 +466,8 @@ class TestCase3FilterBranches:
         result = await repository._get_samples_case3_with_node_filters(
             {}, cat, offset=0, limit=20, base_url=None, return_total=True
         )
-        assert result[1] == 0
+        assert isinstance(result, list)
+        assert len(result) == 1
 
     @pytest.mark.asyncio
     async def test_single_identifier_and_anatomical_sites_list(self, repository):

@@ -1143,13 +1143,13 @@ class TestSampleRepositoryInternal:
         assert result == ([], 0)
         assert not mock_session.run.called
 
-    async def test_get_samples_by_sequencing_file_filters_count_fail_still_tuple(
+    async def test_get_samples_by_sequencing_file_filters_count_fail_returns_bare_list(
         self, repository, mock_session
     ):
-        """If the count query fails but the list succeeds, return_total must still yield a tuple.
+        """If count fails but list succeeds, return a bare list under return_total.
 
-        A bare list under return_total=True undercounts /sample-diagnosis (total forced to 0)
-        and triggers a wasteful summary recompute on /sample.
+        Callers (SampleService / sample-diagnosis) treat a bare list as "count
+        unavailable" and fall back to summary — better than a page-size undercount.
         """
         sample_obj = Mock()
         mock_list_result = AsyncMock()
@@ -1182,15 +1182,13 @@ class TestSampleRepositoryInternal:
                 return_total=True,
             )
 
-        assert isinstance(result, tuple)
-        samples, total = result
-        assert samples == [sample_obj]
-        assert total == 1  # lower bound = len(samples) when count unavailable
+        assert isinstance(result, list)
+        assert result == [sample_obj]
 
-    async def test_get_samples_by_pathology_file_filters_count_fail_still_tuple(
+    async def test_get_samples_by_pathology_file_filters_count_fail_returns_bare_list(
         self, repository, mock_session
     ):
-        """pathology_file reverse path: count failure still returns (samples, len) tuple."""
+        """pathology_file reverse path: count failure returns bare list for summary fallback."""
         sample_obj = Mock()
         mock_list_result = AsyncMock()
         mock_list_result.__aiter__.return_value = [
@@ -1220,15 +1218,13 @@ class TestSampleRepositoryInternal:
                 return_total=True,
             )
 
-        assert isinstance(result, tuple)
-        samples, total = result
-        assert samples == [sample_obj]
-        assert total == 1
+        assert isinstance(result, list)
+        assert result == [sample_obj]
 
-    async def test_get_samples_by_combined_filters_count_fail_still_tuple(
+    async def test_get_samples_by_combined_filters_count_fail_returns_bare_list(
         self, repository, mock_session
     ):
-        """combined sf+pf reverse path: count failure still returns (samples, len) tuple."""
+        """combined sf+pf reverse path: count failure returns bare list for summary fallback."""
         sample_obj = Mock()
         mock_list_result = AsyncMock()
         mock_list_result.__aiter__.return_value = [
@@ -1264,10 +1260,8 @@ class TestSampleRepositoryInternal:
                 return_total=True,
             )
 
-        assert isinstance(result, tuple)
-        samples, total = result
-        assert samples == [sample_obj]
-        assert total == 1
+        assert isinstance(result, list)
+        assert result == [sample_obj]
 
     async def test_get_samples_by_sequencing_file_filters_success(self, repository, mock_session):
         """Test reverse query returns samples when records exist."""

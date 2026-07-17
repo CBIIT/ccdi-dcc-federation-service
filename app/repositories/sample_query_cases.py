@@ -187,7 +187,7 @@ class SampleQueryCases:
                 total_count = recs[0].get("total_count", 0) if recs else 0
             except Exception as e:
                 logger.warning("Case 1 count query failed", error=str(e), exc_info=True)
-                total_count = 0
+                total_count = None
         
         # Build query: paginate at (sample_id, study_id) pair level to match count query
         cypher = f"""
@@ -254,8 +254,11 @@ class SampleQueryCases:
                 logger.warning("Error converting sample record in Case 1: %s", e, exc_info=True)
                 continue
         
-        if return_total:
-            return (samples, total_count if total_count is not None else len(samples))
+        # When return_total but the count query failed: return a bare list so
+        # SampleService can fall back to summary instead of reporting total=0
+        # while samples still has real rows.
+        if return_total and total_count is not None:
+            return (samples, total_count)
         return samples
 
     async def _get_samples_case2_sample_study(
@@ -844,7 +847,7 @@ class SampleQueryCases:
                 )
             except Exception as e:
                 logger.warning("Case 3 count query failed", error=str(e), exc_info=True)
-                total_count = 0
+                total_count = None
         
         # Build main query
         # After collecting and filtering, pick 1 node per type and paginate
@@ -940,6 +943,9 @@ class SampleQueryCases:
                 logger.warning("Error converting sample record in Case 3: %s", e, exc_info=True)
                 continue
         
-        if return_total:
-            return (samples, total_count if total_count is not None else len(samples))
+        # When return_total but the count query failed: return a bare list so
+        # SampleService can fall back to summary instead of reporting total=0
+        # while samples still has real rows.
+        if return_total and total_count is not None:
+            return (samples, total_count)
         return samples

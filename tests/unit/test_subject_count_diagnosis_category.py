@@ -173,8 +173,9 @@ async def test_count_diagnosis_category_cypher_maps_aliases(repository, mock_ses
 
     missing_query = mock_session.run.call_args_list[1][0][0]
     values_query = mock_session.run.call_args_list[2][0][0]
-    for query in (missing_query, values_query):
-        assert "Myeloid leukemias" in query
-        assert "Myeloid Leukemia" in query
-        assert "Low-grade Gliomas" in query
-        assert "Low-Grade Gliomas" in query
+    assert "IN $harmonized_pvs_lower" in missing_query
+    assert "[pv IN $harmonized_pvs WHERE" not in missing_query
+    assert "Myeloid leukemias" in missing_query
+    assert "[pv IN $harmonized_pvs WHERE" in values_query
+    assert "Low-grade Gliomas" in values_query
+    assert "Low-Grade Gliomas" in values_query

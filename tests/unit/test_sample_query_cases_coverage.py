@@ -526,7 +526,7 @@ class TestCase3FilterBranches:
         query = repository.session.run.call_args[0][0]
         params = repository.session.run.call_args[0][1]
         assert "diag_category_filters" in params
-        assert params["diag_category_filters"] == ["Lymphoma"]
+        assert params["diag_category_filters"] == ["lymphoma"]
         # 3.11 list-native: exact-token match iterates the LIST, no SPLIT idiom
         assert "coalesce(d.diagnosis_category, [])" in query
         assert "$diag_category_filters" in query
@@ -541,7 +541,7 @@ class TestCase3FilterBranches:
             {}, cat, offset=0, limit=20, base_url=None, return_total=False
         )
         params = repository.session.run.call_args[0][1]
-        assert params["diag_category_filters"] == ["Myeloid leukemias", "Myeloid Leukemia"]
+        assert params["diag_category_filters"] == ["myeloid leukemias", "myeloid leukemia"]
 
     @pytest.mark.asyncio
     async def test_library_selection_fallback_to_raw_value(self, repository):

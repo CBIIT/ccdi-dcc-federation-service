@@ -1481,7 +1481,7 @@ WHERE size([
     AND d.diagnosis_category IS NOT NULL
     AND size(coalesce(d.diagnosis_category, [])) > 0
     AND any(tok IN coalesce(d.diagnosis_category, [])
-            WHERE [pv IN $harmonized_pvs WHERE toLower(pv) = toLower({tok_mapped})][0] IS NOT NULL)
+            WHERE toLower({tok_mapped}) IN $harmonized_pvs_lower)
 ]) = 0
 RETURN count(*) AS missing
 """.strip()

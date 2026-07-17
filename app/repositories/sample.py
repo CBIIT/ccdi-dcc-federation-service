@@ -1396,7 +1396,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
                     "library_source_material", value
                 ):
                     logger.info("Invalid library_source_material value - returning empty results", value=value)
-                    return []
+                    return [] if not return_total else ([], 0)
                 reverse_mapped = reverse_map_field_value("library_source_material", value)
                 if isinstance(reverse_mapped, list):
                     params[param_name] = reverse_mapped
@@ -1404,12 +1404,12 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
                 else:
                     params[param_name] = reverse_mapped if reverse_mapped else value
                     where_conditions.append(f"sf.library_source_material = ${param_name}")
-                
+
             elif field == "library_strategy":
                 # Check if invalid value
                 if is_database_only_value("library_strategy", value):
                     logger.info("Invalid library_strategy value - returning empty results", value=value)
-                    return []
+                    return [] if not return_total else ([], 0)
                 # Handle reverse mapping
                 reverse_mapped = reverse_map_field_value("library_strategy", value)
                 if reverse_mapped and reverse_mapped != value:
@@ -1422,21 +1422,21 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
                 else:
                     params[param_name] = value
                     where_conditions.append(f"sf.library_strategy = ${param_name}")
-                    
+
             elif field == "library_selection_method":
                 # Check if invalid value
                 if is_database_only_value("library_selection_method", value):
                     logger.info("Invalid library_selection_method value - returning empty results", value=value)
-                    return []
+                    return [] if not return_total else ([], 0)
                 db_value = SampleRepository._reverse_map_library_selection_method_static(value)
                 params[param_name] = db_value
                 where_conditions.append(f"sf.library_selection = ${param_name}")
-                
+
             elif field == "specimen_molecular_analyte_type":
                 # Check if invalid value
                 if is_database_only_value("specimen_molecular_analyte_type", value) or is_null_mapped_value("specimen_molecular_analyte_type", value):
                     logger.info("Invalid specimen_molecular_analyte_type value - returning empty results", value=value)
-                    return []
+                    return [] if not return_total else ([], 0)
                 reverse_mapped = reverse_map_field_value("specimen_molecular_analyte_type", value)
                 if isinstance(reverse_mapped, list):
                     # Multiple DB values (e.g., "RNA" -> ["Transcriptomic", "Viral RNA"])
@@ -1566,8 +1566,14 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
                     logger.error("Error converting record to sample", error=str(e), record=str(record)[:200])
                     continue
             
-            if return_total and total_count_sf is not None:
-                return (samples, total_count_sf)
+            # Always return a tuple when return_total so callers never see a bare list
+            # (SampleService summary fallback / sample-diagnosis total=0 undercount).
+            # If the count query failed, use len(samples) as a lower bound (same as early-pagination).
+            if return_total:
+                return (
+                    samples,
+                    total_count_sf if total_count_sf is not None else len(samples),
+                )
             return samples
             
         except Exception as e:
@@ -1741,8 +1747,11 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
                     logger.error("Error converting record to sample", error=str(e), record=str(record)[:200])
                     continue
             
-            if return_total and total_count_pf is not None:
-                return (samples, total_count_pf)
+            if return_total:
+                return (
+                    samples,
+                    total_count_pf if total_count_pf is not None else len(samples),
+                )
             return samples
             
         except Exception as e:
@@ -1987,8 +1996,11 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
                     logger.error("Error converting record to sample", error=str(e), record=str(record)[:200])
                     continue
             
-            if return_total and total_count_combined is not None:
-                return (samples, total_count_combined)
+            if return_total:
+                return (
+                    samples,
+                    total_count_combined if total_count_combined is not None else len(samples),
+                )
             return samples
             
         except Exception as e:
@@ -2547,6 +2559,18 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
             samples, total_count = result
             return samples, int(total_count or 0)
 
-        # Defensive fallback: repository path didn't produce total_count
+        # Defensive fallback: repository returned a bare list (count unavailable).
+        # Prefer summary over silent total=0 when the page has rows.
         samples = result if isinstance(result, list) else []
-        return samples, 0
+        if not samples:
+            return [], 0
+        try:
+            summary = await self.get_samples_summary(filters)
+            total = int((summary.get("counts") or {}).get("total") or len(samples))
+            return samples, total
+        except Exception as e:
+            logger.warning(
+                "sample-diagnosis: summary fallback after missing total failed",
+                error=str(e),
+            )
+            return samples, len(samples)

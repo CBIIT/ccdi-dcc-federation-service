@@ -84,14 +84,14 @@ class TestDiagnosisCategoryFilterDbValues:
         from app.core.diagnosis_category import diagnosis_category_filter_db_values
 
         assert diagnosis_category_filter_db_values("Myeloid Leukemia") == [
-            "Myeloid leukemias",
-            "Myeloid Leukemia",
+            "myeloid leukemias",
+            "myeloid leukemia",
         ]
 
     def test_unmapped_value_passthrough(self):
         from app.core.diagnosis_category import diagnosis_category_filter_db_values
 
-        assert diagnosis_category_filter_db_values("Neuroblastoma") == ["Neuroblastoma"]
+        assert diagnosis_category_filter_db_values("Neuroblastoma") == ["neuroblastoma"]
 
 
 @pytest.mark.unit

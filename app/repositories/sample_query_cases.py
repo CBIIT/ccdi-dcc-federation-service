@@ -514,7 +514,7 @@ class SampleQueryCases:
                         params["diag_category_contains_term"] = value.strip()
                         diagnosis_conditions.append(diagnosis_category_contains_predicate("d"))
                     else:
-                        # Reverse-map API PV to DB spellings (e.g. Myeloid Leukemia → also Myeloid leukemias)
+                        # Reverse-map API PV to lowercased DB spellings (helper owns .lower())
                         filter_value = value.strip() if isinstance(value, str) else value
                         params["diag_category_filters"] = diagnosis_category_filter_db_values(
                             str(filter_value) if filter_value is not None else ""

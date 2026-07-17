@@ -1113,6 +1113,116 @@ class TestSampleRepositoryInternal:
         assert result == []
         assert not mock_session.run.called
 
+    @pytest.mark.parametrize(
+        "field,patch_target",
+        [
+            ("library_source_material", "app.repositories.sample.is_null_mapped_value"),
+            ("library_strategy", "app.repositories.sample.is_database_only_value"),
+            ("library_selection_method", "app.repositories.sample.is_database_only_value"),
+            ("specimen_molecular_analyte_type", "app.repositories.sample.is_database_only_value"),
+        ],
+    )
+    async def test_get_samples_by_sequencing_file_filters_invalid_value_return_total(
+        self, repository, mock_session, field, patch_target
+    ):
+        """With return_total=True, an invalid filter value must return ([], 0), not a bare [].
+
+        A bare [] fails `isinstance(result, tuple)` in SampleService.get_samples, which then
+        falls back to running a whole extra get_samples_summary() query just to learn total=0.
+        """
+        with patch(patch_target, return_value=True):
+            result = await repository._get_samples_by_sequencing_file_filters(
+                {field: "Invalid value"},
+                offset=0,
+                limit=10,
+                return_total=True,
+            )
+
+        assert result == ([], 0)
+        assert not mock_session.run.called
+
+    async def test_get_samples_by_sequencing_file_filters_count_fail_still_tuple(
+        self, repository, mock_session
+    ):
+        """If the count query fails but the list succeeds, return_total must still yield a tuple.
+
+        A bare list under return_total=True undercounts /sample-diagnosis (total forced to 0)
+        and triggers a wasteful summary recompute on /sample.
+        """
+        sample_obj = Mock()
+        mock_list_result = AsyncMock()
+        mock_list_result.__aiter__.return_value = [
+            {
+                "sa": {"sample_id": "S1"},
+                "p": {},
+                "st": {"study_id": "phs001"},
+                "sf": {"library_strategy": "WGS"},
+                "pf": {},
+                "diagnoses": {},
+            }
+        ]
+        mock_list_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_list_result)
+        repository._record_to_sample = Mock(return_value=sample_obj)
+
+        with patch("app.repositories.sample.is_database_only_value", return_value=False), patch(
+            "app.repositories.sample.is_null_mapped_value", return_value=False
+        ), patch(
+            "app.repositories.sample.reverse_map_field_value", return_value="WGS"
+        ), patch(
+            "app.repositories.sample.run_count_query_with_retry",
+            AsyncMock(side_effect=RuntimeError("count failed")),
+        ):
+            result = await repository._get_samples_by_sequencing_file_filters(
+                {"library_strategy": "WGS"},
+                offset=0,
+                limit=10,
+                return_total=True,
+            )
+
+        assert isinstance(result, tuple)
+        samples, total = result
+        assert samples == [sample_obj]
+        assert total == 1  # lower bound = len(samples) when count unavailable
+
+    async def test_get_samples_by_pathology_file_filters_count_fail_still_tuple(
+        self, repository, mock_session
+    ):
+        """pathology_file reverse path: count failure still returns (samples, len) tuple."""
+        sample_obj = Mock()
+        mock_list_result = AsyncMock()
+        mock_list_result.__aiter__.return_value = [
+            {
+                "sa": {"sample_id": "S1"},
+                "p": {},
+                "st": {"study_id": "phs001"},
+                "sf": {},
+                "pf": {"fixation_embedding_method": "OCT"},
+                "diagnoses": {},
+            }
+        ]
+        mock_list_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_list_result)
+        repository._record_to_sample = Mock(return_value=sample_obj)
+
+        with patch("app.repositories.sample.is_database_only_value", return_value=False), patch(
+            "app.repositories.sample.reverse_map_field_value", return_value="OCT"
+        ), patch(
+            "app.repositories.sample.run_count_query_with_retry",
+            AsyncMock(side_effect=RuntimeError("count failed")),
+        ):
+            result = await repository._get_samples_by_pathology_file_filters(
+                {"preservation_method": "OCT"},
+                offset=0,
+                limit=10,
+                return_total=True,
+            )
+
+        assert isinstance(result, tuple)
+        samples, total = result
+        assert samples == [sample_obj]
+        assert total == 1
+
     async def test_get_samples_by_sequencing_file_filters_success(self, repository, mock_session):
         """Test reverse query returns samples when records exist."""
         with patch("app.repositories.sample.is_database_only_value", return_value=False), \

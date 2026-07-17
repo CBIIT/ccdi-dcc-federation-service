@@ -46,9 +46,11 @@ def diagnosis_category_token_case_expr(variable_name: str = "token") -> str:
 
 def diagnosis_category_filter_db_values(api_value: str) -> list[str]:
     """
-    Expand an API diagnosis_category filter to DB token spellings.
+    Expand an API diagnosis_category filter to lowercased DB token spellings.
 
     Uses reverse_mappings so e.g. "Myeloid Leukemia" also matches DB "Myeloid leukemias".
+    Values are lowercased for Cypher ``IN $diag_category_filters`` membership against
+    ``toLower(trim(toString(token)))`` — callers must not re-lower.
     """
     if api_value is None:
         return []
@@ -57,12 +59,13 @@ def diagnosis_category_filter_db_values(api_value: str) -> list[str]:
         return []
     reverse_mapped = reverse_map_field_value("diagnosis_category", t)
     if isinstance(reverse_mapped, list):
-        return list(
-            dict.fromkeys(str(v) for v in reverse_mapped if v is not None and str(v).strip())
-        )
-    if reverse_mapped:
-        return [str(reverse_mapped)]
-    return [t]
+        raw = [str(v) for v in reverse_mapped if v is not None and str(v).strip()]
+    elif reverse_mapped:
+        raw = [str(reverse_mapped)]
+    else:
+        raw = [t]
+    # Lowercase once here so all Cypher producers share one contract (ASCII PVs today).
+    return list(dict.fromkeys(v.lower() for v in raw if v.strip()))
 
 
 def split_diagnosis_category_tokens(raw: object) -> tuple[list[str], list[str]]:

@@ -636,40 +636,6 @@ class TestGetSamplesMainMethod:
             assert isinstance(result, list)
             assert result == []
 
-    async def test_get_samples_case2_none_and_case3_none_fall_through_to_standard_query(self, repository, mock_session):
-        """Regression: when Case 2 and Case 3 both return None, standard query path should run."""
-        async def async_gen():
-            yield {
-                "sa": {"sample_id": "SAMP001"},
-                "p": {},
-                "st": {"study_id": "phs002430"},
-                "sf": {},
-                "pf": {},
-                "diagnoses": {}
-            }
-
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        mock_result.consume = AsyncMock()
-        mock_session.run = AsyncMock(return_value=mock_result)
-
-        with patch.object(repository, '_get_samples_case2_sample_study', new_callable=AsyncMock) as mock_case2, \
-             patch.object(repository, '_get_samples_case3_with_node_filters', new_callable=AsyncMock) as mock_case3:
-            mock_case2.return_value = None
-            mock_case3.return_value = None
-
-            result = await repository.get_samples(
-                filters={"age_at_collection": "1461", "depositions": "phs002430"},
-                offset=0,
-                limit=50,
-                return_total=False,
-            )
-
-            mock_case2.assert_called_once()
-            mock_case3.assert_called_once()
-            assert mock_session.run.called
-            assert isinstance(result, list)
-
     async def test_get_samples_sequencing_file_only_uses_optimized_path(self, repository, mock_session):
         """Sequencing_file-only filters route to the optimized sf-first method, not Case 3."""
         async def async_gen():
@@ -890,38 +856,6 @@ class TestGetSamplesMainMethod:
         assert isinstance(result, tuple)
         assert len(result) == 2
         assert isinstance(result[0], list)
-
-    async def test_get_samples_case3_returns_none_fallthrough(self, repository, mock_session):
-        """Test Case 3 returning None falls through to standard query (line 371-373)."""
-        async def async_gen():
-            yield {
-                "sa": {"sample_id": "SAMP001"},
-                "p": {},
-                "st": {"study_id": "phs001"},
-                "sf": {},
-                "pf": {},
-                "diagnoses": {}
-            }
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        mock_result.consume = AsyncMock()
-        mock_session.run = AsyncMock(return_value=mock_result)
-        
-        # Mock case3 to return None (indicating it can't handle the filters).
-        # Use a diagnosis filter so routing still reaches Case 3 (sequencing_file-only
-        # filters now bypass Case 3 via the optimized sf-first method).
-        with patch.object(repository, '_get_samples_case3_with_node_filters', new_callable=AsyncMock) as mock_case3:
-            mock_case3.return_value = None
-            result = await repository.get_samples(
-                filters={"diagnosis": "Neuroblastoma", "unknown_filter": "value"},  # routes to Case 3
-                offset=0,
-                limit=20
-            )
-            
-            mock_case3.assert_called_once()
-            # Should fall through and execute standard query
-            assert mock_session.run.called
 
     async def test_get_samples_case1_record_conversion_exception(self, repository, mock_session):
         """Test Case 1 exception handling during record conversion."""

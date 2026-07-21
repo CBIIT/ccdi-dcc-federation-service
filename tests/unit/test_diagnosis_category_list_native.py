@@ -8,9 +8,13 @@ one garbled unharmonized token instead of the real harmonized/unharmonized split
 """
 
 import pytest
+from unittest.mock import patch
 
 from app.core.diagnosis_category import (
     HARMONIZED_DIAGNOSIS_CATEGORIES,
+    canonical_diagnosis_category_token,
+    diagnosis_category_filter_db_values,
+    diagnosis_category_token_case_expr,
     split_diagnosis_category_tokens,
 )
 from app.repositories.sample_converters import _build_diagnosis_result
@@ -77,6 +81,52 @@ class TestSplitDiagnosisCategoryTokens:
         assert harmonized == ["Low-Grade Gliomas"]
         assert unharmonized == []
 
+    def test_blank_tokens_skipped(self):
+        """Empty / whitespace-only tokens after strip are ignored (line 95)."""
+        harmonized, unharmonized = split_diagnosis_category_tokens(
+            ["", "  ", HARMONIZED_PV, ";;"]
+        )
+        assert harmonized == [HARMONIZED_PV]
+        assert unharmonized == []
+
+
+@pytest.mark.unit
+class TestCanonicalDiagnosisCategoryToken:
+    """Edge cases for canonical_diagnosis_category_token (core coverage)."""
+
+    def test_none_returns_none(self):
+        assert canonical_diagnosis_category_token(None) is None
+
+    def test_blank_returns_none(self):
+        assert canonical_diagnosis_category_token("") is None
+        assert canonical_diagnosis_category_token("   ") is None
+
+    def test_harmonized_pv_round_trip(self):
+        assert canonical_diagnosis_category_token(HARMONIZED_PV) == HARMONIZED_PV
+
+    def test_map_field_value_none_returns_none(self):
+        """Defensive path when map_field_value nulls a token (line 34)."""
+        with patch(
+            "app.core.diagnosis_category.map_field_value",
+            return_value=None,
+        ):
+            assert canonical_diagnosis_category_token("anything") is None
+
+
+@pytest.mark.unit
+class TestDiagnosisCategoryTokenCaseExpr:
+    def test_returns_case_statement_when_mappings_exist(self):
+        expr = diagnosis_category_token_case_expr("token")
+        assert "CASE" in expr
+        assert "Myeloid leukemias" in expr
+
+    def test_falls_back_to_variable_when_no_case_statement(self):
+        with patch(
+            "app.core.diagnosis_category.build_case_mapping_statement",
+            return_value="",
+        ):
+            assert diagnosis_category_token_case_expr("tok") == "tok"
+
 
 @pytest.mark.unit
 class TestDiagnosisCategoryFilterDbValues:
@@ -106,6 +156,14 @@ class TestDiagnosisCategoryFilterDbValues:
         vals = diagnosis_category_filter_db_values("Low-Grade Gliomas")
         assert vals == ["low-grade gliomas"]
         assert all(v == v.lower() for v in vals)
+
+    def test_falsy_reverse_map_falls_back_to_raw_token(self):
+        """When reverse_map returns None/empty, use the API token as-is (line 66)."""
+        with patch(
+            "app.core.diagnosis_category.reverse_map_field_value",
+            return_value=None,
+        ):
+            assert diagnosis_category_filter_db_values("Neuroblastoma") == ["neuroblastoma"]
 
 
 @pytest.mark.unit

@@ -2522,7 +2522,10 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
             return [], 0
         try:
             summary = await self.get_samples_summary(filters)
-            total = int((summary.get("counts") or {}).get("total") or len(samples))
+            counts = summary.get("counts") or {}
+            # Use `is None` — a legitimate total=0 must not fall through to len(samples).
+            raw_total = counts.get("total")
+            total = int(raw_total) if raw_total is not None else len(samples)
             return samples, total
         except Exception as e:
             logger.warning(

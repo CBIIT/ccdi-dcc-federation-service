@@ -78,8 +78,6 @@ class TestSampleEndpoints:
         self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
     ):
         """Test list_samples returns samples successfully."""
-        from app.models.dto import SummaryResponse, SummaryCounts
-        
         class MockSample:
             def model_dump(self, exclude=None, exclude_none=None, exclude_unset=None):
                 return {
@@ -92,12 +90,11 @@ class TestSampleEndpoints:
                 }
         
         mock_samples = [MockSample()]
-        mock_summary = SummaryResponse(counts=SummaryCounts(total=100))
         
         with patch('app.api.v1.endpoints.samples.SampleService') as mock_service_class:
             mock_service = Mock()
-            mock_service.get_samples = AsyncMock(return_value=mock_samples)
-            mock_service.get_samples_summary = AsyncMock(return_value=mock_summary)
+            # SampleService.get_samples(return_total=True) always returns a tuple
+            mock_service.get_samples = AsyncMock(return_value=(mock_samples, 100))
             mock_service_class.return_value = mock_service
             
             with patch('app.api.v1.endpoints.samples.get_cache_service', return_value=None):
@@ -119,6 +116,7 @@ class TestSampleEndpoints:
         assert isinstance(result.summary, dict)
         # Access summary counts
         assert result.summary["counts"]["all"] == 100
+        mock_service.get_samples_summary.assert_not_called()
 
     async def test_list_samples_database_error(
         self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination

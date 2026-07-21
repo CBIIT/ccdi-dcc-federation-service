@@ -95,15 +95,16 @@ class TestSampleEndpointsEnhanced:
         
         assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
 
-    async def test_list_samples_summary_database_error(self, mock_request, mock_response, mock_session, mock_settings, mock_allowlist, mock_pagination):
-        """Test list_samples returns 404 when summary raises database connection error."""
+    async def test_list_samples_uses_tuple_total_without_summary_fallback(
+        self, mock_request, mock_response, mock_session, mock_settings, mock_allowlist, mock_pagination
+    ):
+        """Endpoint unpacks (samples, total); does not call get_samples_summary."""
         from app.services.sample import SampleService
-        
+
         mock_query_params = Mock()
         mock_query_params.keys = Mock(return_value=[])
         mock_request.query_params = mock_query_params
-        
-        # Mock service
+
         with patch('app.api.v1.endpoints.samples.SampleService') as mock_service_class:
             mock_service = AsyncMock(spec=SampleService)
             mock_sample = Mock()
@@ -114,12 +115,41 @@ class TestSampleEndpointsEnhanced:
                 },
                 "metadata": {}
             })
-            mock_service.get_samples = AsyncMock(return_value=[mock_sample])
-            mock_service.get_samples_summary = AsyncMock(
+            mock_service.get_samples = AsyncMock(return_value=([mock_sample], 42))
+            mock_service_class.return_value = mock_service
+
+            with patch('app.api.v1.endpoints.samples.get_cache_service', return_value=None):
+                result = await list_samples(
+                    request=mock_request,
+                    response=mock_response,
+                    filters={},
+                    pagination=mock_pagination,
+                    session=mock_session,
+                    settings=mock_settings,
+                    allowlist=mock_allowlist,
+                    _rate_limit=None
+                )
+
+        assert result.summary["counts"]["all"] == 42
+        mock_service.get_samples_summary.assert_not_called()
+
+    async def test_list_samples_database_error_from_get_samples(
+        self, mock_request, mock_response, mock_session, mock_settings, mock_allowlist, mock_pagination
+    ):
+        """DB errors from get_samples map to 404 (summary fallback path removed)."""
+        from app.services.sample import SampleService
+
+        mock_query_params = Mock()
+        mock_query_params.keys = Mock(return_value=[])
+        mock_request.query_params = mock_query_params
+
+        with patch('app.api.v1.endpoints.samples.SampleService') as mock_service_class:
+            mock_service = AsyncMock(spec=SampleService)
+            mock_service.get_samples = AsyncMock(
                 side_effect=DatabaseConnectionError("Connection failed")
             )
             mock_service_class.return_value = mock_service
-            
+
             with patch('app.api.v1.endpoints.samples.get_cache_service', return_value=None):
                 with pytest.raises(HTTPException) as exc_info:
                     await list_samples(
@@ -136,74 +166,21 @@ class TestSampleEndpointsEnhanced:
         assert exc_info.value.detail["errors"][0]["kind"] == "NotFound"
         assert exc_info.value.detail["errors"][0]["entity"] == "Samples"
 
-    async def test_list_samples_summary_connection_error(self, mock_request, mock_response, mock_session, mock_settings, mock_allowlist, mock_pagination):
-        """Test list_samples returns 404 when summary raises connection-related error."""
+    async def test_list_samples_other_error_from_get_samples(
+        self, mock_request, mock_response, mock_session, mock_settings, mock_allowlist, mock_pagination
+    ):
+        """Non-DB errors from get_samples still map to 404."""
         from app.services.sample import SampleService
-        
-        mock_query_params = Mock()
-        mock_query_params.keys = Mock(return_value=[])
-        mock_request.query_params = mock_query_params
-        
-        # Mock service - need proper Sample structure
-        with patch('app.api.v1.endpoints.samples.SampleService') as mock_service_class:
-            mock_service = AsyncMock(spec=SampleService)
-            # Create a proper mock sample with required fields
-            mock_sample = Mock()
-            mock_sample.model_dump = Mock(return_value={
-                "id": {
-                    "namespace": {"organization": "CCDI-DCC", "name": "phs002431"},
-                    "name": "SAMPLE-001"
-                },
-                "metadata": {}
-            })
-            mock_service.get_samples = AsyncMock(return_value=[mock_sample])
-            mock_service.get_samples_summary = AsyncMock(
-                side_effect=Exception("Database connection timeout")
-            )
-            mock_service_class.return_value = mock_service
-            
-            with patch('app.api.v1.endpoints.samples.get_cache_service', return_value=None):
-                with pytest.raises(HTTPException) as exc_info:
-                    await list_samples(
-                        request=mock_request,
-                        response=mock_response,
-                        filters={},
-                        pagination=mock_pagination,
-                        session=mock_session,
-                        settings=mock_settings,
-                        allowlist=mock_allowlist,
-                        _rate_limit=None
-                    )
-        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
-        assert exc_info.value.detail["errors"][0]["kind"] == "NotFound"
-        assert exc_info.value.detail["errors"][0]["entity"] == "Samples"
 
-    async def test_list_samples_summary_other_error(self, mock_request, mock_response, mock_session, mock_settings, mock_allowlist, mock_pagination):
-        """Test list_samples returns 404 when summary raises other error."""
-        from app.services.sample import SampleService
-        
         mock_query_params = Mock()
         mock_query_params.keys = Mock(return_value=[])
         mock_request.query_params = mock_query_params
-        
-        # Mock service - need proper Sample structure
+
         with patch('app.api.v1.endpoints.samples.SampleService') as mock_service_class:
             mock_service = AsyncMock(spec=SampleService)
-            # Create a proper mock sample with required fields
-            mock_sample = Mock()
-            mock_sample.model_dump = Mock(return_value={
-                "id": {
-                    "namespace": {"organization": "CCDI-DCC", "name": "phs002431"},
-                    "name": "SAMPLE-001"
-                },
-                "metadata": {}
-            })
-            mock_service.get_samples = AsyncMock(return_value=[mock_sample])
-            mock_service.get_samples_summary = AsyncMock(
-                side_effect=Exception("Some other error")
-            )
+            mock_service.get_samples = AsyncMock(side_effect=Exception("Some other error"))
             mock_service_class.return_value = mock_service
-            
+
             with patch('app.api.v1.endpoints.samples.get_cache_service', return_value=None):
                 with pytest.raises(HTTPException) as exc_info:
                     await list_samples(

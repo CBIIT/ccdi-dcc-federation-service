@@ -223,68 +223,16 @@ async def list_samples(
         # so that get_samples_summary gets the original filters dict if needed
         filters_copy = filters.copy()
         
-        # Get samples with total count (optimized: uses same filter state when possible)
-        # This avoids a separate get_samples_summary call for most cases
-        result = await service.get_samples(
+        # Get samples with total count (optimized: uses same filter state when possible).
+        # SampleService.get_samples(..., return_total=True) always returns (samples, total);
+        # summary fallback for bare-list repository results lives inside the service.
+        samples, total_count = await service.get_samples(
             filters=filters_copy,
             offset=pagination.offset,
             limit=pagination.per_page,
             return_total=True
         )
-        
-        # Handle tuple return (samples, total_count) or list return (samples only)
-        if isinstance(result, tuple):
-            samples, total_count = result
-            logger.debug("Using total count from get_samples (optimized path)", total_count=total_count)
-        else:
-            # Repository didn't return total (e.g. sequencing_file-only reverse query path)
-            # Fall back to get_samples_summary
-            samples = result
-            try:
-                summary_result = await service.get_samples_summary(filters)
-                total_count = summary_result.counts.total
-            except (DatabaseConnectionError, NotFoundError) as summary_error:
-                # DB / no-data error - re-raise so outer handler returns 404
-                logger.error(
-                    "Error getting samples summary (backend/DB) - returning 404",
-                    error=str(summary_error),
-                    error_type=type(summary_error).__name__,
-                    filters=filters,
-                    exc_info=True
-                )
-                if isinstance(summary_error, NotFoundError):
-                    raise summary_error
-                error_detail = ErrorDetail(
-                    kind=ErrorKind.NOT_FOUND,
-                    entity="Samples",
-                    message="Unable to find data for your request.",
-                    reason="No data found."
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
-                )
-            except Exception as summary_error:
-                # Other errors (e.g. connection-related) - re-raise so outer handler returns 404
-                logger.error(
-                    "Error getting samples summary - returning 404",
-                    error=str(summary_error),
-                    error_type=type(summary_error).__name__,
-                    filters=filters,
-                    exc_info=True
-                )
-                if hasattr(summary_error, 'to_http_exception'):
-                    raise summary_error.to_http_exception()
-                error_detail = ErrorDetail(
-                    kind=ErrorKind.NOT_FOUND,
-                    entity="Samples",
-                    message="Unable to find data for your request.",
-                    reason="No data found."
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
-                )
+        logger.debug("Using total count from get_samples", total_count=total_count)
         
         # Build pagination info
         pagination_info = PaginationInfo(

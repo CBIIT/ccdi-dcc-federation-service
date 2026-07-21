@@ -38,6 +38,10 @@ class SampleSummary:
             Dictionary with summary statistics
         """
         logger.debug("Getting samples summary", filters=filters)
+
+        # Work on a shallow copy so .pop("identifiers") / .pop("_diagnosis_search")
+        # below cannot mutate the caller's filters dict.
+        filters = filters.copy()
         
         # IMPORTANT: Check routing BEFORE popping identifiers (identifiers is popped later for early filtering)
         # This ensures routing decisions include identifiers filter

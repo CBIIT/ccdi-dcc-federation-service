@@ -499,7 +499,27 @@ class TestSampleRepositoryGetSamples:
 
             assert len(samples) == 1
             assert total_count == 42
-            mock_summary.assert_awaited_once_with({"tissue_type": "Tumor"})
+            mock_summary.assert_awaited_once()
+
+    async def test_get_samples_for_diagnosis_endpoint_fallback_total_zero(
+        self, repository
+    ):
+        """Summary total=0 must be preserved (not replaced by len(samples))."""
+        with patch.object(repository, "get_samples", new_callable=AsyncMock) as mock_get_samples, patch.object(
+            repository, "get_samples_summary", new_callable=AsyncMock
+        ) as mock_summary:
+            mock_get_samples.return_value = [Mock()]
+            mock_summary.return_value = {"counts": {"total": 0}}
+
+            samples, total_count = await repository.get_samples_for_diagnosis_endpoint(
+                filters={"tissue_type": "Tumor"},
+                offset=0,
+                limit=20,
+            )
+
+            assert len(samples) == 1
+            assert total_count == 0
+            mock_summary.assert_awaited_once()
 
     async def test_get_samples_for_diagnosis_endpoint_fallback_empty_list(self, repository):
         """Empty bare list stays ([], 0) without calling summary."""

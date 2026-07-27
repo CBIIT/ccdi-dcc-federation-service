@@ -91,9 +91,3 @@ def get_db_values_for_api_file_type(api_value: str) -> List[str]:
             return [str(v).lower() for v in mapped]
         return [str(mapped).lower()]
     return [str(api_value).lower()]
-
-
-def get_mappable_db_values_lower() -> List[str]:
-    """Lowercase DB keys that map to an API (col D) value — for count values/missing filters."""
-    config = _load_config()
-    return sorted({str(k).lower() for k in config.get("mappings", {}).keys()})

@@ -681,19 +681,13 @@ class TestFileRepositoryInternal:
 
     async def test_count_files_by_field_type_enum_mapping(self, repository, mock_session):
         """Test count_files_by_field maps enum values and counts non-matching as missing."""
-        total_result = AsyncMock()
-        total_result.__aiter__.return_value = [{"total": 3}]
-        total_result.consume = AsyncMock()
-        missing_result = AsyncMock()
-        missing_result.__aiter__.return_value = [{"missing": 0}]
-        missing_result.consume = AsyncMock()
         values_result = AsyncMock()
         values_result.__aiter__.return_value = [
             {"value": "bam", "count": 2},
             {"value": "unknown", "count": 1},
         ]
         values_result.consume = AsyncMock()
-        mock_session.run = AsyncMock(side_effect=[total_result, missing_result, values_result])
+        mock_session.run = AsyncMock(return_value=values_result)
 
         result = await repository.count_files_by_field("type", {})
 
@@ -701,39 +695,19 @@ class TestFileRepositoryInternal:
         assert result["missing"] == 1  # unknown counted as missing
         assert result["values"][0]["value"] == "BAM"
         assert result["values"][0]["count"] == 2
+        assert mock_session.run.call_count == 1
 
     async def test_count_files_by_field_retry_on_empty_then_success(self, repository, mock_session):
         """Test count_files_by_field retries when results are empty."""
-        total_result_1 = AsyncMock()
-        total_result_1.__aiter__.return_value = [{"total": 0}]
-        total_result_1.consume = AsyncMock()
-        missing_result_1 = AsyncMock()
-        missing_result_1.__aiter__.return_value = [{"missing": 0}]
-        missing_result_1.consume = AsyncMock()
         values_result_1 = AsyncMock()
         values_result_1.__aiter__.return_value = []
         values_result_1.consume = AsyncMock()
 
-        total_result_2 = AsyncMock()
-        total_result_2.__aiter__.return_value = [{"total": 2}]
-        total_result_2.consume = AsyncMock()
-        missing_result_2 = AsyncMock()
-        missing_result_2.__aiter__.return_value = [{"missing": 0}]
-        missing_result_2.consume = AsyncMock()
         values_result_2 = AsyncMock()
         values_result_2.__aiter__.return_value = [{"value": "bam", "count": 2}]
         values_result_2.consume = AsyncMock()
 
-        mock_session.run = AsyncMock(
-            side_effect=[
-                total_result_1,
-                missing_result_1,
-                values_result_1,
-                total_result_2,
-                missing_result_2,
-                values_result_2,
-            ]
-        )
+        mock_session.run = AsyncMock(side_effect=[values_result_1, values_result_2])
 
         with patch("app.repositories.file.asyncio.sleep", new=AsyncMock()):
             result = await repository.count_files_by_field("type", {})
@@ -741,28 +715,15 @@ class TestFileRepositoryInternal:
         assert result["total"] == 2
         assert result["missing"] == 0
         assert result["values"][0]["value"] == "BAM"
-        assert mock_session.run.call_count == 6
+        assert mock_session.run.call_count == 2
 
     async def test_count_files_by_field_retry_on_exception_then_success(self, repository, mock_session):
         """Test count_files_by_field retries after exception."""
-        total_result = AsyncMock()
-        total_result.__aiter__.return_value = [{"total": 1}]
-        total_result.consume = AsyncMock()
-        missing_result = AsyncMock()
-        missing_result.__aiter__.return_value = [{"missing": 0}]
-        missing_result.consume = AsyncMock()
         values_result = AsyncMock()
         values_result.__aiter__.return_value = [{"value": "bam", "count": 1}]
         values_result.consume = AsyncMock()
 
-        mock_session.run = AsyncMock(
-            side_effect=[
-                Exception("boom"),
-                total_result,
-                missing_result,
-                values_result,
-            ]
-        )
+        mock_session.run = AsyncMock(side_effect=[Exception("boom"), values_result])
 
         with patch("app.repositories.file.asyncio.sleep", new=AsyncMock()):
             result = await repository.count_files_by_field("type", {})
@@ -770,7 +731,7 @@ class TestFileRepositoryInternal:
         assert result["total"] == 1
         assert result["missing"] == 0
         assert result["values"][0]["value"] == "BAM"
-        assert mock_session.run.call_count == 4
+        assert mock_session.run.call_count == 2
 
     async def test_count_files_by_field_max_retries_exceeded(self, repository, mock_session):
         """Test count_files_by_field raises after max retries."""

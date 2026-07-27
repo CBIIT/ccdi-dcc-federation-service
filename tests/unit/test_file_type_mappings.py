@@ -11,7 +11,6 @@ import pytest
 from app.core.file_type_mappings import (
     clear_file_type_mappings_cache,
     get_db_values_for_api_file_type,
-    get_mappable_db_values_lower,
     map_file_type_db_to_api,
 )
 from app.repositories.file import FileRepository
@@ -104,13 +103,6 @@ class TestReverseMap:
 
     def test_legacy_enum_direct(self):
         assert get_db_values_for_api_file_type("JPEG") == ["jpeg"]
-
-    def test_mappable_keys_include_aliases(self):
-        keys = get_mappable_db_values_lower()
-        assert "bam" in keys
-        assert "bam_index" in keys
-        assert "tiff" in keys
-        assert "bcf" in keys
 
 
 class TestRepositoryMapper:

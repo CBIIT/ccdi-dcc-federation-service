@@ -15,7 +15,6 @@ from app.db.memgraph import run_count_query_with_retry
 from app.core.constants import FileType
 from app.core.file_type_mappings import (
     get_db_values_for_api_file_type,
-    get_mappable_db_values_lower,
     map_file_type_db_to_api,
 )
 from app.config_data.file_node_registry import FileNodeConfig, FILE_NODE_REGISTRY
@@ -658,250 +657,116 @@ class FileRepository:
         if type_where_fragment:
             base_where_conditions.append(type_where_fragment)
 
-        # OPTIMIZATION: When counting by type, restrict values/missing to mappable DB keys
-        # (mapping keys → col D). Alias keys like bam_index are included; null_mappings are not.
-        type_enum_param = None
-        type_enum_filter = None
-        if field == "type":
-            mappable_lower = get_mappable_db_values_lower()
-            if mappable_lower:
-                param_counter += 1
-                type_enum_param = f"param_{param_counter}"
-                params[type_enum_param] = mappable_lower
-                type_enum_filter = f"toLower(sf.{db_field}) IN ${type_enum_param}"
-                logger.debug(
-                    "Using mapping-key IN filter for type count (values query only)",
-                    mappable_count=len(mappable_lower),
-                    db_field=db_field,
-                )
-        
-        # Build base WHERE clause for file filters (applied before traversals)
-        # NOTE: type_enum_filter is NOT included here - it's only for values query
-        base_where_clause = "WHERE " + " AND ".join(base_where_conditions) if base_where_conditions else ""
-        
-        # OPTIMIZATION STRATEGY:
-        # Apply file filters FIRST (before traversals) to reduce dataset size
-        # Use reverse traversal when no file filters exist (start from studies)
-        # This significantly reduces the number of nodes processed
-        
-        # Check if we have file filters (excluding study path requirements)
+        base_where_clause = (
+            "WHERE " + " AND ".join(base_where_conditions) if base_where_conditions else ""
+        )
         has_file_filters = len(base_where_conditions) > 0
-        
+
+        # Single-pass type count: one study-path traversal groups by raw file_type;
+        # total / missing / API buckets are derived in Python (avoids 3× full scans).
         if has_file_filters:
-            # OPTIMIZED PATTERN: Apply file filters FIRST (including IN clause for type)
-            # Then traverse to study - this processes fewer files before traversals
-            # The IN clause filters files to reverse-mapped DB values (mapping keys), significantly reducing dataset
-            
-            # Query 1: Total count (with file filters applied early)
-            total_cypher = f"""
+            match_clause = f"""
             MATCH (sf:{self.config.node_label})
             {base_where_clause}
             OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa:sample)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-            WITH DISTINCT sf, coalesce(st1, st2) AS st
-            WHERE st IS NOT NULL
-            RETURN count(sf) as total
-            """.strip()
-
-            # Query 2: Missing count (with file filters applied early)
-            # For type count: Missing includes NULL file_type OR file_type not in mappable mapping keys
-            missing_where_conditions = base_where_conditions.copy() if base_where_conditions else []
-            if type_enum_filter:
-                # For type count: Missing = NULL OR not in mappable DB keys
-                missing_where_conditions.append(f"(sf.{db_field} IS NULL OR NOT ({type_enum_filter}))")
-            else:
-                # For other fields: Missing = NULL
-                missing_where_conditions.append(f"sf.{db_field} IS NULL")
-            missing_where_clause = "WHERE " + " AND ".join(missing_where_conditions)
-
-            missing_cypher = f"""
-            MATCH (sf:{self.config.node_label})
-            {missing_where_clause}
-            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa:sample)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-            WITH DISTINCT sf, coalesce(st1, st2) AS st
-            WHERE st IS NOT NULL
-            RETURN count(sf) as missing
-            """.strip()
-
-            # Query 3: Values with counts (with file filters applied early)
-            # For type count: Also apply mappable-key IN filter to only group mapped DB types
-            field_where_conditions_filtered = base_where_conditions.copy() if base_where_conditions else []
-            field_where_conditions_filtered.append(f"sf.{db_field} IS NOT NULL")
-            # Add mapping-key filter for type count (only for values query)
-            if type_enum_filter:
-                field_where_conditions_filtered.append(type_enum_filter)
-            field_where_clause_filtered = "WHERE " + " AND ".join(field_where_conditions_filtered) if field_where_conditions_filtered else ""
-
-            values_cypher = f"""
-            MATCH (sf:{self.config.node_label})
-            {field_where_clause_filtered}
-            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa:sample)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-            WITH sf, coalesce(st1, st2) AS st
-            WHERE st IS NOT NULL
-            WITH DISTINCT sf, sf.{db_field} as field_val
-            WHERE field_val IS NOT NULL AND toString(field_val) <> '' AND toString(field_val) <> 'null'
-            RETURN toString(field_val) as value, count(sf) as count
-            ORDER BY count DESC, value ASC
             """.strip()
         else:
-            # SIMPLE PATTERN: No file filters - use original pattern (already optimized)
-            # Query 1: Total count
-            total_cypher = f"""
+            match_clause = f"""
             MATCH (sf:{self.config.node_label})-[:{self.config.rel_name}]->(sa:sample)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-            WITH DISTINCT sf, coalesce(st1, st2) AS st
-            WHERE st IS NOT NULL
-            RETURN count(sf) as total
             """.strip()
 
-            # Query 2: Missing count
-            # For type count: Missing includes NULL file_type OR file_type not in mappable mapping keys
-            if type_enum_filter:
-                # For type count: Missing = NULL OR not in mappable DB keys
-                missing_where_additional = f" AND (sf.{db_field} IS NULL OR NOT ({type_enum_filter}))"
-            else:
-                # For other fields: Missing = NULL
-                missing_where_additional = f" AND sf.{db_field} IS NULL"
+        values_cypher = f"""
+        {match_clause}
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+        WITH sf, coalesce(st1, st2) AS st
+        WHERE st IS NOT NULL
+        WITH DISTINCT sf, sf.{db_field} as field_val
+        RETURN CASE WHEN field_val IS NULL THEN null ELSE toString(field_val) END as value,
+               count(sf) as count
+        ORDER BY count DESC, value ASC
+        """.strip()
 
-            missing_cypher = f"""
-            MATCH (sf:{self.config.node_label})-[:{self.config.rel_name}]->(sa:sample)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-            WITH DISTINCT sf, coalesce(st1, st2) AS st
-            WHERE st IS NOT NULL{missing_where_additional}
-            RETURN count(sf) as missing
-            """.strip()
-
-            # Query 3: Values with counts
-            # For type count: Also apply mappable-key IN filter to only group mapped DB types
-            values_where_parts = [f"sf.{db_field} IS NOT NULL"]
-            if type_enum_filter:
-                values_where_parts.append(type_enum_filter)
-            values_where_additional = " AND " + " AND ".join(values_where_parts) if values_where_parts else ""
-
-            values_cypher = f"""
-            MATCH (sf:{self.config.node_label})-[:{self.config.rel_name}]->(sa:sample)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-            WITH sf, coalesce(st1, st2) AS st
-            WHERE st IS NOT NULL{values_where_additional}
-            WITH DISTINCT sf, sf.{db_field} as field_val
-            WHERE field_val IS NOT NULL AND toString(field_val) <> '' AND toString(field_val) <> 'null'
-            RETURN toString(field_val) as value, count(sf) as count
-            ORDER BY count DESC, value ASC
-            """.strip()
-        
         logger.info(
-            "Executing count_files_by_field Cypher queries (optimized - early filtering)",
+            "Executing count_files_by_field single-pass type query",
             field=field,
             db_field=db_field,
-            has_file_filters=has_file_filters
+            has_file_filters=has_file_filters,
         )
-        
-        # Execute 3 queries with retry logic (simplified queries for better performance)
+
         max_retries = 2
         retry_count = 0
-        total = 0
-        missing = 0
-        values_records = []
-        
+        values_records: List[Dict[str, Any]] = []
+
         while retry_count <= max_retries:
             try:
-                # Execute total query
-                total_result = await self.session.run(total_cypher, params)
-                total_records = []
-                async for record in total_result:
-                    total_records.append(dict(record))
-                await total_result.consume()
-                total = total_records[0].get("total", 0) if total_records else 0
-                
-                # Execute missing query
-                missing_result = await self.session.run(missing_cypher, params)
-                missing_records = []
-                async for record in missing_result:
-                    missing_records.append(dict(record))
-                await missing_result.consume()
-                missing = missing_records[0].get("missing", 0) if missing_records else 0
-                
-                # Execute values query
                 values_result = await self.session.run(values_cypher, params)
                 values_records = []
                 async for record in values_result:
                     values_records.append(dict(record))
                 await values_result.consume()
-                
-                # If we got results or it's the last retry, break out of retry loop
-                if (total > 0 or len(values_records) > 0) or retry_count >= max_retries:
+
+                if values_records or retry_count >= max_retries:
                     break
-                
-                # If no results and not the last retry, wait a bit and retry
+
                 if retry_count < max_retries:
-                    await asyncio.sleep(0.1 * (retry_count + 1))  # Exponential backoff: 0.1s, 0.2s
+                    await asyncio.sleep(0.1 * (retry_count + 1))
                     retry_count += 1
-                    logger.debug(f"Retrying count_files_by_field query (attempt {retry_count + 1})")
+                    logger.debug(
+                        f"Retrying count_files_by_field query (attempt {retry_count + 1})"
+                    )
             except Exception as e:
                 if retry_count < max_retries:
                     await asyncio.sleep(0.1 * (retry_count + 1))
                     retry_count += 1
-                    logger.warning(f"Error in count_files_by_field query, retrying (attempt {retry_count + 1})", error=str(e))
+                    logger.warning(
+                        f"Error in count_files_by_field query, retrying (attempt {retry_count + 1})",
+                        error=str(e),
+                    )
                 else:
-                    logger.error("Error in count_files_by_field query after retries", error=str(e), exc_info=True)
+                    logger.error(
+                        "Error in count_files_by_field query after retries",
+                        error=str(e),
+                        exc_info=True,
+                    )
                     raise
-        
-        # Format results
-        # For "type" field, map DB file types to API (col D) values and count non-matching as missing
-        if field == "type":
-            # Map file types to API values and aggregate counts
-            enum_counts: Dict[str, int] = {}
-            non_matching_count = 0
-            
-            for record in values_records:
-                raw_value = record.get("value")
-                count = record.get("count", 0)
-                
-                mapped_value = self._map_file_type_to_enum(raw_value)
-                
-                if mapped_value:
-                    enum_counts[mapped_value] = enum_counts.get(mapped_value, 0) + count
-                else:
-                    # Count as missing (null-mapped or unmapped)
-                    non_matching_count += count
-            
-            # Format results with API values
-            counts = [
-                {"value": enum_value, "count": count}
-                for enum_value, count in sorted(enum_counts.items(), key=lambda x: (-x[1], x[0]))
-            ]
-            
-            # Add non-matching types to missing count
-            missing = missing + non_matching_count
-        else:
-            # For other fields, use results as-is
-            counts = []
-            for record in values_records:
-                counts.append({
-                    "value": record.get("value"),
-                    "count": record.get("count", 0)
-                })
-        
+
+        # Derive total / missing / API buckets from the single grouped result set
+        api_counts: Dict[str, int] = {}
+        total = 0
+        missing = 0
+        for record in values_records:
+            raw_value = record.get("value")
+            count = int(record.get("count", 0) or 0)
+            total += count
+
+            if raw_value is None or str(raw_value).strip() == "" or str(raw_value).strip().lower() == "null":
+                missing += count
+                continue
+
+            mapped_value = self._map_file_type_to_enum(raw_value)
+            if mapped_value:
+                api_counts[mapped_value] = api_counts.get(mapped_value, 0) + count
+            else:
+                missing += count
+
+        counts = [
+            {"value": api_value, "count": count}
+            for api_value, count in sorted(api_counts.items(), key=lambda x: (-x[1], x[0]))
+        ]
+
         logger.debug(
             "Completed sequencing file count by field",
             field=field,
             total=total,
             missing=missing,
-            values_count=len(counts)
+            values_count=len(counts),
         )
-        
+
         return {
             "total": total,
             "missing": missing,
-            "values": counts
+            "values": counts,
         }
     
     async def _count_files_by_depositions(

@@ -499,7 +499,7 @@ class TestSampleRepositoryGetSamples:
 
             assert len(samples) == 1
             assert total_count == 42
-            mock_summary.assert_awaited_once()
+            mock_summary.assert_awaited_once_with({"tissue_type": "Tumor"})
 
     async def test_get_samples_for_diagnosis_endpoint_fallback_total_zero(
         self, repository
@@ -519,7 +519,7 @@ class TestSampleRepositoryGetSamples:
 
             assert len(samples) == 1
             assert total_count == 0
-            mock_summary.assert_awaited_once()
+            mock_summary.assert_awaited_once_with({"tissue_type": "Tumor"})
 
     async def test_get_samples_for_diagnosis_endpoint_fallback_empty_list(self, repository):
         """Empty bare list stays ([], 0) without calling summary."""

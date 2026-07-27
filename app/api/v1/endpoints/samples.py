@@ -219,8 +219,8 @@ async def list_samples(
         cache_service = get_cache_service()
         service = SampleService(session, allowlist, settings, cache_service)
         
-        # Make a copy of filters for get_samples (it will modify the dict by popping identifiers)
-        # so that get_samples_summary gets the original filters dict if needed
+        # Defensive copy: get_samples() (or a future change to it) should never be able
+        # to mutate the request-scoped `filters` dict out from under this function.
         filters_copy = filters.copy()
         
         # Get samples with total count (optimized: uses same filter state when possible).

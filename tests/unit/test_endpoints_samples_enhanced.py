@@ -133,43 +133,17 @@ class TestSampleEndpointsEnhanced:
         assert result.summary["counts"]["all"] == 42
         mock_service.get_samples_summary.assert_not_called()
 
-    async def test_list_samples_database_error_from_get_samples(
-        self, mock_request, mock_response, mock_session, mock_settings, mock_allowlist, mock_pagination
-    ):
-        """DB errors from get_samples map to 404 (summary fallback path removed)."""
-        from app.services.sample import SampleService
-
-        mock_query_params = Mock()
-        mock_query_params.keys = Mock(return_value=[])
-        mock_request.query_params = mock_query_params
-
-        with patch('app.api.v1.endpoints.samples.SampleService') as mock_service_class:
-            mock_service = AsyncMock(spec=SampleService)
-            mock_service.get_samples = AsyncMock(
-                side_effect=DatabaseConnectionError("Connection failed")
-            )
-            mock_service_class.return_value = mock_service
-
-            with patch('app.api.v1.endpoints.samples.get_cache_service', return_value=None):
-                with pytest.raises(HTTPException) as exc_info:
-                    await list_samples(
-                        request=mock_request,
-                        response=mock_response,
-                        filters={},
-                        pagination=mock_pagination,
-                        session=mock_session,
-                        settings=mock_settings,
-                        allowlist=mock_allowlist,
-                        _rate_limit=None
-                    )
-        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
-        assert exc_info.value.detail["errors"][0]["kind"] == "NotFound"
-        assert exc_info.value.detail["errors"][0]["entity"] == "Samples"
-
     async def test_list_samples_other_error_from_get_samples(
         self, mock_request, mock_response, mock_session, mock_settings, mock_allowlist, mock_pagination
     ):
-        """Non-DB errors from get_samples still map to 404."""
+        """Endpoint maps an unexpected exception raised by service.get_samples() to 404.
+
+        Note: a real SampleService.get_samples() catches DatabaseConnectionError (and
+        similar operational DB errors) internally and returns ([], 0) rather than
+        raising it (see feedback_db_error_empty_200) -- so this test covers the
+        endpoint's generic catch-all for any exception that does escape, not a
+        DB-specific path.
+        """
         from app.services.sample import SampleService
 
         mock_query_params = Mock()

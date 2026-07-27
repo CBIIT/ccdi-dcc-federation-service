@@ -79,7 +79,8 @@
     "XLSX",
     "XML",
     "YAML",
-    "ZIP"
+    "ZIP",
+    "JPG",
+    "Parquet"
   ]
 }
-

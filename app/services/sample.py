@@ -111,7 +111,8 @@ class SampleService:
             )
             return (samples, floor_total_to_page_size(total_count, len(samples)))
         if return_total:
-            # Repository did not return total (e.g. sequencing_file-only path); fall back to summary
+            # Repository did not return total (its paired count sub-query failed on
+            # any of the case1/case3/sf-only/pf-only paths); fall back to summary
             summary_result = await self.get_samples_summary(filters)
             total_count = summary_result.counts.total
             samples = result

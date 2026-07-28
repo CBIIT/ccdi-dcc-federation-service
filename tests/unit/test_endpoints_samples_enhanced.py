@@ -17,9 +17,21 @@ from app.api.v1.endpoints.samples import (
     get_samples_summary
 )
 from app.models.dto import SamplesResponse, SampleResponse, CountResponse, SummaryResponse, SummaryCounts
-from app.models.errors import ErrorKind, InvalidParametersError, UnsupportedFieldError
+from app.models.errors import (
+    ErrorKind,
+    InvalidParametersError,
+    UnsupportedFieldError,
+    NotFoundError,
+)
 from app.db.memgraph import DatabaseConnectionError
 from app.core.pagination import PaginationParams
+
+
+class _EmptyQueryParams(dict):
+    """Query params that support len() == 0 (Mock does not)."""
+
+    def __len__(self):
+        return 0
 
 
 @pytest.mark.unit
@@ -449,21 +461,16 @@ class TestSampleEndpointsEnhanced:
     async def test_get_samples_summary_database_error(self, mock_request, mock_session, mock_settings, mock_allowlist):
         """Test get_samples_summary handles database connection errors."""
         from app.services.sample import SampleService
-        
-        # Mock request with no query parameters
-        mock_query_params = Mock()
-        mock_query_params.keys = Mock(return_value=[])
-        mock_query_params.__bool__ = Mock(return_value=False)
-        mock_request.query_params = mock_query_params
-        
-        # Mock service to raise database error
+
+        mock_request.query_params = _EmptyQueryParams()
+
         with patch('app.api.v1.endpoints.samples.SampleService') as mock_service_class:
             mock_service = AsyncMock(spec=SampleService)
             mock_service.get_samples_summary = AsyncMock(
                 side_effect=DatabaseConnectionError("Connection failed")
             )
             mock_service_class.return_value = mock_service
-            
+
             with patch('app.api.v1.endpoints.samples.get_cache_service', return_value=None):
                 with patch('app.api.v1.endpoints.samples.check_rate_limit', return_value=None):
                     with pytest.raises(HTTPException) as exc_info:
@@ -474,27 +481,22 @@ class TestSampleEndpointsEnhanced:
                             allowlist=mock_allowlist,
                             _rate_limit=None
                         )
-                
+
                 assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
 
     async def test_get_samples_summary_connection_error(self, mock_request, mock_session, mock_settings, mock_allowlist):
         """Test get_samples_summary handles connection-related errors."""
         from app.services.sample import SampleService
-        
-        # Mock request with no query parameters
-        mock_query_params = Mock()
-        mock_query_params.keys = Mock(return_value=[])
-        mock_query_params.__bool__ = Mock(return_value=False)
-        mock_request.query_params = mock_query_params
-        
-        # Mock service to raise connection error
+
+        mock_request.query_params = _EmptyQueryParams()
+
         with patch('app.api.v1.endpoints.samples.SampleService') as mock_service_class:
             mock_service = AsyncMock(spec=SampleService)
             mock_service.get_samples_summary = AsyncMock(
                 side_effect=Exception("Database connection timeout")
             )
             mock_service_class.return_value = mock_service
-            
+
             with patch('app.api.v1.endpoints.samples.get_cache_service', return_value=None):
                 with patch('app.api.v1.endpoints.samples.check_rate_limit', return_value=None):
                     with pytest.raises(HTTPException) as exc_info:
@@ -505,6 +507,221 @@ class TestSampleEndpointsEnhanced:
                             allowlist=mock_allowlist,
                             _rate_limit=None
                         )
-                
+
                 assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+
+    async def test_list_samples_reraises_http_exception(
+        self, mock_request, mock_response, mock_session, mock_settings, mock_allowlist, mock_pagination
+    ):
+        """HTTPException from service is re-raised as-is."""
+        from app.services.sample import SampleService
+
+        mock_query_params = Mock()
+        mock_query_params.keys = Mock(return_value=[])
+        mock_request.query_params = mock_query_params
+
+        with patch("app.api.v1.endpoints.samples.SampleService") as mock_service_class:
+            mock_service = AsyncMock(spec=SampleService)
+            mock_service.get_samples = AsyncMock(
+                side_effect=HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="x")
+            )
+            mock_service_class.return_value = mock_service
+
+            with patch("app.api.v1.endpoints.samples.get_cache_service", return_value=None):
+                with pytest.raises(HTTPException) as exc_info:
+                    await list_samples(
+                        request=mock_request,
+                        response=mock_response,
+                        filters={},
+                        pagination=mock_pagination,
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None,
+                    )
+
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+
+    async def test_list_samples_not_found_error(
+        self, mock_request, mock_response, mock_session, mock_settings, mock_allowlist, mock_pagination
+    ):
+        """NotFoundError from list path uses to_http_exception."""
+        from app.services.sample import SampleService
+
+        mock_query_params = Mock()
+        mock_query_params.keys = Mock(return_value=[])
+        mock_request.query_params = mock_query_params
+
+        with patch("app.api.v1.endpoints.samples.SampleService") as mock_service_class:
+            mock_service = AsyncMock(spec=SampleService)
+            mock_service.get_samples = AsyncMock(side_effect=NotFoundError(entity="Samples"))
+            mock_service_class.return_value = mock_service
+
+            with patch("app.api.v1.endpoints.samples.get_cache_service", return_value=None):
+                with pytest.raises(HTTPException) as exc_info:
+                    await list_samples(
+                        request=mock_request,
+                        response=mock_response,
+                        filters={},
+                        pagination=mock_pagination,
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None,
+                    )
+
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+
+    async def test_list_samples_query_error_with_http_converter(
+        self, mock_request, mock_response, mock_session, mock_settings, mock_allowlist, mock_pagination
+    ):
+        """Query-keyword Exception with to_http_exception uses converter."""
+        from app.services.sample import SampleService
+
+        class ConvertibleError(Exception):
+            def to_http_exception(self):
+                return HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail={"errors": [{"kind": "NotFound", "entity": "Samples"}]},
+                )
+
+        mock_query_params = Mock()
+        mock_query_params.keys = Mock(return_value=[])
+        mock_request.query_params = mock_query_params
+
+        with patch("app.api.v1.endpoints.samples.SampleService") as mock_service_class:
+            mock_service = AsyncMock(spec=SampleService)
+            mock_service.get_samples = AsyncMock(
+                side_effect=ConvertibleError("syntax error in cypher")
+            )
+            mock_service_class.return_value = mock_service
+
+            with patch("app.api.v1.endpoints.samples.get_cache_service", return_value=None):
+                with pytest.raises(HTTPException) as exc_info:
+                    await list_samples(
+                        request=mock_request,
+                        response=mock_response,
+                        filters={},
+                        pagination=mock_pagination,
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None,
+                    )
+
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+
+    async def test_count_samples_query_error_with_http_converter(
+        self, mock_request, mock_session, mock_settings, mock_allowlist
+    ):
+        """Count query-error path with to_http_exception uses converter."""
+        from app.services.sample import SampleService
+
+        class ConvertibleError(Exception):
+            def to_http_exception(self):
+                return HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail={"errors": [{"kind": "NotFound", "entity": "Samples"}]},
+                )
+
+        mock_request.query_params = _EmptyQueryParams()
+
+        with patch("app.api.v1.endpoints.samples.SampleService") as mock_service_class:
+            mock_service = AsyncMock(spec=SampleService)
+            mock_service.count_samples_by_field = AsyncMock(
+                side_effect=ConvertibleError("unbound variable x")
+            )
+            mock_service_class.return_value = mock_service
+
+            with patch("app.api.v1.endpoints.samples.get_cache_service", return_value=None):
+                with pytest.raises(HTTPException) as exc_info:
+                    await count_samples_by_field(
+                        request=mock_request,
+                        field="tissue_type",
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None,
+                    )
+
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+
+    async def test_get_sample_invalid_organization(
+        self, mock_request, mock_session, mock_settings, mock_allowlist
+    ):
+        """Non-CCDI-DCC organization raises InvalidParametersError (outside try)."""
+        with pytest.raises(InvalidParametersError):
+            await get_sample(
+                organization="OTHER",
+                namespace="phs002431",
+                name="SAMPLE-001",
+                request=mock_request,
+                session=mock_session,
+                settings=mock_settings,
+                allowlist=mock_allowlist,
+                _rate_limit=None,
+            )
+
+    async def test_get_sample_not_found_error(
+        self, mock_request, mock_session, mock_settings, mock_allowlist
+    ):
+        """NotFoundError from service uses to_http_exception."""
+        from app.services.sample import SampleService
+
+        with patch("app.api.v1.endpoints.samples.SampleService") as mock_service_class:
+            mock_service = AsyncMock(spec=SampleService)
+            mock_service.get_sample_by_identifier = AsyncMock(
+                side_effect=NotFoundError(entity="Samples")
+            )
+            mock_service_class.return_value = mock_service
+
+            with patch("app.api.v1.endpoints.samples.get_cache_service", return_value=None):
+                with pytest.raises(HTTPException) as exc_info:
+                    await get_sample(
+                        organization="CCDI-DCC",
+                        namespace="phs002431",
+                        name="SAMPLE-001",
+                        request=mock_request,
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None,
+                    )
+
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+
+    async def test_get_sample_exception_with_http_converter(
+        self, mock_request, mock_session, mock_settings, mock_allowlist
+    ):
+        """Generic Exception with to_http_exception uses converter (get)."""
+        from app.services.sample import SampleService
+
+        class ConvertibleError(Exception):
+            def to_http_exception(self):
+                return HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail={"errors": [{"kind": "NotFound", "entity": "Samples"}]},
+                )
+
+        with patch("app.api.v1.endpoints.samples.SampleService") as mock_service_class:
+            mock_service = AsyncMock(spec=SampleService)
+            mock_service.get_sample_by_identifier = AsyncMock(
+                side_effect=ConvertibleError("x")
+            )
+            mock_service_class.return_value = mock_service
+
+            with patch("app.api.v1.endpoints.samples.get_cache_service", return_value=None):
+                with pytest.raises(HTTPException) as exc_info:
+                    await get_sample(
+                        organization="CCDI-DCC",
+                        namespace="phs002431",
+                        name="SAMPLE-001",
+                        request=mock_request,
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None,
+                    )
+
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
 

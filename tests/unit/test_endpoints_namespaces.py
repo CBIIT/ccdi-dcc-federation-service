@@ -291,3 +291,148 @@ class TestNamespaceEndpoints:
         assert result.metadata is None  # Should be null when not found
         assert result.id.name == "nonexistent"
 
+    async def test_get_namespace_reraises_http_exception(
+        self, mock_session, mock_settings, mock_request
+    ):
+        """HTTPException from service is re-raised."""
+        with patch("app.api.v1.endpoints.namespaces.NamespaceService") as mock_service_class:
+            mock_service = Mock()
+            mock_service.get_namespace_detail = AsyncMock(
+                side_effect=HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="x")
+            )
+            mock_service_class.return_value = mock_service
+
+            with patch("app.api.v1.endpoints.namespaces.check_rate_limit", return_value=None):
+                with pytest.raises(HTTPException) as exc_info:
+                    await get_namespace(
+                        organization="CCDI-DCC",
+                        namespace="phs002431",
+                        request=mock_request,
+                        session=mock_session,
+                        settings=mock_settings,
+                        _rate_limit=None,
+                    )
+
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+
+    async def test_get_namespace_exception_with_http_converter(
+        self, mock_session, mock_settings, mock_request
+    ):
+        """Exception with to_http_exception uses converter."""
+
+        class ConvertibleError(Exception):
+            def to_http_exception(self):
+                return HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail={"errors": [{"kind": "NotFound", "entity": "Namespaces"}]},
+                )
+
+        with patch("app.api.v1.endpoints.namespaces.NamespaceService") as mock_service_class:
+            mock_service = Mock()
+            mock_service.get_namespace_detail = AsyncMock(side_effect=ConvertibleError("x"))
+            mock_service_class.return_value = mock_service
+
+            with patch("app.api.v1.endpoints.namespaces.check_rate_limit", return_value=None):
+                with pytest.raises(HTTPException) as exc_info:
+                    await get_namespace(
+                        organization="CCDI-DCC",
+                        namespace="phs002431",
+                        request=mock_request,
+                        session=mock_session,
+                        settings=mock_settings,
+                        _rate_limit=None,
+                    )
+
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+
+    async def test_get_namespace_generic_error_returns_null_metadata(
+        self, mock_session, mock_settings, mock_request
+    ):
+        """Plain Exception falls back to namespace with metadata=null."""
+        with patch("app.api.v1.endpoints.namespaces.NamespaceService") as mock_service_class:
+            mock_service = Mock()
+            mock_service.get_namespace_detail = AsyncMock(side_effect=RuntimeError("boom"))
+            mock_service_class.return_value = mock_service
+
+            with patch("app.api.v1.endpoints.namespaces.check_rate_limit", return_value=None):
+                result = await get_namespace(
+                    organization="CCDI-DCC",
+                    namespace="phs002431",
+                    request=mock_request,
+                    session=mock_session,
+                    settings=mock_settings,
+                    _rate_limit=None,
+                )
+
+        assert isinstance(result, Namespace)
+        assert result.metadata is None
+        assert result.id.name == "phs002431"
+
+
+@pytest.mark.unit
+class TestNamespaceServiceErrorPaths:
+    """Cover retry-exhaust and empty study_id skip branches."""
+
+    @pytest.fixture
+    def mock_session(self):
+        return AsyncMock(spec=AsyncSession)
+
+    @pytest.fixture
+    def mock_settings(self):
+        return Mock()
+
+    @pytest.fixture
+    def service(self, mock_session, mock_settings):
+        return NamespaceService(mock_session, mock_settings)
+
+    async def test_get_namespaces_retry_exhaust_raises(self, service, mock_session):
+        """After max retries, get_namespaces re-raises the error."""
+        mock_session.run = AsyncMock(side_effect=Exception("persistent failure"))
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            with pytest.raises(Exception, match="persistent failure"):
+                await service.get_namespaces()
+
+        assert mock_session.run.call_count == 3
+
+    async def test_get_namespaces_skips_empty_study_id(self, service, mock_session):
+        """Records without study_id are skipped."""
+
+        async def async_gen():
+            yield {
+                "study_id": None,
+                "study_description": "",
+                "study_acronym": "",
+                "study_name": "",
+                "study_dd": "",
+                "grant_ids": [],
+            }
+            yield {
+                "study_id": "phs002431",
+                "study_description": "Ok",
+                "study_acronym": "OK",
+                "study_name": "Ok Study",
+                "study_dd": "phs002431",
+                "grant_ids": [],
+            }
+
+        mock_result = AsyncMock()
+        mock_result.__aiter__ = Mock(return_value=async_gen())
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        result = await service.get_namespaces()
+
+        assert len(result) == 1
+        assert result[0].id.name == "phs002431"
+
+    async def test_get_namespace_detail_retry_exhaust_raises(self, service, mock_session):
+        """After max retries, get_namespace_detail re-raises the error."""
+        mock_session.run = AsyncMock(side_effect=Exception("persistent failure"))
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            with pytest.raises(Exception, match="persistent failure"):
+                await service.get_namespace_detail("CCDI-DCC", "phs002431")
+
+        assert mock_session.run.call_count == 3
+

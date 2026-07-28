@@ -17,7 +17,13 @@ from app.api.v1.endpoints.files import (
     get_files_summary
 )
 from app.models.dto import CountResponse, SummaryResponse, SummaryCounts
-from app.models.errors import InvalidParametersError, InvalidRouteError, UnsupportedFieldError, ValidationError
+from app.models.errors import (
+    InvalidParametersError,
+    InvalidRouteError,
+    UnsupportedFieldError,
+    ValidationError,
+    NotFoundError,
+)
 from app.db.memgraph import DatabaseConnectionError
 from app.core.pagination import PaginationParams
 
@@ -460,4 +466,312 @@ class TestFileEndpointsEnhanced:
         
         assert isinstance(result, SummaryResponse)
         assert result.counts.total == 500
+
+    async def test_count_files_by_field_unsupported_from_service(
+        self, mock_request, mock_session, mock_settings, mock_allowlist
+    ):
+        """UnsupportedFieldError raised inside try hits except → to_http_exception."""
+        from app.services.file import FileService
+
+        mock_request.query_params = {}
+
+        with patch("app.api.v1.endpoints.files.FileService") as mock_service_class:
+            mock_service = AsyncMock(spec=FileService)
+            mock_service.count_files_by_field = AsyncMock(
+                side_effect=UnsupportedFieldError("type", "file")
+            )
+            mock_service_class.return_value = mock_service
+
+            with patch("app.api.v1.endpoints.files.get_cache_service", return_value=None):
+                with pytest.raises(HTTPException) as exc_info:
+                    await count_files_by_field(
+                        request=mock_request,
+                        field="type",
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None,
+                    )
+
+        assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
+
+    async def test_count_files_by_field_validation_without_http_converter(
+        self, mock_request, mock_session, mock_settings, mock_allowlist
+    ):
+        """ValidationError without usable to_http_exception falls back to 404 envelope."""
+        from app.services.file import FileService
+
+        class BareValidationError(ValidationError):
+            @property
+            def to_http_exception(self):
+                raise AttributeError("no converter")
+
+        mock_request.query_params = {}
+
+        with patch("app.api.v1.endpoints.files.FileService") as mock_service_class:
+            mock_service = AsyncMock(spec=FileService)
+            mock_service.count_files_by_field = AsyncMock(
+                side_effect=BareValidationError("timeout-ish")
+            )
+            mock_service_class.return_value = mock_service
+
+            with patch("app.api.v1.endpoints.files.get_cache_service", return_value=None):
+                with pytest.raises(HTTPException) as exc_info:
+                    await count_files_by_field(
+                        request=mock_request,
+                        field="type",
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None,
+                    )
+
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+
+    async def test_count_files_by_field_generic_exception(
+        self, mock_request, mock_session, mock_settings, mock_allowlist
+    ):
+        """Plain Exception on count maps to 404 NotFound envelope."""
+        from app.services.file import FileService
+
+        mock_request.query_params = {}
+
+        with patch("app.api.v1.endpoints.files.FileService") as mock_service_class:
+            mock_service = AsyncMock(spec=FileService)
+            mock_service.count_files_by_field = AsyncMock(
+                side_effect=RuntimeError("unexpected failure")
+            )
+            mock_service_class.return_value = mock_service
+
+            with patch("app.api.v1.endpoints.files.get_cache_service", return_value=None):
+                with pytest.raises(HTTPException) as exc_info:
+                    await count_files_by_field(
+                        request=mock_request,
+                        field="type",
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None,
+                    )
+
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+
+    async def test_count_files_by_field_exception_with_http_converter(
+        self, mock_request, mock_session, mock_settings, mock_allowlist
+    ):
+        """Generic Exception with to_http_exception uses converter path (count)."""
+        from app.services.file import FileService
+
+        class ConvertibleError(Exception):
+            def to_http_exception(self):
+                return HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail={"errors": [{"kind": "NotFound", "entity": "Files"}]},
+                )
+
+        mock_request.query_params = {}
+
+        with patch("app.api.v1.endpoints.files.FileService") as mock_service_class:
+            mock_service = AsyncMock(spec=FileService)
+            mock_service.count_files_by_field = AsyncMock(side_effect=ConvertibleError("x"))
+            mock_service_class.return_value = mock_service
+
+            with patch("app.api.v1.endpoints.files.get_cache_service", return_value=None):
+                with pytest.raises(HTTPException) as exc_info:
+                    await count_files_by_field(
+                        request=mock_request,
+                        field="type",
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None,
+                    )
+
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+
+    async def test_get_file_not_found(self, mock_request, mock_session, mock_settings, mock_allowlist):
+        """NotFoundError from service is converted via to_http_exception."""
+        from app.services.file import FileService
+
+        mock_request.url.path = "/api/v1/file/CCDI-DCC/phs002431/file-1"
+
+        with patch("app.api.v1.endpoints.files.FileService") as mock_service_class:
+            mock_service = AsyncMock(spec=FileService)
+            mock_service.get_file_by_identifier = AsyncMock(
+                side_effect=NotFoundError(entity="Files")
+            )
+            mock_service_class.return_value = mock_service
+
+            with patch("app.api.v1.endpoints.files.get_cache_service", return_value=None):
+                with pytest.raises(HTTPException) as exc_info:
+                    await get_file(
+                        organization="CCDI-DCC",
+                        namespace="phs002431",
+                        name="file-1",
+                        request=mock_request,
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None,
+                    )
+
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+
+    async def test_get_file_invalid_route_from_service(
+        self, mock_request, mock_session, mock_settings, mock_allowlist
+    ):
+        """InvalidRouteError raised inside try hits except → to_http_exception."""
+        from app.services.file import FileService
+
+        mock_request.url.path = "/api/v1/file/CCDI-DCC/phs002431/file-1"
+        mock_request.method = "GET"
+
+        with patch("app.api.v1.endpoints.files.FileService") as mock_service_class:
+            mock_service = AsyncMock(spec=FileService)
+            mock_service.get_file_by_identifier = AsyncMock(
+                side_effect=InvalidRouteError(method="GET", route="/api/v1/file/x")
+            )
+            mock_service_class.return_value = mock_service
+
+            with patch("app.api.v1.endpoints.files.get_cache_service", return_value=None):
+                with pytest.raises(HTTPException) as exc_info:
+                    await get_file(
+                        organization="CCDI-DCC",
+                        namespace="phs002431",
+                        name="file-1",
+                        request=mock_request,
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None,
+                    )
+
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+
+    async def test_get_file_exception_with_http_converter(
+        self, mock_request, mock_session, mock_settings, mock_allowlist
+    ):
+        """Generic Exception with to_http_exception uses converter path (get)."""
+        from app.services.file import FileService
+
+        class ConvertibleError(Exception):
+            def to_http_exception(self):
+                return HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail={"errors": [{"kind": "NotFound", "entity": "Files"}]},
+                )
+
+        mock_request.url.path = "/api/v1/file/CCDI-DCC/phs002431/file-1"
+
+        with patch("app.api.v1.endpoints.files.FileService") as mock_service_class:
+            mock_service = AsyncMock(spec=FileService)
+            mock_service.get_file_by_identifier = AsyncMock(side_effect=ConvertibleError("x"))
+            mock_service_class.return_value = mock_service
+
+            with patch("app.api.v1.endpoints.files.get_cache_service", return_value=None):
+                with pytest.raises(HTTPException) as exc_info:
+                    await get_file(
+                        organization="CCDI-DCC",
+                        namespace="phs002431",
+                        name="file-1",
+                        request=mock_request,
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None,
+                    )
+
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+
+    async def test_list_files_non_connection_error_uses_generic_log(
+        self, mock_request, mock_response, mock_session, mock_settings, mock_allowlist, mock_pagination
+    ):
+        """Non-connection Exception hits the generic error log branch."""
+        from app.services.file import FileService
+
+        mock_query_params = Mock()
+        mock_query_params.keys = Mock(return_value=[])
+        mock_request.query_params = mock_query_params
+
+        with patch("app.api.v1.endpoints.files.FileService") as mock_service_class:
+            mock_service = AsyncMock(spec=FileService)
+            mock_service.get_files = AsyncMock(side_effect=ValueError("unexpected shape"))
+            mock_service_class.return_value = mock_service
+
+            with patch("app.api.v1.endpoints.files.get_cache_service", return_value=None):
+                with pytest.raises(HTTPException) as exc_info:
+                    await list_files(
+                        request=mock_request,
+                        response=mock_response,
+                        filters={},
+                        pagination=mock_pagination,
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None,
+                    )
+
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+
+    async def test_list_files_exception_with_http_converter(
+        self, mock_request, mock_response, mock_session, mock_settings, mock_allowlist, mock_pagination
+    ):
+        """Exception carrying to_http_exception is re-raised via that converter."""
+        from app.services.file import FileService
+
+        mock_query_params = Mock()
+        mock_query_params.keys = Mock(return_value=[])
+        mock_request.query_params = mock_query_params
+
+        with patch("app.api.v1.endpoints.files.FileService") as mock_service_class:
+            mock_service = AsyncMock(spec=FileService)
+            mock_service.get_files = AsyncMock(side_effect=NotFoundError(entity="Files"))
+            mock_service_class.return_value = mock_service
+
+            with patch("app.api.v1.endpoints.files.get_cache_service", return_value=None):
+                with pytest.raises(HTTPException) as exc_info:
+                    await list_files(
+                        request=mock_request,
+                        response=mock_response,
+                        filters={},
+                        pagination=mock_pagination,
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None,
+                    )
+
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+
+    async def test_get_files_summary_connection_keyword_error(
+        self, mock_request, mock_session, mock_settings, mock_allowlist
+    ):
+        """Connection-keyword Exception uses the cloudwatch-oriented log path."""
+        from app.services.file import FileService
+
+        class EmptyQueryParams(dict):
+            def __len__(self):
+                return 0
+
+        mock_request.query_params = EmptyQueryParams()
+
+        with patch("app.api.v1.endpoints.files.FileService") as mock_service_class:
+            mock_service = AsyncMock(spec=FileService)
+            mock_service.get_files_summary = AsyncMock(
+                side_effect=Exception("network connection reset by peer")
+            )
+            mock_service_class.return_value = mock_service
+
+            with patch("app.api.v1.endpoints.files.get_cache_service", return_value=None):
+                with patch("app.api.v1.endpoints.files.check_rate_limit", return_value=None):
+                    with pytest.raises(HTTPException) as exc_info:
+                        await get_files_summary(
+                            request=mock_request,
+                            session=mock_session,
+                            settings=mock_settings,
+                            allowlist=mock_allowlist,
+                            _rate_limit=None,
+                        )
+
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
 

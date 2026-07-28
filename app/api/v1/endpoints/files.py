@@ -452,21 +452,6 @@ async def count_files_by_field(
         logger.warning("Unsupported field error counting sequencing files by field", error=str(e), field=field)
         # Re-raise to let the exception handler process it with proper format
         raise e.to_http_exception()
-    except InvalidParametersError as e:
-        logger.warning("Invalid parameters error counting sequencing files by field", error=str(e), field=field)
-        if hasattr(e, 'to_http_exception'):
-            raise e.to_http_exception()
-        error_detail = ErrorDetail(
-            kind=ErrorKind.INVALID_PARAMETERS,
-            entity="Files",
-            # Generic message only — never expose exception text/user input in the response (goes to logs).
-            message="Invalid query parameter(s) provided.",
-            reason="Invalid parameter provided."
-        )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
-        )
     except ValidationError as e:
         logger.warning("Validation error counting sequencing files by field", error=str(e), field=field)
         if hasattr(e, 'to_http_exception'):
@@ -474,7 +459,7 @@ async def count_files_by_field(
         error_detail = ErrorDetail(
             kind=ErrorKind.NOT_FOUND,
             entity="Files",
-            # Generic message only — never expose exception text/user input in the response (goes to logs).
+            # Generic message only � never expose exception text/user input in the response (goes to logs).
             message="Unable to find data for your request.",
             reason="Query validation or timeout error."
         )

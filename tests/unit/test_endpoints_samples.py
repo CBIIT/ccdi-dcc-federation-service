@@ -335,19 +335,19 @@ class TestSampleEndpoints:
         self, mock_session, mock_settings, mock_allowlist, mock_request
     ):
         """Test get_samples_summary handles database connection errors."""
-        # Mock request with no query parameters
-        mock_query_params = Mock()
-        mock_query_params.keys = Mock(return_value=[])
-        mock_query_params.__bool__ = Mock(return_value=False)
-        mock_request.query_params = mock_query_params
-        
+        class EmptyQueryParams(dict):
+            def __len__(self):
+                return 0
+
+        mock_request.query_params = EmptyQueryParams()
+
         with patch('app.api.v1.endpoints.samples.SampleService') as mock_service_class:
             mock_service = Mock()
             mock_service.get_samples_summary = AsyncMock(
                 side_effect=DatabaseConnectionError("Connection failed")
             )
             mock_service_class.return_value = mock_service
-            
+
             with patch('app.api.v1.endpoints.samples.get_cache_service', return_value=None):
                 with patch('app.api.v1.endpoints.samples.check_rate_limit', return_value=None):
                     with pytest.raises(HTTPException) as exc_info:
@@ -358,6 +358,6 @@ class TestSampleEndpoints:
                             allowlist=mock_allowlist,
                             _rate_limit=None
                         )
-                    
+
                     assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
 

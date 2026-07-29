@@ -142,11 +142,11 @@ class TestBuildCountQuery:
         assert "collect(" not in cypher
 
     @pytest.mark.asyncio
-    async def test_single_md5sum_or_checksum_value(self):
+    async def test_single_md5sum_filter(self):
         repo, _ = make_repo()
         cypher, params = await repo._build_count_query({"md5sum": "deadbeef"})
         assert "sf.md5sum =" in cypher
-        assert "sf.checksum_value =" in cypher
+        assert "checksum_value" not in cypher
         assert "deadbeef" in params.values()
 
     @pytest.mark.asyncio
@@ -154,6 +154,7 @@ class TestBuildCountQuery:
         repo, _ = make_repo()
         cypher, params = await repo._build_count_query({"md5sum": "aaa||bbb"})
         assert "sf.md5sum IN" in cypher
+        assert "checksum_value" not in cypher
         assert ["aaa", "bbb"] in list(params.values())
 
     @pytest.mark.asyncio

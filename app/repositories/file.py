@@ -184,12 +184,10 @@ class FileRepository:
             param_counter += 1
             checksums_param_name = f"param_{param_counter}"
             if len(checksums_list) == 1:
-                # Single checksum: check both md5sum and checksum_value fields
-                where_conditions.append(f"(sf.md5sum = ${checksums_param_name} OR sf.checksum_value = ${checksums_param_name})")
+                where_conditions.append(f"sf.md5sum = ${checksums_param_name}")
                 params[checksums_param_name] = checksums_list[0]
             else:
-                # Multiple checksums: check if either field is IN the list
-                where_conditions.append(f"(sf.md5sum IN ${checksums_param_name} OR sf.checksum_value IN ${checksums_param_name})")
+                where_conditions.append(f"sf.md5sum IN ${checksums_param_name}")
                 params[checksums_param_name] = checksums_list
         
         # Build final query
@@ -1067,12 +1065,10 @@ class FileRepository:
             param_counter += 1
             checksums_param_name = f"param_{param_counter}"
             if len(checksums_list) == 1:
-                # Single checksum: check both md5sum and checksum_value fields
-                where_conditions.append(f"(sf.md5sum = ${checksums_param_name} OR sf.checksum_value = ${checksums_param_name})")
+                where_conditions.append(f"sf.md5sum = ${checksums_param_name}")
                 params[checksums_param_name] = checksums_list[0]
             else:
-                # Multiple checksums: check if either field is IN the list
-                where_conditions.append(f"(sf.md5sum IN ${checksums_param_name} OR sf.checksum_value IN ${checksums_param_name})")
+                where_conditions.append(f"sf.md5sum IN ${checksums_param_name}")
                 params[checksums_param_name] = checksums_list
 
         # Build final query - OPTIMIZATION: Same as get_files, filter files FIRST

@@ -2350,10 +2350,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Matches any file (methylation_array_file or sequencing_file) where the `md5sum` or `checksum_value` field matches the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the file should be included in the results.",
+              "description": "Matches any file (methylation_array_file or sequencing_file) where the `md5sum` field matches the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the file should be included in the results.",
               "title": "Checksums"
             },
-            "description": "Matches any file (methylation_array_file or sequencing_file) where the `md5sum` or `checksum_value` field matches the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the file should be included in the results."
+            "description": "Matches any file (methylation_array_file or sequencing_file) where the `md5sum` field matches the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the file should be included in the results."
           },
           {
             "name": "description",

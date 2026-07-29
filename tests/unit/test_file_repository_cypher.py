@@ -90,7 +90,7 @@ class TestBuildCountQuery:
         assert "toLower(sf.file_type)" in cypher
         assert "RETURN count(DISTINCT sf)" in cypher
         assert "MATCH (st:study)" not in cypher.split("RETURN")[0] or "coalesce" in cypher
-        assert params.get("param_1") == "BAM"
+        assert params.get("param_1") == ["bam"]
 
     @pytest.mark.asyncio
     async def test_file_type_and_depositions_pattern_one(self):
@@ -113,6 +113,16 @@ class TestBuildCountQuery:
         files = await repo.get_files({"file_type": "NOT_A_REAL_TYPE"}, offset=0, limit=10)
 
         assert files == []
+        session.run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_get_files_rejects_null_and_db_only_type_filters(self):
+        repo, session = make_repo()
+        session.run = AsyncMock()
+
+        for bad in ("null", "bam"):
+            files = await repo.get_files({"file_type": bad}, offset=0, limit=10)
+            assert files == []
         session.run.assert_not_called()
 
     @pytest.mark.asyncio
@@ -220,6 +230,16 @@ class TestGetFilesCypherPatterns:
         assert "toLower(sf.file_type)" in cypher
         assert "st2.study_id" in cypher
         assert "MATCH (sf:sequencing_file)" in cypher
+
+    @pytest.mark.asyncio
+    async def test_file_type_bai_reverse_maps_alias_db_values(self):
+        repo, session = make_repo()
+        session.run = AsyncMock(return_value=_empty_async_result())
+        await repo.get_files({"file_type": "BAI"}, offset=0, limit=10)
+        cypher = session.run.call_args[0][0]
+        params = session.run.call_args[0][1]
+        assert "toLower(sf.file_type) IN" in cypher
+        assert set(params["param_1"]) == {"bai", "bam_index"}
 
     @pytest.mark.asyncio
     async def test_file_type_only_optimized_pattern(self):
@@ -353,19 +373,12 @@ class TestGetFileByIdentifierCypher:
         assert file_obj.id["namespace"]["name"] == "phs002431"
 
 
-def _count_field_mock_results(total: int, missing: int, values: list) -> list:
-    """Build three AsyncMock results for count_files_by_field session.run calls."""
-
-    def _one_row(key: str, val: int) -> AsyncMock:
-        mock = AsyncMock()
-        mock.__aiter__.return_value = [{key: val}]
-        mock.consume = AsyncMock()
-        return mock
-
+def _count_field_mock_values(values: list) -> AsyncMock:
+    """Build one AsyncMock result for single-pass count_files_by_field session.run."""
     values_mock = AsyncMock()
     values_mock.__aiter__.return_value = values
     values_mock.consume = AsyncMock()
-    return [_one_row("total", total), _one_row("missing", missing), values_mock]
+    return values_mock
 
 
 @pytest.mark.unit
@@ -376,28 +389,76 @@ class TestCountFilesByFieldWithFilters:
     async def test_type_count_with_file_type_filter_uses_optimized_pattern(self):
         repo, session = make_repo()
         session.run = AsyncMock(
-            side_effect=_count_field_mock_results(
-                10,
-                1,
-                [{"value": "bam", "count": 9}],
+            return_value=_count_field_mock_values(
+                [{"value": "bam", "count": 9}, {"value": "unknown", "count": 1}]
             )
         )
 
         result = await repo.count_files_by_field("type", {"file_type": "BAM"})
 
         assert result["total"] == 10
+        assert result["missing"] == 1
         assert result["values"][0]["value"] == "BAM"
-        total_cypher = session.run.call_args_list[0][0][0]
-        values_cypher = session.run.call_args_list[2][0][0]
-        assert "toLower(sf.file_type)" in total_cypher
-        assert "MATCH (sf:sequencing_file)" in total_cypher
-        assert "toLower(sf.file_type) IN" in values_cypher
+        assert result["values"][0]["count"] == 9
+        assert session.run.call_count == 1
+        cypher = session.run.call_args_list[0][0][0]
+        params = session.run.call_args_list[0][0][1]
+        assert "toLower(sf.file_type) IN" in cypher
+        assert "MATCH (sf:sequencing_file)" in cypher
+        assert "RETURN CASE WHEN field_val IS NULL THEN null ELSE toString(field_val) END as value" in cypher
+        assert params["param_1"] == ["bam"]
+
+    @pytest.mark.asyncio
+    async def test_type_count_merges_alias_db_values_into_api_bucket(self):
+        """bai + bam_index raw counts aggregate into a single BAI bucket."""
+        repo, session = make_repo()
+        session.run = AsyncMock(
+            return_value=_count_field_mock_values(
+                [
+                    {"value": "bai", "count": 2},
+                    {"value": "bam_index", "count": 3},
+                    {"value": "unknown", "count": 1},
+                ]
+            )
+        )
+
+        result = await repo.count_files_by_field("type", {})
+
+        assert result["total"] == 6
+        assert result["missing"] == 1  # unknown
+        assert len(result["values"]) == 1
+        assert result["values"][0]["value"] == "BAI"
+        assert result["values"][0]["count"] == 5
+        assert session.run.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_type_count_bai_filter_reverse_maps_aliases(self):
+        repo, session = make_repo()
+        session.run = AsyncMock(
+            return_value=_count_field_mock_values([{"value": "bai", "count": 4}])
+        )
+
+        result = await repo.count_files_by_field("type", {"file_type": "BAI"})
+
+        assert result["total"] == 4
+        params = session.run.call_args_list[0][0][1]
+        assert set(params["param_1"]) == {"bai", "bam_index"}
+
+    @pytest.mark.asyncio
+    async def test_type_count_rejects_null_and_db_only_filters(self):
+        repo, session = make_repo()
+        session.run = AsyncMock()
+
+        for bad in ("null", "bam"):
+            result = await repo.count_files_by_field("type", {"file_type": bad})
+            assert result == {"total": 0, "missing": 0, "values": []}
+        session.run.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_type_count_with_unharmonized_file_name_filter(self):
         repo, session = make_repo()
         session.run = AsyncMock(
-            side_effect=_count_field_mock_results(3, 0, [{"value": "FASTQ", "count": 3}])
+            return_value=_count_field_mock_values([{"value": "FASTQ", "count": 3}])
         )
 
         await repo.count_files_by_field(
@@ -405,16 +466,16 @@ class TestCountFilesByFieldWithFilters:
             {"metadata.unharmonized.file_name": ["a.bam", "b.bam"]},
         )
 
-        total_cypher = session.run.call_args_list[0][0][0]
+        cypher = session.run.call_args_list[0][0][0]
         params = session.run.call_args_list[0][0][1]
-        assert "sf.file_name IN" in total_cypher
+        assert "sf.file_name IN" in cypher
         assert ["a.bam", "b.bam"] in params.values()
 
     @pytest.mark.asyncio
     async def test_type_count_with_scalar_unharmonized_filter(self):
         repo, session = make_repo()
         session.run = AsyncMock(
-            side_effect=_count_field_mock_results(1, 0, [{"value": "BAM", "count": 1}])
+            return_value=_count_field_mock_values([{"value": "BAM", "count": 1}])
         )
 
         await repo.count_files_by_field(
@@ -422,49 +483,41 @@ class TestCountFilesByFieldWithFilters:
             {"metadata.unharmonized.file_name": "solo.bam"},
         )
 
-        total_cypher = session.run.call_args_list[0][0][0]
-        assert "sf.file_name =" in total_cypher
+        cypher = session.run.call_args_list[0][0][0]
+        assert "sf.file_name =" in cypher
 
     @pytest.mark.asyncio
-    async def test_type_count_with_file_filter_uses_enum_missing_clause(self):
+    async def test_type_count_null_raw_values_count_as_missing(self):
         repo, session = make_repo()
         session.run = AsyncMock(
-            side_effect=_count_field_mock_results(4, 1, [{"value": "BAM", "count": 3}])
+            return_value=_count_field_mock_values(
+                [
+                    {"value": "fastq", "count": 3},
+                    {"value": None, "count": 1},
+                    {"value": "null", "count": 1},
+                ]
+            )
         )
 
-        await repo.count_files_by_field("type", {"file_type": "FASTQ"})
+        result = await repo.count_files_by_field("type", {"file_type": "FASTQ"})
 
-        missing_cypher = session.run.call_args_list[1][0][0]
-        assert "sf.file_type IS NULL OR NOT" in missing_cypher
+        assert result["total"] == 5
+        assert result["missing"] == 2
+        assert result["values"] == [{"value": "FASTQ", "count": 3}]
 
     @pytest.mark.asyncio
     async def test_type_count_with_scalar_file_size_filter(self):
         repo, session = make_repo()
         session.run = AsyncMock(
-            side_effect=_count_field_mock_results(2, 0, [{"value": "BAM", "count": 2}])
+            return_value=_count_field_mock_values([{"value": "BAM", "count": 2}])
         )
 
         await repo.count_files_by_field("type", {"file_size": 4096})
 
-        total_cypher = session.run.call_args_list[0][0][0]
-        assert "sf.file_size =" in total_cypher
-
-    @pytest.mark.asyncio
-    async def test_type_count_with_filters_and_no_enum_uses_simple_missing(self):
-        """has_file_filters + empty enum: missing uses IS NULL only (line 690)."""
-        repo, session = make_repo()
-        session.run = AsyncMock(
-            side_effect=_count_field_mock_results(1, 0, [])
-        )
-
-        with patch("app.repositories.file.FileType") as mock_ft:
-            mock_ft.values.return_value = []
-            with patch("app.repositories.file.load_file_enum", return_value=[]):
-                await repo.count_files_by_field("type", {"file_size": 100})
-
-        missing_cypher = session.run.call_args_list[1][0][0]
-        assert "sf.file_type IS NULL" in missing_cypher
-        assert "NOT (toLower" not in missing_cypher
+        cypher = session.run.call_args_list[0][0][0]
+        assert "sf.file_size =" in cypher
+        assert "MATCH (sf:sequencing_file)" in cypher
+        assert session.run.call_count == 1
 
 
 @pytest.mark.unit
@@ -665,69 +718,56 @@ class TestGetFilesRetry:
         assert session.run.call_count == 3
 
 
+
 @pytest.mark.unit
 class TestCountFilesByFieldNoFilters:
     """count_files_by_field() with no file-level filters (simple pattern)."""
 
     @pytest.mark.asyncio
-    async def test_type_count_no_filters_uses_simple_missing_clause(self):
+    async def test_type_count_no_filters_uses_simple_pattern(self):
         repo, session = make_repo()
         session.run = AsyncMock(
-            side_effect=_count_field_mock_results(
-                5,
-                2,
-                [{"value": "FASTQ", "count": 3}],
+            return_value=_count_field_mock_values(
+                [{"value": "fastq", "count": 3}, {"value": None, "count": 2}]
             )
         )
 
         result = await repo.count_files_by_field("type", {})
 
         assert result["total"] == 5
-        missing_cypher = session.run.call_args_list[1][0][0]
-        assert "sf.file_type IS NULL" in missing_cypher
-        assert "toLower(sf.file_type) IN" in missing_cypher
+        assert result["missing"] == 2
+        assert result["values"] == [{"value": "FASTQ", "count": 3}]
+        assert session.run.call_count == 1
+        cypher = session.run.call_args_list[0][0][0]
+        assert f"MATCH (sf:{repo.config.node_label})-[:{repo.config.rel_name}]->(sa:sample)" in cypher
+        assert "RETURN CASE WHEN field_val IS NULL THEN null ELSE toString(field_val) END as value" in cypher
+        # No separate mappable IN filter on the single-pass query
+        assert "toLower(sf.file_type) IN $param_" not in cypher
 
     @pytest.mark.asyncio
     async def test_type_count_no_filters_retries_on_empty_totals(self):
         repo, session = make_repo()
-        empty = _count_field_mock_results(0, 0, [])
-        success = _count_field_mock_results(2, 0, [{"value": "bam", "count": 2}])
-        session.run = AsyncMock(side_effect=empty + success)
+        empty = _count_field_mock_values([])
+        success = _count_field_mock_values([{"value": "bam", "count": 2}])
+        session.run = AsyncMock(side_effect=[empty, success])
 
         with patch("app.repositories.file.asyncio.sleep", new=AsyncMock()):
             result = await repo.count_files_by_field("type", {})
 
         assert result["total"] == 2
-        assert session.run.call_count == 6
+        assert session.run.call_count == 2
 
     @pytest.mark.asyncio
     async def test_type_count_with_list_filter_on_db_field(self):
         repo, session = make_repo()
         session.run = AsyncMock(
-            side_effect=_count_field_mock_results(1, 0, [{"value": "BAM", "count": 1}])
+            return_value=_count_field_mock_values([{"value": "BAM", "count": 1}])
         )
 
         await repo.count_files_by_field("type", {"md5sum": ["hash1", "hash2"]})
 
-        total_cypher = session.run.call_args_list[0][0][0]
-        assert "sf.md5sum IN" in total_cypher
-
-    @pytest.mark.asyncio
-    async def test_type_count_no_filters_without_enum_uses_null_missing_only(self):
-        """When FileType.values() is empty, missing query uses IS NULL only (line 745)."""
-        repo, session = make_repo()
-        session.run = AsyncMock(
-            side_effect=_count_field_mock_results(1, 0, [])
-        )
-
-        with patch("app.repositories.file.FileType") as mock_ft:
-            mock_ft.values.return_value = []
-            with patch("app.repositories.file.load_file_enum", return_value=[]):
-                await repo.count_files_by_field("type", {})
-
-        missing_cypher = session.run.call_args_list[1][0][0]
-        assert " AND sf.file_type IS NULL" in missing_cypher
-        assert "NOT (toLower" not in missing_cypher
+        cypher = session.run.call_args_list[0][0][0]
+        assert "sf.md5sum IN" in cypher
 
 
 @pytest.mark.unit
@@ -768,7 +808,37 @@ class TestCountFilesByDepositionsFilters:
         await repo._count_files_by_depositions({"file_type": "BAM"})
 
         cypher = session.run.call_args_list[0][0][0]
-        assert "sf.file_type =" in cypher
+        params = session.run.call_args_list[0][0][1]
+        assert "toLower(sf.file_type) IN" in cypher
+        assert params["param_1"] == ["bam"]
+
+    @pytest.mark.asyncio
+    async def test_depositions_count_bai_filter_reverse_maps_aliases(self):
+        repo, session = make_repo()
+        total = AsyncMock()
+        total.__aiter__.return_value = [{"total": 2}]
+        missing = AsyncMock()
+        missing.__aiter__.return_value = [{"missing": 0}]
+        values = AsyncMock()
+        values.__aiter__.return_value = [{"value": "phs002431", "count": 2}]
+        session.run = AsyncMock(side_effect=[total, missing, values])
+
+        await repo._count_files_by_depositions({"file_type": "BAI"})
+
+        cypher = session.run.call_args_list[0][0][0]
+        params = session.run.call_args_list[0][0][1]
+        assert "toLower(sf.file_type) IN" in cypher
+        assert set(params["param_1"]) == {"bai", "bam_index"}
+
+    @pytest.mark.asyncio
+    async def test_depositions_count_rejects_null_type_filter(self):
+        repo, session = make_repo()
+        session.run = AsyncMock()
+
+        result = await repo._count_files_by_depositions({"file_type": "null"})
+
+        assert result == {"total": 0, "missing": 0, "values": []}
+        session.run.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_list_file_field_filter_on_depositions_count(self):

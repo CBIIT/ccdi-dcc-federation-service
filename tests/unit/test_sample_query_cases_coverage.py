@@ -122,7 +122,12 @@ class TestCase1DirectCoverage:
         assert "param_1_0" in repository.session.run.call_args[0][1]
 
     @pytest.mark.asyncio
-    async def test_count_query_failure_defaults_total_to_zero(self, repository):
+    async def test_count_query_failure_returns_bare_list(self, repository):
+        """Count query failure must not report total=0 while samples has real rows.
+
+        Returning a bare list signals SampleService to fall back to a summary
+        recompute instead of surfacing a fabricated zero total.
+        """
         repository.session.run = AsyncMock(
             side_effect=[Exception("count failed"), _empty_result()]
         )
@@ -133,8 +138,8 @@ class TestCase1DirectCoverage:
             base_url=None,
             return_total=True,
         )
-        assert isinstance(result, tuple)
-        assert result[1] == 0
+        assert isinstance(result, list)
+        assert len(result) == 1
 
 
 @pytest.mark.unit
@@ -371,6 +376,53 @@ class TestCase3FilterBranches:
         assert "sf.library_source_molecule IN ['MicroRNA', 'Total RNA']" in query
 
     @pytest.mark.asyncio
+    async def test_specimen_molecular_analyte_type_db_only_early_exit(self, repository):
+        """DB-only 'Total RNA' is rejected; clients must filter by API PV 'RNA'."""
+        cat = _categorized(
+            sequencing_file={"specimen_molecular_analyte_type": "Total RNA"},
+        )
+        result = await repository._get_samples_case3_with_node_filters(
+            {}, cat, offset=0, limit=20, base_url=None, return_total=False
+        )
+        assert result == []
+        repository.session.run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_specimen_molecular_analyte_type_null_mapped_early_exit(self, repository):
+        """Null-mapped 'Not Reported' is rejected as a filter."""
+        cat = _categorized(
+            sequencing_file={"specimen_molecular_analyte_type": "Not Reported"},
+        )
+        result = await repository._get_samples_case3_with_node_filters(
+            {}, cat, offset=0, limit=20, base_url=None, return_total=False
+        )
+        assert result == []
+        repository.session.run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_preservation_method_db_only_early_exit(self, repository):
+        """DB-only 'Cytospin Slide' is rejected; clients must filter by API PV 'Unknown'."""
+        cat = _categorized(pathology_file={"preservation_method": "Cytospin Slide"})
+        result = await repository._get_samples_case3_with_node_filters(
+            {}, cat, offset=0, limit=20, base_url=None, return_total=False
+        )
+        assert result == []
+        repository.session.run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_preservation_method_unknown_is_valid_filter(self, repository):
+        """'Unknown' is null-mapped for responses but must still be accepted as a filter."""
+        repository.session.run = AsyncMock(return_value=_empty_result())
+        cat = _categorized(pathology_file={"preservation_method": "Unknown"})
+        await repository._get_samples_case3_with_node_filters(
+            {}, cat, offset=0, limit=20, base_url=None, return_total=False
+        )
+        query = repository.session.run.call_args[0][0]
+        params = repository.session.run.call_args[0][1]
+        assert "pf.fixation_embedding_method IN" in query
+        assert ["Cytospin Slide", "Other"] in params.values()
+
+    @pytest.mark.asyncio
     async def test_pathology_only_enrichment_without_node_filters(self, repository):
         """Only pathology filter: diagnosis enrichment projection, head(sf) pick."""
         repository.session.run = AsyncMock(return_value=_empty_result())
@@ -401,7 +453,12 @@ class TestCase3FilterBranches:
         assert result[1] == 15
 
     @pytest.mark.asyncio
-    async def test_count_query_failure_defaults_to_zero(self, repository):
+    async def test_count_query_failure_returns_bare_list(self, repository):
+        """Count query failure must not report total=0 while samples has real rows.
+
+        Returning a bare list signals SampleService to fall back to a summary
+        recompute instead of surfacing a fabricated zero total.
+        """
         repository.session.run = AsyncMock(
             side_effect=[Exception("count boom"), _empty_result()]
         )
@@ -409,7 +466,8 @@ class TestCase3FilterBranches:
         result = await repository._get_samples_case3_with_node_filters(
             {}, cat, offset=0, limit=20, base_url=None, return_total=True
         )
-        assert result[1] == 0
+        assert isinstance(result, list)
+        assert len(result) == 1
 
     @pytest.mark.asyncio
     async def test_single_identifier_and_anatomical_sites_list(self, repository):
@@ -429,6 +487,96 @@ class TestCase3FilterBranches:
         assert "sa.sample_id = $param_1" in query
         assert "param_2_0" in repository.session.run.call_args[0][1]
         assert "d.disease_phase IN" in query
+
+    @pytest.mark.asyncio
+    async def test_disease_phase_unknown_uses_in_clause(self, repository):
+        """API 'Unknown' reverse-maps to multiple DB spellings → IN clause."""
+        repository.session.run = AsyncMock(return_value=_empty_result())
+        cat = _categorized(diagnosis={"disease_phase": "Unknown"})
+        await repository._get_samples_case3_with_node_filters(
+            {}, cat, offset=0, limit=20, base_url=None, return_total=False
+        )
+        params = repository.session.run.call_args[0][1]
+        query = repository.session.run.call_args[0][0]
+        assert "d.disease_phase IN" in query
+        assert ["Not Applicable", "Prior Primary", "Synchronous", "Unknown"] in params.values()
+
+    @pytest.mark.asyncio
+    async def test_disease_phase_db_only_early_exit(self, repository):
+        """DB-only 'Not Applicable' is rejected as an API filter."""
+        cat = _categorized(diagnosis={"disease_phase": "Not Applicable"})
+        result = await repository._get_samples_case3_with_node_filters(
+            {}, cat, offset=0, limit=20, base_url=None, return_total=False
+        )
+        assert result == []
+        repository.session.run.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "categorized,expected",
+        [
+            (
+                {"diagnosis": {"disease_phase": "Not Applicable"}},
+                ([], 0),
+            ),
+            (
+                {"diagnosis": {"disease_phase": "Recurrent Disease"}},
+                ([], 0),
+            ),
+            (
+                {"pathology_file": {"preservation_method": "Cytospin Slide"}},
+                ([], 0),
+            ),
+            (
+                {"pathology_file": {"preservation_method": "Other"}},
+                ([], 0),
+            ),
+            (
+                {"sequencing_file": {"specimen_molecular_analyte_type": "Total RNA"}},
+                ([], 0),
+            ),
+            (
+                {"sequencing_file": {"library_source_material": "Other"}},
+                ([], 0),
+            ),
+            (
+                {"sequencing_file": {"library_strategy": "Archer Fusion"}},
+                ([], 0),
+            ),
+        ],
+    )
+    async def test_case3_db_only_return_total_tuple(self, repository, categorized, expected):
+        """DB-only / invalid filters with return_total=True must return ([], 0), not []."""
+        cat = _categorized(**categorized)
+        result = await repository._get_samples_case3_with_node_filters(
+            {}, cat, offset=0, limit=20, base_url=None, return_total=True
+        )
+        assert result == expected
+        repository.session.run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_disease_phase_relapse_uses_in_clause(self, repository):
+        """API 'Relapse' reverse-maps to Recurrent Disease + Relapse → IN clause."""
+        repository.session.run = AsyncMock(return_value=_empty_result())
+        cat = _categorized(diagnosis={"disease_phase": "Relapse"})
+        await repository._get_samples_case3_with_node_filters(
+            {}, cat, offset=0, limit=20, base_url=None, return_total=False
+        )
+        params = repository.session.run.call_args[0][1]
+        query = repository.session.run.call_args[0][0]
+        assert "d.disease_phase IN" in query
+        assert ["Recurrent Disease", "Relapse"] in params.values()
+
+    @pytest.mark.asyncio
+    async def test_diagnosis_category_low_grade_gliomas_lowered(self, repository):
+        """Canonical Low-Grade Gliomas expands to lowercased DB alias spellings."""
+        repository.session.run = AsyncMock(return_value=_empty_result())
+        cat = _categorized(diagnosis={"diagnosis_category": "Low-Grade Gliomas"})
+        await repository._get_samples_case3_with_node_filters(
+            {}, cat, offset=0, limit=20, base_url=None, return_total=False
+        )
+        params = repository.session.run.call_args[0][1]
+        assert params["diag_category_filters"] == ["low-grade gliomas"]
 
     @pytest.mark.asyncio
     async def test_disease_phase_null_mapped_with_search(self, repository):
@@ -454,10 +602,24 @@ class TestCase3FilterBranches:
             {}, cat, offset=0, limit=20, base_url=None, return_total=False
         )
         query = repository.session.run.call_args[0][0]
-        assert "diag_category_filter" in repository.session.run.call_args[0][1]
+        params = repository.session.run.call_args[0][1]
+        assert "diag_category_filters" in params
+        assert params["diag_category_filters"] == ["lymphoma"]
         # 3.11 list-native: exact-token match iterates the LIST, no SPLIT idiom
         assert "coalesce(d.diagnosis_category, [])" in query
+        assert "$diag_category_filters" in query
         assert "split(toString" not in query
+
+    @pytest.mark.asyncio
+    async def test_diagnosis_category_reverse_maps_myeloid_leukemia(self, repository):
+        """API 'Myeloid Leukemia' must also match DB 'Myeloid leukemias'."""
+        repository.session.run = AsyncMock(return_value=_empty_result())
+        cat = _categorized(diagnosis={"diagnosis_category": "Myeloid Leukemia"})
+        await repository._get_samples_case3_with_node_filters(
+            {}, cat, offset=0, limit=20, base_url=None, return_total=False
+        )
+        params = repository.session.run.call_args[0][1]
+        assert params["diag_category_filters"] == ["myeloid leukemias", "myeloid leukemia"]
 
     @pytest.mark.asyncio
     async def test_library_selection_fallback_to_raw_value(self, repository):
@@ -481,22 +643,30 @@ class TestCase3FilterBranches:
         assert params.get("param_1") == "PCR"
 
     @pytest.mark.asyncio
-    async def test_library_source_material_null_mapped_early_exit(self, repository):
+    async def test_library_source_material_db_only_early_exit(self, repository):
         cat = _categorized(
             sequencing_file={"library_source_material": "Other"},
         )
-        with patch(
-            "app.repositories.sample_query_cases.is_database_only_value",
-            return_value=False,
-        ):
-            with patch(
-                "app.repositories.sample_query_cases.is_null_mapped_value",
-                return_value=True,
-            ):
-                result = await repository._get_samples_case3_with_node_filters(
-                    {}, cat, offset=0, limit=20, base_url=None, return_total=False
-                )
+        # Real is_database_only_value: "Other" is DB-only (maps to API "Not Reported")
+        result = await repository._get_samples_case3_with_node_filters(
+            {}, cat, offset=0, limit=20, base_url=None, return_total=False
+        )
         assert result == []
+        repository.session.run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_library_source_material_not_reported_uses_in(self, repository):
+        repository.session.run = AsyncMock(return_value=_empty_result())
+        cat = _categorized(
+            sequencing_file={"library_source_material": "Not Reported"},
+        )
+        await repository._get_samples_case3_with_node_filters(
+            {}, cat, offset=0, limit=20, base_url=None, return_total=False
+        )
+        query = repository.session.run.call_args[0][0]
+        params = repository.session.run.call_args[0][1]
+        assert "sf.library_source_material IN $" in query
+        assert ["Other", "Not Reported"] in params.values()
 
     @pytest.mark.asyncio
     async def test_specimen_molecular_analyte_type_scalar_mapping(self, repository):

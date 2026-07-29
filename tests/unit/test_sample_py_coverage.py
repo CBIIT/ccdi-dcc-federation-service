@@ -483,11 +483,11 @@ class TestGetSamplesMainMethod:
             limit=20,
             return_total=True
         )
-        
-        # Should still return results with total_count=0 (falls through)
-        assert isinstance(result, tuple)
-        assert len(result) == 2
-        assert result[1] == 0  # Exception sets total_count to 0
+
+        # Count failed: bare list, not a fabricated total=0, so SampleService can
+        # fall back to a summary recompute instead of undercounting.
+        assert isinstance(result, list)
+        assert len(result) == 1
 
     async def test_get_samples_case3_record_conversion_exception(self, repository, mock_session):
         """Test Case 3 exception handling during record conversion."""
@@ -636,40 +636,6 @@ class TestGetSamplesMainMethod:
             assert isinstance(result, list)
             assert result == []
 
-    async def test_get_samples_case2_none_and_case3_none_fall_through_to_standard_query(self, repository, mock_session):
-        """Regression: when Case 2 and Case 3 both return None, standard query path should run."""
-        async def async_gen():
-            yield {
-                "sa": {"sample_id": "SAMP001"},
-                "p": {},
-                "st": {"study_id": "phs002430"},
-                "sf": {},
-                "pf": {},
-                "diagnoses": {}
-            }
-
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        mock_result.consume = AsyncMock()
-        mock_session.run = AsyncMock(return_value=mock_result)
-
-        with patch.object(repository, '_get_samples_case2_sample_study', new_callable=AsyncMock) as mock_case2, \
-             patch.object(repository, '_get_samples_case3_with_node_filters', new_callable=AsyncMock) as mock_case3:
-            mock_case2.return_value = None
-            mock_case3.return_value = None
-
-            result = await repository.get_samples(
-                filters={"age_at_collection": "1461", "depositions": "phs002430"},
-                offset=0,
-                limit=50,
-                return_total=False,
-            )
-
-            mock_case2.assert_called_once()
-            mock_case3.assert_called_once()
-            assert mock_session.run.called
-            assert isinstance(result, list)
-
     async def test_get_samples_sequencing_file_only_uses_optimized_path(self, repository, mock_session):
         """Sequencing_file-only filters route to the optimized sf-first method, not Case 3."""
         async def async_gen():
@@ -814,11 +780,11 @@ class TestGetSamplesMainMethod:
             limit=20,
             return_total=True
         )
-        
-        # Should still return results with total_count=0 (exception sets it to 0)
-        assert isinstance(result, tuple)
-        assert len(result) == 2
-        assert result[1] == 0  # Exception sets total_count to 0
+
+        # Count failed: bare list, not a fabricated total=0, so SampleService can
+        # fall back to a summary recompute instead of undercounting.
+        assert isinstance(result, list)
+        assert len(result) == 1
 
     async def test_get_samples_case2_count_query_exception(self, repository, mock_session):
         """Test Case 2 exception handling in count query."""
@@ -848,11 +814,11 @@ class TestGetSamplesMainMethod:
             limit=20,
             return_total=True
         )
-        
-        # Should still return results with total_count=0 (exception sets it to 0)
-        assert isinstance(result, tuple)
-        assert len(result) == 2
-        assert result[1] == 0  # Exception sets total_count to 0
+
+        # Count failed: bare list, not a fabricated total=0, so SampleService can
+        # fall back to a summary recompute instead of undercounting.
+        assert isinstance(result, list)
+        assert len(result) == 1
 
     async def test_get_samples_case2_with_return_total(self, repository, mock_session):
         """Test Case 2 with return_total=True."""
@@ -890,38 +856,6 @@ class TestGetSamplesMainMethod:
         assert isinstance(result, tuple)
         assert len(result) == 2
         assert isinstance(result[0], list)
-
-    async def test_get_samples_case3_returns_none_fallthrough(self, repository, mock_session):
-        """Test Case 3 returning None falls through to standard query (line 371-373)."""
-        async def async_gen():
-            yield {
-                "sa": {"sample_id": "SAMP001"},
-                "p": {},
-                "st": {"study_id": "phs001"},
-                "sf": {},
-                "pf": {},
-                "diagnoses": {}
-            }
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        mock_result.consume = AsyncMock()
-        mock_session.run = AsyncMock(return_value=mock_result)
-        
-        # Mock case3 to return None (indicating it can't handle the filters).
-        # Use a diagnosis filter so routing still reaches Case 3 (sequencing_file-only
-        # filters now bypass Case 3 via the optimized sf-first method).
-        with patch.object(repository, '_get_samples_case3_with_node_filters', new_callable=AsyncMock) as mock_case3:
-            mock_case3.return_value = None
-            result = await repository.get_samples(
-                filters={"diagnosis": "Neuroblastoma", "unknown_filter": "value"},  # routes to Case 3
-                offset=0,
-                limit=20
-            )
-            
-            mock_case3.assert_called_once()
-            # Should fall through and execute standard query
-            assert mock_session.run.called
 
     async def test_get_samples_case1_record_conversion_exception(self, repository, mock_session):
         """Test Case 1 exception handling during record conversion."""
@@ -1202,8 +1136,10 @@ class TestGetSamplesBySequencingFileFilters:
                 return_total=True
             )
             
-            # Should still return results with total_count=None (falls through)
+            # Count failed: return bare list so SampleService / diagnosis endpoint
+            # can fall back to summary instead of a page-size undercount.
             assert isinstance(result, list)
+            assert len(result) == 1
             assert mock_session.run.call_count == 2
         finally:
             sm.is_database_only_value = original_is_db_only
@@ -1534,11 +1470,11 @@ class TestGetSamplesEarlyPaginationAdvanced:
             limit=20,
             return_total=True
         )
-        
-        # Should still return results with total_count=0
-        assert isinstance(result, tuple)
-        assert len(result) == 2
-        assert result[1] == 0
+
+        # Count failed: bare list, not a fabricated total=0, so SampleService can
+        # fall back to a summary recompute instead of undercounting.
+        assert isinstance(result, list)
+        assert len(result) == 1
 
     async def test_depositions_only_list_query(self, repository, mock_session):
         """Test depositions-only list query path (line 199-227)."""
@@ -1716,8 +1652,9 @@ class TestGetSamplesByPathologyFileFilters:
             return_total=True
         )
         
-        # Should still return results with total_count=None (falls through)
+        # Count failed: return bare list so callers can fall back to summary
         assert isinstance(result, list)
+        assert len(result) == 1
         assert mock_session.run.call_count == 2
 
     async def test_pathology_file_record_conversion_exception(self, repository, mock_session):
@@ -2091,8 +2028,9 @@ class TestGetSamplesByCombinedFilters:
                 return_total=True
             )
             
-            # Should still return results with total_count=None (falls through)
+            # Count failed: return bare list so callers can fall back to summary
             assert isinstance(result, list)
+            assert len(result) == 1
             assert mock_session.run.call_count == 2
         finally:
             sm.is_database_only_value = original_is_db_only
@@ -2357,13 +2295,15 @@ class TestGetSamplesSummaryReverseQueryInSample:
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
         
-        import app.repositories.sample as sm
+        import app.repositories.sample_summary as ss
         
-        original_is_null = sm.is_null_mapped_value
-        original_reverse_map = sm.reverse_map_field_value
+        original_is_null = ss.is_null_mapped_value
+        original_reverse_map = ss.reverse_map_field_value
+        original_is_db = ss.is_database_only_value
         
-        sm.is_null_mapped_value = lambda field, value: False
-        sm.reverse_map_field_value = lambda field, value: "DNA" if field == "library_source_material" else value
+        ss.is_null_mapped_value = lambda field, value: False
+        ss.is_database_only_value = lambda field, value: False
+        ss.reverse_map_field_value = lambda field, value: "DNA" if field == "library_source_material" else value
         
         try:
             result = await repository._get_samples_summary_reverse_query({"library_source_material": "DNA"})
@@ -2372,23 +2312,24 @@ class TestGetSamplesSummaryReverseQueryInSample:
             assert result == {"counts": {"total": 5}}
             mock_session.run.assert_called_once()
         finally:
-            sm.is_null_mapped_value = original_is_null
-            sm.reverse_map_field_value = original_reverse_map
+            ss.is_null_mapped_value = original_is_null
+            ss.reverse_map_field_value = original_reverse_map
+            ss.is_database_only_value = original_is_db
 
     async def test_get_samples_summary_reverse_query_library_strategy_with_reverse_mapping(self, repository, mock_session):
-        """Test _get_samples_summary_reverse_query with library_strategy reverse mapping (line 3529-3534)."""
+        """Test _get_samples_summary_reverse_query with library_strategy reverse mapping."""
         mock_result = AsyncMock()
         mock_result.single = AsyncMock(return_value={"total_count": 3})
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
         
-        import app.repositories.sample as sm
+        import app.repositories.sample_summary as ss
         
-        original_is_db_only = sm.is_database_only_value
-        original_reverse_map = sm.reverse_map_field_value
+        original_is_db_only = ss.is_database_only_value
+        original_reverse_map = ss.reverse_map_field_value
         
-        sm.is_database_only_value = lambda field, value: False
-        sm.reverse_map_field_value = lambda field, value: (
+        ss.is_database_only_value = lambda field, value: False
+        ss.reverse_map_field_value = lambda field, value: (
             "WXS" if field == "library_strategy" and value == "Other" else value
         )
         
@@ -2397,13 +2338,12 @@ class TestGetSamplesSummaryReverseQueryInSample:
             
             assert isinstance(result, dict)
             assert result == {"counts": {"total": 3}}
-            # Verify query has OR condition for both mapped and original values
             call_args = mock_session.run.call_args
             query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
             assert 'OR' in query or 'param_1' in query or 'param_2' in query
         finally:
-            sm.is_database_only_value = original_is_db_only
-            sm.reverse_map_field_value = original_reverse_map
+            ss.is_database_only_value = original_is_db_only
+            ss.reverse_map_field_value = original_reverse_map
 
     async def test_get_samples_summary_reverse_query_library_selection_method(self, repository, mock_session):
         """Test _get_samples_summary_reverse_query with library_selection_method filter."""
@@ -2412,11 +2352,11 @@ class TestGetSamplesSummaryReverseQueryInSample:
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
         
-        import app.repositories.sample as sm
+        import app.repositories.sample_summary as ss
         
-        original_is_db_only = sm.is_database_only_value
+        original_is_db_only = ss.is_database_only_value
         
-        sm.is_database_only_value = lambda field, value: False
+        ss.is_database_only_value = lambda field, value: False
         
         try:
             result = await repository._get_samples_summary_reverse_query({"library_selection_method": "PCR"})
@@ -2425,24 +2365,24 @@ class TestGetSamplesSummaryReverseQueryInSample:
             assert result == {"counts": {"total": 2}}
             mock_session.run.assert_called_once()
         finally:
-            sm.is_database_only_value = original_is_db_only
+            ss.is_database_only_value = original_is_db_only
 
     async def test_get_samples_summary_reverse_query_specimen_molecular_analyte_type_list(self, repository, mock_session):
-        """Test _get_samples_summary_reverse_query with specimen_molecular_analyte_type list mapping (line 3550-3552)."""
+        """Test _get_samples_summary_reverse_query with specimen_molecular_analyte_type list mapping."""
         mock_result = AsyncMock()
         mock_result.single = AsyncMock(return_value={"total_count": 4})
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
         
-        import app.repositories.sample as sm
+        import app.repositories.sample_summary as ss
         
-        original_is_db_only = sm.is_database_only_value
-        original_is_null = sm.is_null_mapped_value
-        original_reverse_map = sm.reverse_map_field_value
+        original_is_db_only = ss.is_database_only_value
+        original_is_null = ss.is_null_mapped_value
+        original_reverse_map = ss.reverse_map_field_value
         
-        sm.is_database_only_value = lambda field, value: False
-        sm.is_null_mapped_value = lambda field, value: False
-        sm.reverse_map_field_value = lambda field, value: (
+        ss.is_database_only_value = lambda field, value: False
+        ss.is_null_mapped_value = lambda field, value: False
+        ss.reverse_map_field_value = lambda field, value: (
             ["MicroRNA", "Total RNA"] if field == "specimen_molecular_analyte_type" and value == "RNA"
             else value
         )
@@ -2452,33 +2392,32 @@ class TestGetSamplesSummaryReverseQueryInSample:
             
             assert isinstance(result, dict)
             assert result == {"counts": {"total": 4}}
-            # Verify query uses IN clause for list
             call_args = mock_session.run.call_args
             query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
             assert 'IN [' in query or 'IN' in query
         finally:
-            sm.is_database_only_value = original_is_db_only
-            sm.is_null_mapped_value = original_is_null
-            sm.reverse_map_field_value = original_reverse_map
+            ss.is_database_only_value = original_is_db_only
+            ss.is_null_mapped_value = original_is_null
+            ss.reverse_map_field_value = original_reverse_map
 
     async def test_get_samples_summary_reverse_query_exception_handling(self, repository, mock_session):
         """Test _get_samples_summary_reverse_query exception handling."""
         mock_session.run = AsyncMock(side_effect=Exception("Database error"))
         
-        import app.repositories.sample as sm
+        import app.repositories.sample_summary as ss
         
-        original_is_db_only = sm.is_database_only_value
-        original_is_null = sm.is_null_mapped_value
+        original_is_db_only = ss.is_database_only_value
+        original_is_null = ss.is_null_mapped_value
         
-        sm.is_database_only_value = lambda field, value: False
-        sm.is_null_mapped_value = lambda field, value: False
+        ss.is_database_only_value = lambda field, value: False
+        ss.is_null_mapped_value = lambda field, value: False
         
         try:
             with pytest.raises(Exception, match="Database error"):
                 await repository._get_samples_summary_reverse_query({"library_strategy": "WXS"})
         finally:
-            sm.is_database_only_value = original_is_db_only
-            sm.is_null_mapped_value = original_is_null
+            ss.is_database_only_value = original_is_db_only
+            ss.is_null_mapped_value = original_is_null
 
     async def test_get_samples_summary_reverse_query_no_record(self, repository, mock_session):
         """Test _get_samples_summary_reverse_query when query returns no record."""
@@ -2487,13 +2426,13 @@ class TestGetSamplesSummaryReverseQueryInSample:
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
         
-        import app.repositories.sample as sm
+        import app.repositories.sample_summary as ss
         
-        original_is_db_only = sm.is_database_only_value
-        original_is_null = sm.is_null_mapped_value
+        original_is_db_only = ss.is_database_only_value
+        original_is_null = ss.is_null_mapped_value
         
-        sm.is_database_only_value = lambda field, value: False
-        sm.is_null_mapped_value = lambda field, value: False
+        ss.is_database_only_value = lambda field, value: False
+        ss.is_null_mapped_value = lambda field, value: False
         
         try:
             result = await repository._get_samples_summary_reverse_query({"library_strategy": "WXS"})
@@ -2501,24 +2440,24 @@ class TestGetSamplesSummaryReverseQueryInSample:
             assert isinstance(result, dict)
             assert result == {"counts": {"total": 0}}
         finally:
-            sm.is_database_only_value = original_is_db_only
-            sm.is_null_mapped_value = original_is_null
+            ss.is_database_only_value = original_is_db_only
+            ss.is_null_mapped_value = original_is_null
 
     async def test_get_samples_summary_reverse_query_library_strategy_no_reverse_mapping(self, repository, mock_session):
-        """Test _get_samples_summary_reverse_query with library_strategy that has no reverse mapping (line 3535-3537)."""
+        """Test _get_samples_summary_reverse_query with library_strategy that has no reverse mapping."""
         mock_result = AsyncMock()
         mock_result.single = AsyncMock(return_value={"total_count": 7})
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
         
-        import app.repositories.sample as sm
+        import app.repositories.sample_summary as ss
         
-        original_is_db_only = sm.is_database_only_value
-        original_reverse_map = sm.reverse_map_field_value
+        original_is_db_only = ss.is_database_only_value
+        original_reverse_map = ss.reverse_map_field_value
         
-        sm.is_database_only_value = lambda field, value: False
-        sm.reverse_map_field_value = lambda field, value: (
-            None if field == "library_strategy" and value == "WXS" else value  # No reverse mapping
+        ss.is_database_only_value = lambda field, value: False
+        ss.reverse_map_field_value = lambda field, value: (
+            None if field == "library_strategy" and value == "WXS" else value
         )
         
         try:
@@ -2528,5 +2467,5 @@ class TestGetSamplesSummaryReverseQueryInSample:
             assert result == {"counts": {"total": 7}}
             mock_session.run.assert_called_once()
         finally:
-            sm.is_database_only_value = original_is_db_only
-            sm.reverse_map_field_value = original_reverse_map
+            ss.is_database_only_value = original_is_db_only
+            ss.reverse_map_field_value = original_reverse_map

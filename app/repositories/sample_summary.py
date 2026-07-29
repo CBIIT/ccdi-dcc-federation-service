@@ -38,6 +38,10 @@ class SampleSummary:
             Dictionary with summary statistics
         """
         logger.debug("Getting samples summary", filters=filters)
+
+        # Work on a shallow copy so .pop("identifiers") / .pop("_diagnosis_search")
+        # below cannot mutate the caller's filters dict.
+        filters = filters.copy()
         
         # IMPORTANT: Check routing BEFORE popping identifiers (identifiers is popped later for early filtering)
         # This ensures routing decisions include identifiers filter
@@ -291,9 +295,15 @@ class SampleSummary:
                 # which is processed later in the query building logic
                 self._validate_library_source_material_filter(value, param_name, params, with_conditions)
             elif field == "preservation_method":
-                reverse_mapped = reverse_map_field_value("preservation_method", value)
-                params[param_name] = reverse_mapped if reverse_mapped else value
-                with_conditions.append(("preservation_method", param_name))
+                # Reject DB-only spellings (e.g. Cytospin Slide, Other); "Unknown" is
+                # null-mapped for responses but is a valid API filter, so only
+                # is_database_only_value gates this -- not is_null_mapped_value.
+                if is_database_only_value("preservation_method", value):
+                    with_conditions.append(("preservation_method_invalid", "invalid"))
+                else:
+                    reverse_mapped = reverse_map_field_value("preservation_method", value)
+                    params[param_name] = reverse_mapped if reverse_mapped else value
+                    with_conditions.append(("preservation_method", param_name))
             elif field == "tissue_type":
                 # Use helper function to validate tissue_type filter
                 if self._validate_tissue_type_filter(value, param_name, params, with_conditions) is None:
@@ -465,16 +475,20 @@ class SampleSummary:
             elif isinstance(condition, tuple) and condition[0] == "preservation_method":
                 preservation_method_param = condition[1]
                 # Don't add to regular_conditions - will be applied in OPTIONAL MATCH WHERE clause (early filter optimization)
+            elif isinstance(condition, tuple) and condition[0] == "preservation_method_invalid":
+                # Invalid value (database-only value) - set impossible condition
+                preservation_method_param = "invalid"
             else:
                 regular_conditions.append(condition)
         
         # PERFORMANCE FIX: Early return for invalid filter values
-        # If any filter has an invalid value (e.g., "Other" for library_source_material),
+        # If any filter has an invalid value (e.g., DB-only "Other" for library_source_material),
         # return empty results immediately without hitting the database
         if (specimen_molecular_analyte_type_single_param == "invalid" or
             library_selection_method_param == "invalid" or
             library_strategy_param == "invalid" or
-            library_source_material_param == "invalid"):
+            library_source_material_param == "invalid" or
+            preservation_method_param == "invalid"):
             logger.info("Invalid filter value detected in summary query - returning empty results")
             return {"counts": {"total": 0}}
         
@@ -1188,35 +1202,35 @@ RETURN count(*) AS total_count
         retry_count = 0
         records = []
         
-        while retry_count <= max_retries:
-            try:
-                result = await self.session.run(cypher, params)
-                records = []
-                async for record in result:
-                    records.append(dict(record))
-                
-                # Ensure result is fully consumed
-                await result.consume()
-                
-                # If we got results or it's the last retry, break out of retry loop
-                if records or retry_count >= max_retries:
-                    break
-                
-                # If no results and not the last retry, wait a bit and retry
-                if retry_count < max_retries:
-                    await asyncio.sleep(0.1 * (retry_count + 1))  # Exponential backoff: 0.1s, 0.2s
-                    retry_count += 1
-                    logger.debug(f"Retrying get_samples_summary query (attempt {retry_count + 1})")
-            except Exception as e:
-                if retry_count < max_retries:
-                    await asyncio.sleep(0.1 * (retry_count + 1))
-                    retry_count += 1
-                    logger.warning(f"Error in get_samples_summary query, retrying (attempt {retry_count + 1})", error=str(e))
-                else:
-                    # Re-raise to be handled by outer try-except
-                    raise
-        
         try:
+            while retry_count <= max_retries:
+                try:
+                    result = await self.session.run(cypher, params)
+                    records = []
+                    async for record in result:
+                        records.append(dict(record))
+                    
+                    # Ensure result is fully consumed
+                    await result.consume()
+                    
+                    # If we got results or it's the last retry, break out of retry loop
+                    if records or retry_count >= max_retries:
+                        break
+                    
+                    # If no results and not the last retry, wait a bit and retry
+                    if retry_count < max_retries:
+                        await asyncio.sleep(0.1 * (retry_count + 1))  # Exponential backoff: 0.1s, 0.2s
+                        retry_count += 1
+                        logger.debug(f"Retrying get_samples_summary query (attempt {retry_count + 1})")
+                except Exception as e:
+                    if retry_count < max_retries:
+                        await asyncio.sleep(0.1 * (retry_count + 1))
+                        retry_count += 1
+                        logger.warning(f"Error in get_samples_summary query, retrying (attempt {retry_count + 1})", error=str(e))
+                    else:
+                        # Re-raise to be handled by outer try-except (anatomical_sites string fallback)
+                        raise
+            
             logger.debug(
                 "Query executed successfully",
                 records_count=len(records),
@@ -1522,11 +1536,17 @@ RETURN count(*) AS total_count
             param_name = f"param_{param_counter}"
             
             if field == "library_source_material":
-                if is_null_mapped_value("library_source_material", value):
+                if is_null_mapped_value("library_source_material", value) or is_database_only_value(
+                    "library_source_material", value
+                ):
                     return {"counts": {"total": 0}}
                 reverse_mapped = reverse_map_field_value("library_source_material", value)
-                params[param_name] = reverse_mapped
-                where_conditions.append(f"sf.library_source_material = ${param_name}")
+                if isinstance(reverse_mapped, list):
+                    params[param_name] = reverse_mapped
+                    where_conditions.append(f"sf.library_source_material IN ${param_name}")
+                else:
+                    params[param_name] = reverse_mapped if reverse_mapped else value
+                    where_conditions.append(f"sf.library_source_material = ${param_name}")
                 
             elif field == "library_strategy":
                 if is_database_only_value("library_strategy", value):

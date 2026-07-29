@@ -25,6 +25,7 @@ from app.repositories.subject_diagnosis_cypher import (
     diagnosis_category_exact_token_predicate,
     diagnosis_search_predicate,
 )
+from app.core.diagnosis_category import diagnosis_category_filter_db_values
 from app.repositories.sample_helpers import SD_CAT_MARKER
 from app.utils.cypher_builder import anatomic_site_member_predicate
 
@@ -186,7 +187,7 @@ class SampleQueryCases:
                 total_count = recs[0].get("total_count", 0) if recs else 0
             except Exception as e:
                 logger.warning("Case 1 count query failed", error=str(e), exc_info=True)
-                total_count = 0
+                total_count = None
         
         # Build query: paginate at (sample_id, study_id) pair level to match count query
         cypher = f"""
@@ -253,8 +254,11 @@ class SampleQueryCases:
                 logger.warning("Error converting sample record in Case 1: %s", e, exc_info=True)
                 continue
         
-        if return_total:
-            return (samples, total_count if total_count is not None else len(samples))
+        # When return_total but the count query failed: return a bare list so
+        # SampleService can fall back to summary instead of reporting total=0
+        # while samples still has real rows.
+        if return_total and total_count is not None:
+            return (samples, total_count)
         return samples
 
     async def _get_samples_case2_sample_study(
@@ -457,6 +461,16 @@ class SampleQueryCases:
                 param_name = f"param_{param_counter}"
                 
                 if field == "disease_phase":
+                    # Reject DB-only spellings (e.g. Not Applicable, Recurrent Disease);
+                    # clients must filter by API PVs (Unknown, Relapse).
+                    if is_database_only_value("disease_phase", value):
+                        logger.info(
+                            "Case 3: Invalid disease_phase filter (database-only), returning empty results",
+                            disease_phase=value,
+                        )
+                        if return_total:
+                            return ([], 0)
+                        return []
                     if is_null_mapped_value("disease_phase", value):
                         params[param_name] = value
                         if needs_diagnosis_search:
@@ -503,7 +517,11 @@ class SampleQueryCases:
                         params["diag_category_contains_term"] = value.strip()
                         diagnosis_conditions.append(diagnosis_category_contains_predicate("d"))
                     else:
-                        params["diag_category_filter"] = value
+                        # Reverse-map API PV to lowercased DB spellings (helper owns .lower())
+                        filter_value = value.strip() if isinstance(value, str) else value
+                        params["diag_category_filters"] = diagnosis_category_filter_db_values(
+                            str(filter_value) if filter_value is not None else ""
+                        )
                         diagnosis_conditions.append(diagnosis_category_exact_token_predicate("d"))
             
             if diagnosis_conditions:
@@ -579,13 +597,15 @@ class SampleQueryCases:
                         params[param_name] = value
                         sf_conditions.append(f"sf.library_strategy = ${param_name}")
                 elif field == "library_source_material":
-                    # Check if value is in null_mappings (e.g., "Other")
-                    if is_null_mapped_value("library_source_material", value):
-                        logger.info("Case 3: Invalid library_source_material filter (null-mapped), returning empty results", library_source_material=value)
+                    # Reject null-mapped or DB-only values (e.g. "Other" is DB-only → API "Not Reported")
+                    if is_null_mapped_value("library_source_material", value) or is_database_only_value(
+                        "library_source_material", value
+                    ):
+                        logger.info("Case 3: Invalid library_source_material filter, returning empty results", library_source_material=value)
                         if return_total:
                             return ([], 0)
                         return []
-                    # Apply reverse mapping for the filter value to get DB value
+                    # Apply reverse mapping for the filter value to get DB value(s)
                     reverse_mapped = reverse_map_field_value("library_source_material", value)
                     if isinstance(reverse_mapped, list):
                         params[param_name] = reverse_mapped
@@ -594,6 +614,18 @@ class SampleQueryCases:
                         params[param_name] = reverse_mapped if reverse_mapped else value
                         sf_conditions.append(f"sf.library_source_material = ${param_name}")
                 elif field == "specimen_molecular_analyte_type":
+                    # Reject DB-only spellings (e.g. Total RNA) and null-mapped values
+                    # (e.g. Not Reported) — clients must filter by API PVs (RNA, DNA, …).
+                    if is_database_only_value("specimen_molecular_analyte_type", value) or is_null_mapped_value(
+                        "specimen_molecular_analyte_type", value
+                    ):
+                        logger.info(
+                            "Case 3: Invalid specimen_molecular_analyte_type filter, returning empty results",
+                            specimen_molecular_analyte_type=value,
+                        )
+                        if return_total:
+                            return ([], 0)
+                        return []
                     # Map API value to DB value(s)
                     reverse_mapped = reverse_map_field_value("specimen_molecular_analyte_type", value)
                     if isinstance(reverse_mapped, list):
@@ -613,6 +645,17 @@ class SampleQueryCases:
         if has_pf_filters:
             if "preservation_method" in categorized["pathology_file"]:
                 preservation_value = categorized["pathology_file"]["preservation_method"]
+                # Reject DB-only spellings (e.g. Cytospin Slide, Other); "Unknown" is
+                # null-mapped for responses but is a valid API filter, so only
+                # is_database_only_value gates this -- not is_null_mapped_value.
+                if is_database_only_value("preservation_method", preservation_value):
+                    logger.info(
+                        "Case 3: Invalid preservation_method filter (database-only), returning empty results",
+                        preservation_method=preservation_value,
+                    )
+                    if return_total:
+                        return ([], 0)
+                    return []
                 param_counter += 1
                 pf_param = f"param_{param_counter}"
                 reverse_mapped = reverse_map_field_value("preservation_method", preservation_value)
@@ -804,7 +847,7 @@ class SampleQueryCases:
                 )
             except Exception as e:
                 logger.warning("Case 3 count query failed", error=str(e), exc_info=True)
-                total_count = 0
+                total_count = None
         
         # Build main query
         # After collecting and filtering, pick 1 node per type and paginate
@@ -900,6 +943,9 @@ class SampleQueryCases:
                 logger.warning("Error converting sample record in Case 3: %s", e, exc_info=True)
                 continue
         
-        if return_total:
-            return (samples, total_count if total_count is not None else len(samples))
+        # When return_total but the count query failed: return a bare list so
+        # SampleService can fall back to summary instead of reporting total=0
+        # while samples still has real rows.
+        if return_total and total_count is not None:
+            return (samples, total_count)
         return samples

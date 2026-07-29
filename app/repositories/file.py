@@ -12,7 +12,11 @@ from neo4j import AsyncSession
 
 from app.core.logging import get_logger
 from app.db.memgraph import run_count_query_with_retry
-from app.core.constants import FileType, load_file_enum
+from app.core.constants import FileType
+from app.core.file_type_mappings import (
+    get_db_values_for_api_file_type,
+    map_file_type_db_to_api,
+)
 from app.config_data.file_node_registry import FileNodeConfig, FILE_NODE_REGISTRY
 from app.lib.field_allowlist import FieldAllowlist, EntityType
 from app.models.dto import File
@@ -125,31 +129,14 @@ class FileRepository:
             if not checksums_list:
                 checksums_list = None
         
-        # Validate type filter - must match enum value exactly (case-sensitive)
-        # Note: filter key is "file_type" because get_file_filters() maps "type" -> "file_type"
-        # After validation, use case-insensitive matching in the query to handle database case variations
-        type_filter_param = None
-        if "file_type" in filters_copy:
-            type_value = filters_copy.pop("file_type")  # Remove from filters_copy to handle separately
-            # Check if the type value exactly matches an enum value (case-sensitive)
-            if type_value not in FileType.values():
-                # Type doesn't match any enum value, return empty results
-                logger.info(
-                    "Type filter value does not match any enum value (case-sensitive) - returning empty results",
-                    type_value=type_value,
-                    valid_values=FileType.values()[:5]  # Log first 5 for reference
-                )
-                return []
-            # Use case-insensitive matching in the query (toLower for both sides)
-            # This allows matching database values regardless of case, while still validating input case-sensitively
-            param_counter += 1
-            type_filter_param = f"param_{param_counter}"
-            params[type_filter_param] = type_value
-            logger.debug(
-                "Type filter validated successfully, will use case-insensitive matching in query",
-                type_value=type_value
-            )
-        
+        # Validate type filter - must match merged enum exactly (case-sensitive).
+        # Reverse-map API PV → DB value(s); match case-insensitively in Cypher.
+        is_valid, param_counter, type_where_fragment = self._validate_and_reverse_map_file_type_filter(
+            filters_copy, params, param_counter
+        )
+        if not is_valid:
+            return []
+
         # Add regular filters
         for field, value in filters_copy.items():
             # Handle unharmonized fields (e.g., metadata.unharmonized.file_name)
@@ -188,10 +175,10 @@ class FileRepository:
                 where_conditions.append(f"sf.{field} = ${param_name}")
             params[param_name] = value
         
-        # Add case-insensitive type filter if present
-        if type_filter_param:
-            where_conditions.append(f"toLower(sf.file_type) = toLower(${type_filter_param})")
-        
+        # Add case-insensitive type filter if present (reverse-mapped DB values)
+        if type_where_fragment:
+            where_conditions.append(type_where_fragment)
+
         # Add checksums filter if present (supports || separator for OR logic)
         if checksums_list is not None:
             param_counter += 1
@@ -621,34 +608,21 @@ class FileRepository:
         }
         db_field = field_mapping.get(field, field)
         
-        # Validate type filter - must match enum value exactly (case-sensitive)
-        # Note: filter key is "file_type" because get_file_filters() maps "type" -> "file_type"
-        # After validation, use case-insensitive matching in the query to handle database case variations
-        type_filter_param = None
+        # Validate type filter - must match merged enum exactly (case-sensitive).
         filters_copy = filters.copy()
         params = {}  # Initialize params dict
         param_counter = 0
-        
-        if "file_type" in filters_copy:
-            type_value = filters_copy.pop("file_type")  # Remove from filters_copy to handle separately
-            # Check if the type value exactly matches an enum value (case-sensitive)
-            if type_value not in FileType.values():
-                # Type doesn't match any enum value, return empty results
-                logger.debug(
-                    "Type filter value does not match any enum value (case-sensitive)",
-                    type_value=type_value,
-                    valid_values=FileType.values()[:5]  # Log first 5 for reference
-                )
-                return {
-                    "total": 0,
-                    "missing": 0,
-                    "values": []
-                }
-            # Use case-insensitive matching in the query (toLower for both sides)
-            param_counter += 1
-            type_filter_param = f"param_{param_counter}"
-            params[type_filter_param] = type_value
-        
+
+        is_valid, param_counter, type_where_fragment = self._validate_and_reverse_map_file_type_filter(
+            filters_copy, params, param_counter
+        )
+        if not is_valid:
+            return {
+                "total": 0,
+                "missing": 0,
+                "values": []
+            }
+
         # Build WHERE conditions and parameters for filters (excluding field-specific conditions)
         base_where_conditions = []
         
@@ -679,265 +653,120 @@ class FileRepository:
                 base_where_conditions.append(f"sf.{filter_field} = ${param_name}")
             params[param_name] = value
 
-        # Add case-insensitive type filter if present
-        if type_filter_param:
-            base_where_conditions.append(f"toLower(sf.file_type) = toLower(${type_filter_param})")
-        
-        # OPTIMIZATION: When counting by type, filter to enum values using IN clause
-        # BUT: Only apply this filter to the VALUES query, not total/missing queries
-        # This ensures total counts match between type and depositions endpoints
-        # (both should count ALL files with valid study paths)
-        type_enum_param = None
-        type_enum_filter = None
-        if field == "type":
-            enum_values = FileType.values() if FileType.values() else load_file_enum()
-            if enum_values:
-                # Create case-insensitive IN filter for all enum values
-                # Use toLower() for case-insensitive matching with parameter
-                param_counter += 1
-                type_enum_param = f"param_{param_counter}"
-                # Store lowercase enum values for case-insensitive matching
-                enum_values_lower = [v.lower() for v in enum_values]
-                params[type_enum_param] = enum_values_lower
-                # Build case-insensitive IN condition using parameter
-                # NOTE: This will be added ONLY to values query, not total/missing
-                type_enum_filter = f"toLower(sf.{db_field}) IN ${type_enum_param}"
-                logger.debug(
-                    "Using enum-based IN filter for type count (values query only)",
-                    enum_count=len(enum_values),
-                    db_field=db_field
-                )
-        
-        # Build base WHERE clause for file filters (applied before traversals)
-        # NOTE: type_enum_filter is NOT included here - it's only for values query
-        base_where_clause = "WHERE " + " AND ".join(base_where_conditions) if base_where_conditions else ""
-        
-        # OPTIMIZATION STRATEGY:
-        # Apply file filters FIRST (before traversals) to reduce dataset size
-        # Use reverse traversal when no file filters exist (start from studies)
-        # This significantly reduces the number of nodes processed
-        
-        # Check if we have file filters (excluding study path requirements)
+        # Add case-insensitive type filter if present (reverse-mapped DB values)
+        if type_where_fragment:
+            base_where_conditions.append(type_where_fragment)
+
+        base_where_clause = (
+            "WHERE " + " AND ".join(base_where_conditions) if base_where_conditions else ""
+        )
         has_file_filters = len(base_where_conditions) > 0
-        
+
+        # Single-pass type count: one study-path traversal groups by raw file_type;
+        # total / missing / API buckets are derived in Python (avoids 3× full scans).
         if has_file_filters:
-            # OPTIMIZED PATTERN: Apply file filters FIRST (including IN clause for enum types)
-            # Then traverse to study - this processes fewer files before traversals
-            # The IN clause filters files to only valid enum types, significantly reducing dataset
-            
-            # Query 1: Total count (with file filters applied early)
-            total_cypher = f"""
+            match_clause = f"""
             MATCH (sf:{self.config.node_label})
             {base_where_clause}
             OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa:sample)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-            WITH DISTINCT sf, coalesce(st1, st2) AS st
-            WHERE st IS NOT NULL
-            RETURN count(sf) as total
-            """.strip()
-
-            # Query 2: Missing count (with file filters applied early)
-            # For type count: Missing includes NULL file_type OR file_type not in enum list
-            missing_where_conditions = base_where_conditions.copy() if base_where_conditions else []
-            if type_enum_filter:
-                # For type count: Missing = NULL OR not in enum list
-                # Use NOT (IN enum) to catch files with invalid enum values
-                missing_where_conditions.append(f"(sf.{db_field} IS NULL OR NOT ({type_enum_filter}))")
-            else:
-                # For other fields: Missing = NULL
-                missing_where_conditions.append(f"sf.{db_field} IS NULL")
-            missing_where_clause = "WHERE " + " AND ".join(missing_where_conditions)
-
-            missing_cypher = f"""
-            MATCH (sf:{self.config.node_label})
-            {missing_where_clause}
-            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa:sample)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-            WITH DISTINCT sf, coalesce(st1, st2) AS st
-            WHERE st IS NOT NULL
-            RETURN count(sf) as missing
-            """.strip()
-
-            # Query 3: Values with counts (with file filters applied early)
-            # For type count: Also apply enum IN filter to only group valid enum types
-            field_where_conditions_filtered = base_where_conditions.copy() if base_where_conditions else []
-            field_where_conditions_filtered.append(f"sf.{db_field} IS NOT NULL")
-            # Add enum filter for type count (only for values query)
-            if type_enum_filter:
-                field_where_conditions_filtered.append(type_enum_filter)
-            field_where_clause_filtered = "WHERE " + " AND ".join(field_where_conditions_filtered) if field_where_conditions_filtered else ""
-
-            values_cypher = f"""
-            MATCH (sf:{self.config.node_label})
-            {field_where_clause_filtered}
-            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa:sample)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-            WITH sf, coalesce(st1, st2) AS st
-            WHERE st IS NOT NULL
-            WITH DISTINCT sf, sf.{db_field} as field_val
-            WHERE field_val IS NOT NULL AND toString(field_val) <> '' AND toString(field_val) <> 'null'
-            RETURN toString(field_val) as value, count(sf) as count
-            ORDER BY count DESC, value ASC
             """.strip()
         else:
-            # SIMPLE PATTERN: No file filters - use original pattern (already optimized)
-            # Query 1: Total count
-            total_cypher = f"""
+            match_clause = f"""
             MATCH (sf:{self.config.node_label})-[:{self.config.rel_name}]->(sa:sample)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-            WITH DISTINCT sf, coalesce(st1, st2) AS st
-            WHERE st IS NOT NULL
-            RETURN count(sf) as total
             """.strip()
 
-            # Query 2: Missing count
-            # For type count: Missing includes NULL file_type OR file_type not in enum list
-            if type_enum_filter:
-                # For type count: Missing = NULL OR not in enum list
-                missing_where_additional = f" AND (sf.{db_field} IS NULL OR NOT ({type_enum_filter}))"
-            else:
-                # For other fields: Missing = NULL
-                missing_where_additional = f" AND sf.{db_field} IS NULL"
+        values_cypher = f"""
+        {match_clause}
+        OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+        OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
+        WITH sf, coalesce(st1, st2) AS st
+        WHERE st IS NOT NULL
+        WITH DISTINCT sf, sf.{db_field} as field_val
+        RETURN CASE WHEN field_val IS NULL THEN null ELSE toString(field_val) END as value,
+               count(sf) as count
+        ORDER BY count DESC, value ASC
+        """.strip()
 
-            missing_cypher = f"""
-            MATCH (sf:{self.config.node_label})-[:{self.config.rel_name}]->(sa:sample)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-            WITH DISTINCT sf, coalesce(st1, st2) AS st
-            WHERE st IS NOT NULL{missing_where_additional}
-            RETURN count(sf) as missing
-            """.strip()
-
-            # Query 3: Values with counts
-            # For type count: Also apply enum IN filter to only group valid enum types
-            values_where_parts = [f"sf.{db_field} IS NOT NULL"]
-            if type_enum_filter:
-                values_where_parts.append(type_enum_filter)
-            values_where_additional = " AND " + " AND ".join(values_where_parts) if values_where_parts else ""
-
-            values_cypher = f"""
-            MATCH (sf:{self.config.node_label})-[:{self.config.rel_name}]->(sa:sample)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
-            OPTIONAL MATCH (sa)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
-            WITH sf, coalesce(st1, st2) AS st
-            WHERE st IS NOT NULL{values_where_additional}
-            WITH DISTINCT sf, sf.{db_field} as field_val
-            WHERE field_val IS NOT NULL AND toString(field_val) <> '' AND toString(field_val) <> 'null'
-            RETURN toString(field_val) as value, count(sf) as count
-            ORDER BY count DESC, value ASC
-            """.strip()
-        
         logger.info(
-            "Executing count_files_by_field Cypher queries (optimized - early filtering)",
+            "Executing count_files_by_field single-pass type query",
             field=field,
             db_field=db_field,
-            has_file_filters=has_file_filters
+            has_file_filters=has_file_filters,
         )
-        
-        # Execute 3 queries with retry logic (simplified queries for better performance)
+
         max_retries = 2
         retry_count = 0
-        total = 0
-        missing = 0
-        values_records = []
-        
+        values_records: List[Dict[str, Any]] = []
+
         while retry_count <= max_retries:
             try:
-                # Execute total query
-                total_result = await self.session.run(total_cypher, params)
-                total_records = []
-                async for record in total_result:
-                    total_records.append(dict(record))
-                await total_result.consume()
-                total = total_records[0].get("total", 0) if total_records else 0
-                
-                # Execute missing query
-                missing_result = await self.session.run(missing_cypher, params)
-                missing_records = []
-                async for record in missing_result:
-                    missing_records.append(dict(record))
-                await missing_result.consume()
-                missing = missing_records[0].get("missing", 0) if missing_records else 0
-                
-                # Execute values query
                 values_result = await self.session.run(values_cypher, params)
                 values_records = []
                 async for record in values_result:
                     values_records.append(dict(record))
                 await values_result.consume()
-                
-                # If we got results or it's the last retry, break out of retry loop
-                if (total > 0 or len(values_records) > 0) or retry_count >= max_retries:
+
+                if values_records or retry_count >= max_retries:
                     break
-                
-                # If no results and not the last retry, wait a bit and retry
+
                 if retry_count < max_retries:
-                    await asyncio.sleep(0.1 * (retry_count + 1))  # Exponential backoff: 0.1s, 0.2s
+                    await asyncio.sleep(0.1 * (retry_count + 1))
                     retry_count += 1
-                    logger.debug(f"Retrying count_files_by_field query (attempt {retry_count + 1})")
+                    logger.debug(
+                        f"Retrying count_files_by_field query (attempt {retry_count + 1})"
+                    )
             except Exception as e:
                 if retry_count < max_retries:
                     await asyncio.sleep(0.1 * (retry_count + 1))
                     retry_count += 1
-                    logger.warning(f"Error in count_files_by_field query, retrying (attempt {retry_count + 1})", error=str(e))
+                    logger.warning(
+                        f"Error in count_files_by_field query, retrying (attempt {retry_count + 1})",
+                        error=str(e),
+                    )
                 else:
-                    logger.error("Error in count_files_by_field query after retries", error=str(e), exc_info=True)
+                    logger.error(
+                        "Error in count_files_by_field query after retries",
+                        error=str(e),
+                        exc_info=True,
+                    )
                     raise
-        
-        # Format results
-        # For "type" field, map file types to enum values and count non-matching as missing
-        if field == "type":
-            # Map file types to enum values and aggregate counts
-            enum_counts: Dict[str, int] = {}
-            non_matching_count = 0
-            
-            for record in values_records:
-                raw_value = record.get("value")
-                count = record.get("count", 0)
-                
-                # Map to enum value (case-insensitive)
-                mapped_value = self._map_file_type_to_enum(raw_value)
-                
-                if mapped_value:
-                    # Add to enum counts
-                    enum_counts[mapped_value] = enum_counts.get(mapped_value, 0) + count
-                else:
-                    # Count as missing (non-matching type)
-                    non_matching_count += count
-            
-            # Format results with enum values
-            counts = [
-                {"value": enum_value, "count": count}
-                for enum_value, count in sorted(enum_counts.items(), key=lambda x: (-x[1], x[0]))
-            ]
-            
-            # Add non-matching types to missing count
-            missing = missing + non_matching_count
-        else:
-            # For other fields, use results as-is
-            counts = []
-            for record in values_records:
-                counts.append({
-                    "value": record.get("value"),
-                    "count": record.get("count", 0)
-                })
-        
+
+        # Derive total / missing / API buckets from the single grouped result set
+        api_counts: Dict[str, int] = {}
+        total = 0
+        missing = 0
+        for record in values_records:
+            raw_value = record.get("value")
+            count = int(record.get("count", 0) or 0)
+            total += count
+
+            if raw_value is None or str(raw_value).strip() == "" or str(raw_value).strip().lower() == "null":
+                missing += count
+                continue
+
+            mapped_value = self._map_file_type_to_enum(raw_value)
+            if mapped_value:
+                api_counts[mapped_value] = api_counts.get(mapped_value, 0) + count
+            else:
+                missing += count
+
+        counts = [
+            {"value": api_value, "count": count}
+            for api_value, count in sorted(api_counts.items(), key=lambda x: (-x[1], x[0]))
+        ]
+
         logger.debug(
             "Completed sequencing file count by field",
             field=field,
             total=total,
             missing=missing,
-            values_count=len(counts)
+            values_count=len(counts),
         )
-        
+
         return {
             "total": total,
             "missing": missing,
-            "values": counts
+            "values": counts,
         }
     
     async def _count_files_by_depositions(
@@ -959,9 +788,19 @@ class FileRepository:
         base_where_conditions = []
         params = {}
         param_counter = 0
-        
+        filters_copy = filters.copy()
+
+        # Reverse-map type filter like other file query paths
+        is_valid, param_counter, type_where_fragment = self._validate_and_reverse_map_file_type_filter(
+            filters_copy, params, param_counter
+        )
+        if not is_valid:
+            return {"total": 0, "missing": 0, "values": []}
+        if type_where_fragment:
+            base_where_conditions.append(type_where_fragment)
+
         # Add regular filters
-        for filter_field, value in filters.items():
+        for filter_field, value in filters_copy.items():
             # Handle unharmonized fields (e.g., metadata.unharmonized.file_name)
             if filter_field.startswith("metadata.unharmonized."):
                 # Extract the actual database field name
@@ -1174,29 +1013,12 @@ class FileRepository:
             if not checksums_list:
                 checksums_list = None
 
-        # Validate type filter - must match enum value exactly (case-sensitive)
-        # Note: filter key is "file_type" because get_file_filters() maps "type" -> "file_type"
-        # After validation, use case-insensitive matching in the query to handle database case variations
-        type_filter_param = None
-        if "file_type" in filters_copy:
-            type_value = filters_copy.pop("file_type")  # Remove from filters_copy to handle separately
-            # Check if the type value exactly matches an enum value (case-sensitive)
-            if type_value not in FileType.values():
-                # Type doesn't match any enum value — return a sentinel zero-count query
-                logger.info(
-                    "Type filter value does not match any enum value (case-sensitive) - returning zero-count sentinel query",
-                    type_value=type_value,
-                    valid_values=FileType.values()[:5]  # Log first 5 for reference
-                )
-                return _ZERO_COUNT_SENTINEL, {}
-            # Use case-insensitive matching in the query (toLower for both sides)
-            param_counter += 1
-            type_filter_param = f"param_{param_counter}"
-            params[type_filter_param] = type_value
-            logger.debug(
-                "Type filter validated successfully for summary, will use case-insensitive matching in query",
-                type_value=type_value
-            )
+        # Validate type filter - must match merged enum exactly (case-sensitive).
+        is_valid, param_counter, type_where_fragment = self._validate_and_reverse_map_file_type_filter(
+            filters_copy, params, param_counter
+        )
+        if not is_valid:
+            return _ZERO_COUNT_SENTINEL, {}
 
         # Add regular filters
         for field, value in filters_copy.items():
@@ -1236,9 +1058,9 @@ class FileRepository:
                 where_conditions.append(f"sf.{field} = ${param_name}")
             params[param_name] = value
 
-        # Add case-insensitive type filter if present
-        if type_filter_param:
-            where_conditions.append(f"toLower(sf.file_type) = toLower(${type_filter_param})")
+        # Add case-insensitive type filter if present (reverse-mapped DB values)
+        if type_where_fragment:
+            where_conditions.append(type_where_fragment)
 
         # Add checksums filter if present (supports || separator for OR logic)
         if checksums_list is not None:
@@ -1442,30 +1264,49 @@ class FileRepository:
     
     def _map_file_type_to_enum(self, file_type: Any) -> Optional[str]:
         """
-        Map a file type value to a FileType enum value (case-insensitive matching).
-        
-        Args:
-            file_type: The file type value from the database
-            
-        Returns:
-            The matching enum value if found, None otherwise
+        Map a database file_type value to an API (col D) value.
+
+        Uses ``file_type_mappings.json`` with case-insensitive DB lookup.
+        Returns None for null_mappings and unmapped values (no enum fallback).
         """
-        if file_type is None:
-            return None
-        
-        file_type_str = str(file_type).strip()
-        if not file_type_str:
-            return None
-        
-        # Case-insensitive matching against enum values
-        file_type_lower = file_type_str.lower()
-        for enum_value in FileType.values():
-            if enum_value.lower() == file_type_lower:
-                return enum_value
-        
-        # No match found
-        return None
-    
+        return map_file_type_db_to_api(file_type)
+
+    def _validate_and_reverse_map_file_type_filter(
+        self,
+        filters_copy: Dict[str, Any],
+        params: Dict[str, Any],
+        param_counter: int,
+    ) -> Tuple[bool, int, Optional[str]]:
+        """
+        Pop and validate a ``file_type`` filter, reverse-mapping it to DB values.
+
+        Returns ``(is_valid, new_param_counter, where_fragment)``. ``where_fragment``
+        is None when no file_type filter was present in filters_copy. is_valid is
+        False only when a file_type filter was present but didn't match the merged
+        enum (case-sensitive) - callers must return their own empty result in that case.
+        """
+        if "file_type" not in filters_copy:
+            return True, param_counter, None
+
+        type_value = filters_copy.pop("file_type")
+        if type_value not in FileType.values():
+            logger.info(
+                "Type filter value does not match any enum value (case-sensitive) - returning empty results",
+                type_value=type_value,
+                valid_values=FileType.values()[:5],
+            )
+            return False, param_counter, None
+
+        param_counter += 1
+        param_name = f"param_{param_counter}"
+        params[param_name] = get_db_values_for_api_file_type(type_value)
+        logger.debug(
+            "Type filter validated; reverse-mapped DB values for case-insensitive IN match",
+            type_value=type_value,
+            db_values=params[param_name],
+        )
+        return True, param_counter, f"toLower(sf.file_type) IN ${param_name}"
+
     def _record_to_file(self, record: Dict[str, Any], samples: List[Any] = None, study: Dict[str, Any] = None) -> File:
         """
         Convert a database record to a File object with proper structure.

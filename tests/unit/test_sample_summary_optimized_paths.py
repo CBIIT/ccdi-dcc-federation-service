@@ -319,7 +319,7 @@ class TestReverseQuery:
         assert "sf.library_selection" in query
 
     async def test_reverse_query_specimen_molecular_analyte_type_list(self, repository, mock_session):
-        """'RNA' reverse-maps to a multi-value list → IN literal list."""
+        """'RNA' reverse-maps to a multi-value list → IN $param."""
         mock_record = {"total_count": 14}
         mock_session.run = AsyncMock(return_value=make_single_result(mock_record))
 
@@ -328,9 +328,11 @@ class TestReverseQuery:
         )
         assert result == {"counts": {"total": 14}}
         query = mock_session.run.call_args[0][0]
+        params = mock_session.run.call_args[0][1]
         assert "library_source_molecule" in query
-        assert "Total RNA" in query
-        assert "Messenger RNA" in query
+        assert "IN $param_1" in query
+        assert "Total RNA" in params["param_1"]
+        assert "Messenger RNA" in params["param_1"]
 
     async def test_reverse_query_specimen_molecular_analyte_type_string(self, repository, mock_session):
         """'Protein' reverse-maps to 'Protein' (single string) → = $param."""
@@ -346,13 +348,27 @@ class TestReverseQuery:
         params = mock_session.run.call_args[0][1]
         assert "Protein" in params.values()
 
-    async def test_reverse_query_null_mapped_library_source(self, repository, mock_session):
-        """'Other' is null-mapped for library_source_material → returns 0 without session."""
+    async def test_reverse_query_db_only_library_source(self, repository, mock_session):
+        """'Other' is DB-only for library_source_material → returns 0 without session."""
         result = await repository._get_samples_summary_reverse_query(
             {"library_source_material": "Other"}
         )
         assert result == {"counts": {"total": 0}}
         mock_session.run.assert_not_called()
+
+    async def test_reverse_query_not_reported_library_source_uses_in(self, repository, mock_session):
+        """'Not Reported' reverse-maps to Other + Not Reported and uses IN."""
+        mock_record = {"total_count": 12}
+        mock_session.run = AsyncMock(return_value=make_single_result(mock_record))
+
+        result = await repository._get_samples_summary_reverse_query(
+            {"library_source_material": "Not Reported"}
+        )
+        assert result == {"counts": {"total": 12}}
+        query = mock_session.run.call_args[0][0]
+        params = mock_session.run.call_args[0][1]
+        assert "sf.library_source_material IN $" in query
+        assert ["Other", "Not Reported"] in params.values()
 
     async def test_reverse_query_db_only_library_strategy(self, repository, mock_session):
         """'Archer Fusion' is a DB-only value → returns 0 without session."""

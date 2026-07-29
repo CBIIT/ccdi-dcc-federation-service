@@ -681,19 +681,13 @@ class TestFileRepositoryInternal:
 
     async def test_count_files_by_field_type_enum_mapping(self, repository, mock_session):
         """Test count_files_by_field maps enum values and counts non-matching as missing."""
-        total_result = AsyncMock()
-        total_result.__aiter__.return_value = [{"total": 3}]
-        total_result.consume = AsyncMock()
-        missing_result = AsyncMock()
-        missing_result.__aiter__.return_value = [{"missing": 0}]
-        missing_result.consume = AsyncMock()
         values_result = AsyncMock()
         values_result.__aiter__.return_value = [
             {"value": "bam", "count": 2},
             {"value": "unknown", "count": 1},
         ]
         values_result.consume = AsyncMock()
-        mock_session.run = AsyncMock(side_effect=[total_result, missing_result, values_result])
+        mock_session.run = AsyncMock(return_value=values_result)
 
         result = await repository.count_files_by_field("type", {})
 
@@ -701,39 +695,19 @@ class TestFileRepositoryInternal:
         assert result["missing"] == 1  # unknown counted as missing
         assert result["values"][0]["value"] == "BAM"
         assert result["values"][0]["count"] == 2
+        assert mock_session.run.call_count == 1
 
     async def test_count_files_by_field_retry_on_empty_then_success(self, repository, mock_session):
         """Test count_files_by_field retries when results are empty."""
-        total_result_1 = AsyncMock()
-        total_result_1.__aiter__.return_value = [{"total": 0}]
-        total_result_1.consume = AsyncMock()
-        missing_result_1 = AsyncMock()
-        missing_result_1.__aiter__.return_value = [{"missing": 0}]
-        missing_result_1.consume = AsyncMock()
         values_result_1 = AsyncMock()
         values_result_1.__aiter__.return_value = []
         values_result_1.consume = AsyncMock()
 
-        total_result_2 = AsyncMock()
-        total_result_2.__aiter__.return_value = [{"total": 2}]
-        total_result_2.consume = AsyncMock()
-        missing_result_2 = AsyncMock()
-        missing_result_2.__aiter__.return_value = [{"missing": 0}]
-        missing_result_2.consume = AsyncMock()
         values_result_2 = AsyncMock()
         values_result_2.__aiter__.return_value = [{"value": "bam", "count": 2}]
         values_result_2.consume = AsyncMock()
 
-        mock_session.run = AsyncMock(
-            side_effect=[
-                total_result_1,
-                missing_result_1,
-                values_result_1,
-                total_result_2,
-                missing_result_2,
-                values_result_2,
-            ]
-        )
+        mock_session.run = AsyncMock(side_effect=[values_result_1, values_result_2])
 
         with patch("app.repositories.file.asyncio.sleep", new=AsyncMock()):
             result = await repository.count_files_by_field("type", {})
@@ -741,28 +715,15 @@ class TestFileRepositoryInternal:
         assert result["total"] == 2
         assert result["missing"] == 0
         assert result["values"][0]["value"] == "BAM"
-        assert mock_session.run.call_count == 6
+        assert mock_session.run.call_count == 2
 
     async def test_count_files_by_field_retry_on_exception_then_success(self, repository, mock_session):
         """Test count_files_by_field retries after exception."""
-        total_result = AsyncMock()
-        total_result.__aiter__.return_value = [{"total": 1}]
-        total_result.consume = AsyncMock()
-        missing_result = AsyncMock()
-        missing_result.__aiter__.return_value = [{"missing": 0}]
-        missing_result.consume = AsyncMock()
         values_result = AsyncMock()
         values_result.__aiter__.return_value = [{"value": "bam", "count": 1}]
         values_result.consume = AsyncMock()
 
-        mock_session.run = AsyncMock(
-            side_effect=[
-                Exception("boom"),
-                total_result,
-                missing_result,
-                values_result,
-            ]
-        )
+        mock_session.run = AsyncMock(side_effect=[Exception("boom"), values_result])
 
         with patch("app.repositories.file.asyncio.sleep", new=AsyncMock()):
             result = await repository.count_files_by_field("type", {})
@@ -770,7 +731,7 @@ class TestFileRepositoryInternal:
         assert result["total"] == 1
         assert result["missing"] == 0
         assert result["values"][0]["value"] == "BAM"
-        assert mock_session.run.call_count == 4
+        assert mock_session.run.call_count == 2
 
     async def test_count_files_by_field_max_retries_exceeded(self, repository, mock_session):
         """Test count_files_by_field raises after max retries."""
@@ -1028,9 +989,9 @@ class TestSampleRepositoryInternal:
         assert isinstance(result, dict)
         mock_session.run.assert_called()
 
-    async def test_get_samples_summary_reverse_query_library_source_material_null(self, repository, mock_session):
-        """Test _get_samples_summary_reverse_query returns zero for null-mapped value."""
-        with patch("app.repositories.sample.is_null_mapped_value", return_value=True):
+    async def test_get_samples_summary_reverse_query_library_source_material_db_only(self, repository, mock_session):
+        """Test _get_samples_summary_reverse_query returns zero for DB-only value."""
+        with patch("app.repositories.sample_summary.is_database_only_value", return_value=True):
             result = await repository._get_samples_summary_reverse_query(
                 {"library_source_material": "Other"}
             )
@@ -1040,7 +1001,7 @@ class TestSampleRepositoryInternal:
 
     async def test_get_samples_summary_reverse_query_library_strategy_database_only(self, repository, mock_session):
         """Test _get_samples_summary_reverse_query returns zero for database-only value."""
-        with patch("app.repositories.sample.is_database_only_value", return_value=True):
+        with patch("app.repositories.sample_summary.is_database_only_value", return_value=True):
             result = await repository._get_samples_summary_reverse_query(
                 {"library_strategy": "DB_ONLY"}
             )
@@ -1055,8 +1016,8 @@ class TestSampleRepositoryInternal:
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
 
-        with patch("app.repositories.sample.is_database_only_value", return_value=False), \
-            patch("app.repositories.sample.reverse_map_field_value", return_value="RNA_DB"):
+        with patch("app.repositories.sample_summary.is_database_only_value", return_value=False), \
+            patch("app.repositories.sample_summary.reverse_map_field_value", return_value="RNA_DB"):
             result = await repository._get_samples_summary_reverse_query(
                 {"library_strategy": "RNA-Seq"}
             )
@@ -1067,22 +1028,24 @@ class TestSampleRepositoryInternal:
         assert params["param_2"] == "RNA-Seq"
 
     async def test_get_samples_summary_reverse_query_specimen_molecular_analyte_type_list(self, repository, mock_session):
-        """Test _get_samples_summary_reverse_query handles list reverse mapping."""
+        """Test _get_samples_summary_reverse_query handles list reverse mapping via params."""
         mock_result = AsyncMock()
         mock_result.single = AsyncMock(return_value={"total_count": 2})
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
 
-        with patch("app.repositories.sample.is_database_only_value", return_value=False), \
-            patch("app.repositories.sample.is_null_mapped_value", return_value=False), \
-            patch("app.repositories.sample.reverse_map_field_value", return_value=["m1", "m2"]):
+        with patch("app.repositories.sample_summary.is_database_only_value", return_value=False), \
+            patch("app.repositories.sample_summary.is_null_mapped_value", return_value=False), \
+            patch("app.repositories.sample_summary.reverse_map_field_value", return_value=["m1", "m2"]):
             result = await repository._get_samples_summary_reverse_query(
                 {"specimen_molecular_analyte_type": "DNA"}
             )
 
         assert result == {"counts": {"total": 2}}
         cypher = mock_session.run.call_args[0][0]
-        assert "IN ['m1', 'm2']" in cypher
+        params = mock_session.run.call_args[0][1]
+        assert "IN $param_1" in cypher
+        assert params["param_1"] == ["m1", "m2"]
 
     async def test_get_samples_summary_reverse_query_library_selection_method(self, repository, mock_session):
         """Test _get_samples_summary_reverse_query handles library_selection_method."""
@@ -1091,7 +1054,7 @@ class TestSampleRepositoryInternal:
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
 
-        with patch("app.repositories.sample.is_database_only_value", return_value=False), \
+        with patch("app.repositories.sample_summary.is_database_only_value", return_value=False), \
             patch.object(SampleRepository, "_reverse_map_library_selection_method_static", return_value="Selection_DB"):
             result = await repository._get_samples_summary_reverse_query(
                 {"library_selection_method": "Selection"}
@@ -1112,6 +1075,154 @@ class TestSampleRepositoryInternal:
 
         assert result == []
         assert not mock_session.run.called
+
+    @pytest.mark.parametrize(
+        "field,patch_target",
+        [
+            ("library_source_material", "app.repositories.sample.is_null_mapped_value"),
+            ("library_strategy", "app.repositories.sample.is_database_only_value"),
+            ("library_selection_method", "app.repositories.sample.is_database_only_value"),
+            ("specimen_molecular_analyte_type", "app.repositories.sample.is_database_only_value"),
+        ],
+    )
+    async def test_get_samples_by_sequencing_file_filters_invalid_value_return_total(
+        self, repository, mock_session, field, patch_target
+    ):
+        """With return_total=True, an invalid filter value must return ([], 0), not a bare [].
+
+        A bare [] fails `isinstance(result, tuple)` in SampleService.get_samples, which then
+        falls back to running a whole extra get_samples_summary() query just to learn total=0.
+        """
+        with patch(patch_target, return_value=True):
+            result = await repository._get_samples_by_sequencing_file_filters(
+                {field: "Invalid value"},
+                offset=0,
+                limit=10,
+                return_total=True,
+            )
+
+        assert result == ([], 0)
+        assert not mock_session.run.called
+
+    async def test_get_samples_by_sequencing_file_filters_count_fail_returns_bare_list(
+        self, repository, mock_session
+    ):
+        """If count fails but list succeeds, return a bare list under return_total.
+
+        Callers (SampleService / sample-diagnosis) treat a bare list as "count
+        unavailable" and fall back to summary — better than a page-size undercount.
+        """
+        sample_obj = Mock()
+        mock_list_result = AsyncMock()
+        mock_list_result.__aiter__.return_value = [
+            {
+                "sa": {"sample_id": "S1"},
+                "p": {},
+                "st": {"study_id": "phs001"},
+                "sf": {"library_strategy": "WGS"},
+                "pf": {},
+                "diagnoses": {},
+            }
+        ]
+        mock_list_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_list_result)
+        repository._record_to_sample = Mock(return_value=sample_obj)
+
+        with patch("app.repositories.sample.is_database_only_value", return_value=False), patch(
+            "app.repositories.sample.is_null_mapped_value", return_value=False
+        ), patch(
+            "app.repositories.sample.reverse_map_field_value", return_value="WGS"
+        ), patch(
+            "app.repositories.sample.run_count_query_with_retry",
+            AsyncMock(side_effect=RuntimeError("count failed")),
+        ):
+            result = await repository._get_samples_by_sequencing_file_filters(
+                {"library_strategy": "WGS"},
+                offset=0,
+                limit=10,
+                return_total=True,
+            )
+
+        assert isinstance(result, list)
+        assert result == [sample_obj]
+
+    async def test_get_samples_by_pathology_file_filters_count_fail_returns_bare_list(
+        self, repository, mock_session
+    ):
+        """pathology_file reverse path: count failure returns bare list for summary fallback."""
+        sample_obj = Mock()
+        mock_list_result = AsyncMock()
+        mock_list_result.__aiter__.return_value = [
+            {
+                "sa": {"sample_id": "S1"},
+                "p": {},
+                "st": {"study_id": "phs001"},
+                "sf": {},
+                "pf": {"fixation_embedding_method": "OCT"},
+                "diagnoses": {},
+            }
+        ]
+        mock_list_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_list_result)
+        repository._record_to_sample = Mock(return_value=sample_obj)
+
+        with patch("app.repositories.sample.is_database_only_value", return_value=False), patch(
+            "app.repositories.sample.reverse_map_field_value", return_value="OCT"
+        ), patch(
+            "app.repositories.sample.run_count_query_with_retry",
+            AsyncMock(side_effect=RuntimeError("count failed")),
+        ):
+            result = await repository._get_samples_by_pathology_file_filters(
+                {"preservation_method": "OCT"},
+                offset=0,
+                limit=10,
+                return_total=True,
+            )
+
+        assert isinstance(result, list)
+        assert result == [sample_obj]
+
+    async def test_get_samples_by_combined_filters_count_fail_returns_bare_list(
+        self, repository, mock_session
+    ):
+        """combined sf+pf reverse path: count failure returns bare list for summary fallback."""
+        sample_obj = Mock()
+        mock_list_result = AsyncMock()
+        mock_list_result.__aiter__.return_value = [
+            {
+                "sa": {"sample_id": "S1"},
+                "p": {},
+                "st": {"study_id": "phs001"},
+                "sf": {"library_strategy": "WGS"},
+                "pf": {"fixation_embedding_method": "OCT"},
+                "diagnoses": {},
+            }
+        ]
+        mock_list_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_list_result)
+        repository._record_to_sample = Mock(return_value=sample_obj)
+
+        with patch("app.repositories.sample.is_database_only_value", return_value=False), patch(
+            "app.repositories.sample.is_null_mapped_value", return_value=False
+        ), patch(
+            "app.repositories.sample.reverse_map_field_value",
+            side_effect=lambda field, value: value,
+        ), patch(
+            "app.repositories.sample.SampleRepository._reverse_map_library_selection_method_static",
+            return_value="WGS",
+        ), patch(
+            "app.repositories.sample.run_count_query_with_retry",
+            AsyncMock(side_effect=RuntimeError("count failed")),
+        ):
+            result = await repository._get_samples_by_combined_filters(
+                {"library_strategy": "WGS", "preservation_method": "OCT"},
+                offset=0,
+                limit=10,
+                return_total=True,
+            )
+
+        assert isinstance(result, list)
+        assert result == [sample_obj]
 
     async def test_get_samples_by_sequencing_file_filters_success(self, repository, mock_session):
         """Test reverse query returns samples when records exist."""
@@ -1203,11 +1314,69 @@ class TestSampleRepositoryInternal:
         assert params[identifiers_param] == ["S1", "S2"]
 
     async def test_get_samples_invalid_library_source_material_early_return(self, repository, mock_session):
-        """Test invalid library_source_material returns empty without DB call."""
-        with patch("app.repositories.sample.is_null_mapped_value", return_value=True):
+        """Test invalid (DB-only) library_source_material returns empty without DB call."""
+        with patch("app.repositories.sample.is_database_only_value", return_value=True):
             result = await repository.get_samples({"library_source_material": "Other"}, offset=0, limit=10)
 
         assert result == []
+        assert not mock_session.run.called
+
+    async def test_pathology_file_only_invalid_preservation_method_early_return(self, repository, mock_session):
+        """DB-only 'Cytospin Slide' returns empty without a DB call (pathology_file-only path)."""
+        result = await repository._get_samples_by_pathology_file_filters(
+            {"preservation_method": "Cytospin Slide"}, offset=0, limit=10
+        )
+
+        assert result == []
+        assert not mock_session.run.called
+
+    async def test_pathology_file_only_invalid_preservation_return_total(self, repository, mock_session):
+        """DB-only preservation with return_total=True returns ([], 0), not []."""
+        result = await repository._get_samples_by_pathology_file_filters(
+            {"preservation_method": "Cytospin Slide"},
+            offset=0,
+            limit=10,
+            return_total=True,
+        )
+
+        assert result == ([], 0)
+        assert not mock_session.run.called
+
+    async def test_combined_filters_invalid_preservation_method_early_return(self, repository, mock_session):
+        """DB-only 'Other' returns empty without a DB call (combined sf+pf path)."""
+        result = await repository._get_samples_by_combined_filters(
+            {"library_source_material": "Not Reported", "preservation_method": "Other"},
+            offset=0,
+            limit=10,
+        )
+
+        assert result == []
+        assert not mock_session.run.called
+
+    async def test_combined_filters_invalid_preservation_return_total(self, repository, mock_session):
+        """Combined path: DB-only preservation with return_total=True returns ([], 0)."""
+        result = await repository._get_samples_by_combined_filters(
+            {"library_source_material": "Not Reported", "preservation_method": "Other"},
+            offset=0,
+            limit=10,
+            return_total=True,
+        )
+
+        assert result == ([], 0)
+        assert not mock_session.run.called
+
+    async def test_combined_filters_invalid_library_source_material_return_total(
+        self, repository, mock_session
+    ):
+        """Combined path: DB-only library_source_material=Other with return_total → ([], 0)."""
+        result = await repository._get_samples_by_combined_filters(
+            {"library_source_material": "Other", "preservation_method": "OCT"},
+            offset=0,
+            limit=10,
+            return_total=True,
+        )
+
+        assert result == ([], 0)
         assert not mock_session.run.called
 
     async def test_count_samples_by_associated_diagnoses_no_filters(self, repository, mock_session):

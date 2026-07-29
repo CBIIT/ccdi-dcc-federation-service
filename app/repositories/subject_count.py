@@ -12,12 +12,16 @@ from app.core.field_mappings import (
     map_field_value,
     build_case_mapping_statement,
 )
-from app.core.diagnosis_category import HARMONIZED_DIAGNOSIS_CATEGORIES
+from app.core.diagnosis_category import (
+    HARMONIZED_DIAGNOSIS_CATEGORIES,
+    _CANONICAL_BY_LOWER,
+    diagnosis_category_token_case_expr,
+)
 from app.models.errors import UnsupportedFieldError
+from app.utils.cypher_builder import combine_where_clauses
 
 _HARMONIZED_PVS_SORTED: List[str] = sorted(HARMONIZED_DIAGNOSIS_CATEGORIES)
 _HARMONIZED_PVS_LOWER: List[str] = [pv.lower() for pv in _HARMONIZED_PVS_SORTED]
-from app.utils.cypher_builder import combine_where_clauses
 
 logger = get_logger(__name__)
 
@@ -1263,7 +1267,10 @@ WITH p, d, c, st,
         """
         logger.debug("Counting subjects by diagnosis_category", filters=filters)
 
-        params: Dict[str, Any] = {"harmonized_pvs": _HARMONIZED_PVS_SORTED, "harmonized_pvs_lower": _HARMONIZED_PVS_LOWER}
+        token_mapped = diagnosis_category_token_case_expr("token")
+        tok_mapped = diagnosis_category_token_case_expr("trim(toString(tok))")
+
+        params: Dict[str, Any] = {"harmonized_pvs_lower": _HARMONIZED_PVS_LOWER}
 
         total_cypher = """
 MATCH (p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
@@ -1271,7 +1278,7 @@ WITH p.participant_id AS participant_id, st.study_id AS study_id
 RETURN count(*) AS total
 """.strip()
 
-        missing_cypher = """
+        missing_cypher = f"""
 MATCH (p:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
 OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(p)
 WITH p.participant_id AS participant_id, st.study_id AS study_id, collect(d) AS diagnoses
@@ -1279,12 +1286,12 @@ WHERE size([
     d IN diagnoses WHERE d IS NOT NULL
     AND d.diagnosis_category IS NOT NULL
     AND any(tok IN coalesce(d.diagnosis_category, [])
-            WHERE toLower(trim(toString(tok))) IN $harmonized_pvs_lower)
+            WHERE toLower({tok_mapped}) IN $harmonized_pvs_lower)
 ]) = 0
 RETURN count(*) AS missing
 """.strip()
 
-        values_cypher = """
+        values_cypher = f"""
 MATCH (d:diagnosis)-[:of_diagnosis]->(p:participant)
 WHERE d.diagnosis_category IS NOT NULL
 MATCH (p)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study)
@@ -1292,11 +1299,11 @@ WITH p.participant_id AS participant_id, st.study_id AS study_id,
      [tok IN coalesce(d.diagnosis_category, []) WHERE trim(toString(tok)) <> ''] AS tokens
 UNWIND tokens AS raw_token
 WITH participant_id, study_id, trim(toString(raw_token)) AS token
-WITH participant_id, study_id, token,
-     [pv IN $harmonized_pvs WHERE toLower(pv) = toLower(token)][0] AS matched_pv
-WHERE matched_pv IS NOT NULL
-WITH DISTINCT participant_id, study_id, matched_pv
-RETURN matched_pv AS value, count(*) AS count
+WITH participant_id, study_id, {token_mapped} AS mapped_token
+WITH participant_id, study_id, toLower(mapped_token) AS mapped_lower
+WHERE mapped_lower IN $harmonized_pvs_lower
+WITH DISTINCT participant_id, study_id, mapped_lower
+RETURN mapped_lower AS value, count(*) AS count
 ORDER BY count DESC, value ASC
 """.strip()
 
@@ -1346,7 +1353,10 @@ ORDER BY count DESC, value ASC
                     raise
 
         counts = [
-            {"value": r.get("value"), "count": r.get("count", 0)}
+            {
+                "value": _CANONICAL_BY_LOWER[str(r.get("value") or "").lower()],
+                "count": r.get("count", 0),
+            }
             for r in values_records
         ]
         counts.sort(key=lambda x: (-x["count"], x["value"]))

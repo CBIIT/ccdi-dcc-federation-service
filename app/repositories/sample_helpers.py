@@ -10,6 +10,7 @@ from app.core.logging import get_logger
 from app.core.field_mappings import (
     reverse_map_field_value,
     is_null_mapped_value,
+    is_database_only_value,
     load_sequencing_file_enum,
     load_sample_enum
 )
@@ -212,18 +213,19 @@ class SampleHelpers:
             None if validation fails (value is in null_mappings - caller should handle invalid case)
             True if validation succeeds (condition and param have been added)
         """
-        # Check if value is in null_mappings (e.g., "Other")
-        # Values in null_mappings are treated as missing and should not match any records
-        if is_null_mapped_value("library_source_material", value):
-            # This value is treated as NULL/missing and is not valid for filtering
-            # Add an impossible condition to return empty results
+        # Reject null-mapped or database-only values (e.g. DB-only "Other" is not a
+        # valid API filter -- rejected here explicitly rather than relying on the
+        # enum-membership check below, which only catches it by coincidence.
+        if is_null_mapped_value("library_source_material", value) or is_database_only_value(
+            "library_source_material", value
+        ):
             with_conditions.append(("library_source_material_invalid", "invalid"))
             return None
-        
+
         # Load enum values and use IN clause for filtering
         enum_values = load_sequencing_file_enum("library_source_material")
         if enum_values:
-            # Validate that the value is in the enum (case-sensitive)
+            # Validate that the value is in the enum (case-sensitive).
             if value not in enum_values:
                 # Value not in enum - treat as invalid
                 logger.warning(
@@ -234,16 +236,23 @@ class SampleHelpers:
                 with_conditions.append(("library_source_material_invalid", "invalid"))
                 return None
             
-            # Apply reverse mapping for the filter value to get DB value
+            # Apply reverse mapping for the filter value to get DB value(s).
+            # reverse_mappings may return a list (e.g. "Not Reported" → ["Other", "Not Reported"]).
             reverse_mapped = reverse_map_field_value("library_source_material", value)
-            # Use IN clause with the mapped DB value (as list for consistency)
-            # If reverse_mapped is None, use the original value (it's already validated to be in enum)
-            params[param_name] = [reverse_mapped] if reverse_mapped else [value]
+            if isinstance(reverse_mapped, list):
+                params[param_name] = reverse_mapped
+            elif reverse_mapped:
+                params[param_name] = [reverse_mapped]
+            else:
+                params[param_name] = [value]
             with_conditions.append(("library_source_material", param_name))
         else:
             # Fallback to original logic if enum not available
             reverse_mapped = reverse_map_field_value("library_source_material", value)
-            params[param_name] = reverse_mapped if reverse_mapped else value
+            if isinstance(reverse_mapped, list):
+                params[param_name] = reverse_mapped
+            else:
+                params[param_name] = reverse_mapped if reverse_mapped else value
             with_conditions.append(("library_source_material", param_name))
         
         return True

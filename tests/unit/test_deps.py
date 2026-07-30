@@ -356,6 +356,21 @@ class TestGetSubjectFilters:
         )
         assert result["age_at_vital_status"] == 3650
 
+    def test_age_at_vital_status_zero_is_valid_int(self, mock_request):
+        """age_at_vital_status=0 is in range and stored as int 0 (not skipped as falsy)."""
+        result = get_subject_filters(
+            sex=None,
+            race=None,
+            ethnicity=None,
+            identifiers=None,
+            vital_status=None,
+            age_at_vital_status="0",
+            depositions=None,
+            request=mock_request
+        )
+        assert result["age_at_vital_status"] == 0
+        assert "_invalid_age_at_vital_status" not in result
+
     def test_invalid_age_at_vital_status_non_integer(self, mock_request):
         """Test invalid age_at_vital_status with non-integer."""
         result = get_subject_filters(

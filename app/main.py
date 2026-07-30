@@ -24,6 +24,7 @@ from app.core.config import get_settings, Settings
 from app.core.logging import configure_logging, get_logger
 from app.core.cache import redis_lifespan
 from app.db.memgraph import memgraph_lifespan, DatabaseConnectionError
+from app.lib.field_allowlist import HARMONIZED_FIELDS, EntityType
 from app.api.v1.endpoints.subjects import router as subjects_router
 from app.api.v1.endpoints.samples import router as samples_router
 from app.api.v1.endpoints.experimental import router as experimental_router
@@ -283,6 +284,11 @@ def _suggest_correct_path(path: str) -> str:
     - /api/v1/subject/b1y/sex/count -> /api/v1/subject/by/sex/count
     - /api/v1/subject/by1/race/count -> /api/v1/subject/by/race/count
     """
+    subject_count_fields = {f.lower() for f in HARMONIZED_FIELDS[EntityType.SUBJECT]}
+
+    def _field_ok(field: str) -> bool:
+        return field.lower() in subject_count_fields
+
     # Match pattern: /subject/by{number}/{field}{number}/count
     # Pattern: /api/v1/subject/by2/race2/count
     pattern = r'(/api/v1/subject/)(by)(\d+)(/)([^/]+?)(\d+)(/count)'
@@ -293,29 +299,29 @@ def _suggest_correct_path(path: str) -> str:
         slash = match.group(4)  # /
         field_part = match.group(5)  # race, sex, etc.
         suffix = match.group(7)  # /count
-        return f"{prefix}{by_part}{slash}{field_part}{suffix}"
+        if _field_ok(field_part):
+            return f"{prefix}{by_part}{slash}{field_part}{suffix}"
     
     # Also handle cases where only 'by' has a typo: /subject/by2/{field}/count
     # Pattern: /api/v1/subject/by2/race/count
-    pattern_by_only = r'(/api/v1/subject/)(by)(\d+)(/[^/]+/count)'
+    pattern_by_only = r'(/api/v1/subject/)(by)(\d+)(/)([^/]+)(/count)'
     match_by = re.search(pattern_by_only, path)
     if match_by:
         prefix = match_by.group(1)
         by_part = match_by.group(2)
-        rest = match_by.group(4)
-        return f"{prefix}{by_part}{rest}"
+        field_part = match_by.group(5)
+        if _field_ok(field_part):
+            return f"{prefix}{by_part}/{field_part}/count"
     
     # Handle cases where 'by' has a typo with number in middle: /subject/b1y/{field}/count
     # Pattern: /api/v1/subject/b1y/sex/count or /api/v1/subject/by1/race/count
-    pattern_by_typo = r'(/api/v1/subject/)(b)(\d+)(y)(/[^/]+/count)'
+    pattern_by_typo = r'(/api/v1/subject/)(b)(\d+)(y)(/)([^/]+)(/count)'
     match_typo = re.search(pattern_by_typo, path)
     if match_typo:
         prefix = match_typo.group(1)  # /api/v1/subject/
-        b_part = match_typo.group(2)  # b
-        number = match_typo.group(3)  # 1, 2, etc.
-        y_part = match_typo.group(4)  # y
-        rest = match_typo.group(5)  # /sex/count
-        return f"{prefix}{b_part}{y_part}{rest}"
+        field_part = match_typo.group(6)
+        if _field_ok(field_part):
+            return f"{prefix}by/{field_part}/count"
     
     # Handle pattern: /subject/{typo}/field/count where typo looks like "by"
     # Pattern: /api/v1/subject/b1y/sex/count
@@ -329,9 +335,7 @@ def _suggest_correct_path(path: str) -> str:
         
         # Check if first segment looks like a typo of "by" (contains 'b' and 'y' with numbers)
         if re.match(r'^b.*y.*$', first_seg, re.IGNORECASE) and count_seg == "count":
-            # Valid field names for count endpoint
-            valid_fields = {"sex", "race", "ethnicity", "vital_status", "age_at_vital_status", "associated_diagnoses"}
-            if field_seg.lower() in valid_fields:
+            if _field_ok(field_seg):
                 return f"{prefix}by/{field_seg}/{count_seg}"
     
     return None

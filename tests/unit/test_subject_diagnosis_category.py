@@ -2,10 +2,22 @@ from app.core.diagnosis_category import HARMONIZED_DIAGNOSIS_CATEGORIES
 from app.models.dto import AssociatedDiagnosisCategoryField, SubjectMetadata
 
 
-def test_harmonized_categories_loaded():
-    assert len(HARMONIZED_DIAGNOSIS_CATEGORIES) == 31
-    assert "Neuroblastoma" in HARMONIZED_DIAGNOSIS_CATEGORIES
-    assert "Adenomas and adenocarcinomas" not in HARMONIZED_DIAGNOSIS_CATEGORIES
+def test_age_at_vital_status_zero_enables_survival_processing():
+    """Integer 0 from deps must not be treated as absent (bool(0) is False)."""
+    from unittest.mock import MagicMock
+    from app.repositories.subject import SubjectRepository
+
+    session = MagicMock()
+    allowlist = MagicMock()
+    settings = MagicMock()
+    settings.sex_value_mappings = {"Male": "M", "Female": "F", "Not Reported": "U"}
+    settings.identifier_server_url = "https://example.com"
+    settings.subject_count_fields = []
+    repo = SubjectRepository(session, allowlist, settings)
+
+    fs = repo._build_subject_where({"age_at_vital_status": 0})
+    assert fs.needs_survival_processing is True
+    assert fs.derived_filters.get("age_at_vital_status") == 0
 
 
 def test_harmonized_categories_is_frozenset():

@@ -291,7 +291,7 @@ class TestSampleServiceEnhanced:
         settings.pagination.max_page_size = 1000
         settings.cache = Mock()
         settings.cache.count_ttl = 300
-        settings.cache_ttl_summary_endpoints = 600
+        settings.cache.summary_ttl = 600
         settings.identifier_server_url = "https://dcc.ccdi.cancer.gov"
         return settings
 

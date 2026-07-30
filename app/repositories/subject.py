@@ -22,7 +22,6 @@ from app.core.field_mappings import map_field_value, reverse_map_field_value, is
 from app.lib.field_allowlist import FieldAllowlist
 from app.lib.url_builder import build_identifier_server_url
 from app.models.dto import Subject
-from app.models.errors import UnsupportedFieldError
 from app.utils.cypher_builder import combine_where_clauses, append_where_conditions
 from app.db.memgraph import run_count_query_with_retry
 from app.core.pagination import floor_total_to_page_size
@@ -402,9 +401,9 @@ class SubjectRepository(SubjectCount, SubjectSummary):
             if filtered_derived:
                 derived_where_clause = "WHERE " + " AND ".join(filtered_derived)
 
-        needs_survival_processing = bool(
-            derived_filters.get("vital_status")
-            or derived_filters.get("age_at_vital_status")
+        needs_survival_processing = (
+            derived_filters.get("vital_status") is not None
+            or derived_filters.get("age_at_vital_status") is not None
         )
         needs_diagnosis_processing = bool(
             diagnosis_search_term or diag_category_filter or diagnosis_category_contains
@@ -538,9 +537,6 @@ WITH {carry},
 
         Returns:
             List of Subject objects, or (list, int) tuple when return_total=True
-
-        Raises:
-            UnsupportedFieldError: If filter field is not allowed
         """
         logger.debug(
             "Fetching subjects",
@@ -2052,31 +2048,6 @@ WITH {carry},
         subjects, total_count = result
         return subjects, total_count
 
-    def _validate_filters(self, filters: Dict[str, Any], entity_type: str) -> None:
-        """
-        Validate that all filter fields are allowed.
-        
-        Args:
-            filters: Dictionary of filters to validate
-            entity_type: Type of entity for allowlist checking
-            
-        Raises:
-            UnsupportedFieldError: If any field is not allowed
-        """
-        for field in filters.keys():
-            # Skip special fields
-            if field.startswith("_"):
-                continue
-                
-            if not self.allowlist.is_field_allowed(entity_type, field):
-                # Log the invalid field but don't include it in the error message
-                logger.warning(
-                    "Unsupported field in filter",
-                    field=field,
-                    entity_type=entity_type
-                )
-                raise UnsupportedFieldError(field, entity_type)
-    
     def _record_to_subject(self, record: Dict[str, Any], base_url: Optional[str] = None) -> Subject:
         """
         Convert a database record to a Subject object with nested CCDI-DCC format.

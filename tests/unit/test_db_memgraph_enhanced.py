@@ -85,6 +85,22 @@ class TestMemgraphConnection:
         with pytest.raises(DatabaseConnectionError):
             await connection.connect()
 
+    @patch('app.db.memgraph.AsyncGraphDatabase')
+    async def test_connect_verify_fails_before_publish(self, mock_graph_db, connection):
+        """Failed verify must not leave an unverified driver on self._driver."""
+        mock_driver = AsyncMock(spec=AsyncDriver)
+        mock_driver.verify_connectivity = AsyncMock(
+            side_effect=ServiceUnavailable("Service unavailable")
+        )
+        mock_driver.close = AsyncMock()
+        mock_graph_db.driver.return_value = mock_driver
+
+        with pytest.raises(DatabaseConnectionError):
+            await connection.connect()
+
+        assert connection._driver is None
+        mock_driver.close.assert_called_once()
+
     async def test_disconnect_with_driver(self, connection):
         """Test disconnecting when driver exists."""
         mock_driver = AsyncMock(spec=AsyncDriver)
@@ -191,86 +207,4 @@ class TestMemgraphConnection:
         
         # Should not retry auth errors
         assert mock_driver.session.call_count == 1
-
-    @patch('app.db.memgraph.AsyncGraphDatabase')
-    async def test_execute_query_success(self, mock_graph_db, connection, mock_settings):
-        """Test executing a query successfully."""
-        mock_driver = AsyncMock(spec=AsyncDriver)
-        mock_session = AsyncMock(spec=AsyncSession)
-        mock_result = AsyncMock()
-        
-        async def async_gen():
-            yield {"key": "value"}
-        
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        mock_result.consume = AsyncMock()
-        mock_session.run = AsyncMock(return_value=mock_result)
-        mock_session.close = AsyncMock()
-        mock_driver.session.return_value = mock_session
-        connection._driver = mock_driver
-        
-        result = await connection.execute_query("MATCH (n) RETURN n", {})
-        
-        assert len(result) == 1
-        assert result[0] == {"key": "value"}
-        mock_session.close.assert_called_once()
-
-    @patch('app.db.memgraph.AsyncGraphDatabase')
-    async def test_execute_query_retry_on_error(self, mock_graph_db, connection, mock_settings):
-        """Test execute_query retries on connection errors."""
-        mock_driver = AsyncMock(spec=AsyncDriver)
-        mock_session = AsyncMock(spec=AsyncSession)
-        mock_result = AsyncMock()
-        
-        async def async_gen():
-            yield {"key": "value"}
-        
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        mock_result.consume = AsyncMock()
-        mock_session.run = AsyncMock(return_value=mock_result)
-        mock_session.close = AsyncMock()
-        
-        # First call fails, second succeeds
-        mock_driver.session.side_effect = [
-            ServiceUnavailable("Service unavailable"),
-            mock_session
-        ]
-        mock_driver.close = AsyncMock()
-        mock_driver.verify_connectivity = AsyncMock()
-        mock_graph_db.driver.return_value = mock_driver
-        connection._driver = mock_driver
-        
-        result = await connection.execute_query("MATCH (n) RETURN n", {}, max_retries=3)
-        
-        assert len(result) == 1
-        assert mock_driver.session.call_count == 2
-
-    @patch('app.db.memgraph.AsyncGraphDatabase')
-    async def test_execute_query_max_retries_exceeded(self, mock_graph_db, connection):
-        """Test execute_query raises error after max retries."""
-        mock_driver = AsyncMock(spec=AsyncDriver)
-        mock_driver.session.side_effect = ServiceUnavailable("Service unavailable")
-        mock_driver.close = AsyncMock()
-        mock_driver.verify_connectivity = AsyncMock()
-        mock_graph_db.driver.return_value = mock_driver
-        connection._driver = mock_driver
-        
-        with pytest.raises(DatabaseConnectionError):
-            await connection.execute_query("MATCH (n) RETURN n", {}, max_retries=2)
-
-    @patch('app.db.memgraph.AsyncGraphDatabase')
-    async def test_execute_query_auth_error_no_retry(self, mock_graph_db, connection):
-        """Test execute_query does not retry on AuthError."""
-        mock_driver = AsyncMock(spec=AsyncDriver)
-        mock_session = AsyncMock(spec=AsyncSession)
-        mock_session.run = AsyncMock(side_effect=AuthError("Authentication failed"))
-        mock_session.close = AsyncMock()
-        mock_driver.session.return_value = mock_session
-        connection._driver = mock_driver
-        
-        with pytest.raises(DatabaseConnectionError):
-            await connection.execute_query("MATCH (n) RETURN n", {})
-        
-        # Should not retry auth errors
-        assert mock_session.run.call_count == 1
 

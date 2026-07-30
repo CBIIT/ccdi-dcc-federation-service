@@ -304,9 +304,13 @@ class Settings(BaseSettings):
     def cors(self) -> CORSSettings:
         """Get CORS settings."""
         return CORSSettings(
-            enabled=self.cors_enabled or True,
+            enabled=self.cors_enabled if self.cors_enabled is not None else True,
             allowed_origins=self.cors_allowed_origins or ["*"],
-            allow_credentials=self.cors_allow_credentials or True,
+            allow_credentials=(
+                self.cors_allow_credentials
+                if self.cors_allow_credentials is not None
+                else True
+            ),
             allowed_methods=self.cors_allowed_methods or ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
             allowed_headers=self.cors_allowed_headers or ["*"],
             origins=self.cors_origins,

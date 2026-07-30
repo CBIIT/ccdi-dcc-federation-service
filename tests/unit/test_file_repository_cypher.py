@@ -862,18 +862,6 @@ class TestCountFilesByDepositionsFilters:
 
 @pytest.mark.unit
 class TestFileRepositoryHelpers:
-    def test_validate_filters_raises_for_disallowed_field(self):
-        repo, _ = make_repo()
-        repo.allowlist.is_field_allowed = Mock(return_value=False)
-        with pytest.raises(UnsupportedFieldError):
-            repo._validate_filters({"bad_field": "x"}, "file")
-
-    def test_validate_filters_skips_underscore_prefixed_fields(self):
-        repo, _ = make_repo()
-        repo.allowlist.is_field_allowed = Mock(return_value=False)
-        repo._validate_filters({"_internal": "x"}, "file")
-        repo.allowlist.is_field_allowed.assert_not_called()
-
     def test_map_file_type_to_enum_empty_string_returns_none(self):
         repo, _ = make_repo()
         assert repo._map_file_type_to_enum("   ") is None

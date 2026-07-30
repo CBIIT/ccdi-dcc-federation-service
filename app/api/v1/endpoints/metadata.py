@@ -127,9 +127,11 @@ def _get_metadata_fields_for_type(field_type: str, request: Request) -> Metadata
         
         return response
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("Error getting metadata fields", error=str(e), exc_info=True)
-        # Return empty array on any error
+        # Return empty array on unexpected errors (config 404 is re-raised above)
         return MetadataFieldsInfoResponse(fields=[])
 
 

@@ -365,7 +365,7 @@ class FileService:
         
         # Organization must be "CCDI-DCC"
         if organization.strip() != "CCDI-DCC":
-            raise ValidationError(f"Invalid organization: {organization}. Only 'CCDI-DCC' is supported.")
+            raise ValidationError("Invalid organization. Only 'CCDI-DCC' is supported.")
         
         if not namespace or not namespace.strip():
             raise ValidationError("Namespace identifier cannot be empty")
@@ -373,15 +373,15 @@ class FileService:
         if not name or not name.strip():
             raise ValidationError("File identifier cannot be empty")
         
-        # Check for invalid characters
+        # Check for invalid characters (do not echo user input in the error message)
         # For organization and namespace, check for path separators and spaces
         for param_name, param_value in [("organization", organization), ("namespace", namespace)]:
             if any(char in param_value for char in ["/", "\\", " "]):
-                raise ValidationError(f"Invalid characters in {param_name}: {param_value}")
+                raise ValidationError(f"Invalid characters in {param_name}")
         
         # For name (file_id), only restrict path separators (allow dots, underscores, hyphens for file names)
         if any(char in name for char in ["/", "\\"]):
-            raise ValidationError(f"Invalid characters in name: {name}")
+            raise ValidationError("Invalid characters in name")
     
     def _build_cache_key(
         self,

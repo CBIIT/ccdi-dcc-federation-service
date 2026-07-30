@@ -325,18 +325,19 @@ class TestMetadataEndpoints:
             assert result.fields[0].wiki_url is None
 
     async def test_get_metadata_fields_error_handling(self, tmp_path):
-        """Test metadata endpoints handle errors gracefully."""
+        """Corrupt config JSON surfaces as HTTP 404 (not empty 200)."""
+        from fastapi import HTTPException
+
         metadata_file = tmp_path / "metadata_fields.json"
         metadata_file.write_text("invalid json")
-        
+
         mock_request = Mock(spec=Request)
         mock_request.url.path = "/metadata/fields/subject"
-        
+
         with patch('app.api.v1.endpoints.metadata.DATA_PATH', metadata_file):
-            # Should return empty fields on error
-            result = await get_subject_metadata_fields(mock_request)
-            assert isinstance(result, MetadataFieldsInfoResponse)
-            assert len(result.fields) == 0
+            with pytest.raises(HTTPException) as exc_info:
+                await get_subject_metadata_fields(mock_request)
+            assert exc_info.value.status_code == 404
 
 
 @pytest.mark.unit

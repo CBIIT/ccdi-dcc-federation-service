@@ -1233,31 +1233,6 @@ class FileRepository:
             )
             raise
     
-    def _validate_filters(self, filters: Dict[str, Any], entity_type: str) -> None:
-        """
-        Validate that all filter fields are allowed.
-        
-        Args:
-            filters: Dictionary of filters to validate
-            entity_type: Type of entity for allowlist checking
-            
-        Raises:
-            UnsupportedFieldError: If any field is not allowed
-        """
-        for field in filters.keys():
-            # Skip special fields
-            if field.startswith("_"):
-                continue
-                
-            if not self.allowlist.is_field_allowed(entity_type, field):
-                # Log the invalid field but don't include it in the error message
-                logger.warning(
-                    "Unsupported field in filter",
-                    field=field,
-                    entity_type=entity_type
-                )
-                raise UnsupportedFieldError(field, entity_type)
-    
     def _map_file_type_to_enum(self, file_type: Any) -> Optional[str]:
         """
         Map a database file_type value to an API (col D) value.

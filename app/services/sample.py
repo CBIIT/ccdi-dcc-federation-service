@@ -299,7 +299,7 @@ class SampleService:
             await self.cache_service.set(
                 cache_key,
                 response.model_dump(),
-                ttl=self.settings.cache_ttl_summary_endpoints
+                ttl=self.settings.cache.summary_ttl
             )
         
         logger.info(
@@ -365,10 +365,10 @@ class SampleService:
         if not name or not name.strip():
             raise ValidationError("Sample name cannot be empty")
         
-        # Check for invalid characters
+        # Check for invalid characters (do not echo user input in the error message)
         for param_name, param_value in [("organization", organization), ("namespace", namespace), ("name", name)]:
             if any(char in param_value for char in [".", "/", "\\", " "]):
-                raise ValidationError(f"Invalid characters in {param_name}: {param_value}")
+                raise ValidationError(f"Invalid characters in {param_name}")
     
     def _build_cache_key(
         self,

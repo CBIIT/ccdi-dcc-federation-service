@@ -459,65 +459,6 @@ class TestSpecializedQueries:
         assert mock_session.run.call_count == 2
         assert isinstance(result, tuple)
     
-    async def test_get_samples_by_combined_filters(self, repository, mock_session):
-        """Test _get_samples_by_combined_filters with both sequencing_file and pathology_file filters."""
-        async def async_gen():
-            yield {
-                "sa": {"sample_id": "SAMP001"},
-                "p": {"participant_id": "PART001"},
-                "st": {"study_id": "phs001"},
-                "sf": {"library_strategy": "WXS"},
-                "pf": {"fixation_embedding_method": "FFPE"},
-                "diagnoses": {}
-            }
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())  # Properly set up async iterator
-        mock_result.consume = AsyncMock()
-        mock_session.run = AsyncMock(return_value=mock_result)
-        
-        with patch('app.repositories.sample.is_database_only_value', return_value=False):
-            with patch('app.repositories.sample.reverse_map_field_value', return_value="WXS"):
-                filters = {"library_strategy": "WXS", "preservation_method": "FFPE"}
-                result = await repository._get_samples_by_combined_filters(filters, offset=0, limit=20)
-                
-                assert mock_session.run.called
-                assert isinstance(result, list)
-    
-    async def test_get_samples_by_combined_filters_return_total(self, repository, mock_session):
-        """Test _get_samples_by_combined_filters with return_total=True."""
-        async def async_gen():
-            yield {
-                "sa": {"sample_id": "SAMP001"},
-                "p": {"participant_id": "PART001"},
-                "st": {"study_id": "phs001"},
-                "sf": {"library_strategy": "WXS"},
-                "pf": {"fixation_embedding_method": "FFPE"},
-                "diagnoses": {}
-            }
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        mock_result.consume = AsyncMock()
-        
-        # Mock count query result - need to support async iteration and dict() conversion
-        async def count_async_gen():
-            yield {"total_count": 20}
-        
-        mock_count_result = AsyncMock()
-        mock_count_result.__aiter__ = Mock(return_value=count_async_gen())  # Properly set up async iterator
-        mock_count_result.consume = AsyncMock()
-        
-        mock_session.run = AsyncMock(side_effect=[mock_count_result, mock_result])
-        
-        with patch('app.repositories.sample.is_database_only_value', return_value=False):
-            with patch('app.repositories.sample.reverse_map_field_value', return_value="WXS"):
-                filters = {"library_strategy": "WXS", "preservation_method": "FFPE"}
-                result = await repository._get_samples_by_combined_filters(filters, offset=0, limit=20, return_total=True)
-                
-                assert mock_session.run.call_count == 2
-                assert isinstance(result, tuple)
-    
     async def test_get_samples_summary_reverse_query(self, repository, mock_session):
         """Test _get_samples_summary_reverse_query."""
         mock_result = AsyncMock()

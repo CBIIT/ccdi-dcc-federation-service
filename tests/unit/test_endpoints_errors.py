@@ -65,7 +65,7 @@ class TestErrorEndpoints:
         assert isinstance(result, ErrorsResponse)
         assert len(result.errors) == 1
         assert result.errors[0].kind == ErrorKind.UNSHAREABLE_DATA
-        assert result.errors[0].entity == "Sample"
+        assert result.errors[0].entity == "Samples"
 
     async def test_get_error_examples_unsupported_field(self):
         """Test getting UnsupportedField error example."""

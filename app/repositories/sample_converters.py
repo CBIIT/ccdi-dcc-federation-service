@@ -107,7 +107,7 @@ class SampleConverters:
         st: Dict[str, Any], 
         sf: Dict[str, Any], 
         pf: Dict[str, Any], 
-        diagnoses: Optional[Any],
+        diagnoses: Optional[List[Dict[str, Any]]],
         base_url: Optional[str] = None
     ) -> Sample:
         """
@@ -119,13 +119,13 @@ class SampleConverters:
             st: Study node dictionary
             sf: Sequencing file node dictionary
             pf: Pathology file node dictionary
-            diagnoses: Diagnosis node dict, list of dicts, or None
-
+            diagnoses: List of diagnosis node dictionaries (all matched nodes, or None)
+            
         Returns:
             Sample object with proper structure
         """
         from app.models.dto import (
-            Sample, SampleIdentifier, NamespaceIdentifier, SubjectId,
+            SampleIdentifier, NamespaceIdentifier, SubjectId,
             SampleMetadata,
         )
         
@@ -232,7 +232,7 @@ class SampleConverters:
             if study_id:
                 depositions = [{"kind": "dbGaP", "value": study_id}]
         
-        diagnosis_field, _head_d, harmonized_cats, unharmonized_cats = _build_diagnosis_result(diagnoses)
+        diagnosis_field, head_d, harmonized_cats, unharmonized_cats = _build_diagnosis_result(diagnoses)
         
         # Helper function to wrap value in ValueField if not None and not empty
         def _wrap_value(value):
@@ -335,6 +335,7 @@ class SampleConverters:
                 from app.models.dto import IdentifierField, IdentifierValue
                 
                 # Build server URL - format: /api/v1/sample/CCDI-DCC/{study_id}/{sample_id}
+                # Note: This format doesn't include entity type, matching user's example
                 server_url = None
                 if base_url:
                     server_url = f"{base_url}/api/v1/sample/CCDI-DCC/{study_id}/{sample_id}"
@@ -367,17 +368,18 @@ class SampleConverters:
                 sample_id=sample_id
             )
         
-        disease_phase_value = _head_d.get("disease_phase") if _head_d else None
+        disease_phase_value = head_d.get("disease_phase") if head_d else None
+        tumor_grade_value = head_d.get("tumor_grade") if head_d else None
+        age_at_diagnosis_value = head_d.get("age_at_diagnosis") if head_d else None
+        tumor_classification_value = sa.get("tumor_spatial_extent") if sa else None
+
         anatomical_sites_value = sa.get("anatomic_site") if sa else None
         library_selection_value = sf.get("library_selection") if sf else None
         library_strategy_value = sf.get("library_strategy") if sf else None
         library_source_material_value = sf.get("library_source_material") if sf else None
         specimen_molecular_analyte_type_value = sf.get("library_source_molecule") if sf else None
         preservation_method_value = pf.get("fixation_embedding_method") if pf else None
-        tumor_grade_value = _head_d.get("tumor_grade") if _head_d else None
-        age_at_diagnosis_value = _head_d.get("age_at_diagnosis") if _head_d else None
         age_at_collection_value = sa.get("participant_age_at_collection") if sa else None
-        tumor_classification_value = sa.get("tumor_spatial_extent") if sa else None
         tissue_type_value = sa.get("sample_tumor_status") if sa else None
 
         diagnosis_category_field = (
@@ -389,6 +391,7 @@ class SampleConverters:
             if unharmonized_cats else None
         )
 
+        # Build metadata with field mappings applied
         metadata = SampleMetadata(
             disease_phase=_wrap_value(map_field_value("disease_phase", _null_if_invalid(disease_phase_value))),
             anatomical_sites=_wrap_list_value(_process_anatomical_sites(anatomical_sites_value)),
@@ -402,7 +405,7 @@ class SampleConverters:
             tumor_classification=_wrap_value(map_field_value("tumor_classification", _null_if_invalid(tumor_classification_value))),
             age_at_diagnosis=_wrap_integer_value(_null_if_neg999(age_at_diagnosis_value)),
             age_at_collection=_wrap_integer_value(_null_if_neg999(age_at_collection_value)),
-            tumor_tissue_morphology=None,
+            tumor_tissue_morphology=None,  # Not in the provided mapping
             depositions=depositions,
             diagnosis=diagnosis_field,
             identifiers=identifiers,

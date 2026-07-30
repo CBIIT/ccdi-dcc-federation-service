@@ -356,7 +356,7 @@ class TestCase3FilterBranches:
         assert "sf.library_source_material IN" in query
 
     @pytest.mark.asyncio
-    async def test_specimen_molecular_analyte_type_list_embeds_in_literal(self, repository):
+    async def test_specimen_molecular_analyte_type_list_uses_param(self, repository):
         repository.session.run = AsyncMock(return_value=_empty_result())
         cat = _categorized(
             sequencing_file={"specimen_molecular_analyte_type": "RNA"},
@@ -373,7 +373,9 @@ class TestCase3FilterBranches:
                     {}, cat, offset=0, limit=20, base_url=None, return_total=False
                 )
         query = repository.session.run.call_args[0][0]
-        assert "sf.library_source_molecule IN ['MicroRNA', 'Total RNA']" in query
+        params = repository.session.run.call_args[0][1]
+        assert "sf.library_source_molecule IN $param_1" in query
+        assert params["param_1"] == ["MicroRNA", "Total RNA"]
 
     @pytest.mark.asyncio
     async def test_specimen_molecular_analyte_type_db_only_early_exit(self, repository):

@@ -15,7 +15,6 @@ from app.core.field_mappings import (
 )
 from app.repositories.sample_helpers import DIAGNOSIS_SEARCH_COMPATIBLE_FILTERS, SD_CAT_MARKER
 from app.repositories.subject_diagnosis_cypher import add_diagnosis_search_params, diagnosis_search_predicate
-from app.models.errors import UnsupportedFieldError
 from app.utils.cypher_builder import anatomic_site_member_predicate
 
 logger = get_logger(__name__)
@@ -921,8 +920,10 @@ RETURN count(*) AS total_count
             
             # Check specimen_molecular_analyte_type
             if specimen_molecular_analyte_type_list:
-                db_values_str = ", ".join([f"'{v}'" for v in specimen_molecular_analyte_type_list])
-                sf_match_conditions.append(f"sf.library_source_molecule IN [{db_values_str}]")
+                params["_specimen_molecular_analyte_type_list"] = specimen_molecular_analyte_type_list
+                sf_match_conditions.append(
+                    "sf.library_source_molecule IN $_specimen_molecular_analyte_type_list"
+                )
             elif specimen_molecular_analyte_type_single_param:
                 if specimen_molecular_analyte_type_single_param == "invalid":
                     # Invalid value - add impossible condition to return empty results
@@ -1493,31 +1494,6 @@ RETURN count(*) AS total_count
         total_count = records[0].get("total_count", 0) if records else 0
         return {"counts": {"total": total_count}}
 
-    def _validate_filters(self, filters: Dict[str, Any], entity_type: str) -> None:
-        """
-        Validate that all filter fields are allowed.
-        
-        Args:
-            filters: Dictionary of filters to validate
-            entity_type: Type of entity for allowlist checking
-            
-        Raises:
-            UnsupportedFieldError: If any field is not allowed
-        """
-        for field in filters.keys():
-            # Skip special fields
-            if field.startswith("_"):
-                continue
-                
-            if not self.allowlist.is_field_allowed(entity_type, field):
-                # Log the invalid field but don't include it in the error message
-                logger.warning(
-                    "Unsupported field in filter",
-                    field=field,
-                    entity_type=entity_type
-                )
-                raise UnsupportedFieldError(field, entity_type)
-    
     async def _get_samples_summary_reverse_query(
         self,
         filters: Dict[str, Any]

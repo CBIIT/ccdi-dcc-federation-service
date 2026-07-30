@@ -1263,7 +1263,10 @@ class SubjectSummary:
         if "age_at_vital_status" in filters:
             derived_filters["age_at_vital_status"] = filters["age_at_vital_status"]
 
-        needs_survival_processing = bool(derived_filters.get("vital_status") or derived_filters.get("age_at_vital_status"))
+        needs_survival_processing = (
+            derived_filters.get("vital_status") is not None
+            or derived_filters.get("age_at_vital_status") is not None
+        )
 
         for field, value in derived_filters.items():
             param_counter += 1

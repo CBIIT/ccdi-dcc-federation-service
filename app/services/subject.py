@@ -17,7 +17,7 @@ from app.lib.field_allowlist import FieldAllowlist
 from app.models.dto import Subject, SubjectResponse, CountResponse, SummaryResponse, SummaryCounts
 from app.models.errors import NotFoundError, ValidationError
 from app.repositories.subject import SubjectRepository
-from app.db.memgraph import DatabaseConnectionError, is_memory_limit_error
+from app.db.memgraph import DatabaseConnectionError, is_memory_limit_error, is_retryable_error
 from neo4j.exceptions import ServiceUnavailable, TransientError, SessionExpired
 
 logger = get_logger(__name__)
@@ -155,12 +155,7 @@ class SubjectService:
                     return ([], 0)
                 return []
             except Exception as e:
-                # Check if this is a transient error that might benefit from retry
-                error_str = str(e).lower()
-                is_transient = any(keyword in error_str for keyword in [
-                    'timeout', 'connection', 'network', 'temporary', 'unavailable',
-                    'broken pipe', 'connection reset', 'connection closed'
-                ])
+                is_transient = is_retryable_error(e)
                 
                 if is_transient and attempt < max_retries:
                     logger.warning(
@@ -375,12 +370,7 @@ class SubjectService:
                 # Return empty summary instead of raising - API will return 404
                 return SummaryResponse(counts=SummaryCounts(total=0))
             except Exception as e:
-                # Check if this is a transient error that might benefit from retry
-                error_str = str(e).lower()
-                is_transient = any(keyword in error_str for keyword in [
-                    'timeout', 'connection', 'network', 'temporary', 'unavailable',
-                    'broken pipe', 'connection reset', 'connection closed'
-                ])
+                is_transient = is_retryable_error(e)
                 
                 if is_transient and attempt < max_retries:
                     logger.warning(
@@ -560,14 +550,14 @@ class SubjectService:
         if not name or not name.strip():
             raise ValidationError("Subject name cannot be empty")
         
-        # Check for invalid characters
+        # Check for invalid characters (do not echo user input in the error message)
         for param_name, param_value in [("organization", organization), ("name", name)]:
             if param_value and any(char in param_value for char in [".", "/", "\\", " "]):
-                raise ValidationError(f"Invalid characters in {param_name}: {param_value}")
+                raise ValidationError(f"Invalid characters in {param_name}")
         
         # Check namespace if provided
         if namespace and any(char in namespace for char in [".", "/", "\\", " "]):
-            raise ValidationError(f"Invalid characters in namespace: {namespace}")
+            raise ValidationError("Invalid characters in namespace")
     
     def _build_cache_key(
         self,

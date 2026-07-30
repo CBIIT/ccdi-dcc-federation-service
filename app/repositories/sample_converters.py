@@ -17,16 +17,16 @@ logger = get_logger(__name__)
 
 def node_to_dict(node):
     """Convert a Node object to a dictionary.
-    
+
     Utility function to convert Neo4j/Memgraph Node objects to dictionaries.
     Used throughout the repository for consistent node conversion.
-    
+
     Handles date/time objects (ZONED_DATE_TIME, LocalDateTime, etc.) by converting
     them to ISO format strings to prevent serialization errors.
-    
+
     Args:
         node: Node object from Neo4j/Memgraph, dict, or None
-        
+
     Returns:
         Dictionary representation of the node, or empty dict if None
         Date/time properties are converted to ISO format strings
@@ -35,7 +35,7 @@ def node_to_dict(node):
         return {}
     if isinstance(node, dict):
         return {k: convert_date_time_to_string(v) for k, v in node.items()}
-    
+
     # Try dict() conversion first (works for Neo4j/Memgraph Node objects)
     try:
         node_dict = dict(node)
@@ -99,14 +99,14 @@ def _build_diagnosis_result(
 
 class SampleConverters:
     """Mixin class providing data conversion methods for SampleRepository."""
-    
+
     def _record_to_sample(
-        self, 
-        sa: Dict[str, Any], 
-        p: Dict[str, Any], 
-        st: Dict[str, Any], 
-        sf: Dict[str, Any], 
-        pf: Dict[str, Any], 
+        self,
+        sa: Dict[str, Any],
+        p: Dict[str, Any],
+        st: Dict[str, Any],
+        sf: Dict[str, Any],
+        pf: Dict[str, Any],
         diagnoses: Optional[List[Dict[str, Any]]],
         base_url: Optional[str] = None
     ) -> Sample:
@@ -120,7 +120,7 @@ class SampleConverters:
             sf: Sequencing file node dictionary
             pf: Pathology file node dictionary
             diagnoses: List of diagnosis node dictionaries (all matched nodes, or None)
-            
+
         Returns:
             Sample object with proper structure
         """
@@ -128,34 +128,34 @@ class SampleConverters:
             SampleIdentifier, NamespaceIdentifier, SubjectId,
             SampleMetadata,
         )
-        
+
         # Build sample ID: namespace from study, name from sample_id
         # Handle case where sa might be empty or None
         if not sa:
             logger.warning("Sample node (sa) is empty or None, skipping record")
             raise ValueError("Sample node (sa) is required but was empty or None")
-        
+
         # Try to get study_id from multiple sources
         study_id = ""
         if st and isinstance(st, dict):
             study_id = st.get("study_id", "")
-        
+
         # If study_id is still empty, try to get it from the sample node itself
         if not study_id and sa and isinstance(sa, dict):
             study_id = sa.get("study_id", "")
-        
+
         # If still empty, try to get it from participant
         if not study_id and p and isinstance(p, dict):
             study_id = p.get("study_id", "")
-        
+
         sample_id = sa.get("sample_id", "") if isinstance(sa, dict) else ""
-        
+
         # If sample_id is not available, try other possible fields
         if not sample_id:
             sample_id = sa.get("id", "") if isinstance(sa, dict) else ""
         if not sample_id:
             sample_id = sa.get("name", "") if isinstance(sa, dict) else ""
-        
+
         # Validate required fields - both study_id and sample_id are required
         if not study_id or not study_id.strip():
             logger.warning(
@@ -166,7 +166,7 @@ class SampleConverters:
                 sample_id=sample_id
             )
             raise ValueError(f"Sample record missing required study_id (namespace). Sample ID: {sample_id}")
-        
+
         if not sample_id or not sample_id.strip():
             logger.warning(
                 "Sample node missing sample_id field, skipping",
@@ -174,7 +174,7 @@ class SampleConverters:
                 study_id=study_id
             )
             raise ValueError(f"Sample record missing required sample_id. Study ID: {study_id}")
-        
+
         # Create namespace and sample identifier
         # Pass as dictionary to avoid Pydantic validation issues
         sample_identifier = SampleIdentifier(
@@ -184,7 +184,7 @@ class SampleConverters:
             },
             name=sample_id.strip()
         )
-        
+
         # Build subject reference: name from participant, namespace from study
         subject = None
         if p and isinstance(p, dict) and st and isinstance(st, dict):
@@ -200,7 +200,7 @@ class SampleConverters:
                     namespace=subject_namespace,
                     name=participant_id
                 )
-        
+
         # Build metadata with proper field mappings
         def _null_if_invalid(value):
             """Replace 'Invalid value' with None, and -999 with None."""
@@ -216,7 +216,7 @@ class SampleConverters:
                 # Return None if all values were invalid, otherwise return the filtered list
                 return filtered if filtered else None
             return value
-        
+
         def _null_if_neg999(value):
             """Replace -999 with None, return value as-is (not converted to string)."""
             if value is None:
@@ -224,16 +224,16 @@ class SampleConverters:
             if isinstance(value, (int, float)) and value == -999:
                 return None
             return value  # Return as-is, not as string
-        
+
         # Get depositions from study - format as objects with kind and value
         depositions = None
         if st and isinstance(st, dict) and st.get("study_id"):
             study_id = st.get("study_id")
             if study_id:
                 depositions = [{"kind": "dbGaP", "value": study_id}]
-        
+
         diagnosis_field, head_d, harmonized_cats, unharmonized_cats = _build_diagnosis_result(diagnoses)
-        
+
         # Helper function to wrap value in ValueField if not None and not empty
         def _wrap_value(value):
             """Wrap value in ValueField if not None and not empty, otherwise return None."""
@@ -245,7 +245,7 @@ class SampleConverters:
                 return None
             from app.models.dto import ValueField
             return ValueField(value=str_value)
-        
+
         def _wrap_list_value(value_list):
             """Wrap list of values in list of ValueField objects if not None and not empty, otherwise return None."""
             if value_list is None or not isinstance(value_list, list) or len(value_list) == 0:
@@ -254,25 +254,25 @@ class SampleConverters:
             # Filter out empty strings and create ValueField for each valid value
             wrapped = [ValueField(value=str(v).strip()) for v in value_list if v is not None and str(v).strip()]
             return wrapped if wrapped else None
-        
+
         def _map_library_selection_method(db_value):
             """Map database value to API value for library_selection_method.
-            
+
             Uses centralized field mappings from config_data/field_mappings.json.
             """
             return map_field_value("library_selection_method", db_value)
-        
+
         def _reverse_map_library_selection_method(api_value):
             """Reverse map API value to database value for library_selection_method.
-            
+
             Used for filtering - maps API values back to DB values.
             Uses centralized field mappings from config_data/field_mappings.json.
             """
             result = reverse_map_field_value("library_selection_method", api_value)
             # reverse_map_field_value can return a list, but for library_selection_method it should be a string
             return result if isinstance(result, str) else (result[0] if isinstance(result, list) and result else None)
-        
-        
+
+
         # Helper function to wrap integer value in IntegerValueField if not None
         def _wrap_integer_value(value):
             """Wrap integer value in IntegerValueField if not None, otherwise return None."""
@@ -285,7 +285,7 @@ class SampleConverters:
                 return IntegerValueField(value=int_value)
             except (ValueError, TypeError):
                 return None
-        
+
         # Helper function to handle anatomical_sites (may be array or string)
         def _process_anatomical_sites(value):
             """Process anatomical_sites - handle arrays and strings, return list of all valid values."""
@@ -319,13 +319,13 @@ class SampleConverters:
                     result.append(value_str)
             # Return None if no valid values, otherwise return the list
             return result if result else None
-        
+
         # Build identifiers - reference the subject (participant)
         identifiers = None
         # Ensure we have study_id from st if not already set
         if not study_id and st and isinstance(st, dict):
             study_id = st.get("study_id", "")
-        
+
         if p and isinstance(p, dict) and study_id and sample_id:
             participant_id = str(p.get("participant_id", ""))
             if not participant_id or participant_id == "":
@@ -333,13 +333,13 @@ class SampleConverters:
 
             if participant_id and study_id and sample_id:
                 from app.models.dto import IdentifierField, IdentifierValue
-                
+
                 # Build server URL - format: /api/v1/sample/CCDI-DCC/{study_id}/{sample_id}
                 # Note: This format doesn't include entity type, matching user's example
                 server_url = None
                 if base_url:
                     server_url = f"{base_url}/api/v1/sample/CCDI-DCC/{study_id}/{sample_id}"
-                
+
                 identifier_value = IdentifierValue(
                     namespace={
                         "organization": "CCDI-DCC",
@@ -367,7 +367,7 @@ class SampleConverters:
                 study_id=study_id,
                 sample_id=sample_id
             )
-        
+
         disease_phase_value = head_d.get("disease_phase") if head_d else None
         tumor_grade_value = head_d.get("tumor_grade") if head_d else None
         age_at_diagnosis_value = head_d.get("age_at_diagnosis") if head_d else None
@@ -412,12 +412,12 @@ class SampleConverters:
             diagnosis_category=diagnosis_category_field,
             unharmonized=unharmonized_field,
         )
-        
+
         # Create Sample object
         sample = Sample(
             id=sample_identifier,
             subject=subject,
             metadata=metadata
         )
-        
+
         return sample

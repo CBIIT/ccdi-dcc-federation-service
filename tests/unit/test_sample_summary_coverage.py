@@ -1043,4 +1043,3 @@ class TestGetSamplesSummaryReverseQueryCoverage:
         
         with pytest.raises(Exception, match="Database error"):
             await repository._get_samples_summary_reverse_query({"library_source_material": "DNA"})
-

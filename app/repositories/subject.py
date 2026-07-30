@@ -2344,8 +2344,12 @@ WITH {carry},
                     [{"value": cat} for cat in harmonized_categories] if harmonized_categories else None
                 ),
                 "unharmonized": (
-                    {"associated_diagnosis_categories": [{"value": cat} for cat in unharmonized_categories]}
-                    if unharmonized_categories else None
+                    {
+                        f"associated_diagnosis_category_{i}": {"value": cat}
+                        for i, cat in enumerate(unharmonized_categories, start=1)
+                    }
+                    if unharmonized_categories
+                    else None
                 ),
                 "vital_status": {"value": vital_status} if vital_status else None,
                 # Convert -999 to null for age_at_vital_status in response (count endpoints keep -999 as-is)

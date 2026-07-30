@@ -229,8 +229,8 @@ paths:
                     associated_diagnosis_categories:
                     - value: Brain and Spinal Cord Tumors
                     unharmonized:
-                      associated_diagnosis_categories:
-                      - value: Gliomas
+                      associated_diagnosis_category_1:
+                        value: Gliomas
                     depositions:
                     - kind: dbGaP
                       value: phs002430
@@ -1620,8 +1620,8 @@ paths:
                     associated_diagnosis_categories:
                     - value: Brain and Spinal Cord Tumors
                     unharmonized:
-                      associated_diagnosis_categories:
-                      - value: Gliomas
+                      associated_diagnosis_category_1:
+                        value: Gliomas
                     depositions:
                     - kind: dbGaP
                       value: phs002430

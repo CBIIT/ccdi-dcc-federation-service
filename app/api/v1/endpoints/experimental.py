@@ -373,9 +373,9 @@ Paginated. Experimental—may change.""",
                                         {"value": "Brain and Spinal Cord Tumors"}
                                     ],
                                     "unharmonized": {
-                                        "associated_diagnosis_categories": [
-                                            {"value": "Gliomas"}
-                                        ]
+                                        "associated_diagnosis_category_1": {
+                                            "value": "Gliomas"
+                                        }
                                     },
                                     "depositions": [
                                         {

@@ -29,11 +29,13 @@ def test_subject_metadata_has_associated_diagnosis_categories():
 
 def test_subject_metadata_unharmonized_is_serialized():
     meta = SubjectMetadata(
-        unharmonized={"associated_diagnosis_categories": [{"value": "ICD-O Value"}]}
+        unharmonized={
+            "associated_diagnosis_category_1": {"value": "ICD-O Value"}
+        }
     )
     dumped = meta.model_dump(exclude_none=True)
     assert "unharmonized" in dumped
-    assert "associated_diagnosis_categories" in dumped["unharmonized"]
+    assert "associated_diagnosis_category_1" in dumped["unharmonized"]
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +89,10 @@ def test_harmonized_value_goes_to_associated_diagnosis_categories():
     harmonized_vals = [item.value for item in subject.metadata.associated_diagnosis_categories]
     assert "Medulloblastoma" in harmonized_vals
     assert subject.metadata.unharmonized is None or \
-           "associated_diagnosis_categories" not in (subject.metadata.unharmonized or {})
+           not any(
+               k.startswith("associated_diagnosis_category_")
+               for k in (subject.metadata.unharmonized or {})
+           )
 
 
 def test_out_of_spec_value_goes_to_unharmonized():
@@ -96,9 +101,10 @@ def test_out_of_spec_value_goes_to_unharmonized():
     subject = repo._record_to_subject(record)
     assert subject.metadata.associated_diagnosis_categories is None
     assert subject.metadata.unharmonized is not None
-    assert "associated_diagnosis_categories" in subject.metadata.unharmonized
-    unharmonized_items = subject.metadata.unharmonized["associated_diagnosis_categories"]
-    assert any(item["value"] == "Adenomas and adenocarcinomas" for item in unharmonized_items)
+    assert "associated_diagnosis_category_1" in subject.metadata.unharmonized
+    assert subject.metadata.unharmonized["associated_diagnosis_category_1"]["value"] == (
+        "Adenomas and adenocarcinomas"
+    )
 
 
 def test_mixed_values_split_correctly():
@@ -110,8 +116,12 @@ def test_mixed_values_split_correctly():
     record = _base_record(nodes)
     subject = repo._record_to_subject(record)
     harmonized_vals = [item.value for item in subject.metadata.associated_diagnosis_categories]
-    unharmonized_items = subject.metadata.unharmonized["associated_diagnosis_categories"]
-    unharmonized_vals = [item["value"] for item in unharmonized_items]
+    unharmonized = subject.metadata.unharmonized
+    unharmonized_vals = [
+        unharmonized[k]["value"]
+        for k in sorted(unharmonized)
+        if k.startswith("associated_diagnosis_category_")
+    ]
     assert "Medulloblastoma" in harmonized_vals
     assert "Adenomas and adenocarcinomas" not in harmonized_vals
     assert "Adenomas and adenocarcinomas" in unharmonized_vals
@@ -141,11 +151,38 @@ def test_semicolon_delimited_single_node_splits_correctly():
     record = _base_record([_make_diag_node(diagnosis_category="Medulloblastoma;Adenomas and adenocarcinomas")])
     subject = repo._record_to_subject(record)
     harmonized_vals = [item.value for item in subject.metadata.associated_diagnosis_categories]
-    unharmonized_items = subject.metadata.unharmonized["associated_diagnosis_categories"]
-    unharmonized_vals = [item["value"] for item in unharmonized_items]
+    unharmonized = subject.metadata.unharmonized
+    unharmonized_vals = [
+        unharmonized[k]["value"]
+        for k in sorted(unharmonized)
+        if k.startswith("associated_diagnosis_category_")
+    ]
     assert "Medulloblastoma" in harmonized_vals
     assert "Adenomas and adenocarcinomas" in unharmonized_vals
     assert "Adenomas and adenocarcinomas" not in harmonized_vals
+
+
+def test_multiple_unharmonized_categories_use_numbered_keys():
+    repo = _make_repo()
+    record = _base_record(
+        [
+            _make_diag_node(
+                diagnosis_category=(
+                    "Circumscribed Astrocytic Gliomas;Gliomas;"
+                    "Gliomas, glioneuronal tumors, and neuronal tumors"
+                )
+            )
+        ]
+    )
+    subject = repo._record_to_subject(record)
+    unharmonized = subject.metadata.unharmonized
+    assert unharmonized == {
+        "associated_diagnosis_category_1": {"value": "Circumscribed Astrocytic Gliomas"},
+        "associated_diagnosis_category_2": {"value": "Gliomas"},
+        "associated_diagnosis_category_3": {
+            "value": "Gliomas, glioneuronal tumors, and neuronal tumors"
+        },
+    }
 
 
 # ---------------------------------------------------------------------------

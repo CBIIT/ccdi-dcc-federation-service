@@ -330,27 +330,20 @@ async def close_connection() -> None:
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
     """
     Get a database session with retry logic (async generator for dependency injection).
-    
-    Wraps session creation with retry logic for connection errors.
+
+    Retries apply only to session *acquisition*. The yield is outside the retry
+    try/except so exceptions from the request (thrown back into the generator at
+    yield) propagate normally and are not misclassified as connection failures.
     """
     max_retries = 3
     retry_count = 0
-    
+    session: Optional[AsyncSession] = None
+
     while retry_count <= max_retries:
-        session = None
         try:
             connection = await get_connection()
             session = await connection.get_session(retry_on_error=(retry_count == 0))
-            try:
-                yield session
-                # Success - break out of retry loop
-                break
-            finally:
-                if session:
-                    try:
-                        await session.close()
-                    except Exception:
-                        pass
+            break
         except (ServiceUnavailable, TransientError, SessionExpired, OSError, TimeoutError) as e:
             if retry_count < max_retries and is_retryable_error(e):
                 backoff_time = 0.5 * (retry_count + 1)
@@ -359,18 +352,14 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
                     error=str(e),
                     error_type=type(e).__name__,
                     backoff_seconds=backoff_time,
-                    is_connection_error=True
+                    is_connection_error=True,
                 )
-                # Do not close the shared driver here: this except also catches
-                # errors raised while the request was using the yielded session.
-                # Tear-down would race other concurrent requests. Retry with a
-                # fresh session from the existing (or reconnecting) connection.
+                # Do not close the shared driver on acquisition retry — that would
+                # race other concurrent requests still using the pool.
                 await asyncio.sleep(backoff_time)
                 retry_count += 1
                 continue
-            else:
-                # Re-raise as DatabaseConnectionError so it can be caught by exception handlers
-                raise DatabaseConnectionError(f"Database connection error: {str(e)}") from e
+            raise DatabaseConnectionError(f"Database connection error: {str(e)}") from e
         except DatabaseConnectionError:
             raise
         except Exception as e:
@@ -380,13 +369,23 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
                     f"Unexpected error getting session, retrying (attempt {retry_count + 1}/{max_retries})",
                     error=str(e),
                     error_type=type(e).__name__,
-                    backoff_seconds=backoff_time
+                    backoff_seconds=backoff_time,
                 )
                 await asyncio.sleep(backoff_time)
                 retry_count += 1
                 continue
-            else:
-                raise DatabaseConnectionError(f"Database is not available: {str(e)}") from e
+            raise DatabaseConnectionError(f"Database is not available: {str(e)}") from e
+
+    if session is None:
+        raise DatabaseConnectionError("Database is not available: failed to acquire session")
+
+    try:
+        yield session
+    finally:
+        try:
+            await session.close()
+        except Exception:
+            pass
 
 
 @asynccontextmanager

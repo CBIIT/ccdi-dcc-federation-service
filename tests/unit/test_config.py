@@ -173,6 +173,38 @@ class TestSettings:
         cache_settings = settings.cache
         assert isinstance(cache_settings, CacheSettings)
         assert cache_settings.enabled == settings.cache_enabled
+        assert cache_settings.count_ttl == 300
+        assert cache_settings.summary_ttl == 600
+
+    def test_cache_ttl_accepts_legacy_endpoint_env_names(self):
+        """Legacy CACHE_TTL_*_ENDPOINTS env names still populate count/summary TTL."""
+        with patch.dict(
+            "os.environ",
+            {
+                "CACHE_TTL_COUNT_ENDPOINTS": "1800",
+                "CACHE_TTL_SUMMARY_ENDPOINTS": "900",
+            },
+            clear=False,
+        ):
+            settings = Settings()
+            assert settings.cache_count_ttl == 1800
+            assert settings.cache_summary_ttl == 900
+            assert settings.cache.count_ttl == 1800
+            assert settings.cache.summary_ttl == 900
+
+    def test_cache_ttl_prefers_canonical_env_names(self):
+        """CACHE_COUNT_TTL / CACHE_SUMMARY_TTL are the preferred knobs."""
+        with patch.dict(
+            "os.environ",
+            {
+                "CACHE_COUNT_TTL": "120",
+                "CACHE_SUMMARY_TTL": "240",
+            },
+            clear=False,
+        ):
+            settings = Settings()
+            assert settings.cache.count_ttl == 120
+            assert settings.cache.summary_ttl == 240
 
     def test_settings_cors_property(self):
         """Test Settings.cors property."""

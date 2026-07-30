@@ -206,7 +206,7 @@ async def list_files(
         cache_service = get_cache_service()
         service = FileService(session, allowlist, settings, cache_service)
         
-        # get_files returns (files, total_count) — no separate summary call needed
+        # get_files returns (files, total_count) â no separate summary call needed
         files, total_count = await service.get_files(
             filters=filters,
             offset=pagination.offset,
@@ -454,7 +454,7 @@ async def count_files_by_field(
         error_detail = ErrorDetail(
             kind=ErrorKind.NOT_FOUND,
             entity="Files",
-            # Generic message only - never expose exception text/user input in the response (goes to logs).
+            # Generic message only  never expose exception text/user input in the response (goes to logs).
             message="Unable to find data for your request.",
             reason="Query validation or timeout error."
         )

@@ -425,6 +425,53 @@ class TestCase3FilterBranches:
         assert ["Cytospin Slide", "Other"] in params.values()
 
     @pytest.mark.asyncio
+    async def test_specimen_molecular_analyte_type_db_only_early_exit(self, repository):
+        """DB-only 'Total RNA' is rejected; clients must filter by API PV 'RNA'."""
+        cat = _categorized(
+            sequencing_file={"specimen_molecular_analyte_type": "Total RNA"},
+        )
+        result = await repository._get_samples_case3_with_node_filters(
+            {}, cat, offset=0, limit=20, base_url=None, return_total=False
+        )
+        assert result == []
+        repository.session.run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_specimen_molecular_analyte_type_null_mapped_early_exit(self, repository):
+        """Null-mapped 'Not Reported' is rejected as a filter."""
+        cat = _categorized(
+            sequencing_file={"specimen_molecular_analyte_type": "Not Reported"},
+        )
+        result = await repository._get_samples_case3_with_node_filters(
+            {}, cat, offset=0, limit=20, base_url=None, return_total=False
+        )
+        assert result == []
+        repository.session.run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_preservation_method_db_only_early_exit(self, repository):
+        """DB-only 'Cytospin Slide' is rejected; clients must filter by API PV 'Unknown'."""
+        cat = _categorized(pathology_file={"preservation_method": "Cytospin Slide"})
+        result = await repository._get_samples_case3_with_node_filters(
+            {}, cat, offset=0, limit=20, base_url=None, return_total=False
+        )
+        assert result == []
+        repository.session.run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_preservation_method_unknown_is_valid_filter(self, repository):
+        """'Unknown' is null-mapped for responses but must still be accepted as a filter."""
+        repository.session.run = AsyncMock(return_value=_empty_result())
+        cat = _categorized(pathology_file={"preservation_method": "Unknown"})
+        await repository._get_samples_case3_with_node_filters(
+            {}, cat, offset=0, limit=20, base_url=None, return_total=False
+        )
+        query = repository.session.run.call_args[0][0]
+        params = repository.session.run.call_args[0][1]
+        assert "pf.fixation_embedding_method IN" in query
+        assert ["Cytospin Slide", "Other"] in params.values()
+
+    @pytest.mark.asyncio
     async def test_pathology_only_enrichment_without_node_filters(self, repository):
         """Only pathology filter: diagnosis enrichment projection, head(sf) pick."""
         repository.session.run = AsyncMock(return_value=_empty_result())

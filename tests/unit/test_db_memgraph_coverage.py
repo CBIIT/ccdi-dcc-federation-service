@@ -219,6 +219,25 @@ class TestMemgraphConnectionErrorHandling:
         mock_connection._invalidate_driver.assert_not_called()
 
     @patch('app.db.memgraph.get_connection')
+    async def test_get_session_does_not_retry_errors_from_yield(self, mock_get_connection):
+        """Errors thrown into yield (mid-request) must not hit acquisition retry."""
+        mock_connection = AsyncMock(spec=MemgraphConnection)
+        mock_session = AsyncMock(spec=AsyncSession)
+        mock_connection.get_session = AsyncMock(return_value=mock_session)
+        mock_get_connection.return_value = mock_connection
+
+        gen = get_session()
+        session = await gen.__anext__()
+        assert session is mock_session
+
+        with pytest.raises(TransientError, match="query failed mid-request"):
+            await gen.athrow(TransientError("query failed mid-request"))
+
+        # Acquisition succeeded once; must not retry as if connect failed.
+        assert mock_connection.get_session.call_count == 1
+        mock_session.close.assert_awaited()
+
+    @patch('app.db.memgraph.get_connection')
     async def test_get_session_close_session_exception(self, mock_get_connection):
         """Test get_session handles exception when closing session (line 418-422)."""
         mock_connection = AsyncMock(spec=MemgraphConnection)

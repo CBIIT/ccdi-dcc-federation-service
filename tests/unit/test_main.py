@@ -143,6 +143,20 @@ class TestSuggestCorrectPath:
         
         assert result is None
 
+    def test_suggest_correct_path_uses_allowlist_fields(self):
+        """Typo'd /by/ prefix suggests path for allowlisted fields including depositions."""
+        path = "/api/v1/subject/b1y/depositions/count"
+        assert _suggest_correct_path(path) == "/api/v1/subject/by/depositions/count"
+
+        path = "/api/v1/subject/b1y/associated_diagnosis_categories/count"
+        assert _suggest_correct_path(path) == (
+            "/api/v1/subject/by/associated_diagnosis_categories/count"
+        )
+
+        # Stale/wrong field name must not be suggested
+        path = "/api/v1/subject/b1y/associated_diagnoses/count"
+        assert _suggest_correct_path(path) is None
+
 
 @pytest.mark.unit
 class TestSetupMiddleware:

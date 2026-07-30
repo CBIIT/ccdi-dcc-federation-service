@@ -762,7 +762,7 @@ def get_file_filters(
     ),
     checksums: Optional[str] = Query(
         None, 
-        description="Matches any file (methylation_array_file or sequencing_file) where the `md5sum` or `checksum_value` field matches the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the file should be included in the results."
+        description="Matches any file (methylation_array_file or sequencing_file) where the `md5sum` field matches the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the file should be included in the results."
     ),
     description: Optional[str] = Query(
         None, 
@@ -797,8 +797,6 @@ def get_file_filters(
     if size is not None:
         filters["file_size"] = size
     if checksums is not None:
-        # For checksums, check both md5sum and checksum_value fields
-        # This will be handled in the repository query
         filters["md5sum"] = checksums
     if description is not None:
         filters["file_description"] = description

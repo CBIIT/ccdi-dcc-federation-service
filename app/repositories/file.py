@@ -184,12 +184,10 @@ class FileRepository:
             param_counter += 1
             checksums_param_name = f"param_{param_counter}"
             if len(checksums_list) == 1:
-                # Single checksum: check both md5sum and checksum_value fields
-                where_conditions.append(f"(sf.md5sum = ${checksums_param_name} OR sf.checksum_value = ${checksums_param_name})")
+                where_conditions.append(f"sf.md5sum = ${checksums_param_name}")
                 params[checksums_param_name] = checksums_list[0]
             else:
-                # Multiple checksums: check if either field is IN the list
-                where_conditions.append(f"(sf.md5sum IN ${checksums_param_name} OR sf.checksum_value IN ${checksums_param_name})")
+                where_conditions.append(f"sf.md5sum IN ${checksums_param_name}")
                 params[checksums_param_name] = checksums_list
         
         # Build final query
@@ -1067,12 +1065,10 @@ class FileRepository:
             param_counter += 1
             checksums_param_name = f"param_{param_counter}"
             if len(checksums_list) == 1:
-                # Single checksum: check both md5sum and checksum_value fields
-                where_conditions.append(f"(sf.md5sum = ${checksums_param_name} OR sf.checksum_value = ${checksums_param_name})")
+                where_conditions.append(f"sf.md5sum = ${checksums_param_name}")
                 params[checksums_param_name] = checksums_list[0]
             else:
-                # Multiple checksums: check if either field is IN the list
-                where_conditions.append(f"(sf.md5sum IN ${checksums_param_name} OR sf.checksum_value IN ${checksums_param_name})")
+                where_conditions.append(f"sf.md5sum IN ${checksums_param_name}")
                 params[checksums_param_name] = checksums_list
 
         # Build final query - OPTIMIZATION: Same as get_files, filter files FIRST
@@ -1236,31 +1232,6 @@ class FileRepository:
                 filters=filters,
             )
             raise
-    
-    def _validate_filters(self, filters: Dict[str, Any], entity_type: str) -> None:
-        """
-        Validate that all filter fields are allowed.
-        
-        Args:
-            filters: Dictionary of filters to validate
-            entity_type: Type of entity for allowlist checking
-            
-        Raises:
-            UnsupportedFieldError: If any field is not allowed
-        """
-        for field in filters.keys():
-            # Skip special fields
-            if field.startswith("_"):
-                continue
-                
-            if not self.allowlist.is_field_allowed(entity_type, field):
-                # Log the invalid field but don't include it in the error message
-                logger.warning(
-                    "Unsupported field in filter",
-                    field=field,
-                    entity_type=entity_type
-                )
-                raise UnsupportedFieldError(field, entity_type)
     
     def _map_file_type_to_enum(self, file_type: Any) -> Optional[str]:
         """

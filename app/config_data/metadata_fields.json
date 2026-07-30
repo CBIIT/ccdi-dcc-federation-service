@@ -74,7 +74,7 @@
         }
       },
       {
-        "path": "unharmonized.associated_diagnosis_categories",
+        "path": "unharmonized.associated_diagnosis_category_N",
         "harmonized": false,
         "wiki_url": null,
         "standard": {

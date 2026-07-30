@@ -629,8 +629,8 @@ class SampleQueryCases:
                     # Map API value to DB value(s)
                     reverse_mapped = reverse_map_field_value("specimen_molecular_analyte_type", value)
                     if isinstance(reverse_mapped, list):
-                        db_values_str = ", ".join([f"'{v}'" for v in reverse_mapped])
-                        sf_conditions.append(f"sf.library_source_molecule IN [{db_values_str}]")
+                        params[param_name] = reverse_mapped
+                        sf_conditions.append(f"sf.library_source_molecule IN ${param_name}")
                     else:
                         params[param_name] = reverse_mapped if reverse_mapped else value
                         sf_conditions.append(f"sf.library_source_molecule = ${param_name}")

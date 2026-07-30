@@ -81,7 +81,7 @@ async def get_error_examples(
     if error_type == "all" or error_type == "UnshareableData":
         errors.append(ErrorDetail(
             kind=ErrorKind.UNSHAREABLE_DATA,
-            entity="Sample",
+            entity="Samples",
             message="Our agreement with data providers prohibits us from sharing line-level data.",
             reason="Data sharing is restricted by agreement with data providers."
         ))

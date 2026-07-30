@@ -24,8 +24,6 @@ COVERED_ROUTES = {
 
 
 def _sample(sample_id: str = "S1", study_id: str = "phs002431") -> Sample:
-    # NOTE: dto.py defines NamespaceIdentifier twice; SampleIdentifier captures the first one.
-    # Passing a dict avoids type-mismatch validation errors caused by the second class.
     return Sample(
         id={"namespace": {"organization": "CCDI-DCC", "name": study_id}, "name": sample_id},
         subject=None,

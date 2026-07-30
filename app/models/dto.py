@@ -22,9 +22,14 @@ class BaseIdentifier(BaseModel):
     name: str = Field(..., description="Name")
 
 
-class NamespaceIdentifier(BaseIdentifier):
-    """Namespace identifier model."""
-    pass
+class NamespaceIdentifier(BaseModel):
+    """Namespace identifier (organization + study ID).
+
+    Single definition used by Subject/Sample/File identifiers and nested CCDI-DCC
+    response models. ``organization`` defaults to CCDI-DCC for nested payloads.
+    """
+    organization: str = Field(default="CCDI-DCC", description="Organization identifier")
+    name: str = Field(..., description="Namespace name (study ID)")
 
 
 class OrganizationIdentifier(BaseModel):
@@ -357,11 +362,6 @@ class FileMetadata(CommonMetadata):
 # ============================================================================
 # Nested Structure Models for CCDI-DCC Format
 # ============================================================================
-
-class NamespaceIdentifier(BaseModel):
-    """Namespace identifier for nested structure."""
-    organization: str = Field(default="CCDI-DCC", description="Organization identifier")
-    name: str = Field(..., description="Namespace name (study ID)")
 
 class SubjectId(BaseModel):
     """Subject identifier with nested namespace."""

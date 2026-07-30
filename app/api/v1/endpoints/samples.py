@@ -32,7 +32,7 @@ from app.models.dto import (
 )
 from app.models.errors import NotFoundError, ErrorDetail, ErrorsResponse, ErrorKind, InvalidParametersError, UnsupportedFieldError
 from app.services.sample import SampleService
-from app.db.memgraph import DatabaseConnectionError
+from app.db.memgraph import DatabaseConnectionError, is_retryable_error
 
 logger = get_logger(__name__)
 
@@ -743,12 +743,7 @@ async def get_samples_summary(
             detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
         )
     except Exception as e:
-        # Check if this is a connection-related error
-        error_str = str(e).lower()
-        is_connection_error = any(keyword in error_str for keyword in [
-            'connection', 'database', 'unavailable', 'timeout', 'network',
-            'service unavailable', 'broken pipe', 'connection reset', 'connection closed'
-        ])
+        is_connection_error = is_retryable_error(e)
         
         if is_connection_error:
             # Connection-related error - log clearly for AWS cloud monitoring

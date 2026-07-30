@@ -38,7 +38,7 @@ from app.models.dto import (
 )
 from app.models.errors import NotFoundError, ValidationError, InvalidParametersError, UnsupportedFieldError, InvalidRouteError, ErrorDetail, ErrorsResponse, ErrorKind
 from app.services.file import FileService
-from app.db.memgraph import DatabaseConnectionError
+from app.db.memgraph import DatabaseConnectionError, is_retryable_error
 
 logger = get_logger(__name__)
 
@@ -206,7 +206,7 @@ async def list_files(
         cache_service = get_cache_service()
         service = FileService(session, allowlist, settings, cache_service)
         
-        # get_files returns (files, total_count) â€” no separate summary call needed
+        # get_files returns (files, total_count) - no separate summary call needed
         files, total_count = await service.get_files(
             filters=filters,
             offset=pagination.offset,
@@ -287,12 +287,7 @@ async def list_files(
             detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
         )
     except Exception as e:
-        # Check if this is a connection-related error
-        error_str = str(e).lower()
-        is_connection_error = any(keyword in error_str for keyword in [
-            'connection', 'database', 'unavailable', 'timeout', 'network',
-            'service unavailable', 'broken pipe', 'connection reset', 'connection closed'
-        ])
+        is_connection_error = is_retryable_error(e)
         
         if is_connection_error:
             # Connection-related error - log clearly for AWS cloud monitoring
@@ -459,7 +454,7 @@ async def count_files_by_field(
         error_detail = ErrorDetail(
             kind=ErrorKind.NOT_FOUND,
             entity="Files",
-            # Generic message only — never expose exception text/user input in the response (goes to logs).
+            # Generic message only - never expose exception text/user input in the response (goes to logs).
             message="Unable to find data for your request.",
             reason="Query validation or timeout error."
         )
@@ -773,12 +768,7 @@ async def get_files_summary(
             detail=ErrorsResponse(errors=[error_detail]).model_dump(exclude_none=True)
         )
     except Exception as e:
-        # Check if this is a connection-related error
-        error_str = str(e).lower()
-        is_connection_error = any(keyword in error_str for keyword in [
-            'connection', 'database', 'unavailable', 'timeout', 'network',
-            'service unavailable', 'broken pipe', 'connection reset', 'connection closed'
-        ])
+        is_connection_error = is_retryable_error(e)
         
         if is_connection_error:
             # Connection-related error - log clearly for AWS cloud monitoring

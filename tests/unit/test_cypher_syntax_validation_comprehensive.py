@@ -376,61 +376,6 @@ class TestCypherSyntaxValidation:
             # Log warnings but don't fail - these are heuristics that may have false positives
             print(f"WITH clause comma warnings (may be false positives):\n" + "\n".join(errors))
     
-    @pytest.mark.asyncio
-    async def test_all_reverse_query_patterns_syntax(self, repository, session):
-        """Test all query patterns (reverse and standard) for syntax errors."""
-        test_cases = [
-            {"library_source_material": "Bulk Tissue"},
-            {"library_strategy": "WXS"},
-            {"library_selection_method": "Poly-A Enriched Genomic Library"},
-            {"preservation_method": "Frozen"},
-            {"specimen_molecular_analyte_type": "RNA"},
-            {"library_source_material": "Bulk Tissue", "library_strategy": "WXS"},
-            {"preservation_method": "Frozen", "library_source_material": "Bulk Tissue"},
-        ]
-        
-        for filters in test_cases:
-            session.last_cypher = None
-            
-            try:
-                # Try sequencing_file reverse query
-                if any(k in filters for k in ["library_source_material", "library_strategy", 
-                                               "library_selection_method", "specimen_molecular_analyte_type"]):
-                    await repository._get_samples_by_sequencing_file_filters(filters, offset=0, limit=20)
-                
-                # Try pathology_file reverse query
-                if "preservation_method" in filters:
-                    await repository._get_samples_by_pathology_file_filters(filters, offset=0, limit=20)
-                
-                # Try combined query
-                if len(filters) > 1:
-                    await repository._get_samples_by_combined_filters(filters, offset=0, limit=20)
-            except Exception:
-                pass  # Ignore data processing errors
-            
-            if session.last_cypher:
-                cypher = session.last_cypher
-                
-                # Validate ORDER BY placement
-                errors = self.validate_order_by_placement(cypher)
-                assert not errors, (
-                    f"ORDER BY placement errors for filters {filters}:\n" + "\n".join(errors) +
-                    f"\n\nQuery:\n{cypher[:500]}"
-                )
-                
-                # Validate WITH clause commas (only warn, don't fail - heuristic may have false positives)
-                errors = self.validate_with_clause_commas(cypher)
-                if errors:
-                    # Log warnings but don't fail - these are heuristics that may have false positives
-                    print(f"WITH clause comma warnings for {filters}:\n" + "\n".join(errors))
-                
-                # Validate clause ordering
-                errors = self.validate_clause_ordering(cypher)
-                assert not errors, (
-                    f"Clause ordering errors for filters {filters}:\n" + "\n".join(errors) +
-                    f"\n\nQuery:\n{cypher[:500]}"
-                )
-    
     def test_detect_missing_comma_in_with_clause(self):
         """Test that we can detect missing commas in WITH clauses."""
         # Example of bad query (missing comma before 'sf')

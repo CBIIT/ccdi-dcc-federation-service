@@ -7,7 +7,7 @@ using the Neo4j Python driver (which is compatible with Memgraph).
 
 import asyncio
 from contextlib import asynccontextmanager
-from typing import Any, AsyncGenerator, Dict, List, Optional, TypeVar
+from typing import Any, AsyncGenerator, Dict, Optional, TypeVar
 
 from neo4j import AsyncGraphDatabase, AsyncDriver, AsyncSession
 from neo4j.exceptions import ServiceUnavailable, AuthError, TransientError, SessionExpired
@@ -18,6 +18,12 @@ from app.core.logging import get_logger
 logger = get_logger(__name__)
 
 T = TypeVar('T')
+
+# Serializes driver create / invalidate so one request's retry cannot close the
+# shared AsyncDriver out from under other in-flight sessions without coordination.
+_driver_lock = asyncio.Lock()
+# Serializes module-level MemgraphConnection singleton construction (cold start).
+_connection_lock = asyncio.Lock()
 
 
 class DatabaseConnectionError(Exception):
@@ -47,7 +53,7 @@ def is_retryable_error(error: Exception) -> bool:
         'service unavailable', 'defunct connection', 'connection', 'database',
         'unavailable', 'timeout', 'network', 'broken pipe',
         'connection reset', 'connection closed', 'session expired',
-        'transient'
+        'transient', 'temporary',
     ]
     
     if any(keyword in error_str for keyword in connection_keywords):
@@ -129,53 +135,82 @@ class MemgraphConnection:
         """Initialize the connection manager."""
         self._driver: Optional[AsyncDriver] = None
         self._settings = get_settings()
-    
+
+    async def _invalidate_driver(self) -> None:
+        """
+        Drop and close the current driver under lock (compare-and-swap).
+
+        Only the coroutine that still sees this instance's current driver clears
+        it, so concurrent invalidations do not double-close or race with connect().
+        Prefer session-only retries for transient query errors; call this when
+        session *creation* fails or the driver is known defunct.
+        """
+        async with _driver_lock:
+            driver = self._driver
+            if driver is None:
+                return
+            self._driver = None
+        try:
+            await driver.close()
+        except Exception:
+            pass
+
     async def connect(self) -> None:
         """Establish connection to Memgraph."""
-        try:
-            # Prepare authentication only if both user and password are provided (password may be blank in some deployments)
-            auth = None
-            if self._settings.memgraph_user and self._settings.memgraph_password:
-                auth = (
-                    self._settings.memgraph_user,
-                    self._settings.memgraph_password,
+        async with _driver_lock:
+            if self._driver is not None:
+                return
+            driver: Optional[AsyncDriver] = None
+            try:
+                # Prepare authentication only if both user and password are provided (password may be blank in some deployments)
+                auth = None
+                if self._settings.memgraph_user and self._settings.memgraph_password:
+                    auth = (
+                        self._settings.memgraph_user,
+                        self._settings.memgraph_password,
+                    )
+                # Use environment-configured URI & pool settings from `Settings`
+                # Set max_connection_lifetime lower than any upstream idle timeout (LB/NAT)
+                # If LB idle is 350s, set lifetime to ~300s to prevent stale connections
+                # Default is 3600s, but should be adjusted based on infrastructure
+                connection_lifetime = min(
+                    self._settings.memgraph_max_connection_lifetime,
+                    300  # Cap at 300s to prevent stale connections from idle timeouts
                 )
-            # Use environment-configured URI & pool settings from `Settings`
-            # Set max_connection_lifetime lower than any upstream idle timeout (LB/NAT)
-            # If LB idle is 350s, set lifetime to ~300s to prevent stale connections
-            # Default is 3600s, but should be adjusted based on infrastructure
-            connection_lifetime = min(
-                self._settings.memgraph_max_connection_lifetime,
-                300  # Cap at 300s to prevent stale connections from idle timeouts
-            )
-            
-            self._driver = AsyncGraphDatabase.driver(
-                self._settings.memgraph_uri,
-                auth=auth,
-                max_connection_lifetime=connection_lifetime,
-                max_connection_pool_size=self._settings.memgraph_max_connection_pool_size,
-            )
-            # Test the connection
-            await self.verify_connectivity()
-            
-            logger.info(
-                "Connected to Memgraph",
-                uri=self._settings.memgraph_uri,
-                database=self._settings.memgraph_database
-            )
-            
-        except (ServiceUnavailable, AuthError, OSError, TimeoutError) as e:
-            logger.error("Failed to connect to Memgraph", error=str(e))
-            # Don't raise - allow app to start, connection will be retried on first use
-            self._driver = None
-            raise DatabaseConnectionError(f"Database connection failed: {str(e)}") from e
-    
+
+                driver = AsyncGraphDatabase.driver(
+                    self._settings.memgraph_uri,
+                    auth=auth,
+                    max_connection_lifetime=connection_lifetime,
+                    max_connection_pool_size=self._settings.memgraph_max_connection_pool_size,
+                )
+                # Verify on the local handle before publishing to self._driver so
+                # concurrent get_session callers never observe an unverified driver.
+                await driver.verify_connectivity()
+                self._driver = driver
+                driver = None  # ownership transferred; skip close in except
+
+                logger.info(
+                    "Connected to Memgraph",
+                    uri=self._settings.memgraph_uri,
+                    database=self._settings.memgraph_database
+                )
+
+            except (ServiceUnavailable, AuthError, OSError, TimeoutError) as e:
+                logger.error("Failed to connect to Memgraph", error=str(e))
+                # Don't raise - allow app to start, connection will be retried on first use
+                if driver is not None:
+                    try:
+                        await driver.close()
+                    except Exception:
+                        pass
+                self._driver = None
+                raise DatabaseConnectionError(f"Database connection failed: {str(e)}") from e
+
     async def disconnect(self) -> None:
         """Close the connection to Memgraph."""
-        if self._driver:
-            await self._driver.close()
-            self._driver = None
-            logger.info("Disconnected from Memgraph")
+        await self._invalidate_driver()
+        logger.info("Disconnected from Memgraph")
     
     async def verify_connectivity(self) -> None:
         """Verify connection to Memgraph."""
@@ -237,13 +272,8 @@ class MemgraphConnection:
                         backoff_seconds=backoff_time,
                         is_connection_error=True
                     )
-                    # Close driver to force fresh connection on retry
-                    if self._driver:
-                        try:
-                            await self._driver.close()
-                        except Exception:
-                            pass
-                        self._driver = None
+                    # Session creation failed — invalidate driver under lock, then retry
+                    await self._invalidate_driver()
                     await asyncio.sleep(backoff_time)
                     retry_count += 1
                     continue
@@ -254,174 +284,6 @@ class MemgraphConnection:
                 # Auth errors are not retryable
                 logger.error("Authentication failed", error=str(e))
                 raise DatabaseConnectionError(f"Authentication failed: {str(e)}") from e
-    
-    async def execute_query(
-        self, 
-        query: str, 
-        parameters: Optional[Dict[str, Any]] = None,
-        max_retries: int = 3
-    ) -> List[Dict[str, Any]]:
-        """
-        Execute a Cypher query with retry logic for connection errors.
-        
-        Wraps the entire operation: session creation + query execution + result consumption.
-        On retryable errors, closes the session and gets a fresh one.
-        
-        Args:
-            query: Cypher query string
-            parameters: Query parameters
-            max_retries: Maximum number of retries (default: 3)
-            
-        Returns:
-            List of result records as dictionaries
-        """
-        retry_count = 0
-        
-        while retry_count <= max_retries:
-            session = None
-            try:
-                # Get fresh session for each attempt
-                session = await self.get_session(retry_on_error=(retry_count == 0))
-                
-                # Execute query and consume results
-                result = await session.run(query, parameters or {})
-                records = []
-                async for record in result:
-                    records.append(dict(record))
-                # Ensure result is fully consumed
-                await result.consume()
-                
-                # Success - close session and return
-                await session.close()
-                return records
-                
-            except (ServiceUnavailable, TransientError, SessionExpired, OSError, TimeoutError) as e:
-                # Close session on error to ensure clean state
-                if session:
-                    try:
-                        await session.close()
-                    except Exception:
-                        pass
-                
-                if retry_count < max_retries and is_retryable_error(e):
-                    backoff_time = 0.5 * (retry_count + 1)
-                    logger.warning(
-                        f"Query execution failed with connection error, retrying (attempt {retry_count + 1}/{max_retries})",
-                        query=query[:100] if query else None,
-                        error=str(e),
-                        error_type=type(e).__name__,
-                        backoff_seconds=backoff_time,
-                        is_connection_error=True
-                    )
-                    # Force driver refresh on retry
-                    if self._driver:
-                        try:
-                            await self._driver.close()
-                        except Exception:
-                            pass
-                        self._driver = None
-                    await asyncio.sleep(backoff_time)
-                    retry_count += 1
-                    continue
-                else:
-                    logger.error(
-                        "Query execution failed - database connection error",
-                        query=query[:100] if query else None,
-                        error=str(e),
-                        error_type=type(e).__name__,
-                        retry_count=retry_count
-                    )
-                    raise DatabaseConnectionError(f"Database connection error: {str(e)}") from e
-            except AuthError as e:
-                if session:
-                    try:
-                        await session.close()
-                    except Exception:
-                        pass
-                logger.error("Authentication failed", error=str(e))
-                raise DatabaseConnectionError(f"Authentication failed: {str(e)}") from e
-            except Exception as e:
-                if session:
-                    try:
-                        await session.close()
-                    except Exception:
-                        pass
-                logger.error(
-                    "Query execution failed",
-                    query=query[:100] if query else None,
-                    parameters=parameters,
-                    error=str(e),
-                    error_type=type(e).__name__
-                )
-                raise e
-    
-    async def execute_write_query(
-        self, 
-        query: str, 
-        parameters: Optional[Dict[str, Any]] = None
-    ) -> List[Dict[str, Any]]:
-        """
-        Execute a write Cypher query and return results.
-        
-        Args:
-            query: Cypher query string
-            parameters: Query parameters
-            
-        Returns:
-            List of result records as dictionaries
-        """
-        try:
-            async with self.get_session() as session:
-                try:
-                    result = await session.run(query, parameters or {})
-                    records = []
-                    async for record in result:
-                        records.append(dict(record))
-                    await session.commit()
-                    return records
-                except (ServiceUnavailable, AuthError, OSError, TimeoutError) as e:
-                    logger.error(
-                        "Write query execution failed - database connection error",
-                        query=query[:100] if query else None,
-                        error=str(e)
-                    )
-                    raise DatabaseConnectionError(f"Database connection error: {str(e)}") from e
-                except Exception as e:
-                    logger.error(
-                        "Write query execution failed",
-                        query=query[:100] if query else None,
-                        parameters=parameters,
-                        error=str(e)
-                    )
-                    raise e
-        except DatabaseConnectionError:
-            raise
-        except Exception as e:
-            logger.error(
-                "Failed to get database session for write query",
-                error=str(e)
-            )
-            raise DatabaseConnectionError(f"Database is not available: {str(e)}") from e
-    
-    async def count_query(
-        self, 
-        query: str, 
-        parameters: Optional[Dict[str, Any]] = None
-    ) -> int:
-        """
-        Execute a count query and return the count.
-        
-        Args:
-            query: Cypher count query
-            parameters: Query parameters
-            
-        Returns:
-            Count result
-        """
-        records = await self.execute_query(query, parameters)
-        if records and 'count' in records[0]:
-            return records[0]['count']
-        return 0
 
 
 # Global connection instance
@@ -429,10 +291,16 @@ _connection: Optional[MemgraphConnection] = None
 
 
 async def get_connection() -> MemgraphConnection:
-    """Get the global Memgraph connection."""
+    """Get the global Memgraph connection (singleton; locked at cold start)."""
     global _connection
-    
-    if _connection is None:
+
+    if _connection is not None:
+        return _connection
+
+    async with _connection_lock:
+        if _connection is not None:
+            return _connection
+
         _connection = MemgraphConnection()
         try:
             await _connection.connect()
@@ -445,43 +313,37 @@ async def get_connection() -> MemgraphConnection:
             )
             # Set driver to None so it can be retried later
             _connection._driver = None
-    
-    return _connection
+
+        return _connection
 
 
 async def close_connection() -> None:
     """Close the global Memgraph connection."""
     global _connection
-    
-    if _connection:
-        await _connection.disconnect()
-        _connection = None
+
+    async with _connection_lock:
+        if _connection:
+            await _connection.disconnect()
+            _connection = None
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
     """
     Get a database session with retry logic (async generator for dependency injection).
-    
-    Wraps session creation with retry logic for connection errors.
+
+    Retries apply only to session *acquisition*. The yield is outside the retry
+    try/except so exceptions from the request (thrown back into the generator at
+    yield) propagate normally and are not misclassified as connection failures.
     """
     max_retries = 3
     retry_count = 0
-    
+    session: Optional[AsyncSession] = None
+
     while retry_count <= max_retries:
-        session = None
         try:
             connection = await get_connection()
             session = await connection.get_session(retry_on_error=(retry_count == 0))
-            try:
-                yield session
-                # Success - break out of retry loop
-                break
-            finally:
-                if session:
-                    try:
-                        await session.close()
-                    except Exception:
-                        pass
+            break
         except (ServiceUnavailable, TransientError, SessionExpired, OSError, TimeoutError) as e:
             if retry_count < max_retries and is_retryable_error(e):
                 backoff_time = 0.5 * (retry_count + 1)
@@ -490,22 +352,14 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
                     error=str(e),
                     error_type=type(e).__name__,
                     backoff_seconds=backoff_time,
-                    is_connection_error=True
+                    is_connection_error=True,
                 )
-                # Force connection refresh
-                global _connection
-                if _connection and _connection._driver:
-                    try:
-                        await _connection._driver.close()
-                    except Exception:
-                        pass
-                    _connection._driver = None
+                # Do not close the shared driver on acquisition retry — that would
+                # race other concurrent requests still using the pool.
                 await asyncio.sleep(backoff_time)
                 retry_count += 1
                 continue
-            else:
-                # Re-raise as DatabaseConnectionError so it can be caught by exception handlers
-                raise DatabaseConnectionError(f"Database connection error: {str(e)}") from e
+            raise DatabaseConnectionError(f"Database connection error: {str(e)}") from e
         except DatabaseConnectionError:
             raise
         except Exception as e:
@@ -515,13 +369,23 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
                     f"Unexpected error getting session, retrying (attempt {retry_count + 1}/{max_retries})",
                     error=str(e),
                     error_type=type(e).__name__,
-                    backoff_seconds=backoff_time
+                    backoff_seconds=backoff_time,
                 )
                 await asyncio.sleep(backoff_time)
                 retry_count += 1
                 continue
-            else:
-                raise DatabaseConnectionError(f"Database is not available: {str(e)}") from e
+            raise DatabaseConnectionError(f"Database is not available: {str(e)}") from e
+
+    if session is None:
+        raise DatabaseConnectionError("Database is not available: failed to acquire session")
+
+    try:
+        yield session
+    finally:
+        try:
+            await session.close()
+        except Exception:
+            pass
 
 
 @asynccontextmanager
@@ -542,7 +406,7 @@ async def memgraph_lifespan(settings: Settings):
             "Application will start but database operations will return 500 errors until connection is established.",
             error=str(e)
         )
-    
+
     try:
         yield
     finally:

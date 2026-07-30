@@ -146,4 +146,3 @@ class TestSamplePyCoverageBoost:
     async def test_record_to_sample_empty_sa_raises(self, repository):
         with pytest.raises(ValueError, match="required"):
             repository._record_to_sample({}, {}, {"study_id": "phs001"}, {}, {}, None)
-

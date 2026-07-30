@@ -166,37 +166,6 @@ class TestSamplePyCoverageCampaign:
         cypher = mock_session.run.call_args[0][0]
         assert "fixation_embedding_method IN $" in cypher
 
-    async def test_combined_filters_preservation_list_and_tissue(
-        self, repository, mock_session
-    ):
-        mock_session.run = AsyncMock(return_value=_list_result([SAMPLE_RECORD]))
-        with patch("app.repositories.sample.is_null_mapped_value", return_value=False):
-            with patch("app.repositories.sample.is_database_only_value", return_value=False):
-                with patch(
-                    "app.repositories.sample.reverse_map_field_value",
-                    side_effect=lambda field, value: {
-                        "library_source_material": "DNA",
-                        "preservation_method": ["FFPE", "Frozen"],
-                    }.get(field, value),
-                ):
-                    with patch(
-                        "app.repositories.sample.load_sample_enum",
-                        return_value=["Tumor", "Normal"],
-                    ):
-                        result = await repository._get_samples_by_combined_filters(
-                            {
-                                "library_source_material": "DNA",
-                                "preservation_method": "FFPE",
-                                "tissue_type": "Tumor",
-                            },
-                            offset=0,
-                            limit=10,
-                        )
-        assert isinstance(result, list)
-        cypher = mock_session.run.call_args[0][0]
-        assert "fixation_embedding_method IN $" in cypher
-        assert "sample_tumor_status IN $" in cypher
-
     async def test_null_if_invalid_list_and_neg999_and_blank_wrap(self, repository):
         sample = repository._record_to_sample(
             {

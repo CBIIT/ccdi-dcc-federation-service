@@ -142,11 +142,11 @@ class TestBuildCountQuery:
         assert "collect(" not in cypher
 
     @pytest.mark.asyncio
-    async def test_single_md5sum_or_checksum_value(self):
+    async def test_single_md5sum_filter(self):
         repo, _ = make_repo()
         cypher, params = await repo._build_count_query({"md5sum": "deadbeef"})
         assert "sf.md5sum =" in cypher
-        assert "sf.checksum_value =" in cypher
+        assert "checksum_value" not in cypher
         assert "deadbeef" in params.values()
 
     @pytest.mark.asyncio
@@ -154,6 +154,7 @@ class TestBuildCountQuery:
         repo, _ = make_repo()
         cypher, params = await repo._build_count_query({"md5sum": "aaa||bbb"})
         assert "sf.md5sum IN" in cypher
+        assert "checksum_value" not in cypher
         assert ["aaa", "bbb"] in list(params.values())
 
     @pytest.mark.asyncio
@@ -861,18 +862,6 @@ class TestCountFilesByDepositionsFilters:
 
 @pytest.mark.unit
 class TestFileRepositoryHelpers:
-    def test_validate_filters_raises_for_disallowed_field(self):
-        repo, _ = make_repo()
-        repo.allowlist.is_field_allowed = Mock(return_value=False)
-        with pytest.raises(UnsupportedFieldError):
-            repo._validate_filters({"bad_field": "x"}, "file")
-
-    def test_validate_filters_skips_underscore_prefixed_fields(self):
-        repo, _ = make_repo()
-        repo.allowlist.is_field_allowed = Mock(return_value=False)
-        repo._validate_filters({"_internal": "x"}, "file")
-        repo.allowlist.is_field_allowed.assert_not_called()
-
     def test_map_file_type_to_enum_empty_string_returns_none(self):
         repo, _ = make_repo()
         assert repo._map_file_type_to_enum("   ") is None

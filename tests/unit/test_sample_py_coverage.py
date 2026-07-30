@@ -51,18 +51,18 @@ class TestGetSamplesEarlyPaginationFilterParsing:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         result = await repository._get_samples_early_pagination_with_filters(
             filters={"identifiers": "SAMP001||SAMP002||SAMP003"},
             offset=0,
             limit=20
         )
-        
+
         assert result is not None
         assert mock_session.run.called
         # Verify the query uses IN clause for list
@@ -81,18 +81,18 @@ class TestGetSamplesEarlyPaginationFilterParsing:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         result = await repository._get_samples_early_pagination_with_filters(
             filters={"identifiers": "SAMP001"},
             offset=0,
             limit=20
         )
-        
+
         assert result is not None
         assert mock_session.run.called
         # Verify the query uses = clause for single value
@@ -111,18 +111,18 @@ class TestGetSamplesEarlyPaginationFilterParsing:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         result = await repository._get_samples_early_pagination_with_filters(
             filters={"depositions": "phs001||phs002||phs003"},
             offset=0,
             limit=20
         )
-        
+
         assert result is not None
         assert mock_session.run.called
         # Verify the query uses IN clause for multiple values
@@ -141,18 +141,18 @@ class TestGetSamplesEarlyPaginationFilterParsing:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         result = await repository._get_samples_early_pagination_with_filters(
             filters={"depositions": "phs001||"},  # Only one valid value after split
             offset=0,
             limit=20
         )
-        
+
         assert result is not None
         assert mock_session.run.called
 
@@ -167,18 +167,18 @@ class TestGetSamplesEarlyPaginationFilterParsing:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         result = await repository._get_samples_early_pagination_with_filters(
             filters={"anatomical_sites": ["Brain", "Lung", "Liver"]},
             offset=0,
             limit=20
         )
-        
+
         assert result is not None
         assert mock_session.run.called
         # Verify the query has OR conditions for list
@@ -197,18 +197,18 @@ class TestGetSamplesEarlyPaginationFilterParsing:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         result = await repository._get_samples_early_pagination_with_filters(
             filters={"anatomical_sites": "Brain"},
             offset=0,
             limit=20
         )
-        
+
         assert result is not None
         assert mock_session.run.called
 
@@ -221,7 +221,7 @@ class TestGetSamplesEarlyPaginationFilterParsing:
                 offset=0,
                 limit=20
             )
-            
+
             assert result == []
             # Should return early without calling session.run
             mock_session.run.assert_not_called()
@@ -236,7 +236,7 @@ class TestGetSamplesEarlyPaginationFilterParsing:
                 limit=20,
                 return_total=True
             )
-            
+
             assert result == ([], 0)
             # Should return early without calling session.run
             mock_session.run.assert_not_called()
@@ -252,12 +252,12 @@ class TestGetSamplesEarlyPaginationFilterParsing:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         # Mock _validate_tissue_type_filter to return True (valid)
         with patch.object(repository, '_validate_tissue_type_filter', return_value=True):
             result = await repository._get_samples_early_pagination_with_filters(
@@ -265,7 +265,7 @@ class TestGetSamplesEarlyPaginationFilterParsing:
                 offset=0,
                 limit=20
             )
-            
+
             assert result is not None
             assert mock_session.run.called
 
@@ -276,7 +276,7 @@ class TestGetSamplesEarlyPaginationFilterParsing:
             offset=0,
             limit=20
         )
-        
+
         assert result is None
         mock_session.run.assert_not_called()
 
@@ -287,7 +287,7 @@ class TestGetSamplesEarlyPaginationFilterParsing:
             offset=0,
             limit=20
         )
-        
+
         # Should proceed without identifiers filter
         assert result is not None
         assert mock_session.run.called
@@ -303,18 +303,18 @@ class TestGetSamplesEarlyPaginationFilterParsing:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         result = await repository._get_samples_early_pagination_with_filters(
             filters={"identifiers": "||  ||"},  # Only empty strings after split
             offset=0,
             limit=20
         )
-        
+
         # Should proceed without identifiers filter (since list is empty)
         assert result is not None
         assert mock_session.run.called
@@ -334,18 +334,18 @@ class TestGetSamplesEarlyPaginationFilterParsing:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         result = await repository._get_samples_early_pagination_with_filters(
             filters={"depositions": ""},  # Empty string
             offset=0,
             limit=20
         )
-        
+
         # Should proceed without depositions filter
         assert result is not None
         assert mock_session.run.called
@@ -361,18 +361,18 @@ class TestGetSamplesEarlyPaginationFilterParsing:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         result = await repository._get_samples_early_pagination_with_filters(
             filters={"depositions": "||  ||"},  # Only empty strings after split
             offset=0,
             limit=20
         )
-        
+
         # Should proceed without depositions filter
         assert result is not None
         assert mock_session.run.called
@@ -410,14 +410,14 @@ class TestGetSamplesMainMethod:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         result = await repository.get_samples(filters={}, offset=0, limit=20)
-        
+
         assert isinstance(result, list)
         assert mock_session.run.called
 
@@ -432,22 +432,22 @@ class TestGetSamplesMainMethod:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         async def async_gen_count():
             yield {"total_count": 100}
-        
+
         mock_result_list = AsyncMock()
         mock_result_list.__aiter__ = Mock(return_value=async_gen_list())
         mock_result_list.consume = AsyncMock()
-        
+
         mock_result_count = AsyncMock()
         mock_result_count.__aiter__ = Mock(return_value=async_gen_count())
         mock_result_count.consume = AsyncMock()
-        
+
         mock_session.run = AsyncMock(side_effect=[mock_result_count, mock_result_list])
-        
+
         result = await repository.get_samples(filters={}, offset=0, limit=20, return_total=True)
-        
+
         assert isinstance(result, tuple)
         assert len(result) == 2
         assert isinstance(result[0], list)
@@ -465,17 +465,17 @@ class TestGetSamplesMainMethod:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         # First call (count) raises exception, second call (list) succeeds
         mock_result_list = AsyncMock()
         mock_result_list.__aiter__ = Mock(return_value=async_gen_list())
         mock_result_list.consume = AsyncMock()
-        
+
         mock_session.run = AsyncMock(side_effect=[
             Exception("Database error in count query"),
             mock_result_list
         ])
-        
+
         # Use filters that trigger Case 3
         result = await repository.get_samples(
             filters={"library_strategy": "WXS", "disease_phase": "Primary"},
@@ -500,12 +500,12 @@ class TestGetSamplesMainMethod:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         # Mock _record_to_sample to raise exception
         with patch.object(repository, '_record_to_sample', side_effect=ValueError("Conversion error")):
             result = await repository.get_samples(
@@ -513,7 +513,7 @@ class TestGetSamplesMainMethod:
                 offset=0,
                 limit=20
             )
-            
+
             # Should return empty list when conversion fails
             assert isinstance(result, list)
             assert len(result) == 0
@@ -529,14 +529,14 @@ class TestGetSamplesMainMethod:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         result = await repository.get_samples(filters={}, offset=0, limit=20, return_total=True)
-        
+
         assert isinstance(result, tuple)
         assert len(result) == 2
         assert isinstance(result[0], list)
@@ -553,12 +553,12 @@ class TestGetSamplesMainMethod:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         # Mock the case1 method to verify it's called
         with patch.object(repository, '_get_samples_case1_sample_only', new_callable=AsyncMock) as mock_case1:
             mock_case1.return_value = []
@@ -567,7 +567,7 @@ class TestGetSamplesMainMethod:
                 offset=0,
                 limit=20
             )
-            
+
             mock_case1.assert_called_once()
 
     async def test_get_samples_case2_sample_study_filters(self, repository, mock_session):
@@ -581,12 +581,12 @@ class TestGetSamplesMainMethod:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         # Mock the case2 method to verify it's called
         with patch.object(repository, '_get_samples_case2_sample_study', new_callable=AsyncMock) as mock_case2:
             mock_case2.return_value = []
@@ -595,9 +595,9 @@ class TestGetSamplesMainMethod:
                 offset=0,
                 limit=20
             )
-            
+
             mock_case2.assert_called_once()
-    
+
     async def test_get_samples_case2_none_falls_through_to_case3(self, repository, mock_session):
         """Test get_samples falls through to Case 3 when Case 2 returns None."""
         with patch.object(repository, '_get_samples_case2_sample_study', new_callable=AsyncMock) as mock_case2, \
@@ -605,14 +605,14 @@ class TestGetSamplesMainMethod:
             # Reproduce problematic shape: sample + study filters where Case 2 can't handle it
             mock_case2.return_value = None
             mock_case3.return_value = []
-            
+
             result = await repository.get_samples(
                 filters={"age_at_collection": "1461", "depositions": "phs002430"},
                 offset=0,
                 limit=50,
                 return_total=True,
             )
-            
+
             mock_case2.assert_called_once()
             mock_case3.assert_called_once()
             assert result == []
@@ -647,12 +647,12 @@ class TestGetSamplesMainMethod:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         # Sequencing-file-only filters now route to the optimized sf-first method.
         with patch.object(repository, '_get_samples_by_sequencing_file_filters', new_callable=AsyncMock) as mock_sf:
             mock_sf.return_value = []
@@ -663,7 +663,7 @@ class TestGetSamplesMainMethod:
             )
 
             mock_sf.assert_called_once()
-    
+
     async def test_get_samples_case3_diagnosis_filter(self, repository, mock_session):
         """Test get_samples routes to Case 3 with diagnosis filter."""
         async def async_gen():
@@ -675,12 +675,12 @@ class TestGetSamplesMainMethod:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         # Mock the case3 method to verify it's called for diagnosis filter
         with patch.object(repository, '_get_samples_case3_with_node_filters', new_callable=AsyncMock) as mock_case3:
             mock_case3.return_value = []
@@ -689,7 +689,7 @@ class TestGetSamplesMainMethod:
                 offset=0,
                 limit=20
             )
-            
+
             # Verify Case 3 was called (diagnosis filter should be categorized as diagnosis filter)
             mock_case3.assert_called_once()
             # Verify the diagnosis filter was passed to Case 3
@@ -726,20 +726,20 @@ class TestGetSamplesMainMethod:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         async def async_gen_count():
             yield {"total_count": 10}
-        
+
         mock_result_list = AsyncMock()
         mock_result_list.__aiter__ = Mock(return_value=async_gen_list())
         mock_result_list.consume = AsyncMock()
-        
+
         mock_result_count = AsyncMock()
         mock_result_count.__aiter__ = Mock(return_value=async_gen_count())
         mock_result_count.consume = AsyncMock()
-        
+
         mock_session.run = AsyncMock(side_effect=[mock_result_count, mock_result_list])
-        
+
         # Don't mock case1 - call it directly
         result = await repository.get_samples(
             filters={"tissue_type": "Tumor"},  # Sample-only filter
@@ -747,7 +747,7 @@ class TestGetSamplesMainMethod:
             limit=20,
             return_total=True
         )
-        
+
         assert isinstance(result, tuple)
         assert len(result) == 2
         assert isinstance(result[0], list)
@@ -763,17 +763,17 @@ class TestGetSamplesMainMethod:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         # First call (count) raises exception, second call (list) succeeds
         mock_result_list = AsyncMock()
         mock_result_list.__aiter__ = Mock(return_value=async_gen_list())
         mock_result_list.consume = AsyncMock()
-        
+
         mock_session.run = AsyncMock(side_effect=[
             Exception("Database error in count query"),
             mock_result_list
         ])
-        
+
         result = await repository.get_samples(
             filters={"tissue_type": "Tumor"},
             offset=0,
@@ -797,12 +797,12 @@ class TestGetSamplesMainMethod:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         # First call (count) raises exception, second call (list) succeeds
         mock_result_list = AsyncMock()
         mock_result_list.__aiter__ = Mock(return_value=async_gen_list())
         mock_result_list.consume = AsyncMock()
-        
+
         mock_session.run = AsyncMock(side_effect=[
             Exception("count aggregation failed"),  # non-retryable -> single count attempt
             mock_result_list
@@ -831,20 +831,20 @@ class TestGetSamplesMainMethod:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         async def async_gen_count():
             yield {"total_count": 5}
-        
+
         mock_result_list = AsyncMock()
         mock_result_list.__aiter__ = Mock(return_value=async_gen_list())
         mock_result_list.consume = AsyncMock()
-        
+
         mock_result_count = AsyncMock()
         mock_result_count.__aiter__ = Mock(return_value=async_gen_count())
         mock_result_count.consume = AsyncMock()
-        
+
         mock_session.run = AsyncMock(side_effect=[mock_result_count, mock_result_list])
-        
+
         # Don't mock case2 - call it directly
         result = await repository.get_samples(
             filters={"tissue_type": "Tumor", "depositions": "phs001"},  # Sample + study filters
@@ -852,7 +852,7 @@ class TestGetSamplesMainMethod:
             limit=20,
             return_total=True
         )
-        
+
         assert isinstance(result, tuple)
         assert len(result) == 2
         assert isinstance(result[0], list)
@@ -868,12 +868,12 @@ class TestGetSamplesMainMethod:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         # Mock _record_to_sample to raise exception for first call, succeed for second
         call_count = [0]
         def mock_record_to_sample(*args, **kwargs):
@@ -889,14 +889,14 @@ class TestGetSamplesMainMethod:
                 ),
                 metadata={}
             )
-        
+
         with patch.object(repository, '_record_to_sample', side_effect=mock_record_to_sample):
             result = await repository.get_samples(
                 filters={"tissue_type": "Tumor"},
                 offset=0,
                 limit=20
             )
-            
+
             # Should continue processing despite exception
             assert isinstance(result, list)
 
@@ -911,12 +911,12 @@ class TestGetSamplesMainMethod:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         # Mock _record_to_sample to raise exception
         with patch.object(repository, '_record_to_sample', side_effect=ValueError("Conversion error")):
             result = await repository.get_samples(
@@ -924,7 +924,7 @@ class TestGetSamplesMainMethod:
                 offset=0,
                 limit=20
             )
-            
+
             # Should return empty list when conversion fails
             assert isinstance(result, list)
             assert len(result) == 0
@@ -954,17 +954,17 @@ class TestGetSamplesBySequencingFileFilters:
     async def test_library_source_material_null_mapped_returns_empty(self, repository, mock_session):
         """Test library_source_material with null-mapped value returns empty (line 2837-2839)."""
         import app.repositories.sample as sm
-        
+
         original_func = sm.is_null_mapped_value
         sm.is_null_mapped_value = lambda field, value: True if field == "library_source_material" else original_func(field, value)
-        
+
         try:
             result = await repository._get_samples_by_sequencing_file_filters(
                 filters={"library_source_material": "Not Reported"},
                 offset=0,
                 limit=20
             )
-            
+
             assert result == []
             mock_session.run.assert_not_called()
         finally:
@@ -973,17 +973,17 @@ class TestGetSamplesBySequencingFileFilters:
     async def test_library_strategy_database_only_returns_empty(self, repository, mock_session):
         """Test library_strategy with database-only value returns empty (line 2847-2849)."""
         import app.repositories.sample as sm
-        
+
         original_func = sm.is_database_only_value
         sm.is_database_only_value = lambda field, value: True if field == "library_strategy" else original_func(field, value)
-        
+
         try:
             result = await repository._get_samples_by_sequencing_file_filters(
                 filters={"library_strategy": "Archer Fusion"},
                 offset=0,
                 limit=20
             )
-            
+
             assert result == []
             mock_session.run.assert_not_called()
         finally:
@@ -1000,27 +1000,27 @@ class TestGetSamplesBySequencingFileFilters:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         import app.repositories.sample as sm
-        
+
         original_is_db_only = sm.is_database_only_value
         original_reverse_map = sm.reverse_map_field_value
-        
+
         sm.is_database_only_value = lambda field, value: False
         sm.reverse_map_field_value = lambda field, value: "WXS" if field == "library_strategy" and value == "Other" else value
-        
+
         try:
             result = await repository._get_samples_by_sequencing_file_filters(
                 filters={"library_strategy": "Other"},
                 offset=0,
                 limit=20
             )
-            
+
             assert isinstance(result, list)
             assert mock_session.run.called
             # Verify query has OR condition for both mapped and original values
@@ -1034,17 +1034,17 @@ class TestGetSamplesBySequencingFileFilters:
     async def test_library_selection_method_database_only_returns_empty(self, repository, mock_session):
         """Test library_selection_method with database-only value returns empty."""
         import app.repositories.sample as sm
-        
+
         original_func = sm.is_database_only_value
         sm.is_database_only_value = lambda field, value: True if field == "library_selection_method" else original_func(field, value)
-        
+
         try:
             result = await repository._get_samples_by_sequencing_file_filters(
                 filters={"library_selection_method": "PolyA"},
                 offset=0,
                 limit=20
             )
-            
+
             assert result == []
             mock_session.run.assert_not_called()
         finally:
@@ -1061,32 +1061,32 @@ class TestGetSamplesBySequencingFileFilters:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         import app.repositories.sample as sm
-        
+
         original_is_db_only = sm.is_database_only_value
         original_is_null = sm.is_null_mapped_value
         original_reverse_map = sm.reverse_map_field_value
-        
+
         sm.is_database_only_value = lambda field, value: False
         sm.is_null_mapped_value = lambda field, value: False
         sm.reverse_map_field_value = lambda field, value: (
             ["MicroRNA", "Total RNA"] if field == "specimen_molecular_analyte_type" and value == "RNA"
             else value
         )
-        
+
         try:
             result = await repository._get_samples_by_sequencing_file_filters(
                 filters={"specimen_molecular_analyte_type": "RNA"},
                 offset=0,
                 limit=20
             )
-            
+
             assert isinstance(result, list)
             assert mock_session.run.called
             # Verify query uses IN clause for list
@@ -1109,12 +1109,12 @@ class TestGetSamplesBySequencingFileFilters:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         # First call (count) raises exception, second call (list) succeeds
         mock_result_list = AsyncMock()
         mock_result_list.__aiter__ = Mock(return_value=async_gen_list())
         mock_result_list.consume = AsyncMock()
-        
+
         mock_session.run = AsyncMock(side_effect=[
             Exception("count aggregation failed"),  # non-retryable -> single count attempt
             mock_result_list
@@ -1135,7 +1135,7 @@ class TestGetSamplesBySequencingFileFilters:
                 limit=20,
                 return_total=True
             )
-            
+
             # Count failed: return bare list so SampleService / diagnosis endpoint
             # can fall back to summary instead of a page-size undercount.
             assert isinstance(result, list)
@@ -1156,20 +1156,20 @@ class TestGetSamplesBySequencingFileFilters:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         import app.repositories.sample as sm
-        
+
         original_is_db_only = sm.is_database_only_value
         original_is_null = sm.is_null_mapped_value
-        
+
         sm.is_database_only_value = lambda field, value: False
         sm.is_null_mapped_value = lambda field, value: False
-        
+
         try:
             # Mock _record_to_sample to raise exception
             with patch.object(repository, '_record_to_sample', side_effect=ValueError("Conversion error")):
@@ -1178,7 +1178,7 @@ class TestGetSamplesBySequencingFileFilters:
                     offset=0,
                     limit=20
                 )
-                
+
                 # Should return empty list when conversion fails
                 assert isinstance(result, list)
                 assert len(result) == 0
@@ -1219,18 +1219,18 @@ class TestGetSampleByIdentifier:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         result = await repository.get_sample_by_identifier(
             organization="CCDI-DCC",
             namespace="phs001",
             name="SAMP001"
         )
-        
+
         assert result is not None
         assert isinstance(result, Sample)
         assert mock_session.run.called
@@ -1242,19 +1242,19 @@ class TestGetSampleByIdentifier:
             # Empty async generator - condition ensures yield exists but never executes
             if False:
                 yield None
-        
+
         mock_result = AsyncMock()
         # __aiter__ should return the async generator object (result of calling async_gen())
         mock_result.__aiter__ = Mock(return_value=async_gen())
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         result = await repository.get_sample_by_identifier(
             organization="CCDI-DCC",
             namespace="phs001",
             name="NONEXISTENT"
         )
-        
+
         assert result is None
         assert mock_session.run.called
 
@@ -1290,9 +1290,9 @@ class TestRecordToSample:
         sa = {"sample_id": "SAMP001"}
         st = {}  # Empty study dict
         p = {"study_id": "phs001"}  # Study ID in participant
-        
+
         sample = repository._record_to_sample(sa, p, st, {}, {}, None)
-        
+
         assert sample is not None
         assert sample.id.namespace.name == "phs001"  # Should get from participant
 
@@ -1301,9 +1301,9 @@ class TestRecordToSample:
         sa = {"sample_id": "SAMP001", "study_id": "phs001"}  # Study ID in sample
         st = {}  # Empty study dict
         p = {}  # Empty participant
-        
+
         sample = repository._record_to_sample(sa, p, st, {}, {}, None)
-        
+
         assert sample is not None
         assert sample.id.namespace.name == "phs001"  # Should get from sample
 
@@ -1315,9 +1315,9 @@ class TestRecordToSample:
         sf = {"library_strategy": "WXS", "library_selection": "PCR"}
         pf = {"fixation_embedding_method": "FFPE"}
         diagnoses = {"diagnosis": "Neuroblastoma", "disease_phase": "Primary"}
-        
+
         sample = repository._record_to_sample(sa, p, st, sf, pf, diagnoses)
-        
+
         assert sample is not None
         assert sample.id.name == "SAMP001"
         assert sample.id.namespace.name == "phs001"
@@ -1327,9 +1327,9 @@ class TestRecordToSample:
         """Test _record_to_sample handles None diagnoses."""
         sa = {"sample_id": "SAMP001"}
         st = {"study_id": "phs001"}
-        
+
         sample = repository._record_to_sample(sa, {}, st, {}, {}, None)
-        
+
         assert sample is not None
         assert sample.metadata is not None
 
@@ -1337,9 +1337,9 @@ class TestRecordToSample:
         """Test _record_to_sample handles empty dict diagnoses."""
         sa = {"sample_id": "SAMP001"}
         st = {"study_id": "phs001"}
-        
+
         sample = repository._record_to_sample(sa, {}, st, {}, {}, {})
-        
+
         assert sample is not None
         assert sample.metadata is not None
 
@@ -1376,28 +1376,28 @@ class TestGetSamplesEarlyPaginationAdvanced:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         async def async_gen_count():
             yield {"total_count": 5}
-        
+
         mock_result_list = AsyncMock()
         mock_result_list.__aiter__ = Mock(return_value=async_gen_list())
         mock_result_list.consume = AsyncMock()
-        
+
         mock_result_count = AsyncMock()
         mock_result_count.__aiter__ = Mock(return_value=async_gen_count())
         mock_result_count.consume = AsyncMock()
-        
+
         # First call returns count, second call returns list
         mock_session.run = AsyncMock(side_effect=[mock_result_count, mock_result_list])
-        
+
         result = await repository._get_samples_early_pagination_with_filters(
             filters={"depositions": "phs001"},
             offset=0,
             limit=20,
             return_total=True
         )
-        
+
         assert isinstance(result, tuple)
         assert len(result) == 2
         assert isinstance(result[0], list)
@@ -1415,27 +1415,27 @@ class TestGetSamplesEarlyPaginationAdvanced:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         async def async_gen_count():
             yield {"total_count": 3}
-        
+
         mock_result_list = AsyncMock()
         mock_result_list.__aiter__ = Mock(return_value=async_gen_list())
         mock_result_list.consume = AsyncMock()
-        
+
         mock_result_count = AsyncMock()
         mock_result_count.__aiter__ = Mock(return_value=async_gen_count())
         mock_result_count.consume = AsyncMock()
-        
+
         mock_session.run = AsyncMock(side_effect=[mock_result_count, mock_result_list])
-        
+
         result = await repository._get_samples_early_pagination_with_filters(
             filters={"depositions": "phs001", "identifiers": "SAMP001"},
             offset=0,
             limit=20,
             return_total=True
         )
-        
+
         assert isinstance(result, tuple)
         assert len(result) == 2
         assert isinstance(result[0], list)
@@ -1453,11 +1453,11 @@ class TestGetSamplesEarlyPaginationAdvanced:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         mock_result_list = AsyncMock()
         mock_result_list.__aiter__ = Mock(return_value=async_gen_list())
         mock_result_list.consume = AsyncMock()
-        
+
         # First call (count) raises exception, second call (list) succeeds
         mock_session.run = AsyncMock(side_effect=[
             Exception("count aggregation failed"),  # non-retryable -> single count attempt
@@ -1487,18 +1487,18 @@ class TestGetSamplesEarlyPaginationAdvanced:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         result = await repository._get_samples_early_pagination_with_filters(
             filters={"depositions": "phs001"},
             offset=0,
             limit=20
         )
-        
+
         assert isinstance(result, list)
         assert mock_session.run.called
         # Verify query starts from study node
@@ -1517,12 +1517,12 @@ class TestGetSamplesEarlyPaginationAdvanced:
                 "pf": {},
                 "diagnoses": {}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         # Mock _record_to_sample to raise exception
         with patch.object(repository, '_record_to_sample', side_effect=ValueError("Conversion error")):
             result = await repository._get_samples_early_pagination_with_filters(
@@ -1530,7 +1530,7 @@ class TestGetSamplesEarlyPaginationAdvanced:
                 offset=0,
                 limit=20
             )
-            
+
             # Should return empty list when conversion fails
             assert isinstance(result, list)
             assert len(result) == 0
@@ -1568,18 +1568,18 @@ class TestGetSamplesByPathologyFileFilters:
                 "pf": {"fixation_embedding_method": "FFPE"},
                 "diagnoses": {}
             }
-        
+
         mock_result = AsyncMock()
         mock_result.__aiter__ = Mock(return_value=async_gen())
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         result = await repository._get_samples_by_pathology_file_filters(
             filters={"preservation_method": "FFPE"},
             offset=0,
             limit=20
         )
-        
+
         assert isinstance(result, list)
         assert mock_session.run.called
         # Verify query filters on pathology_file
@@ -1598,27 +1598,27 @@ class TestGetSamplesByPathologyFileFilters:
                 "pf": {"fixation_embedding_method": "FFPE"},
                 "diagnoses": {}
             }
-        
+
         async def async_gen_count():
             yield {"total_count": 2}
-        
+
         mock_result_list = AsyncMock()
         mock_result_list.__aiter__ = Mock(return_value=async_gen_list())
         mock_result_list.consume = AsyncMock()
-        
+
         mock_result_count = AsyncMock()
         mock_result_count.__aiter__ = Mock(return_value=async_gen_count())
         mock_result_count.consume = AsyncMock()
-        
+
         mock_session.run = AsyncMock(side_effect=[mock_result_count, mock_result_list])
-        
+
         result = await repository._get_samples_by_pathology_file_filters(
             filters={"preservation_method": "FFPE"},
             offset=0,
             limit=20,
             return_total=True
         )
-        
+
         assert isinstance(result, tuple)
         assert len(result) == 2
         assert result[1] == 2
@@ -1634,12 +1634,12 @@ class TestGetSamplesByPathologyFileFilters:
                 "pf": {"fixation_embedding_method": "FFPE"},
                 "diagnoses": {}
             }
-        
+
         # First call (count) raises exception, second call (list) succeeds
         mock_result_list = AsyncMock()
         mock_result_list.__aiter__ = Mock(return_value=async_gen_list())
         mock_result_list.consume = AsyncMock()
-        
+
         mock_session.run = AsyncMock(side_effect=[
             Exception("count aggregation failed"),  # non-retryable -> single count attempt
             mock_result_list
@@ -1651,529 +1651,20 @@ class TestGetSamplesByPathologyFileFilters:
             limit=20,
             return_total=True
         )
-        
+
         # Count failed: return bare list so callers can fall back to summary
         assert isinstance(result, list)
         assert len(result) == 1
         assert mock_session.run.call_count == 2
-
-    async def test_pathology_file_record_conversion_exception(self, repository, mock_session):
-        """Test exception handling during record conversion in pathology_file query (line 3155-3157)."""
-        async def async_gen():
-            yield {
-                "sa": {"sample_id": "SAMP001"},
-                "p": {},
-                "st": {"study_id": "phs001"},
-                "sf": {},
-                "pf": {"fixation_embedding_method": "FFPE"},
-                "diagnoses": {}
-            }
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        mock_result.consume = AsyncMock()
-        mock_session.run = AsyncMock(return_value=mock_result)
-        
-        # Mock _record_to_sample to raise exception
-        with patch.object(repository, '_record_to_sample', side_effect=ValueError("Conversion error")):
-            result = await repository._get_samples_by_pathology_file_filters(
-                filters={"preservation_method": "FFPE"},
-                offset=0,
-                limit=20
-            )
-            
-            # Should return empty list when conversion fails
-            assert isinstance(result, list)
-            assert len(result) == 0
-
-
-@pytest.mark.unit
-class TestGetSamplesByCombinedFilters:
-    """Test _get_samples_by_combined_filters (lines 3167+)."""
-
-    @pytest.fixture
-    def mock_session(self):
-        """Create a mock database session."""
-        return AsyncMock(spec=AsyncSession)
-
-    @pytest.fixture
-    def mock_allowlist(self):
-        """Create a mock field allowlist."""
-        allowlist = Mock(spec=FieldAllowlist)
-        allowlist.is_field_allowed = Mock(return_value=True)
-        return allowlist
-
-    @pytest.fixture
-    def repository(self, mock_session, mock_allowlist):
-        """Create a SampleRepository instance."""
-        return SampleRepository(mock_session, mock_allowlist)
-
-    async def test_combined_filters_library_source_material_null(self, repository, mock_session):
-        """Test combined filters with null-mapped library_source_material (line 3200-3202)."""
-        import app.repositories.sample as sm
-        
-        original_func = sm.is_null_mapped_value
-        sm.is_null_mapped_value = lambda field, value: True if field == "library_source_material" else original_func(field, value)
-        
-        try:
-            result = await repository._get_samples_by_combined_filters(
-                filters={"library_source_material": "Not Reported", "preservation_method": "FFPE"},
-                offset=0,
-                limit=20
-            )
-            
-            assert result == []
-            mock_session.run.assert_not_called()
-        finally:
-            sm.is_null_mapped_value = original_func
-
-    async def test_combined_filters_library_strategy_database_only(self, repository, mock_session):
-        """Test combined filters with database-only library_strategy (line 3207-3209)."""
-        import app.repositories.sample as sm
-        
-        original_func = sm.is_database_only_value
-        sm.is_database_only_value = lambda field, value: True if field == "library_strategy" else original_func(field, value)
-        
-        try:
-            result = await repository._get_samples_by_combined_filters(
-                filters={"library_strategy": "Archer Fusion", "preservation_method": "FFPE"},
-                offset=0,
-                limit=20
-            )
-            
-            assert result == []
-            mock_session.run.assert_not_called()
-        finally:
-            sm.is_database_only_value = original_func
-
-    async def test_combined_filters_library_strategy_with_reverse_mapping(self, repository, mock_session):
-        """Test combined filters with library_strategy reverse mapping (line 3211-3216)."""
-        async def async_gen():
-            yield {
-                "sa": {"sample_id": "SAMP001"},
-                "p": {},
-                "st": {"study_id": "phs001"},
-                "sf": {"library_strategy": "WXS"},
-                "pf": {"fixation_embedding_method": "FFPE"},
-                "diagnoses": {}
-            }
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        mock_result.consume = AsyncMock()
-        mock_session.run = AsyncMock(return_value=mock_result)
-        
-        import app.repositories.sample as sm
-        
-        original_is_db_only = sm.is_database_only_value
-        original_reverse_map = sm.reverse_map_field_value
-        
-        sm.is_database_only_value = lambda field, value: False
-        sm.reverse_map_field_value = lambda field, value: (
-            "WXS" if field == "library_strategy" and value == "Other" else value
-        )
-        
-        try:
-            result = await repository._get_samples_by_combined_filters(
-                filters={"library_strategy": "Other", "preservation_method": "FFPE"},
-                offset=0,
-                limit=20
-            )
-            
-            assert isinstance(result, list)
-            assert mock_session.run.called
-            # Verify query has OR condition for both mapped and original values
-            call_args = mock_session.run.call_args
-            query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
-            assert 'OR' in query or 'param_1' in query or 'param_2' in query
-        finally:
-            sm.is_database_only_value = original_is_db_only
-            sm.reverse_map_field_value = original_reverse_map
-
-    async def test_combined_filters_with_return_total(self, repository, mock_session):
-        """Test combined filters with return_total=True."""
-        async def async_gen_list():
-            yield {
-                "sa": {"sample_id": "SAMP001"},
-                "p": {},
-                "st": {"study_id": "phs001"},
-                "sf": {"library_strategy": "WXS"},
-                "pf": {"fixation_embedding_method": "FFPE"},
-                "diagnoses": {}
-            }
-        
-        async def async_gen_count():
-            yield {"total_count": 1}
-        
-        mock_result_list = AsyncMock()
-        mock_result_list.__aiter__ = Mock(return_value=async_gen_list())
-        mock_result_list.consume = AsyncMock()
-        
-        mock_result_count = AsyncMock()
-        mock_result_count.__aiter__ = Mock(return_value=async_gen_count())
-        mock_result_count.consume = AsyncMock()
-        
-        mock_session.run = AsyncMock(side_effect=[mock_result_count, mock_result_list])
-        
-        import app.repositories.sample as sm
-        
-        original_is_db_only = sm.is_database_only_value
-        original_is_null = sm.is_null_mapped_value
-        
-        sm.is_database_only_value = lambda field, value: False
-        sm.is_null_mapped_value = lambda field, value: False
-        
-        try:
-            result = await repository._get_samples_by_combined_filters(
-                filters={"library_strategy": "WXS", "preservation_method": "FFPE"},
-                offset=0,
-                limit=20,
-                return_total=True
-            )
-            
-            assert isinstance(result, tuple)
-            assert len(result) == 2
-            assert result[1] == 1
-        finally:
-            sm.is_database_only_value = original_is_db_only
-            sm.is_null_mapped_value = original_is_null
-
-    async def test_combined_filters_library_selection_method_database_only(self, repository, mock_session):
-        """Test combined filters with database-only library_selection_method (line 3220-3223)."""
-        import app.repositories.sample as sm
-        
-        original_func = sm.is_database_only_value
-        sm.is_database_only_value = lambda field, value: True if field == "library_selection_method" else original_func(field, value)
-        
-        try:
-            result = await repository._get_samples_by_combined_filters(
-                filters={"library_selection_method": "PolyA", "preservation_method": "FFPE"},
-                offset=0,
-                limit=20
-            )
-            
-            assert result == []
-            mock_session.run.assert_not_called()
-        finally:
-            sm.is_database_only_value = original_func
-
-    async def test_combined_filters_specimen_molecular_analyte_type_invalid(self, repository, mock_session):
-        """Test combined filters with invalid specimen_molecular_analyte_type (line 3228-3230)."""
-        import app.repositories.sample as sm
-        
-        original_is_db_only = sm.is_database_only_value
-        original_is_null = sm.is_null_mapped_value
-        
-        sm.is_database_only_value = lambda field, value: True if field == "specimen_molecular_analyte_type" else original_is_db_only(field, value)
-        sm.is_null_mapped_value = lambda field, value: False
-        
-        try:
-            result = await repository._get_samples_by_combined_filters(
-                filters={"specimen_molecular_analyte_type": "Invalid", "preservation_method": "FFPE"},
-                offset=0,
-                limit=20
-            )
-            
-            assert result == []
-            mock_session.run.assert_not_called()
-        finally:
-            sm.is_database_only_value = original_is_db_only
-            sm.is_null_mapped_value = original_is_null
-
-    async def test_combined_filters_specimen_molecular_analyte_type_list(self, repository, mock_session):
-        """Test combined filters with specimen_molecular_analyte_type that maps to list (line 3232-3234)."""
-        async def async_gen():
-            yield {
-                "sa": {"sample_id": "SAMP001"},
-                "p": {},
-                "st": {"study_id": "phs001"},
-                "sf": {"library_source_molecule": "Total RNA"},
-                "pf": {"fixation_embedding_method": "FFPE"},
-                "diagnoses": {}
-            }
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        mock_result.consume = AsyncMock()
-        mock_session.run = AsyncMock(return_value=mock_result)
-        
-        import app.repositories.sample as sm
-        
-        original_is_db_only = sm.is_database_only_value
-        original_is_null = sm.is_null_mapped_value
-        original_reverse_map = sm.reverse_map_field_value
-        
-        sm.is_database_only_value = lambda field, value: False
-        sm.is_null_mapped_value = lambda field, value: False
-        sm.reverse_map_field_value = lambda field, value: (
-            ["MicroRNA", "Total RNA"] if field == "specimen_molecular_analyte_type" and value == "RNA"
-            else original_reverse_map(field, value)
-        )
-        
-        try:
-            result = await repository._get_samples_by_combined_filters(
-                filters={"specimen_molecular_analyte_type": "RNA", "preservation_method": "FFPE"},
-                offset=0,
-                limit=20
-            )
-            
-            assert isinstance(result, list)
-            assert mock_session.run.called
-            # Verify query uses IN clause for list
-            call_args = mock_session.run.call_args
-            query = call_args[0][0] if call_args[0] else call_args.kwargs.get('cypher', '')
-            assert 'IN [' in query or 'IN' in query
-        finally:
-            sm.is_database_only_value = original_is_db_only
-            sm.is_null_mapped_value = original_is_null
-            sm.reverse_map_field_value = original_reverse_map
-
-    async def test_combined_filters_tissue_type_invalid_single(self, repository, mock_session):
-        """Test combined filters with invalid tissue_type (single value, line 3261-3262)."""
-        with patch('app.core.field_mappings.load_sample_enum', return_value=["Tumor", "Normal"]):
-            result = await repository._get_samples_by_combined_filters(
-                filters={"library_strategy": "WXS", "preservation_method": "FFPE", "tissue_type": "Invalid"},
-                offset=0,
-                limit=20
-            )
-            
-            assert result == []
-            mock_session.run.assert_not_called()
-
-    async def test_combined_filters_tissue_type_invalid_list(self, repository, mock_session):
-        """Test combined filters with invalid tissue_type (list with invalid values, line 3256-3257)."""
-        with patch('app.core.field_mappings.load_sample_enum', return_value=["Tumor", "Normal"]):
-            result = await repository._get_samples_by_combined_filters(
-                filters={"library_strategy": "WXS", "preservation_method": "FFPE", "tissue_type": ["Tumor", "Invalid"]},
-                offset=0,
-                limit=20
-            )
-            
-            assert result == []
-            mock_session.run.assert_not_called()
-
-    async def test_combined_filters_tissue_type_valid_list(self, repository, mock_session):
-        """Test combined filters with valid tissue_type list (line 3254-3259)."""
-        async def async_gen():
-            yield {
-                "sa": {"sample_id": "SAMP001", "sample_tumor_status": "Tumor"},
-                "p": {},
-                "st": {"study_id": "phs001"},
-                "sf": {"library_strategy": "WXS"},
-                "pf": {"fixation_embedding_method": "FFPE"},
-                "diagnoses": {}
-            }
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        mock_result.consume = AsyncMock()
-        mock_session.run = AsyncMock(return_value=mock_result)
-        
-        import app.repositories.sample as sm
-        
-        original_is_db_only = sm.is_database_only_value
-        original_is_null = sm.is_null_mapped_value
-        
-        sm.is_database_only_value = lambda field, value: False
-        sm.is_null_mapped_value = lambda field, value: False
-        
-        try:
-            with patch('app.core.field_mappings.load_sample_enum', return_value=["Tumor", "Normal"]):
-                result = await repository._get_samples_by_combined_filters(
-                    filters={"library_strategy": "WXS", "preservation_method": "FFPE", "tissue_type": ["Tumor", "Normal"]},
-                    offset=0,
-                    limit=20
-                )
-                
-                assert isinstance(result, list)
-                assert mock_session.run.called
-        finally:
-            sm.is_database_only_value = original_is_db_only
-            sm.is_null_mapped_value = original_is_null
-
-    async def test_combined_filters_count_query_exception(self, repository, mock_session):
-        """Test exception handling in combined reverse count query (line 3305-3306)."""
-        async def async_gen_list():
-            yield {
-                "sa": {"sample_id": "SAMP001"},
-                "p": {},
-                "st": {"study_id": "phs001"},
-                "sf": {"library_strategy": "WXS"},
-                "pf": {"fixation_embedding_method": "FFPE"},
-                "diagnoses": {}
-            }
-        
-        mock_result_list = AsyncMock()
-        mock_result_list.__aiter__ = Mock(return_value=async_gen_list())
-        mock_result_list.consume = AsyncMock()
-        
-        mock_session.run = AsyncMock(side_effect=[
-            Exception("count aggregation failed"),  # non-retryable -> single count attempt
-            mock_result_list
-        ])
-
-        import app.repositories.sample as sm
-
-        original_is_db_only = sm.is_database_only_value
-        original_is_null = sm.is_null_mapped_value
-
-        sm.is_database_only_value = lambda field, value: False
-        sm.is_null_mapped_value = lambda field, value: False
-
-        try:
-            result = await repository._get_samples_by_combined_filters(
-                filters={"library_strategy": "WXS", "preservation_method": "FFPE"},
-                offset=0,
-                limit=20,
-                return_total=True
-            )
-            
-            # Count failed: return bare list so callers can fall back to summary
-            assert isinstance(result, list)
-            assert len(result) == 1
-            assert mock_session.run.call_count == 2
-        finally:
-            sm.is_database_only_value = original_is_db_only
-            sm.is_null_mapped_value = original_is_null
-
-    async def test_combined_filters_record_conversion_exception(self, repository, mock_session):
-        """Test exception handling during record conversion in combined filters (line 3390-3392)."""
-        async def async_gen():
-            yield {
-                "sa": {"sample_id": "SAMP001"},
-                "p": {},
-                "st": {"study_id": "phs001"},
-                "sf": {"library_strategy": "WXS"},
-                "pf": {"fixation_embedding_method": "FFPE"},
-                "diagnoses": {}
-            }
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        mock_result.consume = AsyncMock()
-        mock_session.run = AsyncMock(return_value=mock_result)
-        
-        import app.repositories.sample as sm
-        
-        original_is_db_only = sm.is_database_only_value
-        original_is_null = sm.is_null_mapped_value
-        
-        sm.is_database_only_value = lambda field, value: False
-        sm.is_null_mapped_value = lambda field, value: False
-        
-        try:
-            # Mock _record_to_sample to raise exception
-            with patch.object(repository, '_record_to_sample', side_effect=ValueError("Conversion error")):
-                result = await repository._get_samples_by_combined_filters(
-                    filters={"library_strategy": "WXS", "preservation_method": "FFPE"},
-                    offset=0,
-                    limit=20
-                )
-                
-                # Should return empty list when conversion fails
-                assert isinstance(result, list)
-                assert len(result) == 0
-        finally:
-            sm.is_database_only_value = original_is_db_only
-            sm.is_null_mapped_value = original_is_null
-
-    async def test_combined_filters_query_exception(self, repository, mock_session):
-        """Test exception handling in combined reverse query execution (line 3398-3400)."""
-        mock_session.run = AsyncMock(side_effect=Exception("Database connection error"))
-        
-        import app.repositories.sample as sm
-        
-        original_is_db_only = sm.is_database_only_value
-        original_is_null = sm.is_null_mapped_value
-        
-        sm.is_database_only_value = lambda field, value: False
-        sm.is_null_mapped_value = lambda field, value: False
-        
-        try:
-            with pytest.raises(Exception, match="Database connection error"):
-                await repository._get_samples_by_combined_filters(
-                    filters={"library_strategy": "WXS", "preservation_method": "FFPE"},
-                    offset=0,
-                    limit=20
-                )
-        finally:
-            sm.is_database_only_value = original_is_db_only
-            sm.is_null_mapped_value = original_is_null
-
-    async def test_combined_filters_specimen_molecular_analyte_type_single_value(self, repository, mock_session):
-        """Test combined filters with specimen_molecular_analyte_type single value (not list, line 3554-3555)."""
-        async def async_gen():
-            yield {
-                "sa": {"sample_id": "SAMP001"},
-                "p": {},
-                "st": {"study_id": "phs001"},
-                "sf": {"library_source_molecule": "DNA"},
-                "pf": {"fixation_embedding_method": "FFPE"},
-                "diagnoses": {}
-            }
-        
-        mock_result = AsyncMock()
-        mock_result.__aiter__ = Mock(return_value=async_gen())
-        mock_result.consume = AsyncMock()
-        mock_session.run = AsyncMock(return_value=mock_result)
-        
-        import app.repositories.sample as sm
-        
-        original_is_db_only = sm.is_database_only_value
-        original_is_null = sm.is_null_mapped_value
-        original_reverse_map = sm.reverse_map_field_value
-        
-        sm.is_database_only_value = lambda field, value: False
-        sm.is_null_mapped_value = lambda field, value: False
-        sm.reverse_map_field_value = lambda field, value: (
-            "DNA" if field == "specimen_molecular_analyte_type" and value == "DNA"
-            else original_reverse_map(field, value)
-        )
-        
-        try:
-            result = await repository._get_samples_by_combined_filters(
-                filters={"specimen_molecular_analyte_type": "DNA", "preservation_method": "FFPE"},
-                offset=0,
-                limit=20
-            )
-            
-            assert isinstance(result, list)
-            assert mock_session.run.called
-        finally:
-            sm.is_database_only_value = original_is_db_only
-            sm.is_null_mapped_value = original_is_null
-            sm.reverse_map_field_value = original_reverse_map
-
-
-@pytest.mark.unit
-class TestRecordToSampleEdgeCases:
-    """Test edge cases in _record_to_sample method."""
-
-    @pytest.fixture
-    def mock_session(self):
-        """Create a mock database session."""
-        return AsyncMock(spec=AsyncSession)
-
-    @pytest.fixture
-    def mock_allowlist(self):
-        """Create a mock field allowlist."""
-        allowlist = Mock(spec=FieldAllowlist)
-        allowlist.is_field_allowed = Mock(return_value=True)
-        return allowlist
-
-    @pytest.fixture
-    def repository(self, mock_session, mock_allowlist):
-        """Create a SampleRepository instance."""
-        return SampleRepository(mock_session, mock_allowlist)
 
     def test_record_to_sample_participant_id_fallback(self, repository):
         """Test _record_to_sample with participant_id fallback to id (line 3694)."""
         sa = {"sample_id": "SAMP001"}
         p = {"id": "PART001"}  # No participant_id, but has id
         st = {"study_id": "phs001"}
-        
+
         sample = repository._record_to_sample(sa, p, st, {}, {}, None)
-        
+
         assert sample is not None
         assert sample.subject is not None
         assert sample.subject.name == "PART001"
@@ -2182,9 +1673,9 @@ class TestRecordToSampleEdgeCases:
         """Test _record_to_sample with -999 value handling (line 3711)."""
         sa = {"sample_id": "SAMP001", "age_at_diagnosis": -999}
         st = {"study_id": "phs001"}
-        
+
         sample = repository._record_to_sample(sa, {}, st, {}, {}, None)
-        
+
         assert sample is not None
         assert sample.metadata is not None
         # -999 should be converted to None
@@ -2194,9 +1685,9 @@ class TestRecordToSampleEdgeCases:
         """Test _record_to_sample with invalid value in list (line 3716-3718)."""
         sa = {"sample_id": "SAMP001", "anatomical_sites": ["Brain", "Invalid value", "Lung"]}
         st = {"study_id": "phs001"}
-        
+
         sample = repository._record_to_sample(sa, {}, st, {}, {}, None)
-        
+
         assert sample is not None
         assert sample.metadata is not None
         # Invalid values should be filtered out
@@ -2205,9 +1696,9 @@ class TestRecordToSampleEdgeCases:
         """Test _record_to_sample with empty string value (line 3761)."""
         sa = {"sample_id": "SAMP001", "tissue_type": ""}
         st = {"study_id": "phs001"}
-        
+
         sample = repository._record_to_sample(sa, {}, st, {}, {}, None)
-        
+
         assert sample is not None
         assert sample.metadata is not None
 
@@ -2216,18 +1707,18 @@ class TestRecordToSampleEdgeCases:
         sa = {"sample_id": "SAMP001"}
         st = {"study_id": "phs001"}
         sf = {"library_selection": "PolyA"}
-        
+
         # Mock reverse_map_field_value to return a list
         import app.repositories.sample as sm
         original_reverse_map = sm.reverse_map_field_value
-        
+
         def mock_reverse_map(field, value):
             if field == "library_selection_method" and value == "PolyA":
                 return ["PolyA", "PCR"]  # Return list
             return original_reverse_map(field, value)
-        
+
         sm.reverse_map_field_value = mock_reverse_map
-        
+
         try:
             sample = repository._record_to_sample(sa, {}, st, sf, {}, None)
             assert sample is not None
@@ -2238,9 +1729,9 @@ class TestRecordToSampleEdgeCases:
         """Test _record_to_sample with integer conversion error (line 3802-3803)."""
         sa = {"sample_id": "SAMP001", "age_at_diagnosis": "not_a_number"}
         st = {"study_id": "phs001"}
-        
+
         sample = repository._record_to_sample(sa, {}, st, {}, {}, None)
-        
+
         assert sample is not None
         assert sample.metadata is not None
         # Invalid integer should be None
@@ -2249,9 +1740,9 @@ class TestRecordToSampleEdgeCases:
         """Test _record_to_sample value filtering with invalid value (line 3833-3835)."""
         sa = {"sample_id": "SAMP001", "some_field": "Invalid value"}
         st = {"study_id": "phs001"}
-        
+
         sample = repository._record_to_sample(sa, {}, st, {}, {}, None)
-        
+
         assert sample is not None
         assert sample.metadata is not None
 
@@ -2260,9 +1751,9 @@ class TestRecordToSampleEdgeCases:
         sa = {"sample_id": "SAMP001"}
         st = {"study_id": "phs001"}
         p = {}  # No study_id in participant
-        
+
         sample = repository._record_to_sample(sa, p, st, {}, {}, None)
-        
+
         assert sample is not None
         assert sample.id.namespace.name == "phs001"
 
@@ -2294,20 +1785,20 @@ class TestGetSamplesSummaryReverseQueryInSample:
         mock_result.single = AsyncMock(return_value={"total_count": 5})
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         import app.repositories.sample_summary as ss
-        
+
         original_is_null = ss.is_null_mapped_value
         original_reverse_map = ss.reverse_map_field_value
         original_is_db = ss.is_database_only_value
-        
+
         ss.is_null_mapped_value = lambda field, value: False
         ss.is_database_only_value = lambda field, value: False
         ss.reverse_map_field_value = lambda field, value: "DNA" if field == "library_source_material" else value
-        
+
         try:
             result = await repository._get_samples_summary_reverse_query({"library_source_material": "DNA"})
-            
+
             assert isinstance(result, dict)
             assert result == {"counts": {"total": 5}}
             mock_session.run.assert_called_once()
@@ -2322,20 +1813,20 @@ class TestGetSamplesSummaryReverseQueryInSample:
         mock_result.single = AsyncMock(return_value={"total_count": 3})
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         import app.repositories.sample_summary as ss
-        
+
         original_is_db_only = ss.is_database_only_value
         original_reverse_map = ss.reverse_map_field_value
-        
+
         ss.is_database_only_value = lambda field, value: False
         ss.reverse_map_field_value = lambda field, value: (
             "WXS" if field == "library_strategy" and value == "Other" else value
         )
-        
+
         try:
             result = await repository._get_samples_summary_reverse_query({"library_strategy": "Other"})
-            
+
             assert isinstance(result, dict)
             assert result == {"counts": {"total": 3}}
             call_args = mock_session.run.call_args
@@ -2351,16 +1842,16 @@ class TestGetSamplesSummaryReverseQueryInSample:
         mock_result.single = AsyncMock(return_value={"total_count": 2})
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         import app.repositories.sample_summary as ss
-        
+
         original_is_db_only = ss.is_database_only_value
-        
+
         ss.is_database_only_value = lambda field, value: False
-        
+
         try:
             result = await repository._get_samples_summary_reverse_query({"library_selection_method": "PCR"})
-            
+
             assert isinstance(result, dict)
             assert result == {"counts": {"total": 2}}
             mock_session.run.assert_called_once()
@@ -2373,23 +1864,23 @@ class TestGetSamplesSummaryReverseQueryInSample:
         mock_result.single = AsyncMock(return_value={"total_count": 4})
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         import app.repositories.sample_summary as ss
-        
+
         original_is_db_only = ss.is_database_only_value
         original_is_null = ss.is_null_mapped_value
         original_reverse_map = ss.reverse_map_field_value
-        
+
         ss.is_database_only_value = lambda field, value: False
         ss.is_null_mapped_value = lambda field, value: False
         ss.reverse_map_field_value = lambda field, value: (
             ["MicroRNA", "Total RNA"] if field == "specimen_molecular_analyte_type" and value == "RNA"
             else value
         )
-        
+
         try:
             result = await repository._get_samples_summary_reverse_query({"specimen_molecular_analyte_type": "RNA"})
-            
+
             assert isinstance(result, dict)
             assert result == {"counts": {"total": 4}}
             call_args = mock_session.run.call_args
@@ -2403,15 +1894,15 @@ class TestGetSamplesSummaryReverseQueryInSample:
     async def test_get_samples_summary_reverse_query_exception_handling(self, repository, mock_session):
         """Test _get_samples_summary_reverse_query exception handling."""
         mock_session.run = AsyncMock(side_effect=Exception("Database error"))
-        
+
         import app.repositories.sample_summary as ss
-        
+
         original_is_db_only = ss.is_database_only_value
         original_is_null = ss.is_null_mapped_value
-        
+
         ss.is_database_only_value = lambda field, value: False
         ss.is_null_mapped_value = lambda field, value: False
-        
+
         try:
             with pytest.raises(Exception, match="Database error"):
                 await repository._get_samples_summary_reverse_query({"library_strategy": "WXS"})
@@ -2425,18 +1916,18 @@ class TestGetSamplesSummaryReverseQueryInSample:
         mock_result.single = AsyncMock(return_value=None)
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         import app.repositories.sample_summary as ss
-        
+
         original_is_db_only = ss.is_database_only_value
         original_is_null = ss.is_null_mapped_value
-        
+
         ss.is_database_only_value = lambda field, value: False
         ss.is_null_mapped_value = lambda field, value: False
-        
+
         try:
             result = await repository._get_samples_summary_reverse_query({"library_strategy": "WXS"})
-            
+
             assert isinstance(result, dict)
             assert result == {"counts": {"total": 0}}
         finally:
@@ -2449,20 +1940,20 @@ class TestGetSamplesSummaryReverseQueryInSample:
         mock_result.single = AsyncMock(return_value={"total_count": 7})
         mock_result.consume = AsyncMock()
         mock_session.run = AsyncMock(return_value=mock_result)
-        
+
         import app.repositories.sample_summary as ss
-        
+
         original_is_db_only = ss.is_database_only_value
         original_reverse_map = ss.reverse_map_field_value
-        
+
         ss.is_database_only_value = lambda field, value: False
         ss.reverse_map_field_value = lambda field, value: (
             None if field == "library_strategy" and value == "WXS" else value
         )
-        
+
         try:
             result = await repository._get_samples_summary_reverse_query({"library_strategy": "WXS"})
-            
+
             assert isinstance(result, dict)
             assert result == {"counts": {"total": 7}}
             mock_session.run.assert_called_once()

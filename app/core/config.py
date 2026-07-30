@@ -10,7 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
-from pydantic import Field, BaseModel
+from pydantic import AliasChoices, Field, BaseModel
 from pydantic_settings import BaseSettings
 
 
@@ -63,9 +63,6 @@ class CacheSettings(BaseModel):
     redis_password: str = ""
     count_ttl: int = 300
     summary_ttl: int = 600
-    ttl_count_endpoints: int = 1800
-    ttl_summary_endpoints: int = 900
-    ttl_list_endpoints: int = 300
 
 
 class CORSSettings(BaseModel):
@@ -138,17 +135,25 @@ class Settings(BaseSettings):
     # Cache settings
     # Redis is not deployed yet; keep caching opt-in via CACHE_ENABLED=true.
     cache_enabled: bool = Field(default=False, alias="CACHE_ENABLED")
-    cache_ttl_count_endpoints: int = Field(
-        default=1800,  # 30 minutes
-        alias="CACHE_TTL_COUNT_ENDPOINTS"
+    # Single knobs used by subject/sample/file services. Legacy CACHE_TTL_*_ENDPOINTS
+    # names remain accepted so existing env/deploy configs keep working.
+    cache_count_ttl: int = Field(
+        default=300,
+        validation_alias=AliasChoices(
+            "CACHE_COUNT_TTL",
+            "cache_count_ttl",
+            "CACHE_TTL_COUNT_ENDPOINTS",
+        ),
+        description="Cache TTL (seconds) for count endpoints",
     )
-    cache_ttl_summary_endpoints: int = Field(
-        default=900,   # 15 minutes
-        alias="CACHE_TTL_SUMMARY_ENDPOINTS"
-    )
-    cache_ttl_list_endpoints: int = Field(
-        default=300,   # 5 minutes
-        alias="CACHE_TTL_LIST_ENDPOINTS"
+    cache_summary_ttl: int = Field(
+        default=600,
+        validation_alias=AliasChoices(
+            "CACHE_SUMMARY_TTL",
+            "cache_summary_ttl",
+            "CACHE_TTL_SUMMARY_ENDPOINTS",
+        ),
+        description="Cache TTL (seconds) for summary endpoints",
     )
     
     # Security
@@ -218,8 +223,6 @@ class Settings(BaseSettings):
     cache_redis_port: Optional[int] = Field(default=6379, description="Redis port")
     cache_redis_db: Optional[int] = Field(default=0, description="Redis database")
     cache_redis_password: Optional[str] = Field(default="", description="Redis password")
-    cache_count_ttl: Optional[int] = Field(default=300, description="Cache TTL for count queries")
-    cache_summary_ttl: Optional[int] = Field(default=600, description="Cache TTL for summary queries")
     query_timeout: Optional[int] = Field(default=60, description="Query timeout in seconds")
     
     # CORS settings
@@ -293,20 +296,21 @@ class Settings(BaseSettings):
             redis_port=self.cache_redis_port or 6379,
             redis_db=self.cache_redis_db or 0,
             redis_password=self.cache_redis_password or "",
-            count_ttl=self.cache_count_ttl or 300,
-            summary_ttl=self.cache_summary_ttl or 600,
-            ttl_count_endpoints=self.cache_ttl_count_endpoints,
-            ttl_summary_endpoints=self.cache_ttl_summary_endpoints,
-            ttl_list_endpoints=self.cache_ttl_list_endpoints
+            count_ttl=self.cache_count_ttl,
+            summary_ttl=self.cache_summary_ttl,
         )
     
     @property
     def cors(self) -> CORSSettings:
         """Get CORS settings."""
         return CORSSettings(
-            enabled=self.cors_enabled or True,
+            enabled=self.cors_enabled if self.cors_enabled is not None else True,
             allowed_origins=self.cors_allowed_origins or ["*"],
-            allow_credentials=self.cors_allow_credentials or True,
+            allow_credentials=(
+                self.cors_allow_credentials
+                if self.cors_allow_credentials is not None
+                else True
+            ),
             allowed_methods=self.cors_allowed_methods or ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
             allowed_headers=self.cors_allowed_headers or ["*"],
             origins=self.cors_origins,

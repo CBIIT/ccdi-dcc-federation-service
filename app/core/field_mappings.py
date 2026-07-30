@@ -61,7 +61,9 @@ def map_field_value(field_name: str, db_value: Any) -> Optional[str]:
         db_value: Database value to map
         
     Returns:
-        Mapped API value, or None if value should be null, or original value if no mapping
+        Mapped API value, or None if value should be null, or
+        ``default_mapped_value`` from config when set, otherwise the original
+        value if no mapping applies.
     """
     if db_value is None:
         return None
@@ -87,9 +89,11 @@ def map_field_value(field_name: str, db_value: Any) -> Optional[str]:
     if str_value in value_mappings:
         return value_mappings[str_value]
 
-    if field_name == "sex":
-        return "U"
-    
+    # Optional config-driven fallback (e.g. sex → "U" for unmapped DB values)
+    default_mapped = field_config.get("default_mapped_value")
+    if default_mapped is not None:
+        return default_mapped
+
     # No mapping found, return as-is
     return str_value
 

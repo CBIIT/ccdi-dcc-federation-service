@@ -80,6 +80,7 @@ class TestMapFieldValue:
                         "Female": "F",
                         "Male": "M",
                     },
+                    "default_mapped_value": "U",
                     "null_mappings": [],
                 }
             }

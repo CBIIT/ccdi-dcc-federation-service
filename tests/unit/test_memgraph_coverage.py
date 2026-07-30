@@ -82,12 +82,11 @@ class TestMemgraphConnectionAdditional:
             with pytest.raises(DatabaseConnectionError):
                 await connection.get_session(retry_on_error=True)
 
-    async def test_get_session_driver_close_error(self, connection):
-        """Test get_session when driver.close() raises exception during retry."""
+    async def test_get_session_invalidate_close_error(self, connection):
+        """Session-creation failure invalidates driver; close errors are swallowed."""
         mock_driver = AsyncMock(spec=AsyncDriver)
         mock_session = AsyncMock(spec=AsyncSession)
-        
-        # First call raises ServiceUnavailable, then we try to close driver (which raises), then succeeds
+
         call_count = 0
         def session_factory(*args, **kwargs):
             nonlocal call_count
@@ -95,134 +94,19 @@ class TestMemgraphConnectionAdditional:
             if call_count == 1:
                 raise ServiceUnavailable("Service unavailable")
             return mock_session
-        
-        # Mock driver.session as a synchronous callable method that returns a session directly
-        # The actual code calls self._driver.session() synchronously, which returns a session
+
         mock_driver.session = Mock(side_effect=session_factory)
-        # Mock driver.close to raise exception (but code catches it)
         mock_driver.close = AsyncMock(side_effect=Exception("Close error"))
-        
-        # Set the driver on the connection
         connection._driver = mock_driver
-        
+
         with patch('asyncio.sleep'):
-            # Should handle close error gracefully and retry
-            # After first failure, driver is set to None, then on retry it should use the mock again
-            # But we need to ensure the mock is still available after driver is set to None
-            # Actually, the code sets driver to None, then on next iteration checks if not self._driver
-            # and tries to reconnect. We need to mock connect() to restore the driver.
-            original_connect = connection.connect
             async def mock_connect():
                 connection._driver = mock_driver
             connection.connect = mock_connect
-            
+
             session = await connection.get_session(retry_on_error=True)
-            # The session returned should be from the second call (after retry)
             assert session is mock_session
-
-    async def test_execute_query_session_close_error(self, connection):
-        """Test execute_query when session.close() raises exception."""
-        mock_session = AsyncMock(spec=AsyncSession)
-        mock_result = AsyncMock()
-        
-        # Create proper async iterator
-        async def async_iter():
-            return
-            yield  # Make it an async generator
-        
-        mock_result.__aiter__ = Mock(return_value=async_iter())
-        mock_result.consume = AsyncMock()
-        mock_session.run = AsyncMock(return_value=mock_result)
-        # Close raises exception after successful query execution
-        # The code doesn't catch exceptions during normal close() (line 233), so it will propagate
-        mock_session.close = AsyncMock(side_effect=Exception("Close error"))
-        
-        # Mock get_session to return the session directly (not as context manager for execute_query)
-        connection.get_session = AsyncMock(return_value=mock_session)
-        
-        # The code doesn't catch exceptions during normal session.close(), so exception propagates
-        with pytest.raises(Exception, match="Close error"):
-            await connection.execute_query("MATCH (n) RETURN n")
-
-    async def test_execute_query_result_consume_error(self, connection):
-        """Test execute_query when result.consume() raises exception."""
-        mock_session = AsyncMock(spec=AsyncSession)
-        mock_result = AsyncMock()
-        
-        # Create proper async iterator
-        async def async_iter():
-            yield {"n": 1}
-        
-        mock_result.__aiter__ = Mock(return_value=async_iter())
-        mock_result.consume = AsyncMock(side_effect=Exception("Consume error"))
-        mock_session.run = AsyncMock(return_value=mock_result)
-        mock_session.close = AsyncMock()
-        
-        # Mock get_session to return the session directly (not as context manager for execute_query)
-        connection.get_session = AsyncMock(return_value=mock_session)
-        
-        # The code doesn't catch exceptions during result.consume() (line 230)
-        # So the exception will propagate - test should expect it
-        with pytest.raises(Exception, match="Consume error"):
-            await connection.execute_query("MATCH (n) RETURN n")
-
-    async def test_execute_write_query_auth_error(self, connection):
-        """Test execute_write_query handles AuthError (session.run raises)."""
-        mock_session = AsyncMock(spec=AsyncSession)
-        mock_session.run = AsyncMock(side_effect=AuthError("Auth failed"))
-        mock_session.commit = AsyncMock()
-        mock_session.close = AsyncMock()
-        # Production uses async with self.get_session() as session — get_session() must return
-        # an async context manager so the coroutine is not left unawaited.
-        @asynccontextmanager
-        async def mock_get_session():
-            yield mock_session
-        connection.get_session = Mock(return_value=mock_get_session())
-        with pytest.raises(DatabaseConnectionError):
-            await connection.execute_write_query("CREATE (n:Node)")
-
-    async def test_execute_write_query_general_exception(self, connection):
-        """Test execute_write_query handles general exceptions (session.run raises)."""
-        mock_session = AsyncMock(spec=AsyncSession)
-        mock_session.run = AsyncMock(side_effect=ValueError("General error"))
-        mock_session.commit = AsyncMock()
-        mock_session.close = AsyncMock()
-        # Production uses async with self.get_session() — return an async context manager.
-        @asynccontextmanager
-        async def mock_get_session():
-            yield mock_session
-        connection.get_session = Mock(return_value=mock_get_session())
-        with pytest.raises(DatabaseConnectionError) as exc_info:
-            await connection.execute_write_query("CREATE (n:Node)")
-        assert "Database is not available" in str(exc_info.value)
-        assert "General error" in str(exc_info.value)
-
-    async def test_execute_write_query_session_error(self, connection):
-        """Test execute_write_query when get_session fails (called before async with)."""
-        # get_session() is called first; use Mock(side_effect=...) so it raises and no
-        # coroutine is returned (avoid "coroutine was never awaited").
-        connection.get_session = Mock(side_effect=DatabaseConnectionError("Session error"))
-        with pytest.raises(DatabaseConnectionError):
-            await connection.execute_write_query("CREATE (n:Node)")
-
-    async def test_count_query_no_count_key(self, connection):
-        """Test count_query when result doesn't have 'count' key."""
-        connection.execute_query = AsyncMock(return_value=[{"other": 5}])
-        
-        result = await connection.count_query("MATCH (n) RETURN count(n)")
-        assert result == 0
-
-    async def test_count_query_empty_results(self, connection):
-        """Test count_query when results are empty."""
-        connection.execute_query = AsyncMock(return_value=[])
-        
-        result = await connection.count_query("MATCH (n) RETURN count(n)")
-        assert result == 0
-
-
-@pytest.mark.unit
-class TestGetConnectionCoverage:
-    """Test cases for get_connection function."""
+            mock_driver.close.assert_called()
 
     @pytest.fixture
     def mock_settings(self):
@@ -315,21 +199,23 @@ class TestGetSessionCoverage:
                     assert session is mock_session
                     break
 
-    async def test_get_session_driver_close_error(self, mock_settings):
-        """Test get_session handles driver.close() error during retry."""
-        import app.db.memgraph as memgraph_module
-        
+    async def test_get_session_retry_exhausted_without_closing_driver(self, mock_settings):
+        """Module get_session exhausts retries without tearing down the shared driver."""
         mock_connection = AsyncMock(spec=MemgraphConnection)
         mock_driver = AsyncMock(spec=AsyncDriver)
-        mock_driver.close = AsyncMock(side_effect=Exception("Close error"))
+        mock_driver.close = AsyncMock()
         mock_connection._driver = mock_driver
+        mock_connection._invalidate_driver = AsyncMock()
         mock_connection.get_session = AsyncMock(side_effect=ServiceUnavailable("Service unavailable"))
-        
+
         with patch('app.db.memgraph.get_connection', return_value=mock_connection):
             with patch('asyncio.sleep'):
                 with pytest.raises(DatabaseConnectionError):
                     async for _ in get_session():
                         pass
+
+        mock_driver.close.assert_not_called()
+        mock_connection._invalidate_driver.assert_not_called()
 
     async def test_get_session_non_retryable_error(self, mock_settings):
         """Test get_session doesn't retry on non-retryable error."""

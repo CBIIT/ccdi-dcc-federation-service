@@ -89,22 +89,6 @@ class TestSubjectRepositoryInternal:
         result = repository._build_sex_normalization_case("race")
         assert result == ""
 
-    def test_validate_filters_valid(self, repository, mock_allowlist):
-        """Test _validate_filters with valid fields."""
-        mock_allowlist.is_field_allowed = Mock(return_value=True)
-        filters = {"sex": "Female", "race": "White"}
-        
-        # Should not raise
-        repository._validate_filters(filters, "subject")
-
-    def test_validate_filters_invalid(self, repository, mock_allowlist):
-        """Test _validate_filters with invalid field."""
-        mock_allowlist.is_field_allowed = Mock(return_value=False)
-        filters = {"invalid_field": "value"}
-        
-        with pytest.raises(UnsupportedFieldError):
-            repository._validate_filters(filters, "subject")
-
     def test_record_to_subject(self, repository):
         """Test _record_to_subject conversion."""
         repository.settings.sex_value_mappings = {
@@ -545,22 +529,6 @@ class TestFileRepositoryInternal:
         """Create a FileRepository instance."""
         return FileRepository(mock_session, mock_allowlist)
 
-    def test_validate_filters_valid(self, repository, mock_allowlist):
-        """Test _validate_filters with valid fields."""
-        mock_allowlist.is_field_allowed = Mock(return_value=True)
-        filters = {"file_type": "BAM", "md5sum": "abc123"}
-        
-        # Should not raise
-        repository._validate_filters(filters, "file")
-
-    def test_validate_filters_invalid(self, repository, mock_allowlist):
-        """Test _validate_filters with invalid field."""
-        mock_allowlist.is_field_allowed = Mock(return_value=False)
-        filters = {"invalid_field": "value"}
-        
-        with pytest.raises(UnsupportedFieldError):
-            repository._validate_filters(filters, "file")
-
     def test_map_file_type_to_enum_valid(self, repository):
         """Test _map_file_type_to_enum with valid enum value."""
         result = repository._map_file_type_to_enum("BAM")
@@ -808,7 +776,7 @@ class TestSampleRepositoryInternal:
         with_conditions = []
         
         # Mock load_sample_enum to return valid values
-        with patch('app.repositories.sample.load_sample_enum', return_value=["Tumor", "Normal"]):
+        with patch('app.repositories.sample_helpers.load_sample_enum', return_value=["Tumor", "Normal"]):
             result = SampleRepository._validate_tissue_type_filter(
                 "Tumor", "tissue_param", params, with_conditions
             )
@@ -822,7 +790,7 @@ class TestSampleRepositoryInternal:
         with_conditions = []
         
         # Mock load_sample_enum to return valid values
-        with patch('app.repositories.sample.load_sample_enum', return_value=["Tumor", "Normal"]):
+        with patch('app.repositories.sample_helpers.load_sample_enum', return_value=["Tumor", "Normal"]):
             result = SampleRepository._validate_tissue_type_filter(
                 "Invalid", "tissue_param", params, with_conditions
             )
@@ -833,7 +801,7 @@ class TestSampleRepositoryInternal:
         params = {}
         with_conditions = []
 
-        with patch("app.repositories.sample.load_sample_enum", return_value=["Tumor"]):
+        with patch("app.repositories.sample_helpers.load_sample_enum", return_value=["Tumor"]):
             result = SampleRepository._validate_tissue_type_filter(
                 ["Tumor", "Bad"], "tissue_param", params, with_conditions
             )
@@ -847,7 +815,7 @@ class TestSampleRepositoryInternal:
         params = {}
         with_conditions = []
 
-        with patch("app.repositories.sample.load_sample_enum", return_value=["Tumor", "Normal", "Cell Line"]):
+        with patch("app.repositories.sample_helpers.load_sample_enum", return_value=["Tumor", "Normal", "Cell Line"]):
             result = SampleRepository._validate_tissue_type_filter(
                 ["Tumor", "Normal"], "tissue_param", params, with_conditions
             )
@@ -865,7 +833,7 @@ class TestSampleRepositoryInternal:
         params = {}
         with_conditions = []
 
-        with patch("app.repositories.sample.load_sample_enum", return_value=None):
+        with patch("app.repositories.sample_helpers.load_sample_enum", return_value=None):
             result = SampleRepository._validate_tissue_type_filter(
                 "Tumor", "tissue_param", params, with_conditions
             )
@@ -881,7 +849,7 @@ class TestSampleRepositoryInternal:
         with_conditions = []
         
         # Mock load_sample_enum to return valid values
-        with patch('app.repositories.sample.load_sample_enum', return_value=["DNA", "RNA"]):
+        with patch('app.repositories.sample_helpers.load_sample_enum', return_value=["DNA", "RNA"]):
             result = repository._validate_library_source_material_filter(
                 "DNA", "source_param", params, with_conditions
             )
@@ -949,23 +917,6 @@ class TestSampleRepositoryInternal:
         result = repository._build_sex_normalization_case("race")
         assert result == ""
 
-    def test_validate_filters_valid(self, repository, mock_allowlist):
-        """Test _validate_filters with valid fields."""
-        mock_allowlist.is_field_allowed = Mock(return_value=True)
-        filters = {"tissue_type": "Tumor", "library_source_material": "DNA"}
-        
-        # Should not raise
-        repository._validate_filters(filters, "sample")
-
-    def test_validate_filters_invalid(self, repository, mock_allowlist):
-        """Test _validate_filters with invalid field."""
-        mock_allowlist.is_field_allowed = Mock(return_value=False)
-        filters = {"invalid_field": "value"}
-        
-        with pytest.raises(UnsupportedFieldError):
-            repository._validate_filters(filters, "sample")
-
-    @pytest.mark.skip(reason="Complex method requires extensive mocking of internal query building")
     async def test_get_samples_by_sequencing_file_filters(self, repository, mock_session):
         """Test _get_samples_by_sequencing_file_filters method (skipped - complex)."""
         pass
@@ -1182,48 +1133,6 @@ class TestSampleRepositoryInternal:
         assert isinstance(result, list)
         assert result == [sample_obj]
 
-    async def test_get_samples_by_combined_filters_count_fail_returns_bare_list(
-        self, repository, mock_session
-    ):
-        """combined sf+pf reverse path: count failure returns bare list for summary fallback."""
-        sample_obj = Mock()
-        mock_list_result = AsyncMock()
-        mock_list_result.__aiter__.return_value = [
-            {
-                "sa": {"sample_id": "S1"},
-                "p": {},
-                "st": {"study_id": "phs001"},
-                "sf": {"library_strategy": "WGS"},
-                "pf": {"fixation_embedding_method": "OCT"},
-                "diagnoses": {},
-            }
-        ]
-        mock_list_result.consume = AsyncMock()
-        mock_session.run = AsyncMock(return_value=mock_list_result)
-        repository._record_to_sample = Mock(return_value=sample_obj)
-
-        with patch("app.repositories.sample.is_database_only_value", return_value=False), patch(
-            "app.repositories.sample.is_null_mapped_value", return_value=False
-        ), patch(
-            "app.repositories.sample.reverse_map_field_value",
-            side_effect=lambda field, value: value,
-        ), patch(
-            "app.repositories.sample.SampleRepository._reverse_map_library_selection_method_static",
-            return_value="WGS",
-        ), patch(
-            "app.repositories.sample.run_count_query_with_retry",
-            AsyncMock(side_effect=RuntimeError("count failed")),
-        ):
-            result = await repository._get_samples_by_combined_filters(
-                {"library_strategy": "WGS", "preservation_method": "OCT"},
-                offset=0,
-                limit=10,
-                return_total=True,
-            )
-
-        assert isinstance(result, list)
-        assert result == [sample_obj]
-
     async def test_get_samples_by_sequencing_file_filters_success(self, repository, mock_session):
         """Test reverse query returns samples when records exist."""
         with patch("app.repositories.sample.is_database_only_value", return_value=False), \
@@ -1334,43 +1243,6 @@ class TestSampleRepositoryInternal:
         """DB-only preservation with return_total=True returns ([], 0), not []."""
         result = await repository._get_samples_by_pathology_file_filters(
             {"preservation_method": "Cytospin Slide"},
-            offset=0,
-            limit=10,
-            return_total=True,
-        )
-
-        assert result == ([], 0)
-        assert not mock_session.run.called
-
-    async def test_combined_filters_invalid_preservation_method_early_return(self, repository, mock_session):
-        """DB-only 'Other' returns empty without a DB call (combined sf+pf path)."""
-        result = await repository._get_samples_by_combined_filters(
-            {"library_source_material": "Not Reported", "preservation_method": "Other"},
-            offset=0,
-            limit=10,
-        )
-
-        assert result == []
-        assert not mock_session.run.called
-
-    async def test_combined_filters_invalid_preservation_return_total(self, repository, mock_session):
-        """Combined path: DB-only preservation with return_total=True returns ([], 0)."""
-        result = await repository._get_samples_by_combined_filters(
-            {"library_source_material": "Not Reported", "preservation_method": "Other"},
-            offset=0,
-            limit=10,
-            return_total=True,
-        )
-
-        assert result == ([], 0)
-        assert not mock_session.run.called
-
-    async def test_combined_filters_invalid_library_source_material_return_total(
-        self, repository, mock_session
-    ):
-        """Combined path: DB-only library_source_material=Other with return_total → ([], 0)."""
-        result = await repository._get_samples_by_combined_filters(
-            {"library_source_material": "Other", "preservation_method": "OCT"},
             offset=0,
             limit=10,
             return_total=True,

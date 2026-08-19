@@ -1,36 +1,45 @@
 """
 Tests for diagnosis_category field on /sample and /sample-diagnosis endpoints.
-Mirrors test_subject_diagnosis_category.py — same DB property (`d.diagnosis_category`),
-different API field name (`diagnosis_category` on sample vs `associated_diagnosis_categories` on subject).
-On `/sample-diagnosis`, category filtering uses substring on the full field (same as
-`/subject-diagnosis`); list `/sample` uses token-after-`;` matching.
+Mirrors subject coverage where applicable, but sample uses singular
+SampleDiagnosisCategoryField + dcc_diagnosis_category_* unharmonized keys.
 """
 
-# ---------------------------------------------------------------------------
-# Task 1 — DTO model tests
-# ---------------------------------------------------------------------------
-from app.models.dto import AssociatedDiagnosisCategoryField, SampleMetadata
+from app.models.dto import SampleDiagnosisCategoryField, SampleMetadata
 
 
-def test_sample_metadata_has_diagnosis_category_field():
+def test_sample_metadata_has_singular_diagnosis_category_field():
     meta = SampleMetadata(
-        diagnosis_category=[
-            AssociatedDiagnosisCategoryField(value="Medulloblastoma"),
-            AssociatedDiagnosisCategoryField(value="Renal Tumors"),
-        ]
+        diagnosis_category=SampleDiagnosisCategoryField(value="Medulloblastoma")
     )
-    assert meta.diagnosis_category[0].value == "Medulloblastoma"
-    assert meta.diagnosis_category[1].value == "Renal Tumors"
+    assert meta.diagnosis_category.value == "Medulloblastoma"
+    assert meta.diagnosis_category.ancestors is None
+    dumped = meta.diagnosis_category.model_dump()
+    assert dumped == {"value": "Medulloblastoma"}
+    assert "ancestors" not in dumped
 
+
+def test_sample_diagnosis_category_ancestors_included_when_set():
+    field = SampleDiagnosisCategoryField(
+        value="Low-Grade Gliomas",
+        ancestors=["unharmonized.dcc_diagnosis_category_1"],
+    )
+    assert field.model_dump() == {
+        "value": "Low-Grade Gliomas",
+        "ancestors": ["unharmonized.dcc_diagnosis_category_1"],
+    }
 
 def test_sample_metadata_unharmonized_is_serialized():
-    """unharmonized must NOT be excluded from serialization (needed for unharmonized categories)."""
+    """unharmonized must NOT be excluded from serialization (needed for dcc_* keys)."""
     meta = SampleMetadata(
-        unharmonized={"diagnosis_category": [{"value": "Custom ICD-O Value"}]}
+        unharmonized={
+            "dcc_diagnosis_category_1": {
+                "value": "Custom ICD-O Value",
+            }
+        }
     )
     dumped = meta.model_dump(exclude_none=True)
     assert "unharmonized" in dumped
-    assert "diagnosis_category" in dumped["unharmonized"]
+    assert "dcc_diagnosis_category_1" in dumped["unharmonized"]
 
 
 def test_sample_metadata_diagnosis_category_defaults_to_none():
@@ -80,8 +89,9 @@ def test_harmonized_category_appears_in_diagnosis_category():
         _diag(diagnosis_category="Medulloblastoma"),
     )
     assert sample.metadata.diagnosis_category is not None
-    vals = [item.value for item in sample.metadata.diagnosis_category]
-    assert "Medulloblastoma" in vals
+    assert sample.metadata.diagnosis_category.value == "Medulloblastoma"
+    assert sample.metadata.diagnosis_category.ancestors is None
+    assert sample.metadata.unharmonized is None
 
 
 def test_unharmonized_category_goes_to_metadata_unharmonized():
@@ -92,23 +102,97 @@ def test_unharmonized_category_goes_to_metadata_unharmonized():
     )
     assert sample.metadata.diagnosis_category is None
     assert sample.metadata.unharmonized is not None
-    assert "diagnosis_category" in sample.metadata.unharmonized
-    items = sample.metadata.unharmonized["diagnosis_category"]
-    assert any(item["value"] == "Adenomas and adenocarcinomas" for item in items)
+    assert sample.metadata.unharmonized["dcc_diagnosis_category_1"]["value"] == (
+        "Adenomas and adenocarcinomas"
+    )
 
 
-def test_semicolon_delimited_splits_harmonized_and_unharmonized():
+def test_semicolon_delimited_splits_native_and_other():
     repo = _make_repo()
     sample = repo._record_to_sample(
         _min_sa(), None, _min_st(), None, None,
         _diag(diagnosis_category="Medulloblastoma;Adenomas and adenocarcinomas"),
     )
-    harmonized_vals = [item.value for item in sample.metadata.diagnosis_category]
-    unharmonized_items = sample.metadata.unharmonized["diagnosis_category"]
-    unharmonized_vals = [item["value"] for item in unharmonized_items]
-    assert "Medulloblastoma" in harmonized_vals
-    assert "Adenomas and adenocarcinomas" not in harmonized_vals
-    assert "Adenomas and adenocarcinomas" in unharmonized_vals
+    assert sample.metadata.diagnosis_category.value == "Medulloblastoma"
+    assert sample.metadata.diagnosis_category.ancestors is None
+    assert sample.metadata.unharmonized == {
+        "dcc_diagnosis_category_1": {"value": "Adenomas and adenocarcinomas"}
+    }
+
+
+def test_extra_native_goes_to_dcc_canonical():
+    repo = _make_repo()
+    sample = repo._record_to_sample(
+        _min_sa(), None, _min_st(), None, None,
+        _diag(diagnosis_category="Medulloblastoma;Renal Tumors;Gliomas"),
+    )
+    assert sample.metadata.diagnosis_category.value == "Medulloblastoma"
+    assert sample.metadata.unharmonized == {
+        "dcc_diagnosis_category_1": {"value": "Renal Tumors"},
+        "dcc_diagnosis_category_2": {"value": "Gliomas"},
+    }
+
+
+def test_alias_only_promotes_with_ancestors_and_comment():
+    repo = _make_repo()
+    sample = repo._record_to_sample(
+        _min_sa(), None, _min_st(), None, None,
+        _diag(diagnosis_category="Low-grade Gliomas;Gliomas"),
+    )
+    assert sample.metadata.diagnosis_category.value == "Low-Grade Gliomas"
+    assert sample.metadata.diagnosis_category.ancestors == [
+        "unharmonized.dcc_diagnosis_category_1"
+    ]
+    assert sample.metadata.unharmonized == {
+        "dcc_diagnosis_category_1": {
+            "value": "Low-grade Gliomas",
+            "comment": "Low-Grade Gliomas",
+            "owned": True,
+        },
+        "dcc_diagnosis_category_2": {"value": "Gliomas"},
+    }
+
+
+def test_two_aliases_no_native_promotes_first_keeps_second_in_dcc():
+    """Coverage gap: ≥2 field_mappings aliases, no native — first promote, rest in dcc_*."""
+    repo = _make_repo()
+    sample = repo._record_to_sample(
+        _min_sa(), None, _min_st(), None, None,
+        _diag(diagnosis_category="Low-grade Gliomas;Myeloid leukemias"),
+    )
+    assert sample.metadata.diagnosis_category.value == "Low-Grade Gliomas"
+    assert sample.metadata.diagnosis_category.ancestors == [
+        "unharmonized.dcc_diagnosis_category_1"
+    ]
+    assert sample.metadata.unharmonized == {
+        "dcc_diagnosis_category_1": {
+            "value": "Low-grade Gliomas",
+            "comment": "Low-Grade Gliomas",
+            "owned": True,
+        },
+        "dcc_diagnosis_category_2": {
+            "value": "Myeloid leukemias",
+            "comment": "Myeloid Leukemia",
+            "owned": True,
+        },
+    }
+
+
+def test_alias_with_native_keeps_raw_in_dcc_not_promoted():
+    repo = _make_repo()
+    sample = repo._record_to_sample(
+        _min_sa(), None, _min_st(), None, None,
+        _diag(diagnosis_category="Medulloblastoma;Low-grade Gliomas"),
+    )
+    assert sample.metadata.diagnosis_category.value == "Medulloblastoma"
+    assert sample.metadata.diagnosis_category.ancestors is None
+    assert sample.metadata.unharmonized == {
+        "dcc_diagnosis_category_1": {
+            "value": "Low-grade Gliomas",
+            "comment": "Low-Grade Gliomas",
+            "owned": True,
+        }
+    }
 
 
 def test_no_diagnosis_node_leaves_diagnosis_category_none():
@@ -134,8 +218,8 @@ def test_deduplication_via_semicolon_repeated_token():
         _min_sa(), None, _min_st(), None, None,
         _diag(diagnosis_category="Medulloblastoma;Medulloblastoma"),
     )
-    harmonized_vals = [item.value for item in sample.metadata.diagnosis_category]
-    assert harmonized_vals.count("Medulloblastoma") == 1
+    assert sample.metadata.diagnosis_category.value == "Medulloblastoma"
+    assert sample.metadata.unharmonized is None
 
 
 def test_case_insensitive_harmonization():
@@ -146,8 +230,7 @@ def test_case_insensitive_harmonization():
         _diag(diagnosis_category="medulloblastoma"),
     )
     assert sample.metadata.diagnosis_category is not None
-    vals = [item.value for item in sample.metadata.diagnosis_category]
-    assert "Medulloblastoma" in vals
+    assert sample.metadata.diagnosis_category.value == "Medulloblastoma"
 
 
 def test_whitespace_around_token_is_trimmed():
@@ -156,9 +239,8 @@ def test_whitespace_around_token_is_trimmed():
         _min_sa(), None, _min_st(), None, None,
         _diag(diagnosis_category=" Medulloblastoma ; Renal Tumors "),
     )
-    harmonized_vals = [item.value for item in sample.metadata.diagnosis_category]
-    assert "Medulloblastoma" in harmonized_vals
-    assert "Renal Tumors" in harmonized_vals
+    assert sample.metadata.diagnosis_category.value == "Medulloblastoma"
+    assert sample.metadata.unharmonized["dcc_diagnosis_category_1"]["value"] == "Renal Tumors"
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +288,7 @@ def test_get_sample_filters_diagnosis_category_not_in_unknown_params():
 
 
 # ---------------------------------------------------------------------------
-# Task 4 — count endpoint dispatch tests
+# Task 4 — count dispatch (smoke)
 # ---------------------------------------------------------------------------
 import pytest
 from unittest.mock import AsyncMock
@@ -216,8 +298,8 @@ from unittest.mock import AsyncMock
 async def test_count_samples_by_diagnosis_category_dispatches():
     repo = _make_repo()
     repo._count_samples_by_diagnosis_category = AsyncMock(
-        return_value={"total": 20, "missing": 3, "values": [{"value": "Medulloblastoma", "count": 8}]}
+        return_value={"total": 0, "values": []}
     )
     result = await repo.count_samples_by_field("diagnosis_category")
     repo._count_samples_by_diagnosis_category.assert_called_once()
-    assert result["total"] == 20
+    assert result["total"] == 0

@@ -172,16 +172,23 @@ class TestBuildDiagnosisResultListNative:
 
     def test_list_diagnosis_category_harmonized(self):
         diagnoses = [{"diagnosis": "Some Dx", "diagnosis_category": [HARMONIZED_PV]}]
-        _, _, harmonized, unharmonized = _build_diagnosis_result(diagnoses)
-        assert harmonized == [HARMONIZED_PV]
-        assert unharmonized == []
+        _, _, diagnosis_category, unharmonized = _build_diagnosis_result(diagnoses)
+        assert diagnosis_category is not None
+        assert diagnosis_category.value == HARMONIZED_PV
+        assert unharmonized is None
 
     def test_list_diagnosis_category_mixed(self):
         diagnoses = [
             {"diagnosis": "Some Dx", "diagnosis_category": [HARMONIZED_PV, UNHARMONIZED_TOKEN]}
         ]
-        _, _, harmonized, unharmonized = _build_diagnosis_result(diagnoses)
-        assert harmonized == [HARMONIZED_PV]
-        assert unharmonized == [UNHARMONIZED_TOKEN]
+        _, _, diagnosis_category, unharmonized = _build_diagnosis_result(diagnoses)
+        assert diagnosis_category is not None
+        assert diagnosis_category.value == HARMONIZED_PV
+        assert unharmonized == {
+            "dcc_diagnosis_category_1": {"value": UNHARMONIZED_TOKEN}
+        }
         # Guard against the pre-fix stringified-list token leaking in.
-        assert not any(tok.startswith("[") for tok in unharmonized)
+        assert not any(
+            str(entry.get("value", "")).startswith("[")
+            for entry in (unharmonized or {}).values()
+        )

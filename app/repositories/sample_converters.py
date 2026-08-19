@@ -7,10 +7,13 @@ These methods are provided as a mixin class that can be inherited by SampleRepos
 
 from typing import Any, Dict, List, Optional, Tuple
 from app.core.logging import get_logger
-from app.core.diagnosis_category import split_diagnosis_category_tokens
+from app.core.diagnosis_category import (
+    build_sample_diagnosis_category_fields,
+    iter_diagnosis_category_raw_tokens,
+)
 from app.core.field_mappings import map_field_value, reverse_map_field_value
 from app.core.serialization import convert_date_time_to_string
-from app.models.dto import AssociatedDiagnosisCategoryField, DiagnosisField, Sample
+from app.models.dto import DiagnosisField, Sample, SampleDiagnosisCategoryField
 
 logger = get_logger(__name__)
 
@@ -56,13 +59,25 @@ def node_to_dict(node):
 
 def _build_diagnosis_result(
     diagnoses: Any,
-) -> Tuple[Optional[List[DiagnosisField]], Optional[Dict[str, Any]], List[str], List[str]]:
+) -> Tuple[
+    Optional[List[DiagnosisField]],
+    Optional[Dict[str, Any]],
+    Optional[SampleDiagnosisCategoryField],
+    Optional[Dict[str, Any]],
+]:
     """Process diagnoses into Sample field structures.
 
     Accepts a single dict, a list of dicts, or None.
-    Returns (diagnosis_field, head_d, harmonized_cats, unharmonized_cats).
+    Returns (diagnosis_field, head_d, diagnosis_category, unharmonized).
     head_d is the first valid diagnosis dict — scalar fields (disease_phase, tumor_grade,
     age_at_diagnosis, tumor_classification) are read from it by the caller.
+
+    Live query invariant: every Cypher path that feeds ``_record_to_sample`` currently
+    yields at most one diagnosis node (``head(collect(DISTINCT d))`` or an explicit
+    ``diagnoses[0]`` truncate). The multi-node flatten below is correct but dormant —
+    if a future query returns multiple diagnosis dicts, ``head_d`` and the tokens that
+    drive singular ``diagnosis_category`` can diverge (first node vs cross-node "first
+    native/alias"). Keep those paths aligned or revisit selection here.
     """
     if isinstance(diagnoses, dict):
         diagnoses = [diagnoses]
@@ -70,8 +85,7 @@ def _build_diagnosis_result(
     head_d: Optional[Dict[str, Any]] = diagnoses_list[0] if diagnoses_list else None
 
     diag_entries: List[DiagnosisField] = []
-    all_harmonized: List[str] = []
-    all_unharmonized: List[str] = []
+    all_raw_cats: List[str] = []
 
     for d in diagnoses_list:
         if not isinstance(d, dict):
@@ -85,15 +99,18 @@ def _build_diagnosis_result(
             ))
         raw_cat = d.get("diagnosis_category")
         if raw_cat is not None and str(raw_cat).strip():
-            h, u = split_diagnosis_category_tokens(raw_cat)
-            all_harmonized.extend(h)
-            all_unharmonized.extend(u)
+            all_raw_cats.extend(iter_diagnosis_category_raw_tokens(raw_cat))
+
+    regular_dict, unharmonized = build_sample_diagnosis_category_fields(all_raw_cats)
+    diagnosis_category = (
+        SampleDiagnosisCategoryField(**regular_dict) if regular_dict else None
+    )
 
     return (
         diag_entries if diag_entries else None,
         head_d,
-        list(dict.fromkeys(all_harmonized)),
-        list(dict.fromkeys(all_unharmonized)),
+        diagnosis_category,
+        unharmonized,
     )
 
 
@@ -232,7 +249,9 @@ class SampleConverters:
             if study_id:
                 depositions = [{"kind": "dbGaP", "value": study_id}]
 
-        diagnosis_field, head_d, harmonized_cats, unharmonized_cats = _build_diagnosis_result(diagnoses)
+        diagnosis_field, head_d, diagnosis_category_field, unharmonized_field = (
+            _build_diagnosis_result(diagnoses)
+        )
 
         # Helper function to wrap value in ValueField if not None and not empty
         def _wrap_value(value):
@@ -382,14 +401,8 @@ class SampleConverters:
         age_at_collection_value = sa.get("participant_age_at_collection") if sa else None
         tissue_type_value = sa.get("sample_tumor_status") if sa else None
 
-        diagnosis_category_field = (
-            [AssociatedDiagnosisCategoryField(value=c) for c in harmonized_cats]
-            if harmonized_cats else None
-        )
-        unharmonized_field = (
-            {"diagnosis_category": [{"value": c} for c in unharmonized_cats]}
-            if unharmonized_cats else None
-        )
+        # diagnosis_category_field / unharmonized_field built by _build_diagnosis_result
+        # (singular SampleDiagnosisCategoryField + dcc_diagnosis_category_* map).
 
         # Build metadata with field mappings applied
         metadata = SampleMetadata(

@@ -241,14 +241,19 @@ class TestSampleConverters:
             },
         ]
 
-        diagnosis_field, head_d, harmonized, unharmonized = _build_diagnosis_result(diagnoses)
+        diagnosis_field, head_d, diagnosis_category, unharmonized = _build_diagnosis_result(diagnoses)
 
         assert [item.value for item in diagnosis_field] == ["Neuroblastoma", "Leukemia"]
         assert diagnosis_field[0].comment == "first note"
         assert diagnosis_field[1].comment is None
         assert head_d == diagnoses[0]
-        assert harmonized == ["Medulloblastoma"]
-        assert unharmonized == ["Gliomas", "Custom Category"]
+        assert diagnosis_category is not None
+        assert diagnosis_category.value == "Medulloblastoma"
+        assert diagnosis_category.ancestors is None
+        assert unharmonized == {
+            "dcc_diagnosis_category_1": {"value": "Gliomas"},
+            "dcc_diagnosis_category_2": {"value": "Custom Category"},
+        }
 
     def test_record_to_sample_with_multiple_diagnoses_aggregates_categories(self, converter):
         """Test _record_to_sample keeps all diagnosis entries and category tokens."""
@@ -279,11 +284,12 @@ class TestSampleConverters:
         assert [item.value for item in sample.metadata.diagnosis] == ["Neuroblastoma", "Leukemia"]
         assert sample.metadata.tumor_grade.value == "G1"
         assert sample.metadata.age_at_diagnosis.value == 10
-        assert [item.value for item in sample.metadata.diagnosis_category] == ["Medulloblastoma"]
-        assert [item["value"] for item in sample.metadata.unharmonized["diagnosis_category"]] == [
-            "Gliomas",
-            "Custom Category",
-        ]
+        assert sample.metadata.diagnosis_category.value == "Medulloblastoma"
+        assert sample.metadata.diagnosis_category.ancestors is None
+        assert sample.metadata.unharmonized == {
+            "dcc_diagnosis_category_1": {"value": "Gliomas"},
+            "dcc_diagnosis_category_2": {"value": "Custom Category"},
+        }
     
     def test_record_to_sample_with_sequencing_file_data(self, converter):
         """Test _record_to_sample with sequencing file data."""

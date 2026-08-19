@@ -70,16 +70,16 @@
         "wiki_url": "https://github.com/CBIIT/ccdi-federation-api/wiki/Subject-Metadata-Fields#associated_diagnosis_categories",
         "standard": {
           "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=16607972%20and%20ver_nr=1",
-          "name": "caDSR CDE 16607969v1.00:16607971v1.00"
+          "name": "caDSR CDE 16607972 1.00"
         }
       },
       {
-        "path": "unharmonized.associated_diagnosis_category_N",
+        "path": "unharmonized.associated_diagnosis_category_<n>",
         "harmonized": false,
         "wiki_url": null,
         "standard": {
           "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=6161017%20and%20ver_nr=1",
-          "name": "caDSR CDE 6161017 disease_type"
+          "name": "caDSR CDE 6161017 v1.0 ICD-O Disease Diagnosis Category"
         }
       },
       {
@@ -210,11 +210,11 @@
       },
       {
         "harmonized": false,
-        "path": "unharmonized.diagnosis_category",
+        "path": "unharmonized.dcc_diagnosis_category_<n>",
         "wiki_url": null,
         "standard": {
           "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=6161017%20and%20ver_nr=1",
-          "name": "caDSR CDE 6161017 disease_type"
+          "name": "caDSR CDE 6161017 v1.0 ICD-O Disease Diagnosis Category"
         }
       },
       {

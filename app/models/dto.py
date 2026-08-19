@@ -307,6 +307,26 @@ class AssociatedDiagnosisCategoryField(BaseModel):
     value: str = Field(..., description="Harmonized diagnosis category value")
 
 
+class SampleDiagnosisCategoryField(BaseModel):
+    """Sample-only singular diagnosis_category (response).
+
+    ``ancestors`` is serialized when set (promoted field_mappings alias only).
+    Do not reuse this model on subject or other entities.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    value: str = Field(..., description="Diagnosis category value shown on the sample")
+    ancestors: Optional[List[str]] = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description=(
+            "Present only when value was promoted from a field_mappings alias; "
+            "paths like unharmonized.dcc_diagnosis_category_1. Omitted when unset."
+        ),
+    )
+
+
 class SampleMetadata(CommonMetadata):
     """Sample metadata model."""
     disease_phase: Optional[ValueField] = None
@@ -324,7 +344,7 @@ class SampleMetadata(CommonMetadata):
     tumor_tissue_morphology: Optional[ValueField] = None
     depositions: Optional[List[DepositionAccession]] = None
     diagnosis: Optional[List[DiagnosisField]] = None
-    diagnosis_category: Optional[List[AssociatedDiagnosisCategoryField]] = None
+    diagnosis_category: Optional[SampleDiagnosisCategoryField] = None
     unharmonized: Optional[Dict[str, Any]] = Field(
         None,
         description="Unharmonized metadata fields"

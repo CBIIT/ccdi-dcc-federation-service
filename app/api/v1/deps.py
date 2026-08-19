@@ -138,7 +138,7 @@ def get_subject_filters(
         None,
         description=(
             "Matches any subject where a diagnosis node's `diagnosis_category` matches "
-            "the value (case-insensitive token after `;` split). Harmonized (CDE 16607972) "
+            "the value (case-insensitive). Harmonized (CDE 16607972) "
             "or unharmonized values. Aligned with CCDI Federation API aggregation subject "
             "filtering (v1.3+)."
         ),
@@ -329,7 +329,7 @@ def get_subject_summary_filters(
         None,
         description=(
             "Matches any subject where a diagnosis node's `diagnosis_category` matches "
-            "the value (case-insensitive token after `;` split). Harmonized (CDE 16607972) "
+            "the value (case-insensitive). Harmonized (CDE 16607972) "
             "or unharmonized values. Aligned with CCDI Federation API aggregation subject "
             "filtering (v1.3+)."
         ),
@@ -531,7 +531,7 @@ def get_sample_filters(
         None,
         description=(
             "Matches any sample where a diagnosis node's `diagnosis_category` matches the value "
-            "(case-insensitive token after `;` split). Harmonized (CDE 16607972) or unharmonized values."
+            "(case-insensitive). Harmonized (CDE 16607972) or unharmonized values."
         ),
     ),
     identifiers: Optional[str] = Query(

@@ -186,10 +186,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Matches any subject where a diagnosis node's `diagnosis_category` matches the value (case-insensitive token after `;` split). Harmonized (CDE 16607972) or unharmonized values. Aligned with CCDI Federation API aggregation subject filtering (v1.3+).",
+              "description": "Matches any subject where a diagnosis node's `diagnosis_category` matches the value (case-insensitive). Harmonized (CDE 16607972) or unharmonized values. Aligned with CCDI Federation API aggregation subject filtering (v1.3+).",
               "title": "Associated Diagnosis Categories"
             },
-            "description": "Matches any subject where a diagnosis node's `diagnosis_category` matches the value (case-insensitive token after `;` split). Harmonized (CDE 16607972) or unharmonized values. Aligned with CCDI Federation API aggregation subject filtering (v1.3+)."
+            "description": "Matches any subject where a diagnosis node's `diagnosis_category` matches the value (case-insensitive). Harmonized (CDE 16607972) or unharmonized values. Aligned with CCDI Federation API aggregation subject filtering (v1.3+)."
           },
           {
             "name": "page",
@@ -336,7 +336,7 @@
               }
             }
           },
-          "422": {
+          "400": {
             "description": "Invalid query or path parameters.",
             "content": {
               "application/json": {
@@ -444,26 +444,6 @@
                       "field": "wrong field",
                       "message": "Field is not supported for subjects.",
                       "reason": "This field is not present for subjects."
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Invalid query or path parameters.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorsResponse"
-                },
-                "example": {
-                  "errors": [
-                    {
-                      "kind": "InvalidParameters",
-                      "parameters": [],
-                      "message": "Invalid query parameter(s) provided.",
-                      "reason": "Unknown query parameter(s)"
                     }
                   ]
                 }
@@ -598,7 +578,7 @@
               }
             }
           },
-          "422": {
+          "400": {
             "description": "Invalid query or path parameters.",
             "content": {
               "application/json": {
@@ -940,10 +920,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Matches any sample where a diagnosis node's `diagnosis_category` matches the value (case-insensitive token after `;` split). Harmonized (CDE 16607972) or unharmonized values.",
+              "description": "Matches any sample where a diagnosis node's `diagnosis_category` matches the value (case-insensitive). Harmonized (CDE 16607972) or unharmonized values.",
               "title": "Diagnosis Category"
             },
-            "description": "Matches any sample where a diagnosis node's `diagnosis_category` matches the value (case-insensitive token after `;` split). Harmonized (CDE 16607972) or unharmonized values."
+            "description": "Matches any sample where a diagnosis node's `diagnosis_category` matches the value (case-insensitive). Harmonized (CDE 16607972) or unharmonized values."
           },
           {
             "name": "identifiers",
@@ -1042,17 +1022,13 @@
                           "value": "Neuroblastoma",
                           "comment": "null"
                         },
-                        "diagnosis_category": [
-                          {
-                            "value": "Brain and Spinal Cord Tumors"
-                          }
-                        ],
+                        "diagnosis_category": {
+                          "value": "Brain and Spinal Cord Tumors"
+                        },
                         "unharmonized": {
-                          "diagnosis_category": [
-                            {
-                              "value": "Gliomas"
-                            }
-                          ]
+                          "dcc_diagnosis_category_1": {
+                            "value": "Gliomas"
+                          }
                         },
                         "age_at_diagnosis": {
                           "value": 10
@@ -1120,7 +1096,7 @@
               }
             }
           },
-          "422": {
+          "400": {
             "description": "Invalid query or path parameters.",
             "content": {
               "application/json": {
@@ -1283,11 +1259,9 @@
                       "value": "Neuroblastoma",
                       "comment": "null"
                     },
-                    "diagnosis_category": [
-                      {
-                        "value": "Brain and Spinal Cord Tumors"
-                      }
-                    ],
+                    "diagnosis_category": {
+                      "value": "Brain and Spinal Cord Tumors"
+                    },
                     "age_at_diagnosis": {
                       "value": 10
                     },
@@ -1352,7 +1326,7 @@
               }
             }
           },
-          "422": {
+          "400": {
             "description": "Invalid query or path parameters.",
             "content": {
               "application/json": {
@@ -1798,17 +1772,13 @@
                             "comment": "null"
                           }
                         ],
-                        "diagnosis_category": [
-                          {
-                            "value": "Brain and Spinal Cord Tumors"
-                          }
-                        ],
+                        "diagnosis_category": {
+                          "value": "Brain and Spinal Cord Tumors"
+                        },
                         "unharmonized": {
-                          "diagnosis_category": [
-                            {
-                              "value": "Gliomas"
-                            }
-                          ]
+                          "dcc_diagnosis_category_1": {
+                            "value": "Gliomas"
+                          }
                         },
                         "age_at_diagnosis": {
                           "value": 10
@@ -1894,7 +1864,7 @@
               }
             }
           },
-          "422": {
+          "400": {
             "description": "Invalid query or path parameters.",
             "content": {
               "application/json": {
@@ -2265,7 +2235,7 @@
               }
             }
           },
-          "422": {
+          "400": {
             "description": "Invalid query or path parameters.",
             "content": {
               "application/json": {
@@ -2529,7 +2499,7 @@
               }
             }
           },
-          "422": {
+          "400": {
             "description": "Invalid query or path parameters.",
             "content": {
               "application/json": {
@@ -2776,7 +2746,7 @@
               }
             }
           },
-          "422": {
+          "400": {
             "description": "Invalid query or path parameters.",
             "content": {
               "application/json": {
@@ -2957,7 +2927,7 @@
               }
             }
           },
-          "422": {
+          "400": {
             "description": "Invalid query or path parameters.",
             "content": {
               "application/json": {
@@ -3036,7 +3006,7 @@
               }
             }
           },
-          "422": {
+          "400": {
             "description": "Invalid query or path parameters.",
             "content": {
               "application/json": {
@@ -3107,7 +3077,7 @@
               }
             }
           },
-          "422": {
+          "400": {
             "description": "Invalid query or path parameters.",
             "content": {
               "application/json": {
@@ -3574,7 +3544,7 @@
       "IdentifierValue": {
         "properties": {
           "namespace": {
-            "$ref": "#/components/schemas/app__models__dto__NamespaceIdentifier__2",
+            "$ref": "#/components/schemas/NamespaceIdentifier",
             "description": "Namespace identifier"
           },
           "name": {
@@ -3704,7 +3674,7 @@
       "Namespace": {
         "properties": {
           "id": {
-            "$ref": "#/components/schemas/app__models__dto__NamespaceIdentifier__1",
+            "$ref": "#/components/schemas/NamespaceIdentifier",
             "description": "Namespace identifier"
           },
           "description": {
@@ -3736,6 +3706,27 @@
         ],
         "title": "Namespace",
         "description": "Namespace model."
+      },
+      "NamespaceIdentifier": {
+        "properties": {
+          "organization": {
+            "type": "string",
+            "title": "Organization",
+            "description": "Organization identifier",
+            "default": "CCDI-DCC"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Namespace name (study ID)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "NamespaceIdentifier",
+        "description": "Namespace identifier (organization + study ID).\n\nSingle definition used by Subject/Sample/File identifiers and nested CCDI-DCC\nresponse models. ``organization`` defaults to CCDI-DCC for nested payloads."
       },
       "NamespaceMetadata": {
         "properties": {
@@ -3882,10 +3873,41 @@
         "title": "Sample",
         "description": "Sample model with proper structure."
       },
+      "SampleDiagnosisCategoryField": {
+        "properties": {
+          "value": {
+            "type": "string",
+            "title": "Value",
+            "description": "Diagnosis category value shown on the sample"
+          },
+          "ancestors": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ancestors",
+            "description": "Present only when value was promoted from a field_mappings alias; paths like unharmonized.dcc_diagnosis_category_1. Omitted when unset."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "value"
+        ],
+        "title": "SampleDiagnosisCategoryField",
+        "description": "Sample-only singular diagnosis_category (response).\n\n``ancestors`` is serialized when set (promoted field_mappings alias only).\nDo not reuse this model on subject or other entities."
+      },
       "SampleIdentifier": {
         "properties": {
           "namespace": {
-            "$ref": "#/components/schemas/app__models__dto__NamespaceIdentifier__2",
+            "$ref": "#/components/schemas/NamespaceIdentifier",
             "description": "Namespace identifier"
           },
           "name": {
@@ -4072,16 +4094,12 @@
           "diagnosis_category": {
             "anyOf": [
               {
-                "items": {
-                  "$ref": "#/components/schemas/AssociatedDiagnosisCategoryField"
-                },
-                "type": "array"
+                "$ref": "#/components/schemas/SampleDiagnosisCategoryField"
               },
               {
                 "type": "null"
               }
-            ],
-            "title": "Diagnosis Category"
+            ]
           },
           "unharmonized": {
             "anyOf": [
@@ -4176,7 +4194,7 @@
       "SubjectId": {
         "properties": {
           "namespace": {
-            "$ref": "#/components/schemas/app__models__dto__NamespaceIdentifier__1",
+            "$ref": "#/components/schemas/NamespaceIdentifier",
             "description": "Namespace identifier"
           },
           "name": {
@@ -4473,48 +4491,6 @@
         ],
         "title": "ValueField",
         "description": "Simple field with value attribute."
-      },
-      "app__models__dto__NamespaceIdentifier__1": {
-        "properties": {
-          "organization": {
-            "type": "string",
-            "title": "Organization",
-            "description": "Organization identifier",
-            "default": "CCDI-DCC"
-          },
-          "name": {
-            "type": "string",
-            "title": "Name",
-            "description": "Namespace name (study ID)"
-          }
-        },
-        "type": "object",
-        "required": [
-          "name"
-        ],
-        "title": "NamespaceIdentifier",
-        "description": "Namespace identifier for nested structure."
-      },
-      "app__models__dto__NamespaceIdentifier__2": {
-        "properties": {
-          "organization": {
-            "type": "string",
-            "title": "Organization",
-            "description": "Organization identifier"
-          },
-          "name": {
-            "type": "string",
-            "title": "Name",
-            "description": "Name"
-          }
-        },
-        "type": "object",
-        "required": [
-          "organization",
-          "name"
-        ],
-        "title": "NamespaceIdentifier",
-        "description": "Namespace identifier model."
       }
     }
   },

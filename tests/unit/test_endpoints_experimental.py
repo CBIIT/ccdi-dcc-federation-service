@@ -267,7 +267,7 @@ class TestExperimentalEndpoints:
 
         mock_samples = [{
             "id": {"namespace": {"organization": "CCDI-DCC", "name": "phs002430"}, "name": "sample1"},
-            "metadata": {"diagnosis_category": [{"value": "Brain and Spinal Cord Tumors"}]},
+            "metadata": {"diagnosis_category": {"value": "Brain and Spinal Cord Tumors"}},
         }]
         pagination = PaginationParams(page=1, per_page=25)
 

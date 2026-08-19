@@ -124,13 +124,13 @@ as a breaking change.""",
                                     "diagnosis": [
                                         {"value": "Neuroblastoma", "comment": "null"}
                                     ],
-                                    "diagnosis_category": [
-                                        {"value": "Brain and Spinal Cord Tumors"}
-                                    ],
+                                    "diagnosis_category": {
+                                        "value": "Brain and Spinal Cord Tumors"
+                                    },
                                     "unharmonized": {
-                                        "diagnosis_category": [
-                                            {"value": "Gliomas"}
-                                        ]
+                                        "dcc_diagnosis_category_1": {
+                                            "value": "Gliomas"
+                                        }
                                     },
                                     "age_at_diagnosis": {"value": 10},
                                     "age_at_collection": {"value": 10},

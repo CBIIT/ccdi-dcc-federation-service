@@ -946,11 +946,12 @@ class TestSampleRepositoryRecordToSample:
         assert [item.value for item in sample.metadata.diagnosis] == ["Neuroblastoma", "Leukemia"]
         assert sample.metadata.tumor_grade.value == "G1"
         assert sample.metadata.age_at_diagnosis.value == 10
-        assert [item.value for item in sample.metadata.diagnosis_category] == ["Medulloblastoma"]
-        assert [item["value"] for item in sample.metadata.unharmonized["diagnosis_category"]] == [
-            "Gliomas",
-            "Custom Category",
-        ]
+        assert sample.metadata.diagnosis_category.value == "Medulloblastoma"
+        assert sample.metadata.diagnosis_category.ancestors is None
+        assert sample.metadata.unharmonized == {
+            "dcc_diagnosis_category_1": {"value": "Gliomas"},
+            "dcc_diagnosis_category_2": {"value": "Custom Category"},
+        }
 
 
 @pytest.mark.unit

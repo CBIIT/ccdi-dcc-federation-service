@@ -14,7 +14,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     POETRY_VENV_IN_PROJECT=1
 
 # System dependencies required for building (gcc, headers) & curl for potential build scripts
-# DSA-6335: openssl 3.5.6-1~deb13u2+ from trixie-security (CVE-2026-34182 and related OpenSSL CVEs).
+# DSA-6465: openssl 3.5.7-1~deb13u2+ (CVE-2026-63072/63075/63076).
+# DSA-6442: util-linux 2.41.5-0+deb13u1+ (CVE-2026-13595/27456 and related libblkid issues).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     build-essential \
@@ -22,8 +23,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         openssl libssl3t64 openssl-provider-legacy \
         libgnutls30t64 \
         libcap2 \
-    && dpkg --compare-versions "$(dpkg-query -f '${Version}' -W openssl)" ge 3.5.6-1~deb13u2 \
-    || (echo "FATAL: openssl < 3.5.6-1~deb13u2 (DSA-6335). apt-get update may be stale — rebuild with --no-cache." && exit 1) \
+        util-linux libblkid1 libuuid1 libmount1 libsmartcols1 \
+        bsdutils mount login \
+    && dpkg --compare-versions "$(dpkg-query -f '${Version}' -W openssl)" ge 3.5.7-1~deb13u2 \
+    || (echo "FATAL: openssl < 3.5.7-1~deb13u2 (DSA-6465). apt-get update may be stale — rebuild with --no-cache." && exit 1) \
+    && dpkg --compare-versions "$(dpkg-query -f '${Version}' -W libblkid1)" ge 2.41.5-0+deb13u1 \
+    || (echo "FATAL: libblkid1 < 2.41.5-0+deb13u1 (DSA-6442 / CVE-2026-13595). apt-get update may be stale — rebuild with --no-cache." && exit 1) \
     && rm -rf /var/lib/apt/lists/*
 
 
@@ -55,7 +60,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 
 # Minimal runtime deps (curl for HEALTHCHECK)
-# DSA-6335: openssl 3.5.6-1~deb13u2+ from trixie-security (CVE-2026-34182 and related OpenSSL CVEs).
+# DSA-6465: openssl 3.5.7-1~deb13u2+ (CVE-2026-63072/63075/63076).
+# DSA-6442: util-linux 2.41.5-0+deb13u1+ (CVE-2026-13595/27456 and related libblkid issues).
 # Remove perl-base after all apt installs — unused by this Python service; clears open perl CVEs on
 # Debian Trixie until a patched package ships. See docs/container-image-security.md.
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
@@ -63,8 +69,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
         openssl libssl3t64 openssl-provider-legacy \
         libgnutls30t64 \
         libcap2 \
-    && dpkg --compare-versions "$(dpkg-query -f '${Version}' -W openssl)" ge 3.5.6-1~deb13u2 \
-    || (echo "FATAL: openssl < 3.5.6-1~deb13u2 (DSA-6335). apt-get update may be stale — rebuild with --no-cache." && exit 1) \
+        util-linux libblkid1 libuuid1 libmount1 libsmartcols1 \
+        bsdutils mount login \
+    && dpkg --compare-versions "$(dpkg-query -f '${Version}' -W openssl)" ge 3.5.7-1~deb13u2 \
+    || (echo "FATAL: openssl < 3.5.7-1~deb13u2 (DSA-6465). apt-get update may be stale — rebuild with --no-cache." && exit 1) \
+    && dpkg --compare-versions "$(dpkg-query -f '${Version}' -W libblkid1)" ge 2.41.5-0+deb13u1 \
+    || (echo "FATAL: libblkid1 < 2.41.5-0+deb13u1 (DSA-6442 / CVE-2026-13595). apt-get update may be stale — rebuild with --no-cache." && exit 1) \
     && apt-get remove -y --allow-remove-essential --purge perl-base \
     && rm -rf /var/lib/apt/lists/*
 

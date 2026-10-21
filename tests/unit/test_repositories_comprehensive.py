@@ -133,7 +133,7 @@ class TestSubjectRepositoryInternal:
             "name": "P1",
             "namespace": "S1",
             "depositions": ["S1"],
-            "race": "Not Allowed to Collect",  # DB format
+            "race": "Not allowed to collect",  # graph stores the API PV; no race mapping
             "sex": "F",
             "vital_status": None,
             "age_at_vital_status": None,
@@ -143,8 +143,6 @@ class TestSubjectRepositoryInternal:
         }
         
         # Use the actual implementation - no mocking to avoid Mock iteration issues
-        # The field_mappings.json already has the mapping configured:
-        # "Not Allowed to Collect" -> "Not allowed to collect"
         subject = repository._record_to_subject(record)
         
         # Verify the result contains the mapped value

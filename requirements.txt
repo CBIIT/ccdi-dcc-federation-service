@@ -24,7 +24,7 @@ starlette-exporter==0.17.1
 
 # Integration testing
 testcontainers==3.7.1
-urllib3>=2.7.0
+urllib3>=2.8.0
 requests>=2.33.0
 
 # Code quality

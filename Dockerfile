@@ -14,8 +14,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     POETRY_VENV_IN_PROJECT=1
 
 # System dependencies required for building (gcc, headers) & curl for potential build scripts
-# DSA-6465: openssl 3.5.7-1~deb13u2+ (CVE-2026-63072/63075/63076).
+# DSA-6531: openssl 3.5.7-1~deb13u3+ (CVE-2026-84782/77696/75806/75805/54872/35189; supersedes DSA-6465).
 # DSA-6442: util-linux 2.41.5-0+deb13u1+ (CVE-2026-13595/27456 and related libblkid issues).
+# DSA-6530: libpcre2-8-0 10.46-1~deb13u3+ (CVE-2026-103111; also CVE-2026-89157/89161).
+# glibc 2.41-12+deb13u4+, curl 8.14.1-2+deb13u7+, libssh2 1.11.1-1+deb13u2+ (trixie, not trixie-security),
+# gzip 1.13-1+deb13u1+. glibc/curl floors clear the CVEs Debian has patched; some remain with no DSA.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     build-essential \
@@ -25,10 +28,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libcap2 \
         util-linux libblkid1 libuuid1 libmount1 libsmartcols1 \
         bsdutils mount login \
-    && dpkg --compare-versions "$(dpkg-query -f '${Version}' -W openssl)" ge 3.5.7-1~deb13u2 \
-    || (echo "FATAL: openssl < 3.5.7-1~deb13u2 (DSA-6465). apt-get update may be stale — rebuild with --no-cache." && exit 1) \
+        libc6 libc-bin \
+        curl libcurl4t64 \
+        libpcre2-8-0 \
+        libssh2-1t64 \
+        gzip \
+    && dpkg --compare-versions "$(dpkg-query -f '${Version}' -W openssl)" ge 3.5.7-1~deb13u3 \
+    || (echo "FATAL: openssl < 3.5.7-1~deb13u3 (DSA-6531). apt-get update may be stale — rebuild with --no-cache." && exit 1) \
     && dpkg --compare-versions "$(dpkg-query -f '${Version}' -W libblkid1)" ge 2.41.5-0+deb13u1 \
     || (echo "FATAL: libblkid1 < 2.41.5-0+deb13u1 (DSA-6442 / CVE-2026-13595). apt-get update may be stale — rebuild with --no-cache." && exit 1) \
+    && dpkg --compare-versions "$(dpkg-query -f '${Version}' -W libpcre2-8-0)" ge 10.46-1~deb13u3 \
+    || (echo "FATAL: libpcre2-8-0 < 10.46-1~deb13u3 (DSA-6530). apt-get update may be stale — rebuild with --no-cache." && exit 1) \
+    && dpkg --compare-versions "$(dpkg-query -f '${Version}' -W libc6)" ge 2.41-12+deb13u4 \
+    || (echo "FATAL: libc6 < 2.41-12+deb13u4. apt-get update may be stale — rebuild with --no-cache." && exit 1) \
+    && dpkg --compare-versions "$(dpkg-query -f '${Version}' -W curl)" ge 8.14.1-2+deb13u7 \
+    || (echo "FATAL: curl < 8.14.1-2+deb13u7. apt-get update may be stale — rebuild with --no-cache." && exit 1) \
+    && dpkg --compare-versions "$(dpkg-query -f '${Version}' -W libssh2-1t64)" ge 1.11.1-1+deb13u2 \
+    || (echo "FATAL: libssh2-1t64 < 1.11.1-1+deb13u2. apt-get update may be stale — rebuild with --no-cache." && exit 1) \
+    && dpkg --compare-versions "$(dpkg-query -f '${Version}' -W gzip)" ge 1.13-1+deb13u1 \
+    || (echo "FATAL: gzip < 1.13-1+deb13u1. apt-get update may be stale — rebuild with --no-cache." && exit 1) \
     && rm -rf /var/lib/apt/lists/*
 
 
@@ -60,8 +78,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 
 # Minimal runtime deps (curl for HEALTHCHECK)
-# DSA-6465: openssl 3.5.7-1~deb13u2+ (CVE-2026-63072/63075/63076).
+# DSA-6531: openssl 3.5.7-1~deb13u3+ (CVE-2026-84782/77696/75806/75805/54872/35189; supersedes DSA-6465).
 # DSA-6442: util-linux 2.41.5-0+deb13u1+ (CVE-2026-13595/27456 and related libblkid issues).
+# DSA-6530: libpcre2-8-0 10.46-1~deb13u3+ (CVE-2026-103111; also CVE-2026-89157/89161).
+# glibc 2.41-12+deb13u4+, curl 8.14.1-2+deb13u7+, libssh2 1.11.1-1+deb13u2+ (trixie, not trixie-security),
+# gzip 1.13-1+deb13u1+. glibc/curl floors clear the CVEs Debian has patched; some remain with no DSA.
 # Remove perl-base after all apt installs — unused by this Python service; clears open perl CVEs on
 # Debian Trixie until a patched package ships. See docs/container-image-security.md.
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
@@ -71,10 +92,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
         libcap2 \
         util-linux libblkid1 libuuid1 libmount1 libsmartcols1 \
         bsdutils mount login \
-    && dpkg --compare-versions "$(dpkg-query -f '${Version}' -W openssl)" ge 3.5.7-1~deb13u2 \
-    || (echo "FATAL: openssl < 3.5.7-1~deb13u2 (DSA-6465). apt-get update may be stale — rebuild with --no-cache." && exit 1) \
+        libc6 libc-bin \
+        curl libcurl4t64 \
+        libpcre2-8-0 \
+        libssh2-1t64 \
+        gzip \
+    && dpkg --compare-versions "$(dpkg-query -f '${Version}' -W openssl)" ge 3.5.7-1~deb13u3 \
+    || (echo "FATAL: openssl < 3.5.7-1~deb13u3 (DSA-6531). apt-get update may be stale — rebuild with --no-cache." && exit 1) \
     && dpkg --compare-versions "$(dpkg-query -f '${Version}' -W libblkid1)" ge 2.41.5-0+deb13u1 \
     || (echo "FATAL: libblkid1 < 2.41.5-0+deb13u1 (DSA-6442 / CVE-2026-13595). apt-get update may be stale — rebuild with --no-cache." && exit 1) \
+    && dpkg --compare-versions "$(dpkg-query -f '${Version}' -W libpcre2-8-0)" ge 10.46-1~deb13u3 \
+    || (echo "FATAL: libpcre2-8-0 < 10.46-1~deb13u3 (DSA-6530). apt-get update may be stale — rebuild with --no-cache." && exit 1) \
+    && dpkg --compare-versions "$(dpkg-query -f '${Version}' -W libc6)" ge 2.41-12+deb13u4 \
+    || (echo "FATAL: libc6 < 2.41-12+deb13u4. apt-get update may be stale — rebuild with --no-cache." && exit 1) \
+    && dpkg --compare-versions "$(dpkg-query -f '${Version}' -W curl)" ge 8.14.1-2+deb13u7 \
+    || (echo "FATAL: curl < 8.14.1-2+deb13u7. apt-get update may be stale — rebuild with --no-cache." && exit 1) \
+    && dpkg --compare-versions "$(dpkg-query -f '${Version}' -W libssh2-1t64)" ge 1.11.1-1+deb13u2 \
+    || (echo "FATAL: libssh2-1t64 < 1.11.1-1+deb13u2. apt-get update may be stale — rebuild with --no-cache." && exit 1) \
+    && dpkg --compare-versions "$(dpkg-query -f '${Version}' -W gzip)" ge 1.13-1+deb13u1 \
+    || (echo "FATAL: gzip < 1.13-1+deb13u1. apt-get update may be stale — rebuild with --no-cache." && exit 1) \
     && apt-get remove -y --allow-remove-essential --purge perl-base \
     && rm -rf /var/lib/apt/lists/*
 

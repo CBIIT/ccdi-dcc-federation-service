@@ -186,17 +186,6 @@
         "F": "Female",
         "M": "Male"
       }
-    },
-    "race": {
-      "description": "Maps database race values to normalized API race values",
-      "source_property": "race",
-      "mappings": {
-        "Not Allowed to Collect": "Not allowed to collect"
-      },
-      "null_mappings": [],
-      "reverse_mappings": {
-        "Not allowed to collect": "Not Allowed to Collect"
-      }
     }
   }
 }

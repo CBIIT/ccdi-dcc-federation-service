@@ -386,7 +386,7 @@ async def count_files_by_field(
     field: str = Path(
         ...,
         description="The field to group by and count. Only 'type' and 'depositions' are supported.",
-        enum=["type", "depositions"],
+        json_schema_extra={"enum": ["type", "depositions"]},
         examples={
             "type": {"value": "type", "summary": "Count by file type"},
             "depositions": {"value": "depositions", "summary": "Count by depositions"}

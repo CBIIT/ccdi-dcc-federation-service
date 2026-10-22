@@ -434,8 +434,8 @@ async def count_subjects_by_field(
     field: str = Path(
         ...,
         description="The field to group by and count with.",
-        enum=["sex", "race", "ethnicity", "vital_status", "age_at_vital_status",
-              "associated_diagnoses", "associated_diagnosis_categories"],
+        json_schema_extra={"enum": ["sex", "race", "ethnicity", "vital_status", "age_at_vital_status",
+                                    "associated_diagnoses", "associated_diagnosis_categories"]},
         examples={
             "sex": {"value": "sex", "summary": "Count by sex"},
             "race": {"value": "race", "summary": "Count by race"},

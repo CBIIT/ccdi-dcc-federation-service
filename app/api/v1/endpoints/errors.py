@@ -40,7 +40,7 @@ async def get_error_examples(
     error_type: Optional[str] = Query(
         default="all",
         description="Type of error example to return",
-        enum=["InvalidRoute", "InvalidParameters", "NotFound", "UnshareableData", "UnsupportedField", "all"]
+        json_schema_extra={"enum": ["InvalidRoute", "InvalidParameters", "NotFound", "UnshareableData", "UnsupportedField", "all"]}
     )
 ) -> ErrorsResponse:
     """

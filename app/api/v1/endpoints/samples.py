@@ -383,13 +383,13 @@ async def count_samples_by_field(
     field: str = Path(
         ...,
         description="The field to group by and count with.",
-        enum=[
+        json_schema_extra={"enum": [
             # Sample metadata fields only
             "disease_phase", "anatomical_sites", "library_selection_method", "library_strategy",
             "library_source_material", "preservation_method", "tumor_grade", "specimen_molecular_analyte_type",
             "tissue_type", "tumor_classification", "age_at_diagnosis", "age_at_collection",
             "tumor_tissue_morphology", "diagnosis", "diagnosis_category"
-        ],
+        ]},
     ),
     session: AsyncSession = Depends(get_database_session),
     settings: Settings = Depends(get_app_settings),

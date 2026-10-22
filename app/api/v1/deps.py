@@ -105,23 +105,23 @@ def get_subject_filters(
     sex: Optional[str] = Query(
         None,
         description="Matches any subject where the `sex` field matches the string provided.",
-        enum=["M", "F", "U"]
+        json_schema_extra={"enum": ["M", "F", "U"]}
     ),
     race: Optional[str] = Query(
         None,
         description="Matches any subject where any member of the `race` field matches any of the provided values. Multiple race values can be provided separated by `||` (double pipe). The race field in the database may contain semicolon-separated values (e.g., 'Asian;White'), and the filter will match if any of the provided values is found within those values. Only `||` is accepted as a delimiter; all other characters are treated as part of a single value.",
-        enum=[r.value for r in Race]
+        json_schema_extra={"enum": [r.value for r in Race]}
     ),
     ethnicity: Optional[str] = Query(
         None,
         description="Matches any subject where the `ethnicity` field matches the string provided. Ethnicity is derived from race values: if race contains 'Hispanic or Latino', ethnicity is 'Hispanic or Latino'; otherwise 'Not reported'. Only these two values are accepted.",
-        enum=[e.value for e in Ethnicity]
+        json_schema_extra={"enum": [e.value for e in Ethnicity]}
     ),
     identifiers: Optional[str] = Query(None, description="Matches any subject where any member of the `identifiers` field matches the string provided. **Note:** a logical OR (`||`) is performed across the values when determining whether the subject should be included in the results."),
     vital_status: Optional[str] = Query(
         None,
         description="Matches any subject where the `vital_status` field matches the string provided.",
-        enum=[v.value for v in VitalStatus]
+        json_schema_extra={"enum": [v.value for v in VitalStatus]}
     ),
     age_at_vital_status: Optional[str] = Query(None, description="Matches any subject where the `age_at_vital_status` field matches the string provided."),
     depositions: Optional[str] = Query(
@@ -296,23 +296,23 @@ def get_subject_summary_filters(
     sex: Optional[str] = Query(
         None,
         description="Matches any subject where the `sex` field matches the string provided.",
-        enum=["M", "F", "U"]
+        json_schema_extra={"enum": ["M", "F", "U"]}
     ),
     race: Optional[str] = Query(
         None,
         description="Matches any subject where any member of the `race` field matches any of the provided values. Multiple race values can be provided separated by `||` (double pipe).",
-        enum=[r.value for r in Race]
+        json_schema_extra={"enum": [r.value for r in Race]}
     ),
     ethnicity: Optional[str] = Query(
         None,
         description="Matches any subject where the `ethnicity` field matches the string provided.",
-        enum=[e.value for e in Ethnicity]
+        json_schema_extra={"enum": [e.value for e in Ethnicity]}
     ),
     identifiers: Optional[str] = Query(None, description="Matches any subject where any member of the `identifiers` field matches the string provided."),
     vital_status: Optional[str] = Query(
         None,
         description="Matches any subject where the `vital_status` field matches the string provided.",
-        enum=[v.value for v in VitalStatus]
+        json_schema_extra={"enum": [v.value for v in VitalStatus]}
     ),
     age_at_vital_status: Optional[str] = Query(None, description="Matches any subject where the `age_at_vital_status` field matches the string provided."),
     depositions: Optional[str] = Query(
@@ -875,23 +875,23 @@ def get_subject_diagnosis_filters(
     sex: Optional[str] = Query(
         None,
         description="Matches any subject where the `sex` field matches the string provided.",
-        enum=["M", "F", "U"]
+        json_schema_extra={"enum": ["M", "F", "U"]}
     ),
     race: Optional[str] = Query(
         None,
         description="Matches any subject where any member of the `race` field matches any of the provided values. Multiple race values can be provided separated by `||` (double pipe). The race field in the database may contain semicolon-separated values (e.g., 'Asian;White'), and the filter will match if any of the provided values is found within those values. Only `||` is accepted as a delimiter; all other characters are treated as part of a single value.",
-        enum=[r.value for r in Race]
+        json_schema_extra={"enum": [r.value for r in Race]}
     ),
     ethnicity: Optional[str] = Query(
         None,
         description="Matches any subject where the `ethnicity` field matches the string provided. Ethnicity is derived from race values: if race contains 'Hispanic or Latino', ethnicity is 'Hispanic or Latino'; otherwise 'Not reported'. Only these two values are accepted.",
-        enum=[e.value for e in Ethnicity]
+        json_schema_extra={"enum": [e.value for e in Ethnicity]}
     ),
     identifiers: Optional[str] = Query(None, description="Matches any subject where any member of the `identifiers` field matches the string provided. **Note:** a logical OR (`||`) is performed across the values when determining whether the subject should be included in the results."),
     vital_status: Optional[str] = Query(
         None,
         description="Matches any subject where the `vital_status` field matches the string provided.",
-        enum=[v.value for v in VitalStatus]
+        json_schema_extra={"enum": [v.value for v in VitalStatus]}
     ),
     age_at_vital_status: Optional[str] = Query(None, description="Matches any subject where the `age_at_vital_status` field matches the string provided."),
     depositions: Optional[str] = Query(

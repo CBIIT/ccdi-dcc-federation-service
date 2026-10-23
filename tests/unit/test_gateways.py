@@ -38,6 +38,43 @@ def test_malformed_gateways_config_top_level_list_returns_empty(monkeypatch, cap
         assert get_gateways("subjects") == []
 
 
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"name": "Broken Open", "kind": "Open"},
+        {"name": "Broken Registered", "kind": "Registered"},
+        {"name": "Broken Controlled", "kind": "Controlled"},
+        {
+            "name": "Broken Approximate",
+            "kind": "Open",
+            "link": {"kind": "Approximate", "url": "https://example.com"},
+        },
+    ],
+)
+def test_invalid_gateway_shapes_are_skipped(entry, monkeypatch, caplog):
+    monkeypatch.setattr(
+        "app.core.gateways._load_gateways_config",
+        lambda: {
+            "subjects": [
+                entry,
+                {
+                    "name": "Valid",
+                    "kind": "Open",
+                    "link": {
+                        "kind": "Approximate",
+                        "url": "https://example.com",
+                        "instructions": "Go",
+                    },
+                },
+            ]
+        },
+    )
+    with caplog.at_level(logging.WARNING):
+        gws = get_gateways("subjects")
+    assert len(gws) == 1
+    assert gws[0]["name"] == "Valid"
+
+
 def test_open_gateway_without_link_is_skipped(monkeypatch, caplog):
     monkeypatch.setattr(
         "app.core.gateways._load_gateways_config",
@@ -125,6 +162,29 @@ async def test_empty_subject_list_has_no_gateways(client, monkeypatch):
     r = client.get("/api/v1/subject?page=1&per_page=5")
     assert r.status_code == 200
     assert "gateways" not in r.json()
+
+
+@pytest.mark.asyncio
+async def test_subject_diagnosis_list_has_gateways(client, monkeypatch):
+    import app.api.v1.endpoints.experimental as experimental_ep
+    from app.models.dto import MetadataField, NamespaceIdentifier, Subject, SubjectId, SubjectMetadata
+
+    subject = Subject(
+        id=SubjectId(namespace=NamespaceIdentifier(name="phs001"), name="P1"),
+        metadata=SubjectMetadata(sex=MetadataField(value="M")),
+    )
+
+    class FakeSubjectService:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def get_subjects_for_diagnosis_endpoint(self, *args, **kwargs):
+            return ([subject], 1)
+
+    monkeypatch.setattr(experimental_ep, "SubjectService", FakeSubjectService)
+    r = client.get("/api/v1/subject-diagnosis?search=cancer&page=1&per_page=5")
+    assert r.status_code == 200
+    assert r.json()["gateways"] == get_gateways("subjects")
 
 
 @pytest.mark.asyncio

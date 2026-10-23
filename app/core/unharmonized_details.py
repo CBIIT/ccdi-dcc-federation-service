@@ -29,8 +29,19 @@ def _load_metadata_fields() -> dict[str, Any]:
         return {}
 
 
+def _entity_fields(entity: str) -> list[Any]:
+    root = _load_metadata_fields()
+    if not isinstance(root, dict):
+        return []
+    section = root.get(entity, {})
+    if not isinstance(section, dict):
+        return []
+    fields = section.get("fields", [])
+    return fields if isinstance(fields, list) else []
+
+
 def _field_for_key(entity: str, key: str) -> dict[str, Any] | None:
-    fields = _load_metadata_fields().get(entity, {}).get("fields", [])
+    fields = _entity_fields(entity)
     numbered = _NUMBERED_KEY.fullmatch(key)
     if numbered:
         wanted = f"unharmonized.{numbered.group(1)}_<n>"

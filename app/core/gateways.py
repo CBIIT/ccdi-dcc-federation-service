@@ -17,13 +17,25 @@ _CONFIG_PATH = Path(__file__).resolve().parents[1] / "config_data" / "gateways.j
 def _load_gateways_config() -> dict[str, Any]:
     if not _CONFIG_PATH.is_file():
         return {}
-    with _CONFIG_PATH.open(encoding="utf-8") as handle:
-        return cast(dict[str, Any], json.load(handle))
+    try:
+        with _CONFIG_PATH.open(encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception as exc:
+        logger.warning("Could not load gateways config; omitting gateways: %s", exc)
+        return {}
+    if not isinstance(data, dict):
+        logger.warning("Gateways config must be a JSON object; omitting gateways")
+        return {}
+    return cast(dict[str, Any], data)
 
 
 def get_gateways(entity: str) -> list[dict[str, Any]]:
     """Return validated gateway dicts for an entity key (e.g. ``subjects``)."""
-    raw = _load_gateways_config().get(entity)
+    config = _load_gateways_config()
+    if not isinstance(config, dict):
+        logger.warning("Gateways config must be a JSON object; omitting gateways")
+        return []
+    raw = config.get(entity)
     if not isinstance(raw, list):
         return []
 

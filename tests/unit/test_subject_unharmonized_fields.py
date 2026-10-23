@@ -69,6 +69,19 @@ def test_sex_already_api_value_has_no_unharmonized():
     assert "dcc_sex_at_birth" not in unharmonized
 
 
+def test_case_normalized_diagnosis_category_keeps_raw_token():
+    record = _base_record([_make_diag_node(diagnosis_category="medulloblastoma")])
+    record["sex"] = "F"
+    s = _make_repo()._record_to_subject(record).model_dump()
+    assert s["metadata"]["associated_diagnosis_categories"] == {
+        "value": "Medulloblastoma",
+        "ancestors": ["unharmonized.dcc_associated_diagnosis_category_1"],
+    }
+    assert s["metadata"]["unharmonized"]["dcc_associated_diagnosis_category_1"]["value"] == (
+        "medulloblastoma"
+    )
+
+
 def test_two_natives_first_kept_second_unharmonized():
     record = _base_record([_make_diag_node(diagnosis_category="Medulloblastoma;Renal Tumors")])
     record["sex"] = "F"

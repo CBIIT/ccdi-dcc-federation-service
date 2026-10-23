@@ -29,6 +29,26 @@ def test_unknown_entity_returns_empty():
     assert get_gateways("nope") == []
 
 
+def test_malformed_gateways_config_top_level_list_returns_empty(monkeypatch, caplog):
+    monkeypatch.setattr(
+        "app.core.gateways._load_gateways_config",
+        lambda: ["not", "a", "dict"],
+    )
+    with caplog.at_level(logging.WARNING):
+        assert get_gateways("subjects") == []
+
+
+def test_open_gateway_without_link_is_skipped(monkeypatch, caplog):
+    monkeypatch.setattr(
+        "app.core.gateways._load_gateways_config",
+        lambda: {"subjects": [{"name": "Broken", "kind": "Open"}]},
+    )
+    with caplog.at_level(logging.WARNING):
+        gws = get_gateways("subjects")
+    assert gws == []
+    assert "invalid gateway" in caplog.text.lower()
+
+
 def test_approximate_link_without_instructions_is_skipped(monkeypatch, caplog):
     monkeypatch.setattr(
         "app.core.gateways._load_gateways_config",

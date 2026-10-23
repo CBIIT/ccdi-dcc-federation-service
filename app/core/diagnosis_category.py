@@ -118,19 +118,23 @@ def build_diagnosis_category_fields(
     aliases = [(i, c) for i, c in enumerate(classified) if c[0] == "alias"]
 
     regular: Optional[dict[str, Any]] = None
-    skip_index: Optional[int] = None  # native chosen for regular is omitted from dcc_*
+    skip_index: Optional[int] = None  # exact native PV match is omitted from dcc_*
+    promote_raw: Optional[str] = None
 
     if natives:
-        skip_index, (_kind, _raw, canon) = natives[0]
+        skip_index, (_kind, raw, canon) = natives[0]
         regular = {"value": canon}
+        if raw != canon:
+            promote_raw = raw
+            skip_index = None
     elif aliases:
-        _idx, (_kind, _raw, transformed) = aliases[0]
-        # dcc index assigned below; ancestors filled after numbering
-        regular = {"value": transformed, "_promote_raw": _raw}
+        _idx, (_kind, raw, transformed) = aliases[0]
+        regular = {"value": transformed, "_promote_raw": raw}
 
     unharmonized: dict[str, Any] = {}
     dcc_i = 0
-    promote_raw = regular.pop("_promote_raw", None) if regular else None
+    if regular is not None:
+        promote_raw = promote_raw or regular.pop("_promote_raw", None)
     promote_dcc_key: Optional[str] = None
 
     for i, (kind, raw, transformed) in enumerate(classified):
@@ -139,7 +143,12 @@ def build_diagnosis_category_fields(
         dcc_i += 1
         key = f"{key_prefix}_{dcc_i}"
         if kind == "native":
-            unharmonized[key] = {"value": transformed}
+            if promote_raw is not None and raw == promote_raw:
+                unharmonized[key] = {"value": raw}
+                if promote_dcc_key is None:
+                    promote_dcc_key = key
+            else:
+                unharmonized[key] = {"value": transformed}
         elif kind == "alias":
             entry = {
                 "value": raw,

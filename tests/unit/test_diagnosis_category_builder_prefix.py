@@ -20,6 +20,21 @@ def test_promoted_alias_ancestor_uses_prefix():
     assert unh[f"{PREFIX}_1"]["value"] == "Myeloid leukemias"
 
 
+def test_case_normalized_native_keeps_raw_in_unharmonized():
+    regular, unh = build_diagnosis_category_fields(["medulloblastoma"], PREFIX)
+    assert regular == {
+        "value": "Medulloblastoma",
+        "ancestors": [f"unharmonized.{PREFIX}_1"],
+    }
+    assert unh == {f"{PREFIX}_1": {"value": "medulloblastoma"}}
+
+
+def test_exact_native_pv_has_no_unharmonized_entry():
+    regular, unh = build_diagnosis_category_fields(["Medulloblastoma"], PREFIX)
+    assert regular == {"value": "Medulloblastoma"}
+    assert unh is None
+
+
 def test_sample_wrapper_unchanged():
     assert build_sample_diagnosis_category_fields(["Medulloblastoma", "Gliomas"]) == (
         build_diagnosis_category_fields(["Medulloblastoma", "Gliomas"], "dcc_diagnosis_category")

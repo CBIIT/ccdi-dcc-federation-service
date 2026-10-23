@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 from enum import Enum
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 
 # ============================================================================
@@ -235,6 +235,16 @@ class NamedGateway(BaseModel):
     status: Optional[ClosedStatus] = None
     available_at: Optional[datetime] = None
     description: Optional[str] = None
+
+    @model_validator(mode="after")
+    def link_required_for_access_kinds(self) -> "NamedGateway":
+        if self.kind in {
+            GatewayKind.OPEN,
+            GatewayKind.REGISTERED,
+            GatewayKind.CONTROLLED,
+        } and self.link is None:
+            raise ValueError("link is required for Open, Registered, and Controlled gateways")
+        return self
 
 
 # ============================================================================

@@ -127,6 +127,22 @@ def test_attach_preserves_existing_entry_keys():
     assert "details" in entry
 
 
+def test_malformed_entity_section_does_not_raise(monkeypatch):
+    monkeypatch.setattr(
+        "app.core.unharmonized_details._load_metadata_fields",
+        lambda: {"subjects": "not-a-section"},
+    )
+    assert build_unharmonized_details("subjects", "dcc_sex_at_birth", "Female") is None
+
+
+def test_malformed_fields_list_does_not_raise(monkeypatch):
+    monkeypatch.setattr(
+        "app.core.unharmonized_details._load_metadata_fields",
+        lambda: {"subjects": {"fields": "not-a-list"}},
+    )
+    assert build_unharmonized_details("subjects", "dcc_sex_at_birth", "Female") is None
+
+
 def test_metadata_fields_endpoint_does_not_expose_details():
     from app.api.v1.endpoints.metadata import convert_to_response, load_metadata_fields
 

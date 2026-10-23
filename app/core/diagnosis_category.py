@@ -98,15 +98,15 @@ def iter_diagnosis_category_raw_tokens(raw: object) -> list[str]:
     return tokens
 
 
-def build_sample_diagnosis_category_fields(
+def build_diagnosis_category_fields(
     raw_tokens: list[str],
+    key_prefix: str,
 ) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]]]:
     """
-    Build sample singular diagnosis_category + dcc_* unharmonized map.
+    Build one harmonized diagnosis category + numbered dcc_* unharmonized entries.
 
     Returns (regular_field_dict_or_None, unharmonized_dict_or_None).
     regular_field_dict has ``value`` and optionally ``ancestors``.
-    Caller may wrap regular into SampleDiagnosisCategoryField.
     """
     # Dedupe by raw string, preserve order
     ordered = list(dict.fromkeys(raw_tokens))
@@ -137,7 +137,7 @@ def build_sample_diagnosis_category_fields(
         if skip_index is not None and i == skip_index:
             continue
         dcc_i += 1
-        key = f"dcc_diagnosis_category_{dcc_i}"
+        key = f"{key_prefix}_{dcc_i}"
         if kind == "native":
             unharmonized[key] = {"value": transformed}
         elif kind == "alias":
@@ -163,6 +163,14 @@ def build_sample_diagnosis_category_fields(
             }
 
     return regular, (unharmonized or None)
+
+
+def build_sample_diagnosis_category_fields(
+    raw_tokens: list[str],
+) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]]]:
+    """Sample wrapper — keys use ``dcc_diagnosis_category_<n>``."""
+    return build_diagnosis_category_fields(raw_tokens, "dcc_diagnosis_category")
+
 
 def diagnosis_category_token_case_expr(variable_name: str = "token") -> str:
     """

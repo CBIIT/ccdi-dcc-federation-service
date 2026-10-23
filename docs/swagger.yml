@@ -206,6 +206,8 @@ paths:
                   metadata:
                     sex:
                       value: F
+                      ancestors:
+                      - unharmonized.dcc_sex_at_birth
                     race:
                     - value: White
                     ethnicity:
@@ -226,13 +228,30 @@ paths:
                     - value: Neuroblastoma
                       comment: 'null'
                     associated_diagnosis_categories:
-                    - value: Brain and Spinal Cord Tumors
+                      value: Brain and Spinal Cord Tumors
                     unharmonized:
-                      associated_diagnosis_category_1:
+                      dcc_sex_at_birth:
+                        value: Female
+                        details:
+                          method: Mapped
+                          harmonizer: DomainExpert
+                          url: https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?sex_at_birth=Female
+                      dcc_associated_diagnosis_category_1:
                         value: Gliomas
+                        details:
+                          method: Mapped
+                          harmonizer: diagnosis_classification_system
+                          url: https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?diagnosis_category=Gliomas
                     depositions:
                     - kind: dbGaP
                       value: phs002430
+                gateways:
+                - name: CCDI DCC model
+                  kind: Open
+                  link:
+                    kind: Approximate
+                    url: https://github.com/CBIIT/ccdi-dcc-model
+                    instructions: The CCDI DCC model is a graph database schema.
         '404':
           description: Not found.
           content:
@@ -1585,6 +1604,8 @@ paths:
                   metadata:
                     sex:
                       value: F
+                      ancestors:
+                      - unharmonized.dcc_sex_at_birth
                     race:
                     - value: White
                     ethnicity:
@@ -1605,13 +1626,30 @@ paths:
                     - value: Neuroblastoma
                       comment: 'null'
                     associated_diagnosis_categories:
-                    - value: Brain and Spinal Cord Tumors
+                      value: Brain and Spinal Cord Tumors
                     unharmonized:
-                      associated_diagnosis_category_1:
+                      dcc_sex_at_birth:
+                        value: Female
+                        details:
+                          method: Mapped
+                          harmonizer: DomainExpert
+                          url: https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?sex_at_birth=Female
+                      dcc_associated_diagnosis_category_1:
                         value: Gliomas
+                        details:
+                          method: Mapped
+                          harmonizer: diagnosis_classification_system
+                          url: https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?diagnosis_category=Gliomas
                     depositions:
                     - kind: dbGaP
                       value: phs002430
+                gateways:
+                - name: CCDI DCC model
+                  kind: Open
+                  link:
+                    kind: Approximate
+                    url: https://github.com/CBIIT/ccdi-dcc-model
+                    instructions: The CCDI DCC model is a graph database schema.
         '404':
           description: Not found.
           content:
@@ -2400,6 +2438,15 @@ components:
           type: string
           title: Value
           description: Harmonized diagnosis category value
+        ancestors:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Ancestors
+          description: Present only when value was promoted from a field_mappings
+            alias; paths like unharmonized.dcc_associated_diagnosis_category_1.
       type: object
       required:
       - value
@@ -2671,6 +2718,15 @@ components:
         value:
           title: Value
           description: Field value
+        ancestors:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Ancestors
+          description: Present when this value was transformed from an unharmonized
+            field
       type: object
       required:
       - value
@@ -3071,11 +3127,8 @@ components:
           title: Associated Diagnoses
         associated_diagnosis_categories:
           anyOf:
-          - items:
-              $ref: '#/components/schemas/AssociatedDiagnosisCategoryField'
-            type: array
+          - $ref: '#/components/schemas/AssociatedDiagnosisCategoryField'
           - type: 'null'
-          title: Associated Diagnosis Categories
         unharmonized:
           anyOf:
           - additionalProperties: true
@@ -3116,6 +3169,16 @@ components:
           type: array
           title: Data
           description: List of subjects with nested structure
+        gateways:
+          anyOf:
+          - items:
+              additionalProperties: true
+              type: object
+            type: array
+          - type: 'null'
+          title: Gateways
+          description: Named gateways for this list response (non-empty subject lists
+            only)
       additionalProperties: true
       type: object
       required:

@@ -43,26 +43,18 @@ class TestModelDumpOverrides:
         # Should not raise error
         assert "files" in result
 
-    def test_subject_response_model_dump_excludes_gateways(self):
-        """Test SubjectResponse.model_dump excludes gateways field."""
+    def test_subject_response_model_dump_omits_gateways_when_unset(self):
+        """Test SubjectResponse.model_dump omits gateways when None."""
         response = SubjectResponse(data=[])
-        object.__setattr__(response, 'gateways', {"gateway1": Mock()})
-        
         result = response.model_dump()
-        
-        # Gateways should be excluded
         assert "gateways" not in result
         assert "data" in result
 
-    def test_subject_response_model_dump_without_gateways(self):
-        """Test SubjectResponse.model_dump when gateways is None."""
-        response = SubjectResponse(data=[])
-        object.__setattr__(response, 'gateways', None)
-        
+    def test_subject_response_model_dump_includes_gateways_when_set(self):
+        """Test SubjectResponse.model_dump serializes gateways when provided."""
+        response = SubjectResponse(data=[], gateways=[{"name": "CCDI DCC model"}])
         result = response.model_dump()
-        
-        # Should not raise error
-        assert "data" in result
+        assert result["gateways"] == [{"name": "CCDI DCC model"}]
 
     def test_file_response_model_dump_without_gateways(self):
         """Test FileResponse.model_dump when gateways is None."""

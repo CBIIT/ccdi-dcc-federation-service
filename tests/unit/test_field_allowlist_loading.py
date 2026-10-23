@@ -14,7 +14,10 @@ def test_unharmonized_allowlist_loaded_from_metadata_config():
 
     # subject/sample expose exactly the configured unharmonized fields
     assert allowlist.is_unharmonized_field_allowed(
-        EntityType.SUBJECT, "associated_diagnosis_category_<n>"
+        EntityType.SUBJECT, "dcc_associated_diagnosis_category_<n>"
+    ) is True
+    assert allowlist.is_unharmonized_field_allowed(
+        EntityType.SUBJECT, "dcc_sex_at_birth"
     ) is True
     assert allowlist.is_unharmonized_field_allowed(
         EntityType.SAMPLE, "dcc_diagnosis_category_<n>"

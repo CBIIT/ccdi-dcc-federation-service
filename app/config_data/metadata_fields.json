@@ -74,12 +74,27 @@
         }
       },
       {
-        "path": "unharmonized.associated_diagnosis_category_<n>",
+        "path": "unharmonized.dcc_sex_at_birth",
+        "harmonized": false,
+        "wiki_url": null,
+        "details": {
+          "method": "Mapped",
+          "harmonizer": "DomainExpert",
+          "url_template": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?sex_at_birth={value}"
+        }
+      },
+      {
+        "path": "unharmonized.dcc_associated_diagnosis_category_<n>",
         "harmonized": false,
         "wiki_url": null,
         "standard": {
           "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=6161017%20and%20ver_nr=1",
           "name": "caDSR CDE 6161017 v1.0 ICD-O Disease Diagnosis Category"
+        },
+        "details": {
+          "method": "Mapped",
+          "harmonizer": "diagnosis_classification_system",
+          "url_template": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?diagnosis_category={value}"
         }
       },
       {

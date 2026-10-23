@@ -33,6 +33,7 @@ from app.models.dto import (
 from app.models.errors import ErrorDetail, ErrorsResponse, ErrorKind, InvalidParametersError
 from app.services.sample import SampleService
 from app.services.subject import SubjectService
+from app.core.gateways import get_gateways
 from app.db.memgraph import DatabaseConnectionError, is_retryable_error
 
 logger = get_logger(__name__)
@@ -346,7 +347,10 @@ Paginated. Experimental—may change.""",
                                 },
                                 "kind": "Participant",
                                 "metadata": {
-                                    "sex": {"value": "F"},
+                                    "sex": {
+                                        "value": "F",
+                                        "ancestors": ["unharmonized.dcc_sex_at_birth"],
+                                    },
                                     "race": [
                                         {"value": "White"}
                                     ],
@@ -369,13 +373,26 @@ Paginated. Experimental—may change.""",
                                     "associated_diagnoses": [
                                         {"value": "Neuroblastoma","comment": "null" }
                                     ],
-                                    "associated_diagnosis_categories": [
-                                        {"value": "Brain and Spinal Cord Tumors"}
-                                    ],
+                                    "associated_diagnosis_categories": {
+                                        "value": "Brain and Spinal Cord Tumors"
+                                    },
                                     "unharmonized": {
-                                        "associated_diagnosis_category_1": {
-                                            "value": "Gliomas"
-                                        }
+                                        "dcc_sex_at_birth": {
+                                            "value": "Female",
+                                            "details": {
+                                                "method": "Mapped",
+                                                "harmonizer": "DomainExpert",
+                                                "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?sex_at_birth=Female",
+                                            },
+                                        },
+                                        "dcc_associated_diagnosis_category_1": {
+                                            "value": "Gliomas",
+                                            "details": {
+                                                "method": "Mapped",
+                                                "harmonizer": "diagnosis_classification_system",
+                                                "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?diagnosis_category=Gliomas",
+                                            },
+                                        },
                                     },
                                     "depositions": [
                                         {
@@ -385,7 +402,27 @@ Paginated. Experimental—may change.""",
                                     ],
                                 }
                             }
-                        ]
+                        ],
+                        "gateways": [
+                            {
+                                "name": "CCDI DCC model",
+                                "kind": "Open",
+                                "link": {
+                                    "kind": "Approximate",
+                                    "url": "https://github.com/CBIIT/ccdi-dcc-model",
+                                    "instructions": "The CCDI DCC model is a graph database schema. model-desc/ccdi-dcc-model.yml describes the model nodes. model-desc/ccdi-dcc-model-props.yml describes the node properties.",
+                                },
+                            },
+                            {
+                                "name": "Childhood Cancer Clinical Data Commons",
+                                "kind": "Open",
+                                "link": {
+                                    "kind": "Approximate",
+                                    "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants",
+                                    "instructions": "The Explore Participants view enables browsing and filtering by study, participant, and sample attributes. The Explore Files view focuses on file-based attributes.",
+                                },
+                            },
+                        ],
                     }
                 }
             }
@@ -565,7 +602,8 @@ async def search_subjects_by_diagnosis(
                     "current": len(subjects)
                 }
             },
-            data=subjects_dicts
+            data=subjects_dicts,
+            gateways=get_gateways("subjects") if subjects else None,
         )
         
         logger.info(

@@ -1,0 +1,22 @@
+{
+  "subjects": [
+    {
+      "name": "CCDI DCC model",
+      "kind": "Open",
+      "link": {
+        "kind": "Approximate",
+        "url": "https://github.com/CBIIT/ccdi-dcc-model",
+        "instructions": "The CCDI DCC model is a graph database schema. model-desc/ccdi-dcc-model.yml describes the model nodes. model-desc/ccdi-dcc-model-props.yml describes the node properties."
+      }
+    },
+    {
+      "name": "Childhood Cancer Clinical Data Commons",
+      "kind": "Open",
+      "link": {
+        "kind": "Approximate",
+        "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants",
+        "instructions": "The Explore Participants view enables browsing and filtering by study, participant, and sample attributes. The Explore Files view focuses on file-based attributes."
+      }
+    }
+  ]
+}

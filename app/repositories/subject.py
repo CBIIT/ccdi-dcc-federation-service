@@ -14,11 +14,13 @@ from neo4j import AsyncSession
 from app.core.logging import get_logger
 from app.core.constants import Race
 from app.core.diagnosis_category import (
+    build_diagnosis_category_fields,
     canonical_diagnosis_category_token,
     diagnosis_category_filter_db_values,
-    split_diagnosis_category_tokens,
+    iter_diagnosis_category_raw_tokens,
 )
 from app.core.field_mappings import map_field_value, reverse_map_field_value, is_database_only_value, build_case_mapping_statement
+from app.core.unharmonized_details import attach_unharmonized_details
 from app.lib.field_allowlist import FieldAllowlist
 from app.lib.url_builder import build_identifier_server_url
 from app.models.dto import Subject
@@ -2143,8 +2145,7 @@ WITH {carry},
                         age_at_vital_status = None
 
         extracted_diagnoses: list = []
-        harmonized_categories: list[str] = []
-        unharmonized_categories: list[str] = []
+        category_tokens: list[str] = []
         if diagnosis_nodes_raw:
             for node in diagnosis_nodes_raw:
                 if not associated_diagnoses_raw:
@@ -2155,14 +2156,13 @@ WITH {carry},
                         elif str(diag_val).strip():
                             extracted_diagnoses.append(diag_val)
                 cat = _get_prop(node, "diagnosis_category")
-                if cat is not None and str(cat).strip():
-                    h, u = split_diagnosis_category_tokens(cat)
-                    harmonized_categories.extend(h)
-                    unharmonized_categories.extend(u)
+                category_tokens.extend(iter_diagnosis_category_raw_tokens(cat))
         if extracted_diagnoses:
             associated_diagnoses_raw = extracted_diagnoses
-        harmonized_categories = list(dict.fromkeys(harmonized_categories))
-        unharmonized_categories = list(dict.fromkeys(unharmonized_categories))
+        associated_diagnosis_categories, category_unharmonized = build_diagnosis_category_fields(
+            category_tokens,
+            "dcc_associated_diagnosis_category",
+        )
 
         # Apply field mapping to vital_status (e.g., "Not Reported" -> "Not reported")
         vital_status = map_field_value("vital_status", vital_status_raw) if vital_status_raw else vital_status_raw
@@ -2221,7 +2221,8 @@ WITH {carry},
         # Apply race value mappings (e.g., "Not Allowed to Collect" -> "Not allowed to collect")
         race_list = [map_field_value("race", race) or race for race in race_list]
         
-        # Normalize sex using config mappings
+        # Normalize sex using config mappings. Keep the raw DB string when it
+        # differs from the API value so unharmonized.dcc_sex_at_birth can show it.
         sex_value = None
         if sex_value_raw is not None:
             sex_str = str(sex_value_raw).strip()
@@ -2255,6 +2256,24 @@ WITH {carry},
                 else:
                     sex_value = "U"
 
+        sex_field: dict[str, Any] | None = {"value": sex_value} if sex_value else None
+        raw_sex_text = None if sex_value_raw is None else str(sex_value_raw)
+        if sex_value_raw is None or (sex_value is not None and raw_sex_text != sex_value):
+            sex_unharmonized: dict[str, Any] = {"value": sex_value_raw}
+            if sex_field is not None:
+                sex_field["ancestors"] = ["unharmonized.dcc_sex_at_birth"]
+        else:
+            sex_unharmonized = None
+
+        unharmonized_payload: dict[str, Any] = dict(category_unharmonized or {})
+        if sex_unharmonized is not None:
+            unharmonized_payload["dcc_sex_at_birth"] = sex_unharmonized
+        unharmonized_final = (
+            attach_unharmonized_details("subjects", unharmonized_payload)
+            if unharmonized_payload
+            else None
+        )
+
         # Build nested subject structure
         # Row mode: namespace must come from this row's study_id
         primary_study_id = row_namespace
@@ -2268,9 +2287,9 @@ WITH {carry},
                 "name": participant_id
             },
             "kind": "Participant",
-            # Note: All "ancestors" fields are excluded from results but kept as optional placeholders in DTO models
+            # ancestors is omitted unless a harmonized value was transformed from an unharmonized field.
             "metadata": {
-                "sex": {"value": sex_value} if sex_value else None,
+                "sex": sex_field,
                 # Race reporting rule: remove 'Hispanic or Latino'. If only that term was present,
                 # replace with "Not Reported"; if race was entirely missing, keep it as None.
                 "race": (
@@ -2311,17 +2330,8 @@ WITH {carry},
                     ],
                     key=lambda x: x["value"]  # Sort by diagnosis value
                 ) if associated_diagnoses else None,
-                "associated_diagnosis_categories": (
-                    [{"value": cat} for cat in harmonized_categories] if harmonized_categories else None
-                ),
-                "unharmonized": (
-                    {
-                        f"associated_diagnosis_category_{i}": {"value": cat}
-                        for i, cat in enumerate(unharmonized_categories, start=1)
-                    }
-                    if unharmonized_categories
-                    else None
-                ),
+                "associated_diagnosis_categories": associated_diagnosis_categories,
+                "unharmonized": unharmonized_final,
                 "vital_status": {"value": vital_status} if vital_status else None,
                 # Convert -999 to null for age_at_vital_status in response (count endpoints keep -999 as-is)
                 # Also convert 0 to null if vital_status exists (0 likely came from -999 when all ages were -999)

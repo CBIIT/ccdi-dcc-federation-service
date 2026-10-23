@@ -6,7 +6,7 @@ based on the OpenAPI specification.
 """
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Union
+from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 from enum import Enum
 
 from pydantic import BaseModel, Field, ConfigDict
@@ -124,31 +124,34 @@ class LinkKind(str, Enum):
 
 class DirectLink(BaseModel):
     """Direct link to resource."""
+    kind: Literal[LinkKind.DIRECT] = LinkKind.DIRECT
     url: str = Field(..., description="Resource URL")
-    kind: LinkKind = Field(LinkKind.DIRECT)
 
 
 class ApproximateLink(BaseModel):
     """Approximate link with instructions."""
+    kind: Literal[LinkKind.APPROXIMATE] = LinkKind.APPROXIMATE
     url: str = Field(..., description="Approximate resource URL")
     instructions: str = Field(..., description="Manual instructions")
-    kind: LinkKind = Field(LinkKind.APPROXIMATE)
 
 
 class InformationalLink(BaseModel):
     """Informational link about access."""
+    kind: Literal[LinkKind.INFORMATIONAL] = LinkKind.INFORMATIONAL
     url: str = Field(..., description="Information URL")
-    kind: LinkKind = Field(LinkKind.INFORMATIONAL)
 
 
 class MailToLink(BaseModel):
     """Email link for access requests."""
+    kind: Literal[LinkKind.MAILTO] = LinkKind.MAILTO
     url: str = Field(..., description="Email URL")
     instructions: str = Field(..., description="Email instructions")
-    kind: LinkKind = Field(LinkKind.MAILTO)
 
 
-GatewayLink = Union[DirectLink, ApproximateLink, InformationalLink, MailToLink]
+GatewayLink = Annotated[
+    Union[DirectLink, ApproximateLink, InformationalLink, MailToLink],
+    Field(discriminator="kind"),
+]
 
 
 class ClosedStatus(str, Enum):
@@ -227,12 +230,11 @@ GatewayOrReference = Union[AnonymousGateway, GatewayReference]
 class NamedGateway(BaseModel):
     """Named gateway for response gateways collection."""
     name: str = Field(..., description="Gateway name")
-    # Include all gateway fields inline
+    kind: GatewayKind = Field(..., description="Gateway kind")
     link: Optional[GatewayLink] = None
     status: Optional[ClosedStatus] = None
     available_at: Optional[datetime] = None
     description: Optional[str] = None
-    kind: GatewayKind = Field(..., description="Gateway kind")
 
 
 # ============================================================================
@@ -305,6 +307,14 @@ class IdentifierField(BaseModel):
 class AssociatedDiagnosisCategoryField(BaseModel):
     """Associated diagnosis categories field — one harmonized PV value."""
     value: str = Field(..., description="Harmonized diagnosis category value")
+    ancestors: Optional[List[str]] = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description=(
+            "Present only when value was promoted from a field_mappings alias; "
+            "paths like unharmonized.dcc_associated_diagnosis_category_1."
+        ),
+    )
 
 
 class SampleDiagnosisCategoryField(BaseModel):
@@ -391,7 +401,11 @@ class SubjectId(BaseModel):
 class MetadataField(BaseModel):
     """Metadata field with value and ancestors."""
     value: Any = Field(..., description="Field value")
-    ancestors: Optional[Any] = Field(default=None, description="Ancestor entities", exclude=True)
+    ancestors: Optional[List[str]] = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="Present when this value was transformed from an unharmonized field",
+    )
 
 class AssociatedDiagnosisField(BaseModel):
     """Associated diagnosis field with detailed structure."""
@@ -407,7 +421,7 @@ class SubjectMetadata(BaseModel):
     ethnicity: Optional[MetadataField] = None
     identifiers: Optional[List[IdentifierField]] = None
     associated_diagnoses: Optional[List[AssociatedDiagnosisField]] = None
-    associated_diagnosis_categories: Optional[List[AssociatedDiagnosisCategoryField]] = None
+    associated_diagnosis_categories: Optional[AssociatedDiagnosisCategoryField] = None
     unharmonized: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Unharmonized metadata fields"
@@ -598,11 +612,10 @@ class SubjectResponse(BaseModel):
     # Top-level response structure
     summary: Optional[Dict[str, Any]] = Field(None, description="Summary statistics")
     data: List[Subject] = Field(..., description="List of subjects with nested structure")
-    # gateways field kept as placeholder in code but excluded from responses
-    gateways: List[Any] = Field(
-        default_factory=list,
-        exclude=True,  # Exclude from serialization but keep as placeholder in code
-        description="Named gateways referenced by subjects (placeholder - excluded from responses)"
+    gateways: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="Named gateways for this list response (non-empty subject lists only)",
     )
     
     # Pagination removed - no longer included in responses

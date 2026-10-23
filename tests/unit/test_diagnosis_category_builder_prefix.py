@@ -1,0 +1,26 @@
+from app.core.diagnosis_category import (
+    build_diagnosis_category_fields,
+    build_sample_diagnosis_category_fields,
+)
+
+PREFIX = "dcc_associated_diagnosis_category"
+
+
+def test_first_native_wins_rest_go_to_prefixed_keys():
+    regular, unh = build_diagnosis_category_fields(
+        ["Medulloblastoma", "Renal Tumors"], PREFIX
+    )
+    assert regular == {"value": "Medulloblastoma"}
+    assert unh == {f"{PREFIX}_1": {"value": "Renal Tumors"}}
+
+
+def test_promoted_alias_ancestor_uses_prefix():
+    regular, unh = build_diagnosis_category_fields(["Myeloid leukemias"], PREFIX)
+    assert regular["ancestors"] == [f"unharmonized.{PREFIX}_1"]
+    assert unh[f"{PREFIX}_1"]["value"] == "Myeloid leukemias"
+
+
+def test_sample_wrapper_unchanged():
+    assert build_sample_diagnosis_category_fields(["Medulloblastoma", "Gliomas"]) == (
+        build_diagnosis_category_fields(["Medulloblastoma", "Gliomas"], "dcc_diagnosis_category")
+    )

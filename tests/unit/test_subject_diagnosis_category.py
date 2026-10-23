@@ -31,23 +31,20 @@ def test_associated_diagnosis_category_field_model():
 
 def test_subject_metadata_has_associated_diagnosis_categories():
     meta = SubjectMetadata(
-        associated_diagnosis_categories=[
-            AssociatedDiagnosisCategoryField(value="Medulloblastoma"),
-            AssociatedDiagnosisCategoryField(value="Renal Tumors"),
-        ]
+        associated_diagnosis_categories=AssociatedDiagnosisCategoryField(value="Medulloblastoma"),
     )
-    assert meta.associated_diagnosis_categories[0].value == "Medulloblastoma"
+    assert meta.associated_diagnosis_categories.value == "Medulloblastoma"
 
 
 def test_subject_metadata_unharmonized_is_serialized():
     meta = SubjectMetadata(
         unharmonized={
-            "associated_diagnosis_category_1": {"value": "ICD-O Value"}
+            "dcc_associated_diagnosis_category_1": {"value": "ICD-O Value"}
         }
     )
     dumped = meta.model_dump(exclude_none=True)
     assert "unharmonized" in dumped
-    assert "associated_diagnosis_category_1" in dumped["unharmonized"]
+    assert "dcc_associated_diagnosis_category_1" in dumped["unharmonized"]
 
 
 # ---------------------------------------------------------------------------
@@ -93,18 +90,25 @@ def _base_record(diagnosis_nodes=None):
     }
 
 
+def _sex_unharmonized_block():
+    return {
+        "value": "Male",
+        "details": {
+            "method": "Mapped",
+            "harmonizer": "DomainExpert",
+            "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?sex_at_birth=Male",
+        },
+    }
+
+
 def test_harmonized_value_goes_to_associated_diagnosis_categories():
     repo = _make_repo()
     record = _base_record([_make_diag_node(diagnosis_category="Medulloblastoma")])
     subject = repo._record_to_subject(record)
     assert subject.metadata.associated_diagnosis_categories is not None
-    harmonized_vals = [item.value for item in subject.metadata.associated_diagnosis_categories]
-    assert "Medulloblastoma" in harmonized_vals
-    assert subject.metadata.unharmonized is None or \
-           not any(
-               k.startswith("associated_diagnosis_category_")
-               for k in (subject.metadata.unharmonized or {})
-           )
+    assert subject.metadata.associated_diagnosis_categories.value == "Medulloblastoma"
+    unharmonized = subject.metadata.unharmonized or {}
+    assert not any(k.startswith("dcc_associated_diagnosis_category_") for k in unharmonized)
 
 
 def test_out_of_spec_value_goes_to_unharmonized():
@@ -113,8 +117,8 @@ def test_out_of_spec_value_goes_to_unharmonized():
     subject = repo._record_to_subject(record)
     assert subject.metadata.associated_diagnosis_categories is None
     assert subject.metadata.unharmonized is not None
-    assert "associated_diagnosis_category_1" in subject.metadata.unharmonized
-    assert subject.metadata.unharmonized["associated_diagnosis_category_1"]["value"] == (
+    assert "dcc_associated_diagnosis_category_1" in subject.metadata.unharmonized
+    assert subject.metadata.unharmonized["dcc_associated_diagnosis_category_1"]["value"] == (
         "Adenomas and adenocarcinomas"
     )
 
@@ -127,15 +131,13 @@ def test_mixed_values_split_correctly():
     ]
     record = _base_record(nodes)
     subject = repo._record_to_subject(record)
-    harmonized_vals = [item.value for item in subject.metadata.associated_diagnosis_categories]
+    assert subject.metadata.associated_diagnosis_categories.value == "Medulloblastoma"
     unharmonized = subject.metadata.unharmonized
     unharmonized_vals = [
         unharmonized[k]["value"]
         for k in sorted(unharmonized)
-        if k.startswith("associated_diagnosis_category_")
+        if k.startswith("dcc_associated_diagnosis_category_")
     ]
-    assert "Medulloblastoma" in harmonized_vals
-    assert "Adenomas and adenocarcinomas" not in harmonized_vals
     assert "Adenomas and adenocarcinomas" in unharmonized_vals
 
 
@@ -154,24 +156,21 @@ def test_deduplication_of_same_category():
     ]
     record = _base_record(nodes)
     subject = repo._record_to_subject(record)
-    harmonized_vals = [item.value for item in subject.metadata.associated_diagnosis_categories]
-    assert harmonized_vals.count("Medulloblastoma") == 1
+    assert subject.metadata.associated_diagnosis_categories.value == "Medulloblastoma"
 
 
 def test_semicolon_delimited_single_node_splits_correctly():
     repo = _make_repo()
     record = _base_record([_make_diag_node(diagnosis_category="Medulloblastoma;Adenomas and adenocarcinomas")])
     subject = repo._record_to_subject(record)
-    harmonized_vals = [item.value for item in subject.metadata.associated_diagnosis_categories]
+    assert subject.metadata.associated_diagnosis_categories.value == "Medulloblastoma"
     unharmonized = subject.metadata.unharmonized
     unharmonized_vals = [
         unharmonized[k]["value"]
         for k in sorted(unharmonized)
-        if k.startswith("associated_diagnosis_category_")
+        if k.startswith("dcc_associated_diagnosis_category_")
     ]
-    assert "Medulloblastoma" in harmonized_vals
     assert "Adenomas and adenocarcinomas" in unharmonized_vals
-    assert "Adenomas and adenocarcinomas" not in harmonized_vals
 
 
 def test_multiple_unharmonized_categories_use_numbered_keys():
@@ -188,13 +187,15 @@ def test_multiple_unharmonized_categories_use_numbered_keys():
     )
     subject = repo._record_to_subject(record)
     unharmonized = subject.metadata.unharmonized
-    assert unharmonized == {
-        "associated_diagnosis_category_1": {"value": "Circumscribed Astrocytic Gliomas"},
-        "associated_diagnosis_category_2": {"value": "Gliomas"},
-        "associated_diagnosis_category_3": {
-            "value": "Gliomas, glioneuronal tumors, and neuronal tumors"
-        },
-    }
+    assert subject.metadata.associated_diagnosis_categories is None
+    assert unharmonized["dcc_associated_diagnosis_category_1"]["value"] == (
+        "Circumscribed Astrocytic Gliomas"
+    )
+    assert unharmonized["dcc_associated_diagnosis_category_2"]["value"] == "Gliomas"
+    assert unharmonized["dcc_associated_diagnosis_category_3"]["value"] == (
+        "Gliomas, glioneuronal tumors, and neuronal tumors"
+    )
+    assert unharmonized["dcc_sex_at_birth"] == _sex_unharmonized_block()
 
 
 # ---------------------------------------------------------------------------

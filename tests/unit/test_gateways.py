@@ -207,3 +207,26 @@ async def test_subject_list_has_gateways(client, monkeypatch):
     r = client.get("/api/v1/subject?page=1&per_page=5")
     assert r.status_code == 200
     assert r.json()["gateways"] == get_gateways("subjects")
+
+
+@pytest.mark.asyncio
+async def test_subject_list_omits_gateways_when_config_yields_none(client, monkeypatch):
+    from app.models.dto import MetadataField, NamespaceIdentifier, Subject, SubjectId, SubjectMetadata
+
+    subject = Subject(
+        id=SubjectId(namespace=NamespaceIdentifier(name="phs001"), name="P1"),
+        metadata=SubjectMetadata(sex=MetadataField(value="M")),
+    )
+
+    class FakeSubjectService:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def get_subjects(self, *args, **kwargs):
+            return ([subject], 1)
+
+    monkeypatch.setattr(subjects_ep, "SubjectService", FakeSubjectService)
+    monkeypatch.setattr("app.core.gateways.get_gateways", lambda entity: [])
+    r = client.get("/api/v1/subject?page=1&per_page=5")
+    assert r.status_code == 200
+    assert "gateways" not in r.json()

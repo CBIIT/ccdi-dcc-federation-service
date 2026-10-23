@@ -351,7 +351,7 @@ async def list_subjects(
                 }
             },
             data=subjects_dicts,  # List of dicts without gateways
-            gateways=get_gateways("subjects") if subjects else None,
+            gateways=(get_gateways("subjects") or None) if subjects else None,
         )
         
         logger.info(
@@ -607,7 +607,10 @@ async def count_subjects_by_field(
                         },
                         "kind": "Participant",
                         "metadata": {
-                            "sex": {"value": "M"},
+                            "sex": {
+                                "value": "M",
+                                "ancestors": ["unharmonized.dcc_sex_at_birth"],
+                            },
                             "race": [
                                 {"value": "White"}
                             ],
@@ -632,9 +635,27 @@ async def count_subjects_by_field(
                                     "value": "Neuroblastoma","comment": "null"
                                 }
                             ],
-                            "associated_diagnosis_categories": [
-                                {"value": "Brain and Spinal Cord Tumors"}
-                            ],
+                            "associated_diagnosis_categories": {
+                                "value": "Brain and Spinal Cord Tumors"
+                            },
+                            "unharmonized": {
+                                "dcc_sex_at_birth": {
+                                    "value": "Male",
+                                    "details": {
+                                        "method": "Mapped",
+                                        "harmonizer": "DomainExpert",
+                                        "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?sex_at_birth=Male",
+                                    },
+                                },
+                                "dcc_associated_diagnosis_category_1": {
+                                    "value": "Gliomas",
+                                    "details": {
+                                        "method": "Mapped",
+                                        "harmonizer": "diagnosis_classification_system",
+                                        "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?diagnosis_category=Gliomas",
+                                    },
+                                },
+                            },
                             "depositions": [
                                 {
                                     "kind": "dbGaP",

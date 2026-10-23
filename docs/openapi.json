@@ -333,7 +333,16 @@
                       "link": {
                         "kind": "Approximate",
                         "url": "https://github.com/CBIIT/ccdi-dcc-model",
-                        "instructions": "The CCDI DCC model is a graph database schema."
+                        "instructions": "The CCDI DCC model is a graph database schema. model-desc/ccdi-dcc-model.yml describes the model nodes. model-desc/ccdi-dcc-model-props.yml describes the node properties."
+                      }
+                    },
+                    {
+                      "name": "Childhood Cancer Clinical Data Commons",
+                      "kind": "Open",
+                      "link": {
+                        "kind": "Approximate",
+                        "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants",
+                        "instructions": "The Explore Participants view enables browsing and filtering by study, participant, and sample attributes. The Explore Files view focuses on file-based attributes."
                       }
                     }
                   ]
@@ -532,7 +541,10 @@
                   "kind": "Participant",
                   "metadata": {
                     "sex": {
-                      "value": "M"
+                      "value": "M",
+                      "ancestors": [
+                        "unharmonized.dcc_sex_at_birth"
+                      ]
                     },
                     "race": [
                       {
@@ -567,11 +579,27 @@
                         "comment": "null"
                       }
                     ],
-                    "associated_diagnosis_categories": [
-                      {
-                        "value": "Brain and Spinal Cord Tumors"
+                    "associated_diagnosis_categories": {
+                      "value": "Brain and Spinal Cord Tumors"
+                    },
+                    "unharmonized": {
+                      "dcc_sex_at_birth": {
+                        "value": "Male",
+                        "details": {
+                          "method": "Mapped",
+                          "harmonizer": "DomainExpert",
+                          "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?sex_at_birth=Male"
+                        }
+                      },
+                      "dcc_associated_diagnosis_category_1": {
+                        "value": "Gliomas",
+                        "details": {
+                          "method": "Mapped",
+                          "harmonizer": "diagnosis_classification_system",
+                          "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?diagnosis_category=Gliomas"
+                        }
                       }
-                    ],
+                    },
                     "depositions": [
                       {
                         "kind": "dbGaP",
@@ -2257,7 +2285,16 @@
                       "link": {
                         "kind": "Approximate",
                         "url": "https://github.com/CBIIT/ccdi-dcc-model",
-                        "instructions": "The CCDI DCC model is a graph database schema."
+                        "instructions": "The CCDI DCC model is a graph database schema. model-desc/ccdi-dcc-model.yml describes the model nodes. model-desc/ccdi-dcc-model-props.yml describes the node properties."
+                      }
+                    },
+                    {
+                      "name": "Childhood Cancer Clinical Data Commons",
+                      "kind": "Open",
+                      "link": {
+                        "kind": "Approximate",
+                        "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants",
+                        "instructions": "The Explore Participants view enables browsing and filtering by study, participant, and sample attributes. The Explore Files view focuses on file-based attributes."
                       }
                     }
                   ]

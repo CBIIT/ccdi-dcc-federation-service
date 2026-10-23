@@ -39,3 +39,26 @@ def test_sample_wrapper_unchanged():
     assert build_sample_diagnosis_category_fields(["Medulloblastoma", "Gliomas"]) == (
         build_diagnosis_category_fields(["Medulloblastoma", "Gliomas"], "dcc_diagnosis_category")
     )
+
+
+def test_sample_wrapper_does_not_promote_case_variant():
+    # /sample is out of scope for FEDERATION-766: a case-variant native stays an exact match.
+    regular, unh = build_sample_diagnosis_category_fields(
+        ["medulloblastoma", "Adenomas and adenocarcinomas"]
+    )
+    assert regular == {"value": "Medulloblastoma"}
+    assert unh == {"dcc_diagnosis_category_1": {"value": "Adenomas and adenocarcinomas"}}
+
+
+def test_subject_builder_promotes_case_variant_by_default():
+    regular, unh = build_diagnosis_category_fields(
+        ["medulloblastoma", "Adenomas and adenocarcinomas"], PREFIX
+    )
+    assert regular == {
+        "value": "Medulloblastoma",
+        "ancestors": [f"unharmonized.{PREFIX}_1"],
+    }
+    assert unh == {
+        f"{PREFIX}_1": {"value": "medulloblastoma"},
+        f"{PREFIX}_2": {"value": "Adenomas and adenocarcinomas"},
+    }

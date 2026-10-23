@@ -101,12 +101,18 @@ def iter_diagnosis_category_raw_tokens(raw: object) -> list[str]:
 def build_diagnosis_category_fields(
     raw_tokens: list[str],
     key_prefix: str,
+    promote_case_variant: bool = True,
 ) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]]]:
     """
     Build one harmonized diagnosis category + numbered dcc_* unharmonized entries.
 
     Returns (regular_field_dict_or_None, unharmonized_dict_or_None).
     regular_field_dict has ``value`` and optionally ``ancestors``.
+
+    promote_case_variant: when the first native token differs from its PV only by
+    case (e.g. ``medulloblastoma``), keep the raw token under dcc_* and link it via
+    ``ancestors`` (subject, FEDERATION-766). False keeps the earlier sample behaviour:
+    the token is treated as an exact match and omitted from dcc_*.
     """
     # Dedupe by raw string, preserve order
     ordered = list(dict.fromkeys(raw_tokens))
@@ -124,7 +130,7 @@ def build_diagnosis_category_fields(
     if natives:
         skip_index, (_kind, raw, canon) = natives[0]
         regular = {"value": canon}
-        if raw != canon:
+        if promote_case_variant and raw != canon:
             promote_raw = raw
             skip_index = None
     elif aliases:
@@ -177,8 +183,13 @@ def build_diagnosis_category_fields(
 def build_sample_diagnosis_category_fields(
     raw_tokens: list[str],
 ) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]]]:
-    """Sample wrapper — keys use ``dcc_diagnosis_category_<n>``."""
-    return build_diagnosis_category_fields(raw_tokens, "dcc_diagnosis_category")
+    """Sample wrapper — keys use ``dcc_diagnosis_category_<n>``.
+
+    Case-variant promotion is off: /sample output is out of scope for FEDERATION-766.
+    """
+    return build_diagnosis_category_fields(
+        raw_tokens, "dcc_diagnosis_category", promote_case_variant=False
+    )
 
 
 def diagnosis_category_token_case_expr(variable_name: str = "token") -> str:

@@ -603,7 +603,7 @@ async def search_subjects_by_diagnosis(
                 }
             },
             data=subjects_dicts,
-            gateways=get_gateways("subjects") if subjects else None,
+            gateways=(get_gateways("subjects") or None) if subjects else None,
         )
         
         logger.info(

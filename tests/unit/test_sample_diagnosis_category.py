@@ -230,12 +230,8 @@ def test_case_insensitive_harmonization():
         _diag(diagnosis_category="medulloblastoma"),
     )
     assert sample.metadata.diagnosis_category.value == "Medulloblastoma"
-    assert sample.metadata.diagnosis_category.ancestors == [
-        "unharmonized.dcc_diagnosis_category_1"
-    ]
-    assert sample.metadata.unharmonized == {
-        "dcc_diagnosis_category_1": {"value": "medulloblastoma"}
-    }
+    assert sample.metadata.diagnosis_category.ancestors is None
+    assert sample.metadata.unharmonized is None
 
 
 def test_whitespace_around_token_is_trimmed():

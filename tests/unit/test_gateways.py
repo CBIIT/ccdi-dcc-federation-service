@@ -226,7 +226,7 @@ async def test_subject_list_omits_gateways_when_config_yields_none(client, monke
             return ([subject], 1)
 
     monkeypatch.setattr(subjects_ep, "SubjectService", FakeSubjectService)
-    monkeypatch.setattr("app.core.gateways.get_gateways", lambda entity: [])
+    monkeypatch.setattr(subjects_ep, "get_gateways", lambda entity: [])
     r = client.get("/api/v1/subject?page=1&per_page=5")
     assert r.status_code == 200
     assert "gateways" not in r.json()

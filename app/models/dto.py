@@ -231,10 +231,10 @@ class NamedGateway(BaseModel):
     """Named gateway for response gateways collection."""
     name: str = Field(..., description="Gateway name")
     kind: GatewayKind = Field(..., description="Gateway kind")
-    link: Optional[GatewayLink] = None
-    status: Optional[ClosedStatus] = None
-    available_at: Optional[datetime] = None
-    description: Optional[str] = None
+    link: Optional[GatewayLink] = Field(default=None, exclude_if=lambda v: v is None)
+    status: Optional[ClosedStatus] = Field(default=None, exclude_if=lambda v: v is None)
+    available_at: Optional[datetime] = Field(default=None, exclude_if=lambda v: v is None)
+    description: Optional[str] = Field(default=None, exclude_if=lambda v: v is None)
 
     @model_validator(mode="after")
     def link_required_for_access_kinds(self) -> "NamedGateway":
@@ -622,7 +622,7 @@ class SubjectResponse(BaseModel):
     # Top-level response structure
     summary: Optional[Dict[str, Any]] = Field(None, description="Summary statistics")
     data: List[Subject] = Field(..., description="List of subjects with nested structure")
-    gateways: Optional[List[Dict[str, Any]]] = Field(
+    gateways: Optional[List[NamedGateway]] = Field(
         default=None,
         exclude_if=lambda v: v is None,
         description="Named gateways for this list response (non-empty subject lists only)",

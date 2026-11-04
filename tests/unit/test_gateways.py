@@ -143,10 +143,43 @@ def test_invalid_gateway_entry_is_skipped(monkeypatch, caplog):
     assert "invalid gateway" in caplog.text.lower()
 
 
+def test_subject_response_openapi_gateways_use_named_gateway():
+    from app.main import app
+
+    schema = app.openapi()["components"]["schemas"]
+    refs: list[str] = []
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if isinstance(ref, str):
+                refs.append(ref)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(schema["SubjectResponse"]["properties"]["gateways"])
+    assert "#/components/schemas/NamedGateway" in refs
+    assert {"name", "kind", "link"} <= set(schema["NamedGateway"]["properties"])
+
+
 def test_subject_response_serializes_gateways_only_when_set():
+    gateway = {
+        "name": "CCDI DCC model",
+        "kind": "Open",
+        "link": {
+            "kind": "Approximate",
+            "url": "https://example.com/model",
+            "instructions": "See the model description.",
+        },
+    }
     assert "gateways" not in SubjectResponse(summary={}, data=[]).model_dump()
-    dumped = SubjectResponse(summary={}, data=[], gateways=[{"name": "g"}]).model_dump()
-    assert dumped["gateways"] == [{"name": "g"}]
+    dumped = SubjectResponse(summary={}, data=[], gateways=[gateway]).model_dump(mode="json")
+    assert dumped["gateways"] == [gateway]
+    assert "status" not in dumped["gateways"][0]
+    assert "description" not in dumped["gateways"][0]
 
 
 @pytest.mark.asyncio

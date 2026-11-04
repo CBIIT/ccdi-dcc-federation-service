@@ -5,7 +5,7 @@ This module provides REST endpoints for experimental diagnosis search operations
 on samples and subjects using case-insensitive substring matching.
 """
 
-from typing import Dict, Any
+from typing import Any, Dict, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from neo4j import AsyncSession
@@ -27,6 +27,7 @@ from app.lib.field_allowlist import FieldAllowlist
 from app.models.dto import (
     SamplesResponse,
     SubjectResponse,
+    NamedGateway,
     CountResponse,
     SummaryResponse
 )
@@ -603,7 +604,10 @@ async def search_subjects_by_diagnosis(
                 }
             },
             data=subjects_dicts,
-            gateways=(get_gateways("subjects") or None) if subjects else None,
+            gateways=cast(
+                list[NamedGateway] | None,
+                (get_gateways("subjects") or None) if subjects else None,
+            ),
         )
         
         logger.info(

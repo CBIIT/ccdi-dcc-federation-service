@@ -2467,6 +2467,27 @@ paths:
               schema: {}
 components:
   schemas:
+    ApproximateLink:
+      properties:
+        kind:
+          type: string
+          const: Approximate
+          title: Kind
+          default: Approximate
+        url:
+          type: string
+          title: Url
+          description: Approximate resource URL
+        instructions:
+          type: string
+          title: Instructions
+          description: Manual instructions
+      type: object
+      required:
+      - url
+      - instructions
+      title: ApproximateLink
+      description: Approximate link with instructions.
     AssociatedDiagnosisCategoryField:
       properties:
         value:
@@ -2505,6 +2526,14 @@ components:
       - value
       title: AssociatedDiagnosisField
       description: Associated diagnosis field with detailed structure.
+    ClosedStatus:
+      type: string
+      enum:
+      - IndefinitelyClosed
+      - AwaitingPublication
+      - Embargoed
+      title: ClosedStatus
+      description: Closed gateway status.
     CountResponse:
       properties:
         total:
@@ -2575,6 +2604,22 @@ components:
       - value
       title: DiagnosisField
       description: Diagnosis field with value and comment.
+    DirectLink:
+      properties:
+        kind:
+          type: string
+          const: Direct
+          title: Kind
+          default: Direct
+        url:
+          type: string
+          title: Url
+          description: Resource URL
+      type: object
+      required:
+      - url
+      title: DirectLink
+      description: Direct link to resource.
     ErrorDetail:
       properties:
         kind:
@@ -2673,6 +2718,15 @@ components:
       type: object
       title: File
       description: Flexible file model that can contain any fields.
+    GatewayKind:
+      type: string
+      enum:
+      - Open
+      - Registered
+      - Controlled
+      - Closed
+      title: GatewayKind
+      description: Gateway access kinds.
     HTTPValidationError:
       properties:
         detail:
@@ -2737,6 +2791,22 @@ components:
       - name
       title: IdentifierValue
       description: Identifier value with nested structure.
+    InformationalLink:
+      properties:
+        kind:
+          type: string
+          const: Informational
+          title: Kind
+          default: Informational
+        url:
+          type: string
+          title: Url
+          description: Information URL
+      type: object
+      required:
+      - url
+      title: InformationalLink
+      description: Informational link about access.
     IntegerValueField:
       properties:
         value:
@@ -2748,6 +2818,27 @@ components:
       - value
       title: IntegerValueField
       description: Integer field with value attribute.
+    MailToLink:
+      properties:
+        kind:
+          type: string
+          const: MailTo
+          title: Kind
+          default: MailTo
+        url:
+          type: string
+          title: Url
+          description: Email URL
+        instructions:
+          type: string
+          title: Instructions
+          description: Email instructions
+      type: object
+      required:
+      - url
+      - instructions
+      title: MailToLink
+      description: Email link for access requests.
     MetadataField:
       properties:
         value:
@@ -2806,6 +2897,52 @@ components:
       - fields
       title: MetadataFieldsInfoResponse
       description: Response for /metadata/fields/{field_type} endpoint.
+    NamedGateway:
+      properties:
+        name:
+          type: string
+          title: Name
+          description: Gateway name
+        kind:
+          $ref: '#/components/schemas/GatewayKind'
+          description: Gateway kind
+        link:
+          anyOf:
+          - oneOf:
+            - $ref: '#/components/schemas/DirectLink'
+            - $ref: '#/components/schemas/ApproximateLink'
+            - $ref: '#/components/schemas/InformationalLink'
+            - $ref: '#/components/schemas/MailToLink'
+            discriminator:
+              propertyName: kind
+              mapping:
+                Approximate: '#/components/schemas/ApproximateLink'
+                Direct: '#/components/schemas/DirectLink'
+                Informational: '#/components/schemas/InformationalLink'
+                MailTo: '#/components/schemas/MailToLink'
+          - type: 'null'
+          title: Link
+        status:
+          anyOf:
+          - $ref: '#/components/schemas/ClosedStatus'
+          - type: 'null'
+        available_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Available At
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+      type: object
+      required:
+      - name
+      - kind
+      title: NamedGateway
+      description: Named gateway for response gateways collection.
     Namespace:
       properties:
         id:
@@ -3207,8 +3344,7 @@ components:
         gateways:
           anyOf:
           - items:
-              additionalProperties: true
-              type: object
+              $ref: '#/components/schemas/NamedGateway'
             type: array
           - type: 'null'
           title: Gateways

@@ -5,7 +5,7 @@ This module provides REST endpoints for subject operations
 including listing, individual retrieval, counting, and summaries.
 """
 
-from typing import Dict, Any, List
+from typing import Any, Dict, List, cast
 import copy
 import re
 
@@ -351,7 +351,10 @@ async def list_subjects(
                 }
             },
             data=subjects_dicts,  # List of dicts without gateways
-            gateways=(get_gateways("subjects") or None) if subjects else None,
+            gateways=cast(
+                List[NamedGateway] | None,
+                (get_gateways("subjects") or None) if subjects else None,
+            ),
         )
         
         logger.info(

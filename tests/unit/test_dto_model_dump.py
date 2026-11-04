@@ -52,9 +52,18 @@ class TestModelDumpOverrides:
 
     def test_subject_response_model_dump_includes_gateways_when_set(self):
         """Test SubjectResponse.model_dump serializes gateways when provided."""
-        response = SubjectResponse(data=[], gateways=[{"name": "CCDI DCC model"}])
-        result = response.model_dump()
-        assert result["gateways"] == [{"name": "CCDI DCC model"}]
+        gateway = {
+            "name": "CCDI DCC model",
+            "kind": "Open",
+            "link": {
+                "kind": "Direct",
+                "url": "https://example.com/model",
+            },
+        }
+        response = SubjectResponse(data=[], gateways=[gateway])
+        result = response.model_dump(mode="json")
+        assert result["gateways"] == [gateway]
+        assert "status" not in result["gateways"][0]
 
     def test_file_response_model_dump_without_gateways(self):
         """Test FileResponse.model_dump when gateways is None."""

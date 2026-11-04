@@ -171,3 +171,39 @@ def test_single_subject_other_organization_is_invalid(client, monkeypatch):
     r = client.get("/api/v1/subject/OTHER-ORG/phs001/P1")
     assert r.status_code == 400
     assert "OTHER-ORG" not in r.text
+
+
+# ---------------------------------------------------------------------------
+# Diagnosis node order is stable (collect(DISTINCT d) has no ORDER BY)
+# ---------------------------------------------------------------------------
+from tests.unit.test_subject_diagnosis_category import _make_diag_node  # noqa: E402
+
+
+def _category_view(nodes):
+    record = _base_record(nodes)
+    record["sex"] = "F"
+    s = _make_repo()._record_to_subject(record).model_dump()
+    return s["metadata"]["associated_diagnosis_categories"], s["metadata"]["unharmonized"]
+
+
+def test_diagnosis_node_order_does_not_change_output():
+    a = _make_diag_node(diagnosis_category="Medulloblastoma", guid="guid-a")
+    b = _make_diag_node(diagnosis_category="Renal Tumors", guid="guid-b")
+    assert _category_view([a, b]) == _category_view([b, a])
+
+
+def test_lowest_guid_wins_harmonized_slot():
+    # Input order is reversed on purpose: guid-a must win regardless of collect() order.
+    renal = _make_diag_node(diagnosis_category="Renal Tumors", guid="guid-b")
+    medullo = _make_diag_node(diagnosis_category="Medulloblastoma", guid="guid-a")
+    harmonized, unharmonized = _category_view([renal, medullo])
+    assert harmonized == {"value": "Medulloblastoma"}
+    assert unharmonized["dcc_associated_diagnosis_category_1"]["value"] == "Renal Tumors"
+
+
+def test_nodes_without_guid_fall_back_to_text_order():
+    a = _make_diag_node(diagnosis_category="Renal Tumors")
+    b = _make_diag_node(diagnosis_category="Medulloblastoma")
+    assert _category_view([a, b]) == _category_view([b, a])
+    harmonized, _ = _category_view([a, b])
+    assert harmonized == {"value": "Medulloblastoma"}

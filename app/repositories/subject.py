@@ -2147,7 +2147,20 @@ WITH {carry},
         extracted_diagnoses: list = []
         category_tokens: list[str] = []
         if diagnosis_nodes_raw:
-            for node in diagnosis_nodes_raw:
+            # collect(DISTINCT d) has no ORDER BY, so Memgraph may return nodes in any order.
+            # Sort by the stable diagnosis guid (text fallbacks for ties) so the harmonized
+            # category, its ancestors link, and dcc_* numbering are repeatable across requests.
+            def _diagnosis_node_sort_key(node: Any) -> tuple[str, str, str]:
+                guid = _get_prop(node, "guid")
+                diag = _get_prop(node, "diagnosis")
+                cat = _get_prop(node, "diagnosis_category")
+                return (
+                    "" if guid is None else str(guid),
+                    "" if diag is None else str(diag),
+                    "" if cat is None else str(cat),
+                )
+
+            for node in sorted(diagnosis_nodes_raw, key=_diagnosis_node_sort_key):
                 if not associated_diagnoses_raw:
                     diag_val = _get_prop(node, "diagnosis")
                     if diag_val is not None:

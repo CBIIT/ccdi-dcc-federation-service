@@ -67,9 +67,13 @@ def _make_repo() -> SubjectRepository:
     return SubjectRepository(session, allowlist, settings)
 
 
-def _make_diag_node(diagnosis_category: str | None = None, diagnosis: str | None = None):
+def _make_diag_node(
+    diagnosis_category: str | None = None,
+    diagnosis: str | None = None,
+    guid: str | None = None,
+):
     node = MagicMock()
-    data = {"diagnosis_category": diagnosis_category, "diagnosis": diagnosis}
+    data = {"diagnosis_category": diagnosis_category, "diagnosis": diagnosis, "guid": guid}
     node.get = lambda key, default=None: data.get(key, default)
     node.__getitem__ = lambda self, key: data[key]
     return node

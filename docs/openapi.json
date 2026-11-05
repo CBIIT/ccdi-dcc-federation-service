@@ -2350,8 +2350,8 @@
         "tags": [
           "File"
         ],
-        "summary": "Gets files known by this server (methylation array and sequencing).",
-        "description": "Gets files known by this server.\n\nResults include files from **methylation_array_file** and **sequencing_file** graph node types, returned in a single merged `File` shape.\n\n### Pagination\n\nThis endpoint is paginated. Users may override the default pagination\nparameters by providing one or more of the pagination-related query\nparameters below.\n\n### Filtering\n\nAll harmonized (top-level) and unharmonized (nested under the\n`metadata.unharmonized` key) metadata fields are filterable. To achieve\nthis, you can provide the field name as a [`String`]. Filtering follows the\nfollowing rules:\n\n* For single-value metadata field, the file is included in the results if\nits value _exactly_ matches the query string. Matches are case-sensitive.\n* For multiple-value metadata fields, the file is included in the results\nif any of its values for the field _exactly_ match the query string (a\nlogical OR (`||`)). Matches are case-sensitive.\n* When the metadata field is `null` (in the case of singular or\nmultiple-valued metadata fields) or empty, the file is not included.\n* When multiple fields are provided as filters, a logical AND (`&&`) strings\ntogether the predicates. In other words, all filters must match for a\nfile to be returned. Note that this means that servers do not natively\nsupport logical OR (`||`) across multiple fields: that must be done by\ncalling this endpoint with each of your desired queries and performing a\nset union of those files out of band.\n\n### Ordering\n\nPaginated results are ordered by node type (**methylation_array_file** first, then\n**sequencing_file**), then by file id within each type. Further details are documented\nin the `responses::Files` schema.",
+        "summary": "Gets files known by this server (methylation array, sequencing, pathology, and generic).",
+        "description": "Gets files known by this server.\n\nResults include files from **methylation_array_file**, **sequencing_file**, **pathology_file**, and **generic_file** graph node types, returned in a single merged `File` shape.\n\n### Pagination\n\nThis endpoint is paginated. Users may override the default pagination\nparameters by providing one or more of the pagination-related query\nparameters below.\n\n### Filtering\n\nAll harmonized (top-level) and unharmonized (nested under the\n`metadata.unharmonized` key) metadata fields are filterable. To achieve\nthis, you can provide the field name as a [`String`]. Filtering follows the\nfollowing rules:\n\n* For single-value metadata field, the file is included in the results if\nits value _exactly_ matches the query string. Matches are case-sensitive.\n* For multiple-value metadata fields, the file is included in the results\nif any of its values for the field _exactly_ match the query string (a\nlogical OR (`||`)). Matches are case-sensitive.\n* When the metadata field is `null` (in the case of singular or\nmultiple-valued metadata fields) or empty, the file is not included.\n* When multiple fields are provided as filters, a logical AND (`&&`) strings\ntogether the predicates. In other words, all filters must match for a\nfile to be returned. Note that this means that servers do not natively\nsupport logical OR (`||`) across multiple fields: that must be done by\ncalling this endpoint with each of your desired queries and performing a\nset union of those files out of band.\n\n### Ordering\n\nPaginated results are ordered by node type (**methylation_array_file** first, then\n**sequencing_file**, then **pathology_file**, then **generic_file**), then by file id\nwithin each type. Further details are documented\nin the `responses::Files` schema.",
         "operationId": "file_index",
         "parameters": [
           {
@@ -2367,10 +2367,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Matches any file (methylation_array_file or sequencing_file) where the `file_type` field matches the string provided.",
+              "description": "Matches any file (methylation_array_file, sequencing_file, pathology_file, or generic_file) where the `file_type` field matches the string provided.",
               "title": "Type"
             },
-            "description": "Matches any file (methylation_array_file or sequencing_file) where the `file_type` field matches the string provided."
+            "description": "Matches any file (methylation_array_file, sequencing_file, pathology_file, or generic_file) where the `file_type` field matches the string provided."
           },
           {
             "name": "size",
@@ -2385,10 +2385,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Matches any file (methylation_array_file or sequencing_file) where the `file_size` field matches the string provided.",
+              "description": "Matches any file (methylation_array_file, sequencing_file, pathology_file, or generic_file) where the `file_size` field matches the string provided.",
               "title": "Size"
             },
-            "description": "Matches any file (methylation_array_file or sequencing_file) where the `file_size` field matches the string provided."
+            "description": "Matches any file (methylation_array_file, sequencing_file, pathology_file, or generic_file) where the `file_size` field matches the string provided."
           },
           {
             "name": "checksums",
@@ -2403,10 +2403,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Matches any file (methylation_array_file or sequencing_file) where the `md5sum` field matches the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the file should be included in the results.",
+              "description": "Matches any file (methylation_array_file, sequencing_file, pathology_file, or generic_file) where the `md5sum` field matches the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the file should be included in the results.",
               "title": "Checksums"
             },
-            "description": "Matches any file (methylation_array_file or sequencing_file) where the `md5sum` field matches the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the file should be included in the results."
+            "description": "Matches any file (methylation_array_file, sequencing_file, pathology_file, or generic_file) where the `md5sum` field matches the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the file should be included in the results."
           },
           {
             "name": "description",
@@ -2421,10 +2421,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Matches any file (methylation_array_file or sequencing_file) where the `file_description` field matches the string provided.\n\n**Note:** a file is returned if the value provided is a substring of the description.",
+              "description": "Matches any file (methylation_array_file, sequencing_file, pathology_file, or generic_file) where the `file_description` field matches the string provided.\n\n**Note:** a file is returned if the value provided is a substring of the description.",
               "title": "Description"
             },
-            "description": "Matches any file (methylation_array_file or sequencing_file) where the `file_description` field matches the string provided.\n\n**Note:** a file is returned if the value provided is a substring of the description."
+            "description": "Matches any file (methylation_array_file, sequencing_file, pathology_file, or generic_file) where the `file_description` field matches the string provided.\n\n**Note:** a file is returned if the value provided is a substring of the description."
           },
           {
             "name": "depositions",
@@ -2439,10 +2439,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Matches any file (methylation_array_file or sequencing_file) where any member of the `depositions` fields match the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the file should be included in the results.",
+              "description": "Matches any file (methylation_array_file, sequencing_file, pathology_file, or generic_file) where any member of the `depositions` fields match the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the file should be included in the results.",
               "title": "Depositions"
             },
-            "description": "Matches any file (methylation_array_file or sequencing_file) where any member of the `depositions` fields match the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the file should be included in the results."
+            "description": "Matches any file (methylation_array_file, sequencing_file, pathology_file, or generic_file) where any member of the `depositions` fields match the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the file should be included in the results."
           },
           {
             "name": "metadata.unharmonized.file_name",
@@ -2461,6 +2461,24 @@
               "title": "Metadata.Unharmonized.File Name"
             },
             "description": "All unharmonized fields should be filterable in the same manner as harmonized fields:\n\n* Filtering on a singular field should include the `File` in the results if the query exactly matches the value of that field for the `File` (case-sensitive).\n* Filtering on field with multiple values should include the `File` in the results if the query exactly matches any of the values of the field for that `File` (case-sensitive).\n* Unlike harmonized fields, unharmonized fields must be prefixed with `metadata.unharmonized`.\n\n**Examples:**\n* `?metadata.unharmonized.file_name=UTYE.fastq` - Filter files by file_name\n\n"
+          },
+          {
+            "name": "metadata.unharmonized.data_category",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exact, case-sensitive match on any one data category of the file. `||` means any of.\n\n**Example:** `?metadata.unharmonized.data_category=Sequencing||Clinical`",
+              "title": "Metadata.Unharmonized.Data Category"
+            },
+            "description": "Exact, case-sensitive match on any one data category of the file. `||` means any of.\n\n**Example:** `?metadata.unharmonized.data_category=Sequencing||Clinical`"
           },
           {
             "name": "page",
@@ -2538,7 +2556,10 @@
                           "value": 74880783442
                         },
                         "type": {
-                          "value": "Sequence Record Format"
+                          "value": "bigWig",
+                          "ancestors": [
+                            "unharmonized.dcc_file_type"
+                          ]
                         },
                         "checksums": {
                           "value": {
@@ -2555,10 +2576,61 @@
                           }
                         ],
                         "unharmonized": {
-                          "file_name": {
-                            "value": "sample1-WGS.fastq.gz"
+                          "dcc_file_name": {
+                            "value": "sample1.bw"
+                          },
+                          "dcc_file_access": {
+                            "value": "Controlled"
+                          },
+                          "dcc_file_type": {
+                            "value": "bw",
+                            "details": {
+                              "url": "https://clinicalcommons.ccdi.cancer.gov/exploreFiles?file_type=bw"
+                            },
+                            "comment": "Compressed genomic signal/coverage track"
+                          },
+                          "dcc_data_category": {
+                            "value": "Sequencing;Simple Nucleotide Variation",
+                            "details": {
+                              "url": "https://clinicalcommons.ccdi.cancer.gov/exploreFiles?data_category=Sequencing|Simple%20Nucleotide%20Variation"
+                            }
+                          },
+                          "dcc_dcf_indexd_guid": {
+                            "value": "dg.4DFC/8b0c08a8-"
+                          },
+                          "dcc_authz": {
+                            "value": "/programs/phs002431.c1"
+                          },
+                          "dcc_acl": {
+                            "value": "phs002431.c1"
+                          },
+                          "dcc_file_mapping_level": {
+                            "value": "Sample",
+                            "details": {
+                              "url": "https://clinicalcommons.ccdi.cancer.gov/exploreFiles?file_mapping_level=Sample"
+                            }
                           }
                         }
+                      }
+                    }
+                  ],
+                  "gateways": [
+                    {
+                      "name": "CCDI DCC model",
+                      "kind": "Open",
+                      "link": {
+                        "kind": "Approximate",
+                        "url": "https://github.com/CBIIT/ccdi-dcc-model",
+                        "instructions": "The CCDI DCC model is a graph database schema. model-desc/ccdi-dcc-model.yml describes the model nodes. model-desc/ccdi-dcc-model-props.yml describes the node properties."
+                      }
+                    },
+                    {
+                      "name": "Childhood Cancer Clinical Data Commons",
+                      "kind": "Open",
+                      "link": {
+                        "kind": "Approximate",
+                        "url": "https://clinicalcommons.ccdi.cancer.gov/exploreFiles",
+                        "instructions": "The Explore Participants view enables browsing and filtering by study, participant, and sample attributes. The Explore File focuses on file based attributes."
                       }
                     }
                   ]
@@ -2614,8 +2686,8 @@
         "tags": [
           "File"
         ],
-        "summary": "Groups files by metadata field and returns counts (methylation array and sequencing).",
-        "description": "Groups files by the specified metadata field and returns counts. Results include files from **methylation_array_file** and **sequencing_file** graph node types, returned in a single merged `File` shape. Only 'type' and 'depositions' are supported.",
+        "summary": "Groups files by metadata field and returns counts (methylation array, sequencing, pathology, and generic).",
+        "description": "Groups files by the specified metadata field and returns counts. Results include files from **methylation_array_file**, **sequencing_file**, **pathology_file**, and **generic_file** graph node types, returned in a single merged `File` shape. Only 'type' and 'depositions' are supported.",
         "operationId": "files_by_count",
         "parameters": [
           {
@@ -2701,8 +2773,8 @@
         "tags": [
           "File"
         ],
-        "summary": "Gets a file by identifier (methylation array or sequencing).",
-        "description": "Gets the file matching the provided identifier (if it exists). Results include files from **methylation_array_file** and **sequencing_file** graph node types, returned in a single merged `File` shape. Organization must be 'CCDI-DCC'. Namespace is the study_id value from the database. Name is the file id field value from the database.",
+        "summary": "Gets a file by identifier (methylation array, sequencing, pathology, or generic).",
+        "description": "Gets the file matching the provided identifier (if it exists). Results include files from **methylation_array_file**, **sequencing_file**, **pathology_file**, and **generic_file** graph node types, returned in a single merged `File` shape. Organization must be 'CCDI-DCC'. Namespace is the study_id value from the database. Name is the file id field value from the database.",
         "operationId": "file_show",
         "parameters": [
           {
@@ -2790,7 +2862,10 @@
                       }
                     ],
                     "type": {
-                      "value": "fastq"
+                      "value": "bigWig",
+                      "ancestors": [
+                        "unharmonized.dcc_file_type"
+                      ]
                     },
                     "size": {
                       "value": 12340
@@ -2804,8 +2879,15 @@
                       "value": "WGS FASTQ Files R2"
                     },
                     "unharmonized": {
-                      "file_name": {
-                        "value": "UTYE.fastq"
+                      "dcc_file_name": {
+                        "value": "sample1.bw"
+                      },
+                      "dcc_file_type": {
+                        "value": "bw",
+                        "details": {
+                          "url": "https://clinicalcommons.ccdi.cancer.gov/exploreFiles?file_type=bw"
+                        },
+                        "comment": "Compressed genomic signal/coverage track"
                       }
                     }
                   }
@@ -2861,8 +2943,8 @@
         "tags": [
           "File"
         ],
-        "summary": "Reports summary for files known by this server (methylation array and sequencing).",
-        "description": "Reports summary information for files known by this server. Results include files from **methylation_array_file** and **sequencing_file** graph node types, returned in a single merged `File` shape.",
+        "summary": "Reports summary for files known by this server (methylation array, sequencing, pathology, and generic).",
+        "description": "Reports summary information for files known by this server. Results include files from **methylation_array_file**, **sequencing_file**, **pathology_file**, and **generic_file** graph node types, returned in a single merged `File` shape.",
         "operationId": "file_summary",
         "responses": {
           "200": {
@@ -4836,7 +4918,7 @@
     },
     {
       "name": "File",
-      "description": "Files within the CCDI-DCC ecosystem (methylation array and sequencing files)."
+      "description": "Files within the CCDI-DCC ecosystem (methylation array, sequencing, pathology, and generic files)."
     },
     {
       "name": "Metadata",

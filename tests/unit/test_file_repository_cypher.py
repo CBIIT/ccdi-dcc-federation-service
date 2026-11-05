@@ -866,3 +866,68 @@ class TestFileRepositoryHelpers:
         repo, _ = make_repo()
         assert repo._map_file_type_to_enum("   ") is None
         assert repo._map_file_type_to_enum(None) is None
+
+
+def _category_predicate(cypher: str) -> str:
+    start = cypher.index("ANY(dc IN sf.data_category")
+    return cypher[start : cypher.index(")", start) + 1]
+
+
+@pytest.mark.unit
+class TestDataCategoryFilter:
+    @pytest.mark.asyncio
+    async def test_element_match_is_parameterized(self):
+        repo, session = make_repo()
+        session.run = AsyncMock(return_value=_empty_async_result())
+        await repo.get_files(
+            {"metadata.unharmonized.data_category": "Clinical"},
+            offset=0,
+            limit=10,
+        )
+        cypher = session.run.call_args[0][0]
+        params = session.run.call_args[0][1]
+        assert "ANY(dc IN sf.data_category WHERE dc IN $param_1)" in cypher
+        assert params["param_1"] == ["Clinical"]
+        assert "Clinical" not in cypher
+        # The predicate stays on the file, ahead of the study traversal.
+        assert cypher.index("ANY(dc IN sf.data_category") < cypher.index("OPTIONAL MATCH")
+
+    @pytest.mark.asyncio
+    async def test_or_splits_on_double_pipe(self):
+        repo, session = make_repo()
+        session.run = AsyncMock(return_value=_empty_async_result())
+        await repo.get_files(
+            {"metadata.unharmonized.data_category": "Sequencing||Clinical"},
+            offset=0,
+            limit=10,
+        )
+        params = session.run.call_args[0][1]
+        assert params["param_1"] == ["Sequencing", "Clinical"]
+
+    @pytest.mark.asyncio
+    async def test_empty_or_adds_no_condition(self):
+        repo, session = make_repo()
+        session.run = AsyncMock(return_value=_empty_async_result())
+        await repo.get_files(
+            {"metadata.unharmonized.data_category": "||"},
+            offset=0,
+            limit=10,
+        )
+        cypher = session.run.call_args[0][0]
+        assert "data_category" not in cypher
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "filters",
+        [{}, {"depositions": "phs002431"}, {"file_type": "BAM"}],
+    )
+    async def test_list_and_count_use_the_same_predicate(self, filters):
+        listed, session = make_repo()
+        session.run = AsyncMock(return_value=_empty_async_result())
+        combined = {**filters, "metadata.unharmonized.data_category": "Clinical"}
+        await listed.get_files(combined, offset=0, limit=10)
+        list_cypher = session.run.call_args[0][0]
+
+        counted, _ = make_repo()
+        count_cypher, _ = await counted._build_count_query(combined)
+        assert _category_predicate(list_cypher) == _category_predicate(count_cypher)

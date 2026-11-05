@@ -1,7 +1,7 @@
 """
 File service for the CCDI Federation Service.
 
-This module provides business logic for sequencing file operations,
+This module provides business logic for file operations,
 including caching, validation, and coordination between
 repositories and API endpoints.
 """

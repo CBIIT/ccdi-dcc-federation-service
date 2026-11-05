@@ -29,6 +29,16 @@ def test_unknown_entity_returns_empty():
     assert get_gateways("nope") == []
 
 
+def test_file_gateways_loaded_in_order():
+    gws = get_gateways("files")
+    assert [g["name"] for g in gws] == [
+        "CCDI DCC model",
+        "Childhood Cancer Clinical Data Commons",
+    ]
+    assert gws[1]["link"]["url"] == "https://clinicalcommons.ccdi.cancer.gov/exploreFiles"
+    assert list(gws[0].keys()) == ["name", "kind", "link"]
+
+
 def test_malformed_gateways_config_top_level_list_returns_empty(monkeypatch, caplog):
     monkeypatch.setattr(
         "app.core.gateways._load_gateways_config",

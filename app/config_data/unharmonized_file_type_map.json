@@ -1,0 +1,128 @@
+{
+  "bam_index": {
+    "dcc_file_type": {
+      "value": "bam_index",
+      "comment": null
+    }
+  },
+  "bcf": {
+    "dcc_file_type": {
+      "value": "bcf",
+      "comment": "Flow cytometry data"
+    }
+  },
+  "bif": {
+    "dcc_file_type": {
+      "value": "bif",
+      "comment": "Uncompressed binary image data"
+    }
+  },
+  "bw": {
+    "dcc_file_type": {
+      "value": "bw",
+      "comment": "Compressed genomic signal/coverage track"
+    }
+  },
+  "cnn": {
+    "dcc_file_type": {
+      "value": "cnn",
+      "comment": "Genomics copy number normalized data"
+    }
+  },
+  "cnr": {
+    "dcc_file_type": {
+      "value": "cnr",
+      "comment": "Genomics copy number ratio data"
+    }
+  },
+  "csi": {
+    "dcc_file_type": {
+      "value": "csi",
+      "comment": "BAM file index format"
+    }
+  },
+  "h5": {
+    "dcc_file_type": {
+      "value": "h5",
+      "comment": "Hierarchical scientific data storage"
+    }
+  },
+  "mrxs": {
+    "dcc_file_type": {
+      "value": "mrxs",
+      "comment": "Zeiss microscope whole-slide image"
+    }
+  },
+  "mzid": {
+    "dcc_file_type": {
+      "value": "mzid",
+      "comment": "Mass spectrometry identification data"
+    }
+  },
+  "ndpi": {
+    "dcc_file_type": {
+      "value": "ndpi",
+      "comment": "Nikon whole-slide microscopy image"
+    }
+  },
+  "nifti": {
+    "dcc_file_type": {
+      "value": "nifti",
+      "comment": "Neuroscience and neuroradiology imaging data"
+    }
+  },
+  "psm": {
+    "dcc_file_type": {
+      "value": "psm",
+      "comment": "Peptide spectrum match results (tab-delimited)"
+    }
+  },
+  "rda": {
+    "dcc_file_type": {
+      "value": "rda",
+      "comment": "R data archive (serialized R objects/workspace)"
+    }
+  },
+  "rdata": {
+    "dcc_file_type": {
+      "value": "rdata",
+      "comment": "R data file (serialized R objects/workspace)"
+    }
+  },
+  "sas7bdat": {
+    "dcc_file_type": {
+      "value": "sas7bdat",
+      "comment": "SAS statistical software binary dataset"
+    }
+  },
+  "scn": {
+    "dcc_file_type": {
+      "value": "scn",
+      "comment": "Digital microscopy slide image"
+    }
+  },
+  "selfsm": {
+    "dcc_file_type": {
+      "value": "selfsm",
+      "comment": "Self-signed email/encrypted message text"
+    }
+  },
+  "tif": {
+    "dcc_file_type": {
+      "value": "tif",
+      "comment": "Tagged Image File Format"
+    }
+  },
+  "vms": {
+    "dcc_file_type": {
+      "value": "vms",
+      "comment": "Virtual microscopy whole-slide image"
+    }
+  },
+  "vmu": {
+    "dcc_file_type": {
+      "value": "vmu",
+      "comment": "Generic binary data"
+    }
+  }
+}

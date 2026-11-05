@@ -1,15 +1,16 @@
 """
 File API routes for the CCDI Federation Service.
 
-This module provides REST endpoints for file operations (methylation_array_file
-and sequencing_file graph node types), including listing, individual retrieval,
-counting, and summaries.
+This module provides REST endpoints for file operations (methylation_array_file,
+sequencing_file, pathology_file, and generic_file graph node types), including
+listing, individual retrieval, counting, and summaries.
 """
 
 # Shared OpenAPI note for all /file routes (shown on /docs).
 _FILE_TYPES_SCOPE = (
-    "Results include files from **methylation_array_file** and **sequencing_file** "
-    "graph node types, returned in a single merged `File` shape."
+    "Results include files from **methylation_array_file**, **sequencing_file**, "
+    "**pathology_file**, and **generic_file** graph node types, returned in a "
+    "single merged `File` shape."
 )
 
 from typing import Dict, Any
@@ -26,6 +27,7 @@ from app.api.v1.deps import (
     check_rate_limit
 )
 from app.core.config import Settings
+from app.core.gateways import get_gateways
 from app.core.pagination import PaginationParams, PaginationInfo, build_link_header
 from app.core.cache import get_cache_service
 from app.core.logging import get_logger
@@ -52,7 +54,7 @@ router = APIRouter(prefix="/file", tags=["File"])
 @router.get(
     "",
     response_model=None,  # Returning custom dict structure
-    summary="Gets files known by this server (methylation array and sequencing).",
+    summary="Gets files known by this server (methylation array, sequencing, pathology, and generic).",
     description=f"""Gets files known by this server.
 
 {_FILE_TYPES_SCOPE}
@@ -87,7 +89,8 @@ set union of those files out of band.
 ### Ordering
 
 Paginated results are ordered by node type (**methylation_array_file** first, then
-**sequencing_file**), then by file id within each type. Further details are documented
+**sequencing_file**, then **pathology_file**, then **generic_file**), then by file id
+within each type. Further details are documented
 in the `responses::Files` schema.""",
     operation_id="file_index",
     responses={
@@ -122,7 +125,10 @@ in the `responses::Files` schema.""",
                                 ],
                                 "metadata": {
                                     "size": {"value": 74880783442},
-                                    "type": {"value": "Sequence Record Format"},
+                                    "type": {
+                                        "value": "bigWig",
+                                        "ancestors": ["unharmonized.dcc_file_type"],
+                                    },
                                     "checksums": {
                                         "value": {
                                             "md5": "2f6a4ef817eb907bdbeee8c35c40ca09"
@@ -136,10 +142,53 @@ in the `responses::Files` schema.""",
                                         }
                                     ],
                                     "unharmonized": {
-                                        "file_name": {"value": "sample1-WGS.fastq.gz"}
+                                        "dcc_file_name": {"value": "sample1.bw"},
+                                        "dcc_file_access": {"value": "Controlled"},
+                                        "dcc_file_type": {
+                                            "value": "bw",
+                                            "details": {
+                                                "url": "https://clinicalcommons.ccdi.cancer.gov/exploreFiles?file_type=bw"
+                                            },
+                                            "comment": "Compressed genomic signal/coverage track",
+                                        },
+                                        "dcc_data_category": {
+                                            "value": "Sequencing;Simple Nucleotide Variation",
+                                            "details": {
+                                                "url": "https://clinicalcommons.ccdi.cancer.gov/exploreFiles?data_category=Sequencing|Simple%20Nucleotide%20Variation"
+                                            },
+                                        },
+                                        "dcc_dcf_indexd_guid": {"value": "dg.4DFC/8b0c08a8-"},
+                                        "dcc_authz": {"value": "/programs/phs002431.c1"},
+                                        "dcc_acl": {"value": "phs002431.c1"},
+                                        "dcc_file_mapping_level": {
+                                            "value": "Sample",
+                                            "details": {
+                                                "url": "https://clinicalcommons.ccdi.cancer.gov/exploreFiles?file_mapping_level=Sample"
+                                            },
+                                        },
                                     }
                                 }
                             }
+                        ],
+                        "gateways": [
+                            {
+                                "name": "CCDI DCC model",
+                                "kind": "Open",
+                                "link": {
+                                    "kind": "Approximate",
+                                    "url": "https://github.com/CBIIT/ccdi-dcc-model",
+                                    "instructions": "The CCDI DCC model is a graph database schema. model-desc/ccdi-dcc-model.yml describes the model nodes. model-desc/ccdi-dcc-model-props.yml describes the node properties.",
+                                },
+                            },
+                            {
+                                "name": "Childhood Cancer Clinical Data Commons",
+                                "kind": "Open",
+                                "link": {
+                                    "kind": "Approximate",
+                                    "url": "https://clinicalcommons.ccdi.cancer.gov/exploreFiles",
+                                    "instructions": "The Explore Participants view enables browsing and filtering by study, participant, and sample attributes. The Explore File focuses on file based attributes.",
+                                },
+                            },
                         ]
                     }
                 }
@@ -246,6 +295,9 @@ async def list_files(
             },
             "data": files_dicts
         }
+        gws = get_gateways("files") if files else []
+        if gws:
+            result["gateways"] = gws
         
         logger.info(
             "List sequencing files response",
@@ -328,7 +380,7 @@ async def list_files(
 @router.get(
     "/by/{field}/count",
     response_model=CountResponse,
-    summary="Groups files by metadata field and returns counts (methylation array and sequencing).",
+    summary="Groups files by metadata field and returns counts (methylation array, sequencing, pathology, and generic).",
     description=(
         f"Groups files by the specified metadata field and returns counts. "
         f"{_FILE_TYPES_SCOPE} Only 'type' and 'depositions' are supported."
@@ -485,7 +537,7 @@ async def count_files_by_field(
 @router.get(
     "/{organization}/{namespace}/{name}",
     response_model=File,
-    summary="Gets a file by identifier (methylation array or sequencing).",
+    summary="Gets a file by identifier (methylation array, sequencing, pathology, or generic).",
     description=(
         f"Gets the file matching the provided identifier (if it exists). {_FILE_TYPES_SCOPE} "
         "Organization must be 'CCDI-DCC'. Namespace is the study_id value from the database. "
@@ -522,7 +574,10 @@ async def count_files_by_field(
                                     "value": "phs002430"
                                 }
                             ],
-                            "type": {"value": "fastq"},
+                            "type": {
+                                "value": "bigWig",
+                                "ancestors": ["unharmonized.dcc_file_type"],
+                            },
                             "size": {"value": 12340},
                             "checksums": {
                                 "value": {
@@ -531,7 +586,14 @@ async def count_files_by_field(
                             },
                             "description": {"value": "WGS FASTQ Files R2"},
                             "unharmonized": {
-                                "file_name": {"value": "UTYE.fastq"}
+                                "dcc_file_name": {"value": "sample1.bw"},
+                                "dcc_file_type": {
+                                    "value": "bw",
+                                    "details": {
+                                        "url": "https://clinicalcommons.ccdi.cancer.gov/exploreFiles?file_type=bw"
+                                    },
+                                    "comment": "Compressed genomic signal/coverage track",
+                                },
                             }
                         }
                     }
@@ -688,7 +750,7 @@ async def get_file(
 @router.get(
     "/summary",
     response_model=SummaryResponse,
-    summary="Reports summary for files known by this server (methylation array and sequencing).",
+    summary="Reports summary for files known by this server (methylation array, sequencing, pathology, and generic).",
     description=(
         f"Reports summary information for files known by this server. {_FILE_TYPES_SCOPE}"
     ),

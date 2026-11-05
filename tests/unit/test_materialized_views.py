@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from datetime import datetime
 from neo4j import AsyncSession
 
+from app.config_data.file_node_registry import FILE_NODE_REGISTRY
 from app.services.materialized_views import MaterializedViewService
 
 
@@ -180,8 +181,9 @@ class TestMaterializedViewService:
         result = await service.refresh_file_count_by_type()
 
         assert result["type"] == "by_type"
-        assert result["total"] == 2000   # 1000 × 2 registry entries
-        assert result["missing"] == 100  # 50 × 2 registry entries
+        n = len(FILE_NODE_REGISTRY)
+        assert result["total"] == 1000 * n
+        assert result["missing"] == 50 * n
         assert result["values_count"] == 2
         assert "last_updated" in result
         # Verify delete, create stats, and create counts were called
@@ -215,8 +217,9 @@ class TestMaterializedViewService:
         result = await service.refresh_file_count_by_depositions()
 
         assert result["type"] == "by_depositions"
-        assert result["total"] == 4000   # 2000 × 2 registry entries
-        assert result["missing"] == 200  # 100 × 2 registry entries
+        n = len(FILE_NODE_REGISTRY)
+        assert result["total"] == 2000 * n
+        assert result["missing"] == 100 * n
         assert result["values_count"] == 1
         assert "last_updated" in result
 
@@ -296,8 +299,7 @@ class TestMaterializedViewService:
         deps_result = {"total": 2000, "missing": 100, "values": [{"value": "phs002431", "count": 1000}]}
         mock_repo.count_files_by_field = AsyncMock(side_effect=[
             Exception("Database error"),  # by_type, first registry entry → whole by_type fails
-            deps_result,                  # by_depositions, first registry entry
-            deps_result,                  # by_depositions, second registry entry
+            *([deps_result] * len(FILE_NODE_REGISTRY)),
         ])
         mock_file_repo_class.return_value = mock_repo
         

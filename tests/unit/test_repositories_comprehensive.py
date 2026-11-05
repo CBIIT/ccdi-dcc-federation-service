@@ -562,7 +562,7 @@ class TestFileRepositoryInternal:
         assert file_obj.samples[0]["name"] == "S1"
         assert file_obj.metadata["type"]["value"] == "BAM"
         assert file_obj.metadata["checksums"]["value"]["md5"] == "abc123"
-        assert file_obj.metadata["unharmonized"]["file_name"]["value"] == "file1.bam"
+        assert file_obj.metadata["unharmonized"]["dcc_file_name"]["value"] == "file1.bam"
         assert file_obj.metadata["depositions"][0]["value"] == "phs002431"
 
     async def test_count_files_by_depositions(self, repository, mock_session):

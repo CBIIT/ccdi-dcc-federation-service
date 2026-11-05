@@ -41,7 +41,7 @@ class _DummySession:
 
 
 def _client() -> TestClient:
-    """App with stubbed session + real FieldAllowlist (file_name only)."""
+    """App with stubbed session + real FieldAllowlist (file_name and data_category)."""
     app = FastAPI()
     setup_exception_handlers(app)
     setup_routers(app)
@@ -71,7 +71,7 @@ def test_hostile_unharmonized_field_returns_400_not_empty_200():
 
 
 def test_wellformed_unallowlisted_unharmonized_field_returns_400():
-    """A well-formed but unallowlisted unharmonized field returns 400 (file allows only file_name)."""
+    """A well-formed but unallowlisted unharmonized field returns 400."""
     client = _client()
     resp = client.get(FILE_PATH, params={"metadata.unharmonized.batch_id": "x"})
 
@@ -94,3 +94,17 @@ def test_allowlisted_file_name_filter_is_accepted():
 
     assert resp.status_code != 400, \
         f"Allowlisted file_name filter should not be rejected, got 400: {resp.text}"
+
+
+def test_allowlisted_data_category_filter_is_accepted():
+    client = _client()
+    resp = client.get(
+        FILE_PATH, params={"metadata.unharmonized.data_category": "Clinical"}
+    )
+    assert resp.status_code != 400, resp.text
+
+
+def test_acl_filter_is_rejected():
+    client = _client()
+    resp = client.get(FILE_PATH, params={"metadata.unharmonized.acl": "x"})
+    assert resp.status_code == 400

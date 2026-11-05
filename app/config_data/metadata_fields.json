@@ -289,12 +289,47 @@
       },
       {
         "harmonized": false,
-        "path": "unharmonized.file_name",
+        "path": "unharmonized.dcc_file_name",
         "wiki_url": null,
         "standard": {
           "name": "caDSR CDE 11284037 v3.0",
           "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=11284037%20and%20ver_nr=3"
         }
+      },
+      {
+        "harmonized": false,
+        "path": "unharmonized.dcc_file_access",
+        "wiki_url": null
+      },
+      {
+        "harmonized": false,
+        "path": "unharmonized.dcc_file_type",
+        "wiki_url": null
+      },
+      {
+        "harmonized": false,
+        "path": "unharmonized.dcc_data_category",
+        "wiki_url": null
+      },
+      {
+        "harmonized": false,
+        "path": "unharmonized.dcc_dcf_indexd_guid",
+        "wiki_url": null
+      },
+      {
+        "harmonized": false,
+        "path": "unharmonized.dcc_authz",
+        "wiki_url": null
+      },
+      {
+        "harmonized": false,
+        "path": "unharmonized.dcc_acl",
+        "wiki_url": null
+      },
+      {
+        "harmonized": false,
+        "path": "unharmonized.dcc_file_mapping_level",
+        "wiki_url": null
       }
     ]
   }

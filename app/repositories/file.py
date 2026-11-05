@@ -1,7 +1,8 @@
 """
 File repository for the CCDI Federation Service.
 
-This module provides data access operations for sequencing files
+This module provides data access operations for file nodes
+(methylation_array_file, sequencing_file, pathology_file, generic_file)
 using Cypher queries to Memgraph.
 """
 
@@ -10,6 +11,7 @@ import re
 from typing import List, Dict, Any, Optional, Tuple
 from neo4j import AsyncSession
 
+from app.core.file_unharmonized import build_file_unharmonized
 from app.core.logging import get_logger
 from app.db.memgraph import run_count_query_with_retry
 from app.core.constants import FileType
@@ -59,8 +61,8 @@ class FileRepository:
 
         Raises InvalidParametersError for a malformed name (defense-in-depth against
         Cypher injection) and UnsupportedFieldError for a well-formed but non-allowlisted
-        name. `file` declares no unharmonized fields in metadata_fields.json, so this
-        default-denies every unharmonized filter on the file endpoints.
+        name. Allowed names are the file filter constant (file_name, data_category),
+        not every path listed under /metadata/fields/file.
         """
         if not _UNHARMONIZED_FIELD_NAME_RE.match(db_field_name):
             logger.warning("Malformed unharmonized filter field name rejected", entity="file")
@@ -68,6 +70,32 @@ class FileRepository:
         if not self.allowlist.is_unharmonized_field_allowed(EntityType.FILE, db_field_name):
             logger.warning("Unsupported unharmonized filter field rejected", entity="file")
             raise UnsupportedFieldError(original_key, "file")
+
+    def _unharmonized_filter_condition(
+        self,
+        db_field_name: str,
+        value: Any,
+        param_name: str,
+        params: dict[str, Any],
+    ) -> Optional[str]:
+        """Cypher predicate for one allowlisted unharmonized filter.
+
+        data_category matches each list element exactly. The local name ``dc`` must
+        not contain ``st.``: get_files splits conditions on that substring.
+        An empty ``||`` value adds no condition. Other fields keep equality / IN.
+        """
+        if db_field_name == "data_category":
+            items = value if isinstance(value, list) else str(value).split("||")
+            selected = [str(item).strip() for item in items if str(item).strip()]
+            if not selected:
+                return None
+            params[param_name] = selected
+            return f"ANY(dc IN sf.data_category WHERE dc IN ${param_name})"
+        if isinstance(value, list):
+            params[param_name] = value
+            return f"sf.{db_field_name} IN ${param_name}"
+        params[param_name] = value
+        return f"sf.{db_field_name} = ${param_name}"
 
     async def get_files(
         self,
@@ -141,19 +169,16 @@ class FileRepository:
         for field, value in filters_copy.items():
             # Handle unharmonized fields (e.g., metadata.unharmonized.file_name)
             if field.startswith("metadata.unharmonized."):
-                # Extract the actual database field name
-                # e.g., "metadata.unharmonized.file_name" -> "file_name"
                 db_field_name = field.replace("metadata.unharmonized.", "")
                 self._validate_unharmonized_file_field(db_field_name, field)
 
                 param_counter += 1
                 param_name = f"param_{param_counter}"
-
-                if isinstance(value, list):
-                    where_conditions.append(f"sf.{db_field_name} IN ${param_name}")
-                else:
-                    where_conditions.append(f"sf.{db_field_name} = ${param_name}")
-                params[param_name] = value
+                condition = self._unharmonized_filter_condition(
+                    db_field_name, value, param_name, params
+                )
+                if condition is not None:
+                    where_conditions.append(condition)
                 continue
             
             param_counter += 1
@@ -628,18 +653,16 @@ class FileRepository:
         for filter_field, value in filters_copy.items():
             # Handle unharmonized fields (e.g., metadata.unharmonized.file_name)
             if filter_field.startswith("metadata.unharmonized."):
-                # Extract the actual database field name
                 db_field_name = filter_field.replace("metadata.unharmonized.", "")
                 self._validate_unharmonized_file_field(db_field_name, filter_field)
 
                 param_counter += 1
                 param_name = f"param_{param_counter}"
-
-                if isinstance(value, list):
-                    base_where_conditions.append(f"sf.{db_field_name} IN ${param_name}")
-                else:
-                    base_where_conditions.append(f"sf.{db_field_name} = ${param_name}")
-                params[param_name] = value
+                condition = self._unharmonized_filter_condition(
+                    db_field_name, value, param_name, params
+                )
+                if condition is not None:
+                    base_where_conditions.append(condition)
                 continue
 
             param_counter += 1
@@ -801,18 +824,16 @@ class FileRepository:
         for filter_field, value in filters_copy.items():
             # Handle unharmonized fields (e.g., metadata.unharmonized.file_name)
             if filter_field.startswith("metadata.unharmonized."):
-                # Extract the actual database field name
                 db_field_name = filter_field.replace("metadata.unharmonized.", "")
                 self._validate_unharmonized_file_field(db_field_name, filter_field)
 
                 param_counter += 1
                 param_name = f"param_{param_counter}"
-
-                if isinstance(value, list):
-                    base_where_conditions.append(f"sf.{db_field_name} IN ${param_name}")
-                else:
-                    base_where_conditions.append(f"sf.{db_field_name} = ${param_name}")
-                params[param_name] = value
+                condition = self._unharmonized_filter_condition(
+                    db_field_name, value, param_name, params
+                )
+                if condition is not None:
+                    base_where_conditions.append(condition)
                 continue
 
             param_counter += 1
@@ -1022,19 +1043,16 @@ class FileRepository:
         for field, value in filters_copy.items():
             # Handle unharmonized fields (e.g., metadata.unharmonized.file_name)
             if field.startswith("metadata.unharmonized."):
-                # Extract the actual database field name
-                # e.g., "metadata.unharmonized.file_name" -> "file_name"
                 db_field_name = field.replace("metadata.unharmonized.", "")
                 self._validate_unharmonized_file_field(db_field_name, field)
 
                 param_counter += 1
                 param_name = f"param_{param_counter}"
-
-                if isinstance(value, list):
-                    where_conditions.append(f"sf.{db_field_name} IN ${param_name}")
-                else:
-                    where_conditions.append(f"sf.{db_field_name} = ${param_name}")
-                params[param_name] = value
+                condition = self._unharmonized_filter_condition(
+                    db_field_name, value, param_name, params
+                )
+                if condition is not None:
+                    where_conditions.append(condition)
                 continue
 
             param_counter += 1
@@ -1353,21 +1371,24 @@ class FileRepository:
         raw_file_type = sf.get("file_type") or sf.get("type")
         mapped_file_type = self._map_file_type_to_enum(raw_file_type)
         
-        # Build unharmonized section with file_name
-        unharmonized = {}
-        file_name_value = sf.get("file_name")
-        if file_name_value is not None:
-            unharmonized["file_name"] = format_metadata_value(file_name_value)
-
-        # Merge any per-type additional unharmonized fields declared in config
+        # Shared dcc_ entries, then any per-type extras. Extras stay last.
+        unharmonized = build_file_unharmonized(sf)
         for api_field, db_property in self.config.unharmonized_fields.items():
             value = sf.get(db_property)
             if value is not None:
                 unharmonized[api_field] = format_metadata_value(value)
-        
+
+        if mapped_file_type is not None and "dcc_file_type" in unharmonized:
+            type_field = {
+                "value": mapped_file_type,
+                "ancestors": ["unharmonized.dcc_file_type"],
+            }
+        else:
+            type_field = format_metadata_value(mapped_file_type)
+
         metadata = {
             "size": format_metadata_value(sf.get("file_size") or sf.get("size")),
-            "type": format_metadata_value(mapped_file_type),  # Use mapped enum value or None
+            "type": type_field,
             "checksums": format_checksums(sf.get("md5sum")),
             "description": format_metadata_value(sf.get("file_description")),
             "depositions": depositions,

@@ -76,6 +76,11 @@ COMMON_UNHARMONIZED_PATTERNS: Set[str] = {
 }
 
 
+# File unharmonized filters are not derived from metadata_fields.json.
+# Listing a dcc_ path there must not make it a filter.
+FILE_UNHARMONIZED_FILTER_FIELDS: frozenset[str] = frozenset({"file_name", "data_category"})
+
+
 class FieldAllowlist:
     """Manages allowed fields for database operations."""
     
@@ -197,20 +202,21 @@ class FieldAllowlist:
         """
         Load allowed unharmonized fields from the metadata field config.
 
-        Source of truth: app/config_data/metadata_fields.json. A field is an
-        allowed unharmonized filter for an endpoint iff it appears there with a
-        path of the form "unharmonized.<name>". Endpoints that declare none
-        (currently `file`) default-deny all unharmonized filters.
+        Source of truth for subject and sample: app/config_data/metadata_fields.json.
+        A field is an allowed unharmonized filter iff it appears there with a
+        path of the form "unharmonized.<name>". File filters are the constant
+        FILE_UNHARMONIZED_FILTER_FIELDS, not the metadata listing.
         """
         import json
         from pathlib import Path
 
         config_path = Path(__file__).resolve().parents[1] / "config_data" / "metadata_fields.json"
-        # metadata_fields.json endpoint key -> EntityType
+        # metadata_fields.json endpoint key -> EntityType.
+        # FILE is not loaded from this file: listing a dcc_ path must not make it
+        # filterable. The file filter set is the constant below.
         key_to_entity = {
             "subjects": EntityType.SUBJECT,
             "samples": EntityType.SAMPLE,
-            "file": EntityType.FILE,
         }
         try:
             with config_path.open("r", encoding="utf-8") as f:
@@ -231,6 +237,7 @@ class FieldAllowlist:
             self._loaded = True
             return
 
+        self._unharmonized_fields[EntityType.FILE] = set(FILE_UNHARMONIZED_FILTER_FIELDS)
         self._loaded = True
         logger.info("Loaded field allowlist from metadata field config")
     

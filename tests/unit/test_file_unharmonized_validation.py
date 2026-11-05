@@ -21,16 +21,22 @@ def test_injection_payload_field_name_is_rejected_as_invalid_parameters():
 
 def test_wellformed_but_not_allowlisted_field_is_unsupported():
     repo = _repo()
-    # syntactically valid name, but not in the file endpoint's unharmonized allowlist
-    # (file allows only `file_name`)
+    # syntactically valid name, but not in the file filter set (file_name, data_category)
     with pytest.raises(UnsupportedFieldError):
         repo._validate_unharmonized_file_field("batch_id", "metadata.unharmonized.batch_id")
 
 
 def test_allowlisted_unharmonized_file_field_passes():
     repo = _repo()
-    # file_name is the one unharmonized filter the file endpoint advertises
     repo._validate_unharmonized_file_field("file_name", "metadata.unharmonized.file_name")
+    repo._validate_unharmonized_file_field("data_category", "metadata.unharmonized.data_category")
+
+
+def test_dcc_response_keys_are_not_filters():
+    repo = _repo()
+    for name in ("dcc_file_name", "file_access"):
+        with pytest.raises(UnsupportedFieldError):
+            repo._validate_unharmonized_file_field(name, "metadata.unharmonized." + name)
 
 
 def test_error_message_does_not_leak_the_field_name():

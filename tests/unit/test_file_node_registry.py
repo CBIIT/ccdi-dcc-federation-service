@@ -27,8 +27,8 @@ class TestFileNodeRegistry:
         with pytest.raises(TypeError):
             cfg.unharmonized_fields["injected"] = "value"
 
-    def test_registry_has_two_entries(self):
-        assert len(FILE_NODE_REGISTRY) == 2
+    def test_registry_has_four_entries(self):
+        assert len(FILE_NODE_REGISTRY) == 4
 
     def test_registry_methylation_first(self):
         assert FILE_NODE_REGISTRY[0].node_label == "methylation_array_file"
@@ -38,8 +38,15 @@ class TestFileNodeRegistry:
         assert FILE_NODE_REGISTRY[1].node_label == "sequencing_file"
         assert FILE_NODE_REGISTRY[1].rel_name == "of_sequencing_file"
 
+    def test_registry_pathology_third(self):
+        assert FILE_NODE_REGISTRY[2].node_label == "pathology_file"
+        assert FILE_NODE_REGISTRY[2].rel_name == "of_pathology_file"
+
+    def test_registry_generic_fourth(self):
+        assert FILE_NODE_REGISTRY[3].node_label == "generic_file"
+        assert FILE_NODE_REGISTRY[3].rel_name == "of_generic_file"
+
     def test_registry_all_have_empty_unharmonized_fields(self):
-        # Both entries ship empty in this release; fields are deferred to a future release.
-        # When unharmonized_fields are populated, update or remove this test accordingly.
+        # Shared dcc_ entries are built in code, not from these maps.
         for cfg in FILE_NODE_REGISTRY:
             assert cfg.unharmonized_fields == {}

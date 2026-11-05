@@ -112,6 +112,30 @@ class TestFileEndpoints:
         assert "data" in result
         assert len(result["data"]) == 1
         assert result["summary"]["counts"]["all"] == 100
+        assert len(result["gateways"]) == 2
+        assert list(result.keys()).index("data") < list(result.keys()).index("gateways")
+
+    async def test_empty_list_omits_gateways(
+        self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
+    ):
+        with patch('app.api.v1.endpoints.files.FileService') as mock_service_class:
+            mock_service = Mock()
+            mock_service.get_files = AsyncMock(return_value=([], 0))
+            mock_service_class.return_value = mock_service
+            with patch('app.api.v1.endpoints.files.get_cache_service', return_value=None):
+                with patch('app.api.v1.endpoints.files.check_rate_limit', return_value=None):
+                    result = await list_files(
+                        request=mock_request,
+                        response=mock_response,
+                        filters={},
+                        pagination=mock_pagination,
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None
+                    )
+        assert result["data"] == []
+        assert "gateways" not in result
 
     async def test_list_files_database_error(
         self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
@@ -172,6 +196,7 @@ class TestFileEndpoints:
         
         assert isinstance(result, dict)
         assert result["id"]["name"] == "file1"
+        assert "gateways" not in result
 
     async def test_get_file_not_found(
         self, mock_session, mock_settings, mock_allowlist, mock_request

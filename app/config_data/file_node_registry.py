@@ -35,4 +35,12 @@ FILE_NODE_REGISTRY: list[FileNodeConfig] = [
         node_label="sequencing_file",
         rel_name="of_sequencing_file",
     ),
+    FileNodeConfig(
+        node_label="pathology_file",
+        rel_name="of_pathology_file",
+    ),
+    FileNodeConfig(
+        node_label="generic_file",
+        rel_name="of_generic_file",
+    ),
 ]

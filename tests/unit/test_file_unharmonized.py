@@ -173,3 +173,42 @@ def test_map_file_has_twenty_one_raw_types():
     )
     assert "unharmonized" not in data
     assert len(data) == 21
+
+
+def test_wrapped_unharmonized_key_is_unwrapped(tmp_path, monkeypatch):
+    """Ticket attachment nests raw types under a top-level unharmonized key."""
+    path = tmp_path / "map.json"
+    path.write_text(
+        json.dumps(
+            {
+                "unharmonized": {
+                    "bw": {
+                        "dcc_file_type": {
+                            "value": "bw",
+                            "comment": "from wrapped map",
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("app.core.file_unharmonized._MAP_PATH", path)
+    clear_file_unharmonized_cache()
+    entry = build_file_unharmonized(NODE)["dcc_file_type"]
+    assert entry["value"] == "bw"
+    assert entry["comment"] == "from wrapped map"
+
+
+@pytest.mark.parametrize("payload", [{}, {"unharmonized": {}}])
+def test_empty_map_omits_file_type_and_warns(tmp_path, monkeypatch, caplog, payload):
+    path = tmp_path / "map.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr("app.core.file_unharmonized._MAP_PATH", path)
+    clear_file_unharmonized_cache()
+    with caplog.at_level(logging.WARNING):
+        out = build_file_unharmonized(NODE)
+    assert "dcc_file_type" not in out
+    assert "dcc_file_name" in out
+    assert caplog.records
+    assert any("empty" in record.message.lower() for record in caplog.records)

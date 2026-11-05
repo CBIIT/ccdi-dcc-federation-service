@@ -869,8 +869,31 @@ class TestFileRepositoryHelpers:
 
 
 def _category_predicate(cypher: str) -> str:
-    start = cypher.index("ANY(dc IN sf.data_category")
-    return cypher[start : cypher.index(")", start) + 1]
+    """The shared data_category predicate, including its valueType guard.
+
+    The first ``)`` is inside ``valueType(...)``, so the predicate ends at the
+    ``WHERE dc IN $param`` close.
+    """
+    start = cypher.index("ANY(dc IN CASE")
+    end = cypher.index(")", cypher.index("WHERE dc IN $", start)) + 1
+    return cypher[start:end]
+
+
+def _assert_consent_before_cell_line(cypher: str) -> None:
+    """Consent study list is the first coalesce argument; cell_line is the fallback."""
+    import re
+
+    pairs = re.findall(
+        r"coalesce\((st\d+)_list\[0\], (st\d+)_list\[0\]\)",
+        cypher,
+    )
+    assert pairs, cypher
+    for preferred, fallback in pairs:
+        preferred_at = cypher.index(f"({preferred}:study)")
+        fallback_at = cypher.index(f"({fallback}:study)")
+        assert preferred_at < fallback_at
+        assert "consent_group" in cypher[preferred_at - 220 : preferred_at]
+        assert "cell_line" in cypher[fallback_at - 160 : fallback_at]
 
 
 @pytest.mark.unit
@@ -886,11 +909,18 @@ class TestDataCategoryFilter:
         )
         cypher = session.run.call_args[0][0]
         params = session.run.call_args[0][1]
-        assert "ANY(dc IN sf.data_category WHERE dc IN $param_1)" in cypher
+        predicate = _category_predicate(cypher)
+        assert (
+            "ANY(dc IN CASE WHEN valueType(sf.data_category) = 'LIST' "
+            "THEN sf.data_category ELSE [coalesce(sf.data_category, '')] END "
+            "WHERE dc IN $param_1)"
+        ) == predicate
+        # "st." would make get_files treat this as a study condition.
+        assert "st." not in predicate
         assert params["param_1"] == ["Clinical"]
         assert "Clinical" not in cypher
         # The predicate stays on the file, ahead of the study traversal.
-        assert cypher.index("ANY(dc IN sf.data_category") < cypher.index("OPTIONAL MATCH")
+        assert cypher.index(predicate) < cypher.index("OPTIONAL MATCH")
 
     @pytest.mark.asyncio
     async def test_or_splits_on_double_pipe(self):
@@ -905,16 +935,71 @@ class TestDataCategoryFilter:
         assert params["param_1"] == ["Sequencing", "Clinical"]
 
     @pytest.mark.asyncio
-    async def test_empty_or_adds_no_condition(self):
+    @pytest.mark.parametrize("blank", ["", "   ", "||", " || "])
+    async def test_blank_data_category_matches_nothing(self, blank):
         repo, session = make_repo()
         session.run = AsyncMock(return_value=_empty_async_result())
-        await repo.get_files(
-            {"metadata.unharmonized.data_category": "||"},
-            offset=0,
-            limit=10,
-        )
-        cypher = session.run.call_args[0][0]
-        assert "data_category" not in cypher
+        filters = {"metadata.unharmonized.data_category": blank}
+        await repo.get_files(filters, offset=0, limit=10)
+        list_cypher = session.run.call_args[0][0]
+        assert " WHERE false" in list_cypher
+        assert "data_category" not in list_cypher
+
+        counted, _ = make_repo()
+        count_cypher, _ = await counted._build_count_query(filters)
+        assert " WHERE false" in count_cypher
+        assert "data_category" not in count_cypher
+
+    @pytest.mark.asyncio
+    async def test_blank_data_category_with_depositions_stays_on_the_file(self):
+        """A blank category plus depositions must not fall through to the study-only pattern."""
+        repo, session = make_repo()
+        session.run = AsyncMock(return_value=_empty_async_result())
+        filters = {
+            "metadata.unharmonized.data_category": " || ",
+            "depositions": "phs002431",
+        }
+        await repo.get_files(filters, offset=0, limit=10)
+        list_cypher = session.run.call_args[0][0]
+        assert " WHERE false" in list_cypher
+        assert "data_category" not in list_cypher
+        assert list_cypher.index("WHERE false") < list_cypher.index("OPTIONAL MATCH")
+        rel = repo.config.rel_name
+        assert f"(sf)-[:{rel}]->(:sample)-[:of_sample]->(:participant)" in list_cypher
+        _assert_consent_before_cell_line(list_cypher)
+
+        counted, _ = make_repo()
+        count_cypher, _ = await counted._build_count_query(filters)
+        # data_category counts stream with EXISTS; the blank predicate is WHERE false.
+        assert " WHERE false" in count_cypher
+        assert "data_category" not in count_cypher
+        assert count_cypher.index("WHERE false") < count_cypher.index("EXISTS {")
+        # Consent path is checked before the cell_line fallback.
+        rel = counted.config.rel_name
+        consent = f"(sf)-[:{rel}]->(:sample)-[:of_sample]->(:participant)"
+        cell_line = f"(sf)-[:{rel}]->(:sample)-[:of_sample]->(:cell_line)"
+        assert count_cypher.index(consent) < count_cypher.index(cell_line)
+
+    @pytest.mark.asyncio
+    async def test_response_study_paths_start_at_the_file(self):
+        """Cell-line fallback must not rebind a sample variable dropped by WITH."""
+        cases = [{}, {"file_type": "BAM"}, {"file_type": "BAM", "depositions": "phs002431"}]
+        for filters in cases:
+            repo, session = make_repo()
+            session.run = AsyncMock(return_value=_empty_async_result())
+            await repo.get_files(filters, offset=0, limit=10)
+            cypher = session.run.call_args[0][0]
+            rel = repo.config.rel_name
+            from_file = f"(sf)-[:{rel}]->(:sample)-[:of_sample]->(:cell_line)"
+            consent_from_file = (
+                f"(sf)-[:{rel}]->(:sample)-[:of_sample]->(:participant)"
+            )
+            assert from_file in cypher
+            assert consent_from_file in cypher
+            assert "(sa2)-[:of_sample]->(:cell_line)" not in cypher
+            assert "(sa3)-[:of_sample]->(:cell_line)" not in cypher
+            assert "(sa4)-[:of_sample]->(:cell_line)" not in cypher
+            _assert_consent_before_cell_line(cypher)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -930,4 +1015,145 @@ class TestDataCategoryFilter:
 
         counted, _ = make_repo()
         count_cypher, _ = await counted._build_count_query(combined)
-        assert _category_predicate(list_cypher) == _category_predicate(count_cypher)
+        predicate = _category_predicate(list_cypher)
+        assert predicate == _category_predicate(count_cypher)
+        assert "st." not in predicate
+        assert "valueType(sf.data_category) = 'LIST'" in predicate
+
+
+@pytest.mark.unit
+class TestDataCategoryCountForm:
+    """data_category counts stream with EXISTS; file_type-only counts keep the collect form."""
+
+    @pytest.mark.asyncio
+    async def test_category_only_count_streams(self):
+        repo, _ = make_repo()
+        cypher, _ = await repo._build_count_query(
+            {"metadata.unharmonized.data_category": "Sequencing"}
+        )
+        assert "RETURN count(sf) AS total_count" in cypher
+        assert "count(DISTINCT sf)" not in cypher
+        assert "collect(" not in cypher
+        assert "EXISTS {" in cypher
+        assert "st.study_id" not in cypher
+
+    @pytest.mark.asyncio
+    async def test_category_with_single_deposition_streams_on_study(self):
+        repo, _ = make_repo()
+        cypher, params = await repo._build_count_query(
+            {"metadata.unharmonized.data_category": "Sequencing", "depositions": "phs002517"}
+        )
+        assert "RETURN count(sf) AS total_count" in cypher
+        assert "collect(" not in cypher
+        assert "st.study_id = $" in cypher
+        assert "phs002517" in params.values()
+
+    @pytest.mark.asyncio
+    async def test_category_with_multiple_depositions_uses_in(self):
+        repo, _ = make_repo()
+        cypher, params = await repo._build_count_query(
+            {"metadata.unharmonized.data_category": "Sequencing", "depositions": "phs001 || phs002"}
+        )
+        assert "RETURN count(sf) AS total_count" in cypher
+        assert "st.study_id IN $" in cypher
+        assert ["phs001", "phs002"] in list(params.values())
+
+    @pytest.mark.asyncio
+    async def test_category_with_file_type_streams(self):
+        repo, _ = make_repo()
+        cypher, _ = await repo._build_count_query(
+            {"metadata.unharmonized.data_category": "Sequencing", "file_type": "BAM"}
+        )
+        assert "RETURN count(sf) AS total_count" in cypher
+        assert "toLower(sf.file_type) IN $" in cypher
+        assert "collect(" not in cypher
+
+    @pytest.mark.asyncio
+    async def test_category_count_guards_both_study_paths(self):
+        repo, _ = make_repo()
+        cypher, _ = await repo._build_count_query(
+            {"metadata.unharmonized.data_category": "Sequencing"}
+        )
+        rel = repo.config.rel_name
+        consent = f"(sf)-[:{rel}]->(:sample)-[:of_sample]->(:participant)"
+        cell_line = f"(sf)-[:{rel}]->(:sample)-[:of_sample]->(:cell_line)"
+        assert consent in cypher and cell_line in cypher
+        assert cypher.index(consent) < cypher.index(cell_line)
+
+    @pytest.mark.asyncio
+    async def test_file_type_count_keeps_collect_form(self):
+        repo, _ = make_repo()
+        cypher, _ = await repo._build_count_query({"file_type": "BAM"})
+        assert "RETURN count(DISTINCT sf)" in cypher
+        assert "collect(" in cypher
+
+    @pytest.mark.asyncio
+    async def test_file_type_with_depositions_keeps_collect_form(self):
+        repo, _ = make_repo()
+        cypher, _ = await repo._build_count_query(
+            {"file_type": "BAM", "depositions": "phs002431"}
+        )
+        assert "RETURN count(DISTINCT sf)" in cypher
+        assert "collect(" in cypher
+
+
+@pytest.mark.unit
+class TestCategoryDepositionListForm:
+    """data_category + depositions filters with EXISTS before pagination. The page fetch stays."""
+
+    @pytest.mark.asyncio
+    async def test_category_and_depositions_filters_with_exists(self):
+        repo, session = make_repo()
+        session.run = AsyncMock(return_value=_empty_async_result())
+        await repo.get_files(
+            {"metadata.unharmonized.data_category": "Sequencing", "depositions": "phs002517"},
+            offset=0,
+            limit=20,
+        )
+        cypher = session.run.call_args[0][0]
+        rel = repo.config.rel_name
+        consent = (
+            f"(sf)-[:{rel}]->(:sample)-[:of_sample]->(:participant)"
+            "-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study) "
+            "WHERE st.study_id = $param_"
+        )
+        cell_line = (
+            f"(sf)-[:{rel}]->(:sample)-[:of_sample]->(:cell_line)"
+            "-[:of_cell_line]->(st:study) WHERE st.study_id = $param_"
+        )
+        assert consent in cypher
+        assert cell_line in cypher
+        # The guard is the filter stage, ahead of pagination. The page fetch still coalesces.
+        assert cypher.index("EXISTS {") < cypher.index("WITH DISTINCT sf.guid")
+        assert "st2_list" not in cypher
+        assert "coalesce(st3_list[0], st4_list[0])" in cypher
+        assert "SKIP $offset" in cypher
+
+    @pytest.mark.asyncio
+    async def test_category_and_several_depositions_use_in(self):
+        repo, session = make_repo()
+        session.run = AsyncMock(return_value=_empty_async_result())
+        await repo.get_files(
+            {
+                "metadata.unharmonized.data_category": "Sequencing",
+                "depositions": "phs002517 || phs002790",
+            },
+            offset=0,
+            limit=10,
+        )
+        cypher = session.run.call_args[0][0]
+        assert cypher.count("WHERE st.study_id IN $") >= 2
+        assert "st2_list" not in cypher
+
+    @pytest.mark.asyncio
+    async def test_file_type_and_depositions_keeps_collect_form(self):
+        repo, session = make_repo()
+        session.run = AsyncMock(return_value=_empty_async_result())
+        await repo.get_files(
+            {"file_type": "BAM", "depositions": "phs002517"},
+            offset=0,
+            limit=20,
+        )
+        cypher = session.run.call_args[0][0]
+        assert "collect(DISTINCT st2)" in cypher
+        assert "EXISTS {" not in cypher

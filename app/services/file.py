@@ -98,9 +98,22 @@ class FileService:
                 return [], total_count
 
             files = []
-            for repo, lo, ll in contributions:
-                batch = await repo.get_files(filters, lo, ll)
-                files.extend(batch)
+            try:
+                for repo, lo, ll in contributions:
+                    batch = await repo.get_files(filters, lo, ll)
+                    files.extend(batch)
+            except (ServiceUnavailable, TransientError, SessionExpired, ConnectionError, TimeoutError) as e:
+                # The count already succeeded, so keep its total. An empty page with all > 0
+                # tells the aggregator this was a page failure, not a genuine miss (all: 0).
+                logger.error(
+                    "Operational database error while fetching file page - returning empty page with counted total",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    filters=filters,
+                    is_operational_db_error=True,
+                    aws_cloudwatch_alert=True,
+                )
+                return [], total_count
 
             logger.info(
                 "Retrieved sequencing files",

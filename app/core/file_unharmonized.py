@@ -42,13 +42,23 @@ def _load_file_type_map() -> dict[str, dict[str, Any]]:
         logger.warning("File type map must be a JSON object; omitting dcc_file_type")
         return {}
 
+    # The ticket attachment nests raw types under a top-level "unharmonized" key.
+    # The committed file is flat (raw type → entry). Unwrap only a map of entries,
+    # not a single dcc_file_type object that happens to use that key.
+    entries = data
+    wrapped = data.get("unharmonized")
+    if isinstance(wrapped, dict) and "dcc_file_type" not in wrapped:
+        entries = wrapped
+
     indexed: dict[str, dict[str, Any]] = {}
-    for raw_type, entry in data.items():
+    for raw_type, entry in entries.items():
         if not isinstance(entry, dict):
             continue
         inner = entry.get("dcc_file_type")
         if isinstance(inner, dict):
             indexed[str(raw_type).strip().lower()] = inner
+    if not indexed:
+        logger.warning("File type map is empty; omitting dcc_file_type")
     return indexed
 
 

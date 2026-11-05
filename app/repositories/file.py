@@ -80,17 +80,25 @@ class FileRepository:
     ) -> Optional[str]:
         """Cypher predicate for one allowlisted unharmonized filter.
 
-        data_category matches each list element exactly. The local name ``dc`` must
-        not contain ``st.``: get_files splits conditions on that substring.
-        An empty ``||`` value adds no condition. Other fields keep equality / IN.
+        data_category matches each list element exactly. A string-typed property
+        is wrapped as a one-element list. The predicate text must not contain
+        ``st.``: get_files splits conditions on that substring, and a study
+        condition here would make the list query diverge from the count query.
+        A blank data_category value matches nothing (``false`` has no ``st.``).
+        Other fields keep equality / IN.
         """
         if db_field_name == "data_category":
             items = value if isinstance(value, list) else str(value).split("||")
             selected = [str(item).strip() for item in items if str(item).strip()]
             if not selected:
-                return None
+                return "false"
             params[param_name] = selected
-            return f"ANY(dc IN sf.data_category WHERE dc IN ${param_name})"
+            # valueType(...) has no "st.", so this stays a file condition.
+            return (
+                "ANY(dc IN CASE WHEN valueType(sf.data_category) = 'LIST' "
+                "THEN sf.data_category ELSE [coalesce(sf.data_category, '')] END "
+                f"WHERE dc IN ${param_name})"
+            )
         if isinstance(value, list):
             params[param_name] = value
             return f"sf.{db_field_name} IN ${param_name}"
@@ -262,13 +270,53 @@ class FileRepository:
         
         # Detect if we have depositions filter for CALL+UNION optimization
         has_depositions_filter = depositions_list is not None
+        has_category_filter = "metadata.unharmonized.data_category" in filters
         
         # CONDITIONAL OPTIMIZATION: Use different query patterns based on filters
         # Pattern 1: File filters + Depositions = CALL+UNION (applies study filter during traversal)
         # Pattern 2: File filters only = Optimized (filter files first, then traverse)
         # Pattern 3: No file filters = Simple (single traversal, less overhead)
         
-        if file_where_conditions and has_depositions_filter:
+        if file_where_conditions and has_depositions_filter and has_category_filter:
+            # data_category + depositions: filter with EXISTS before pagination. The page
+            # fetch below is the same as the collect form. Both study paths keep the
+            # deposition filter, so the page matches the streaming count.
+            deposition_param = depositions_param_name
+            deposition_operator = "=" if len(depositions_list) == 1 else "IN"
+            rel = self.config.rel_name
+            cypher = f"""
+            // Step 1: Match files that have the category and a path to a filtered study.
+            MATCH (sf:{self.config.node_label})
+            {file_where_clause}
+            AND (EXISTS {{ MATCH (sf)-[:{rel}]->(:sample)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study) WHERE st.study_id {deposition_operator} ${deposition_param} }}
+              OR EXISTS {{ MATCH (sf)-[:{rel}]->(:sample)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st:study) WHERE st.study_id {deposition_operator} ${deposition_param} }})
+            // Step 4: Paginate on the SCALAR guid only (avoid sorting full node records in memory)
+            WITH DISTINCT sf.guid AS file_guid
+            ORDER BY file_guid
+            SKIP $offset
+            LIMIT $limit
+            // Step 5: Re-fetch the full node for just this page via the guid index (point lookups)
+            MATCH (sf:{self.config.node_label})
+            WHERE sf.guid = file_guid
+            // Step 6: Collect samples for final results only
+            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa2:sample)
+            WITH file_guid, sf, collect(DISTINCT sa2) as samples
+            // Step 7: Study for this page. Both paths start at the file so the
+            // consent list stays file-level and is preferred over the cell-line list.
+            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(:sample)-[:of_sample]->(:participant)
+                       -[:of_participant]->(:consent_group)
+                       -[:of_consent_group]->(st3:study)
+            WHERE st3.study_id {deposition_operator} ${deposition_param}
+            WITH file_guid, sf, samples, collect(DISTINCT st3) AS st3_list
+            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(:sample)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st4:study)
+            WHERE st4.study_id {deposition_operator} ${deposition_param}
+            WITH file_guid, sf, samples, st3_list, collect(DISTINCT st4) AS st4_list
+            WITH file_guid, sf, samples, head(collect(DISTINCT coalesce(st3_list[0], st4_list[0]))) as study
+            // Step 8: Restore deterministic page order (only ~per_page rows here)
+            ORDER BY file_guid
+            RETURN sf, samples, study as st
+            """.strip()
+        elif file_where_conditions and has_depositions_filter:
             # PATTERN 1: OPTIMIZED QUERY (for type + depositions queries)
             # Use multi-hop traversal: sample -> participant -> consent_group -> study (preferred)
             # or sample -> cell_line -> study (fallback)
@@ -306,14 +354,14 @@ class FileRepository:
             // Step 6: Collect samples for final results only
             OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa2:sample)
             WITH file_guid, sf, collect(DISTINCT sa2) as samples
-            // Step 7: Get study for response (using multi-hop traversal)
-            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa3:sample)
-            OPTIONAL MATCH (sa3)-[:of_sample]->(:participant)
+            // Step 7: Study for this page. Both paths start at the file so the
+            // consent list stays file-level and is preferred over the cell-line list.
+            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(:sample)-[:of_sample]->(:participant)
                        -[:of_participant]->(:consent_group)
                        -[:of_consent_group]->(st3:study)
             WHERE st3.study_id {deposition_operator} ${deposition_param}
             WITH file_guid, sf, samples, collect(DISTINCT st3) AS st3_list
-            OPTIONAL MATCH (sa3)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st4:study)
+            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(:sample)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st4:study)
             WHERE st4.study_id {deposition_operator} ${deposition_param}
             WITH file_guid, sf, samples, st3_list, collect(DISTINCT st4) AS st4_list
             WITH file_guid, sf, samples, head(collect(DISTINCT coalesce(st3_list[0], st4_list[0]))) as study
@@ -347,13 +395,13 @@ class FileRepository:
             // Step 5: Collect samples only for paginated files (much faster!)
             OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa3:sample)
             WITH file_guid, sf, collect(DISTINCT sa3) AS samples
-            // Step 6: Get study for response (only for the returned files, using multi-hop traversal)
-            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa4:sample)
-            OPTIONAL MATCH (sa4)-[:of_sample]->(:participant)
+            // Step 6: Study for this page. Both paths start at the file so the
+            // consent list stays file-level and is preferred over the cell-line list.
+            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(:sample)-[:of_sample]->(:participant)
                        -[:of_participant]->(:consent_group)
                        -[:of_consent_group]->(st4:study)
             WITH file_guid, sf, samples, collect(DISTINCT st4) AS st4_list
-            OPTIONAL MATCH (sa4)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st5:study)
+            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(:sample)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st5:study)
             WITH file_guid, sf, samples, st4_list, collect(DISTINCT st5) AS st5_list
             WITH file_guid, sf, samples, head(collect(DISTINCT coalesce(st4_list[0], st5_list[0]))) AS st
             // Step 7: Restore deterministic page order (only ~per_page rows here)
@@ -441,15 +489,13 @@ class FileRepository:
             // Step 3: Collect samples only for the paginated files
             OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa:sample)
             WITH file_guid, sf, collect(DISTINCT sa) AS samples
-            // Step 4: Get study for response (multi-hop traversal, only for the page)
-            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(sa2:sample)
-            // study path 2 — via participant → consent → study (preferred path)
-            OPTIONAL MATCH (sa2)-[:of_sample]->(:participant)
+            // Step 4: Study for this page. Both paths start at the file so the
+            // consent list stays file-level and is preferred over the cell-line list.
+            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(:sample)-[:of_sample]->(:participant)
                        -[:of_participant]->(:consent_group)
                        -[:of_consent_group]->(st2:study)
             WITH file_guid, sf, samples, collect(DISTINCT st2) AS st2_list
-            // study path 1 — via cell_line (fallback)
-            OPTIONAL MATCH (sa2)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
+            OPTIONAL MATCH (sf)-[:{self.config.rel_name}]->(:sample)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st1:study)
             WITH file_guid, sf, samples, st2_list, collect(DISTINCT st1) AS st1_list
             WITH file_guid, sf, samples, head(collect(DISTINCT coalesce(st2_list[0], st1_list[0]))) as study
             // Step 5: Restore deterministic page order (only ~per_page rows remain here)
@@ -990,9 +1036,10 @@ class FileRepository:
 
         The no-filter case (Pattern 3) uses streaming EXISTS + count(sf): the prior
         collect + count(DISTINCT sf) form materialized a hash set of all ~1.5M matched
-        sf nodes and OOMed the snapshot (>7.65 GiB). The filtered cases (Patterns 1, 2,
-        2b) keep the collect form — their filters bound the candidate set, so they do
-        not OOM and the collect form is faster there than EXISTS.
+        sf nodes and OOMed the snapshot (>7.65 GiB). data_category counts (Pattern 0) also
+        stream with EXISTS, since a large category can match over a million files.
+        file_type-only and file_type+depositions counts (Patterns 1, 2) keep the collect
+        form, and depositions-only counts use Pattern 2b.
 
         Returns a sentinel query ("RETURN 0 AS total_count", {}) when a filter
         value is provably empty (e.g., an invalid file_type enum value), so callers
@@ -1122,14 +1169,33 @@ class FileRepository:
         # Detect if we have depositions filter for CALL+UNION optimization
         has_depositions_filter = depositions_list is not None
 
+        # data_category counts stream with EXISTS, the same study guard as the list query.
+        # The collect form filled Memgraph for data_category=Sequencing (~1.24M files): the
+        # count peaked at roughly 3-4 GiB, and the list query that followed then failed on the limit.
+        has_category_filter = "metadata.unharmonized.data_category" in filters
+
         # CONDITIONAL OPTIMIZATION: Match get_files pattern (same 4 patterns, using multi-hop traversal)
-        if file_where_conditions and has_depositions_filter:
+        if file_where_conditions and has_category_filter:
+            # PATTERN 0: STREAMING EXISTS (data_category, with or without depositions)
+            rel = self.config.rel_name
+            if has_depositions_filter:
+                deposition_operator = "=" if len(depositions_list) == 1 else "IN"
+                study_filter = f"WHERE st.study_id {deposition_operator} ${depositions_param_name}"
+            else:
+                study_filter = ""
+            cypher = f"""
+            MATCH (sf:{self.config.node_label})
+            {file_where_clause}
+            AND (EXISTS {{ MATCH (sf)-[:{rel}]->(:sample)-[:of_sample]->(:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st:study) {study_filter} }}
+              OR EXISTS {{ MATCH (sf)-[:{rel}]->(:sample)-[:of_sample]->(:cell_line)-[:of_cell_line]->(st:study) {study_filter} }})
+            RETURN count(sf) AS total_count
+            """.strip()
+        elif file_where_conditions and has_depositions_filter:
             # PATTERN 1: OPTIMIZED SUMMARY (with file filters + depositions)
             # Use multi-hop traversal: sample -> participant -> consent_group -> study (preferred)
             # or sample -> cell_line -> study (fallback)
-            # NOTE: this collect form is kept (not rewritten to streaming EXISTS like the
-            # no-filter Pattern 3) because the file filters cap the candidate sf set — it
-            # does not OOM here and is ~3x faster than EXISTS on selective filters.
+            # NOTE: collect form, for non-category file filters (e.g. file_type). No memory
+            # failure has been observed for these in local runs.
             deposition_param = depositions_param_name
             deposition_operator = "=" if len(depositions_list) == 1 else "IN"
 
@@ -1156,9 +1222,8 @@ class FileRepository:
             # PATTERN 2: OPTIMIZED SUMMARY (with file filters only)
             # Use multi-hop traversal: sample -> participant -> consent_group -> study (preferred)
             # or sample -> cell_line -> study (fallback)
-            # NOTE: collect form kept (not streaming EXISTS) for the same reason as
-            # Pattern 1 — the file filters bound the sf set, so it does not OOM and is
-            # faster than EXISTS on selective filters.
+            # NOTE: collect form, for non-category file filters (e.g. file_type). data_category
+            # filters take PATTERN 0 above.
             cypher = f"""
             MATCH (sf:{self.config.node_label})
             {file_where_clause}

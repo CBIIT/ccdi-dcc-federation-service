@@ -229,6 +229,44 @@ class TestFileServiceMerge:
         assert total == 0
 
     @pytest.mark.asyncio
+    async def test_get_files_page_failure_keeps_counted_total(self):
+        """Count succeeds, page query fails -> ([], counted_total), not ([], 0).
+
+        An empty page with all > 0 tells the aggregator this was a failure; all: 0
+        would read as a genuine miss.
+        """
+        from neo4j.exceptions import TransientError
+
+        svc = make_service()
+        repo = AsyncMock()
+        repo.count_for_pagination = AsyncMock(return_value=1244484)
+        repo.get_files = AsyncMock(
+            side_effect=TransientError("Memgraph.TransientError: Memory limit exceeded")
+        )
+        with patch.object(svc, "_repos", [repo]):
+            files, total = await svc.get_files({}, offset=0, limit=20)
+        assert files == []
+        assert total == 1244484
+        assert repo.get_files.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_get_files_page_failure_after_partial_repo_discards_partial_rows(self):
+        """A failure on a later repo returns an empty page, not the rows already fetched."""
+        from neo4j.exceptions import ServiceUnavailable
+
+        svc = make_service()
+        maf_repo = AsyncMock()
+        maf_repo.count_for_pagination = AsyncMock(return_value=2)
+        maf_repo.get_files = AsyncMock(return_value=[make_mock_file("maf-1"), make_mock_file("maf-2")])
+        sf_repo = AsyncMock()
+        sf_repo.count_for_pagination = AsyncMock(return_value=98)
+        sf_repo.get_files = AsyncMock(side_effect=ServiceUnavailable("defunct connection"))
+        with patch.object(svc, "_repos", [maf_repo, sf_repo]):
+            files, total = await svc.get_files({}, offset=0, limit=20)
+        assert files == []
+        assert total == 100
+
+    @pytest.mark.asyncio
     async def test_get_files_validation_error_still_propagates(self):
         """Validation errors (bad filter) must NOT be swallowed as empty — they surface as 400."""
         from app.models.errors import InvalidParametersError

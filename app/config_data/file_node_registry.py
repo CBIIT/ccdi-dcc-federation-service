@@ -12,7 +12,7 @@ class FileNodeConfig:
         node_label: The graph node label (e.g., 'sequencing_file', 'methylation_array_file').
         rel_name: The relationship name from sample to this file type (e.g., 'of_sequencing_file').
         unharmonized_fields: Maps API unharmonized field name -> DB property name.
-                           Empty dict = use default mapping only (f.file_name -> metadata.unharmonized.file_name).
+                           Empty dict = use default mapping only (f.file_name -> metadata.unharmonized.dcc_file_name).
     """
     node_label: str
     rel_name: str

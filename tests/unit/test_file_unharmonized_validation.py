@@ -21,20 +21,30 @@ def test_injection_payload_field_name_is_rejected_as_invalid_parameters():
 
 def test_wellformed_but_not_allowlisted_field_is_unsupported():
     repo = _repo()
-    # syntactically valid name, but not in the file filter set (file_name, data_category)
+    # syntactically valid name, but not in the file filter set (dcc_file_name, dcc_data_category)
     with pytest.raises(UnsupportedFieldError):
         repo._validate_unharmonized_file_field("batch_id", "metadata.unharmonized.batch_id")
 
 
 def test_allowlisted_unharmonized_file_field_passes():
     repo = _repo()
-    repo._validate_unharmonized_file_field("file_name", "metadata.unharmonized.file_name")
-    repo._validate_unharmonized_file_field("data_category", "metadata.unharmonized.data_category")
+    repo._validate_unharmonized_file_field("dcc_file_name", "metadata.unharmonized.dcc_file_name")
+    repo._validate_unharmonized_file_field(
+        "dcc_data_category", "metadata.unharmonized.dcc_data_category"
+    )
 
 
-def test_dcc_response_keys_are_not_filters():
+def test_dcc_response_keys_beyond_the_filter_set_are_not_filters():
     repo = _repo()
-    for name in ("dcc_file_name", "file_access"):
+    for name in ("dcc_file_access", "file_access"):
+        with pytest.raises(UnsupportedFieldError):
+            repo._validate_unharmonized_file_field(name, "metadata.unharmonized." + name)
+
+
+def test_bare_property_names_are_no_longer_filters():
+    # Filter names carry the dcc_ prefix. The old names are unsupported, not aliases.
+    repo = _repo()
+    for name in ("file_name", "data_category"):
         with pytest.raises(UnsupportedFieldError):
             repo._validate_unharmonized_file_field(name, "metadata.unharmonized." + name)
 

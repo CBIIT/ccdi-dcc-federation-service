@@ -578,7 +578,7 @@ class TestFileRepositoryInternal:
         ]
         mock_session.run = AsyncMock(side_effect=[total_result, missing_result, values_result])
 
-        filters = {"metadata.unharmonized.file_name": ["a.bam", "b.bam"]}
+        filters = {"metadata.unharmonized.dcc_file_name": ["a.bam", "b.bam"]}
         result = await repository._count_files_by_depositions(filters)
 
         assert result["total"] == 3
@@ -597,7 +597,7 @@ class TestFileRepositoryInternal:
         values_result.__aiter__.return_value = [{"value": "phs001", "count": 1}]
         mock_session.run = AsyncMock(side_effect=[total_result, missing_result, values_result])
 
-        filters = {"metadata.unharmonized.file_name": ["file1.bam"]}
+        filters = {"metadata.unharmonized.dcc_file_name": ["file1.bam"]}
         result = await repository._count_files_by_depositions(filters)
 
         assert result["total"] == 1

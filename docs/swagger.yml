@@ -1876,7 +1876,7 @@ paths:
 
           **Note:** a logical OR (`||`) is performed across the values when determining
           whether the file should be included in the results.'
-      - name: metadata.unharmonized.file_name
+      - name: metadata.unharmonized.dcc_file_name
         in: query
         required: false
         schema:
@@ -1900,7 +1900,7 @@ paths:
 
             **Examples:**
 
-            * `?metadata.unharmonized.file_name=UTYE.fastq` - Filter files by file_name
+            * `?metadata.unharmonized.dcc_file_name=UTYE.fastq` - Filter files by file name
 
 
             '
@@ -1921,11 +1921,11 @@ paths:
 
           **Examples:**
 
-          * `?metadata.unharmonized.file_name=UTYE.fastq` - Filter files by file_name
+          * `?metadata.unharmonized.dcc_file_name=UTYE.fastq` - Filter files by file name
 
 
           '
-      - name: metadata.unharmonized.data_category
+      - name: metadata.unharmonized.dcc_data_category
         in: query
         required: false
         schema:
@@ -1936,13 +1936,13 @@ paths:
             file. `||` means any of.
 
 
-            **Example:** `?metadata.unharmonized.data_category=Sequencing||Clinical`'
+            **Example:** `?metadata.unharmonized.dcc_data_category=Sequencing||Clinical`'
           title: Metadata.Unharmonized.Data Category
         description: 'Exact, case-sensitive match on any one data category of the
           file. `||` means any of.
 
 
-          **Example:** `?metadata.unharmonized.data_category=Sequencing||Clinical`'
+          **Example:** `?metadata.unharmonized.dcc_data_category=Sequencing||Clinical`'
       - name: page
         in: query
         required: false

@@ -76,7 +76,7 @@ class TestFileFiltersEnhanced:
     def mock_request(self):
         request = Mock(spec=Request)
         request.query_params = Mock()
-        request.query_params.items = Mock(return_value=[("metadata.unharmonized.file_name", "test.fastq")])
+        request.query_params.items = Mock(return_value=[("metadata.unharmonized.dcc_file_name", "test.fastq")])
         return request
 
     def test_file_filters_maps_type_alias(self, mock_request):
@@ -85,7 +85,7 @@ class TestFileFiltersEnhanced:
 
     def test_file_filters_unharmonized(self, mock_request):
         result = get_file_filters(request=mock_request)
-        assert result["metadata.unharmonized.file_name"] == "test.fastq"
+        assert result["metadata.unharmonized.dcc_file_name"] == "test.fastq"
 
 
 @pytest.mark.unit

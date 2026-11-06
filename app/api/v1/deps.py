@@ -774,7 +774,7 @@ def get_file_filters(
     ),
     metadata_unharmonized_field: Optional[str] = Query(
         None,
-        alias="metadata.unharmonized.file_name",
+        alias="metadata.unharmonized.dcc_file_name",
         description="""All unharmonized fields should be filterable in the same manner as harmonized fields:
 
 * Filtering on a singular field should include the `File` in the results if the query exactly matches the value of that field for the `File` (case-sensitive).
@@ -782,17 +782,17 @@ def get_file_filters(
 * Unlike harmonized fields, unharmonized fields must be prefixed with `metadata.unharmonized`.
 
 **Examples:**
-* `?metadata.unharmonized.file_name=UTYE.fastq` - Filter files by file_name
+* `?metadata.unharmonized.dcc_file_name=UTYE.fastq` - Filter files by file name
 
 """
     ),
     metadata_unharmonized_data_category: Optional[str] = Query(
         None,
-        alias="metadata.unharmonized.data_category",
+        alias="metadata.unharmonized.dcc_data_category",
         description=(
             "Exact, case-sensitive match on any one data category of the file. "
             "`||` means any of.\n\n"
-            "**Example:** `?metadata.unharmonized.data_category=Sequencing||Clinical`"
+            "**Example:** `?metadata.unharmonized.dcc_data_category=Sequencing||Clinical`"
         ),
     ),
     request: Request = None

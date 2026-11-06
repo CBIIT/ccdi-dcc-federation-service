@@ -318,7 +318,7 @@ class TestGetFilesCypherPatterns:
         repo, session = make_repo()
         session.run = AsyncMock(return_value=_empty_async_result())
         await repo.get_files(
-            {"metadata.unharmonized.file_name": ["a.bam", "b.bam"]},
+            {"metadata.unharmonized.dcc_file_name": ["a.bam", "b.bam"]},
             offset=0,
             limit=10,
         )
@@ -464,7 +464,7 @@ class TestCountFilesByFieldWithFilters:
 
         await repo.count_files_by_field(
             "type",
-            {"metadata.unharmonized.file_name": ["a.bam", "b.bam"]},
+            {"metadata.unharmonized.dcc_file_name": ["a.bam", "b.bam"]},
         )
 
         cypher = session.run.call_args_list[0][0][0]
@@ -481,7 +481,7 @@ class TestCountFilesByFieldWithFilters:
 
         await repo.count_files_by_field(
             "type",
-            {"metadata.unharmonized.file_name": "solo.bam"},
+            {"metadata.unharmonized.dcc_file_name": "solo.bam"},
         )
 
         cypher = session.run.call_args_list[0][0][0]
@@ -545,7 +545,7 @@ class TestBuildCountQueryEdgeCases:
     async def test_unharmonized_scalar_field_in_count_query(self):
         repo, _ = make_repo()
         cypher, params = await repo._build_count_query(
-            {"metadata.unharmonized.file_name": "only.bam"}
+            {"metadata.unharmonized.dcc_file_name": "only.bam"}
         )
         assert "sf.file_name =" in cypher
         assert "only.bam" in params.values()
@@ -567,7 +567,7 @@ class TestBuildCountQueryEdgeCases:
     async def test_unharmonized_list_in_build_count_query(self):
         repo, _ = make_repo()
         cypher, params = await repo._build_count_query(
-            {"metadata.unharmonized.file_name": ["a.bam", "b.bam"]}
+            {"metadata.unharmonized.dcc_file_name": ["a.bam", "b.bam"]}
         )
         assert "sf.file_name IN" in cypher
         assert ["a.bam", "b.bam"] in params.values()
@@ -624,7 +624,7 @@ class TestGetFilesFilterEdgeCases:
         repo, session = make_repo()
         session.run = AsyncMock(return_value=_empty_async_result())
         await repo.get_files(
-            {"metadata.unharmonized.file_name": "x.bam"},
+            {"metadata.unharmonized.dcc_file_name": "x.bam"},
             offset=0,
             limit=5,
         )
@@ -787,7 +787,7 @@ class TestCountFilesByDepositionsFilters:
         session.run = AsyncMock(side_effect=[total, missing, values])
 
         await repo._count_files_by_depositions(
-            {"metadata.unharmonized.file_name": "x.bam"}
+            {"metadata.unharmonized.dcc_file_name": "x.bam"}
         )
 
         cypher = session.run.call_args_list[0][0][0]
@@ -903,7 +903,7 @@ class TestDataCategoryFilter:
         repo, session = make_repo()
         session.run = AsyncMock(return_value=_empty_async_result())
         await repo.get_files(
-            {"metadata.unharmonized.data_category": "Clinical"},
+            {"metadata.unharmonized.dcc_data_category": "Clinical"},
             offset=0,
             limit=10,
         )
@@ -927,7 +927,7 @@ class TestDataCategoryFilter:
         repo, session = make_repo()
         session.run = AsyncMock(return_value=_empty_async_result())
         await repo.get_files(
-            {"metadata.unharmonized.data_category": "Sequencing||Clinical"},
+            {"metadata.unharmonized.dcc_data_category": "Sequencing||Clinical"},
             offset=0,
             limit=10,
         )
@@ -939,7 +939,7 @@ class TestDataCategoryFilter:
     async def test_blank_data_category_matches_nothing(self, blank):
         repo, session = make_repo()
         session.run = AsyncMock(return_value=_empty_async_result())
-        filters = {"metadata.unharmonized.data_category": blank}
+        filters = {"metadata.unharmonized.dcc_data_category": blank}
         await repo.get_files(filters, offset=0, limit=10)
         list_cypher = session.run.call_args[0][0]
         assert " WHERE false" in list_cypher
@@ -956,7 +956,7 @@ class TestDataCategoryFilter:
         repo, session = make_repo()
         session.run = AsyncMock(return_value=_empty_async_result())
         filters = {
-            "metadata.unharmonized.data_category": " || ",
+            "metadata.unharmonized.dcc_data_category": " || ",
             "depositions": "phs002431",
         }
         await repo.get_files(filters, offset=0, limit=10)
@@ -1009,7 +1009,7 @@ class TestDataCategoryFilter:
     async def test_list_and_count_use_the_same_predicate(self, filters):
         listed, session = make_repo()
         session.run = AsyncMock(return_value=_empty_async_result())
-        combined = {**filters, "metadata.unharmonized.data_category": "Clinical"}
+        combined = {**filters, "metadata.unharmonized.dcc_data_category": "Clinical"}
         await listed.get_files(combined, offset=0, limit=10)
         list_cypher = session.run.call_args[0][0]
 
@@ -1029,7 +1029,7 @@ class TestDataCategoryCountForm:
     async def test_category_only_count_streams(self):
         repo, _ = make_repo()
         cypher, _ = await repo._build_count_query(
-            {"metadata.unharmonized.data_category": "Sequencing"}
+            {"metadata.unharmonized.dcc_data_category": "Sequencing"}
         )
         assert "RETURN count(sf) AS total_count" in cypher
         assert "count(DISTINCT sf)" not in cypher
@@ -1041,7 +1041,7 @@ class TestDataCategoryCountForm:
     async def test_category_with_single_deposition_streams_on_study(self):
         repo, _ = make_repo()
         cypher, params = await repo._build_count_query(
-            {"metadata.unharmonized.data_category": "Sequencing", "depositions": "phs002517"}
+            {"metadata.unharmonized.dcc_data_category": "Sequencing", "depositions": "phs002517"}
         )
         assert "RETURN count(sf) AS total_count" in cypher
         assert "collect(" not in cypher
@@ -1052,7 +1052,7 @@ class TestDataCategoryCountForm:
     async def test_category_with_multiple_depositions_uses_in(self):
         repo, _ = make_repo()
         cypher, params = await repo._build_count_query(
-            {"metadata.unharmonized.data_category": "Sequencing", "depositions": "phs001 || phs002"}
+            {"metadata.unharmonized.dcc_data_category": "Sequencing", "depositions": "phs001 || phs002"}
         )
         assert "RETURN count(sf) AS total_count" in cypher
         assert "st.study_id IN $" in cypher
@@ -1062,7 +1062,7 @@ class TestDataCategoryCountForm:
     async def test_category_with_file_type_streams(self):
         repo, _ = make_repo()
         cypher, _ = await repo._build_count_query(
-            {"metadata.unharmonized.data_category": "Sequencing", "file_type": "BAM"}
+            {"metadata.unharmonized.dcc_data_category": "Sequencing", "file_type": "BAM"}
         )
         assert "RETURN count(sf) AS total_count" in cypher
         assert "toLower(sf.file_type) IN $" in cypher
@@ -1072,7 +1072,7 @@ class TestDataCategoryCountForm:
     async def test_category_count_guards_both_study_paths(self):
         repo, _ = make_repo()
         cypher, _ = await repo._build_count_query(
-            {"metadata.unharmonized.data_category": "Sequencing"}
+            {"metadata.unharmonized.dcc_data_category": "Sequencing"}
         )
         rel = repo.config.rel_name
         consent = f"(sf)-[:{rel}]->(:sample)-[:of_sample]->(:participant)"
@@ -1106,7 +1106,7 @@ class TestCategoryDepositionListForm:
         repo, session = make_repo()
         session.run = AsyncMock(return_value=_empty_async_result())
         await repo.get_files(
-            {"metadata.unharmonized.data_category": "Sequencing", "depositions": "phs002517"},
+            {"metadata.unharmonized.dcc_data_category": "Sequencing", "depositions": "phs002517"},
             offset=0,
             limit=20,
         )
@@ -1135,7 +1135,7 @@ class TestCategoryDepositionListForm:
         session.run = AsyncMock(return_value=_empty_async_result())
         await repo.get_files(
             {
-                "metadata.unharmonized.data_category": "Sequencing",
+                "metadata.unharmonized.dcc_data_category": "Sequencing",
                 "depositions": "phs002517 || phs002790",
             },
             offset=0,

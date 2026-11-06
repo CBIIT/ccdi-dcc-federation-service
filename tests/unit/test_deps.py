@@ -1201,13 +1201,13 @@ class TestGetFileFilters:
 
     def test_unharmonized_fields(self, mock_request):
         """Test unharmonized fields."""
-        mock_request.query_params.keys = Mock(return_value=["metadata.unharmonized.file_name"])
+        mock_request.query_params.keys = Mock(return_value=["metadata.unharmonized.dcc_file_name"])
         mock_request.query_params.items = Mock(return_value=[
-            ("metadata.unharmonized.file_name", "test.fastq")
+            ("metadata.unharmonized.dcc_file_name", "test.fastq")
         ])
         result = get_file_filters(request=mock_request)
-        assert "metadata.unharmonized.file_name" in result
-        assert result["metadata.unharmonized.file_name"] == "test.fastq"
+        assert "metadata.unharmonized.dcc_file_name" in result
+        assert result["metadata.unharmonized.dcc_file_name"] == "test.fastq"
 
 
 @pytest.mark.unit

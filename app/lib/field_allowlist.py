@@ -78,7 +78,13 @@ COMMON_UNHARMONIZED_PATTERNS: Set[str] = {
 
 # File unharmonized filters are not derived from metadata_fields.json.
 # Listing a dcc_ path there must not make it a filter.
-FILE_UNHARMONIZED_FILTER_FIELDS: frozenset[str] = frozenset({"file_name", "data_category"})
+# Filter names carry the dcc_ prefix, matching the metadata listing and the dcc_ response keys.
+# Each maps to the file node property it filters on.
+FILE_UNHARMONIZED_FILTER_PROPERTIES: dict[str, str] = {
+    "dcc_file_name": "file_name",
+    "dcc_data_category": "data_category",
+}
+FILE_UNHARMONIZED_FILTER_FIELDS: frozenset[str] = frozenset(FILE_UNHARMONIZED_FILTER_PROPERTIES)
 
 
 class FieldAllowlist:

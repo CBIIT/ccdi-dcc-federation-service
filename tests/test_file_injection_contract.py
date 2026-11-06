@@ -87,10 +87,10 @@ def test_wellformed_unallowlisted_unharmonized_field_returns_400():
 
 
 def test_allowlisted_file_name_filter_is_accepted():
-    """The advertised metadata.unharmonized.file_name filter is allowlisted, so it is NOT
+    """The advertised metadata.unharmonized.dcc_file_name filter is allowlisted, so it is NOT
     rejected as 400 — it flows through to the query (200 with data or empty)."""
     client = _client()
-    resp = client.get(FILE_PATH, params={"metadata.unharmonized.file_name": "UTYE.fastq"})
+    resp = client.get(FILE_PATH, params={"metadata.unharmonized.dcc_file_name": "UTYE.fastq"})
 
     assert resp.status_code != 400, \
         f"Allowlisted file_name filter should not be rejected, got 400: {resp.text}"
@@ -99,7 +99,7 @@ def test_allowlisted_file_name_filter_is_accepted():
 def test_allowlisted_data_category_filter_is_accepted():
     client = _client()
     resp = client.get(
-        FILE_PATH, params={"metadata.unharmonized.data_category": "Clinical"}
+        FILE_PATH, params={"metadata.unharmonized.dcc_data_category": "Clinical"}
     )
     assert resp.status_code != 400, resp.text
 

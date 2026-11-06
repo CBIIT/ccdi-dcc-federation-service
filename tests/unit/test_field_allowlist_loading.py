@@ -10,10 +10,15 @@ def test_unharmonized_allowlist_loaded_from_metadata_config():
     allowlist.load_from_database()
 
     # file filters are a constant, not the metadata_fields.json listing
-    assert allowlist.get_allowed_unharmonized_fields(EntityType.FILE) == ["data_category", "file_name"]
-    assert allowlist.is_unharmonized_field_allowed(EntityType.FILE, "file_name") is True
-    assert allowlist.is_unharmonized_field_allowed(EntityType.FILE, "data_category") is True
-    assert allowlist.is_unharmonized_field_allowed(EntityType.FILE, "dcc_file_name") is False
+    assert allowlist.get_allowed_unharmonized_fields(EntityType.FILE) == [
+        "dcc_data_category",
+        "dcc_file_name",
+    ]
+    assert allowlist.is_unharmonized_field_allowed(EntityType.FILE, "dcc_file_name") is True
+    assert allowlist.is_unharmonized_field_allowed(EntityType.FILE, "dcc_data_category") is True
+    # bare DB property names are not filter names
+    assert allowlist.is_unharmonized_field_allowed(EntityType.FILE, "file_name") is False
+    assert allowlist.is_unharmonized_field_allowed(EntityType.FILE, "data_category") is False
     assert allowlist.is_unharmonized_field_allowed(EntityType.FILE, "file_access") is False
     assert allowlist.is_unharmonized_field_allowed(EntityType.FILE, "anything") is False
 

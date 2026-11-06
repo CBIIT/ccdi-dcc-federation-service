@@ -2445,7 +2445,7 @@
             "description": "Matches any file (methylation_array_file, sequencing_file, pathology_file, or generic_file) where any member of the `depositions` fields match the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the file should be included in the results."
           },
           {
-            "name": "metadata.unharmonized.file_name",
+            "name": "metadata.unharmonized.dcc_file_name",
             "in": "query",
             "required": false,
             "schema": {
@@ -2457,13 +2457,13 @@
                   "type": "null"
                 }
               ],
-              "description": "All unharmonized fields should be filterable in the same manner as harmonized fields:\n\n* Filtering on a singular field should include the `File` in the results if the query exactly matches the value of that field for the `File` (case-sensitive).\n* Filtering on field with multiple values should include the `File` in the results if the query exactly matches any of the values of the field for that `File` (case-sensitive).\n* Unlike harmonized fields, unharmonized fields must be prefixed with `metadata.unharmonized`.\n\n**Examples:**\n* `?metadata.unharmonized.file_name=UTYE.fastq` - Filter files by file_name\n\n",
+              "description": "All unharmonized fields should be filterable in the same manner as harmonized fields:\n\n* Filtering on a singular field should include the `File` in the results if the query exactly matches the value of that field for the `File` (case-sensitive).\n* Filtering on field with multiple values should include the `File` in the results if the query exactly matches any of the values of the field for that `File` (case-sensitive).\n* Unlike harmonized fields, unharmonized fields must be prefixed with `metadata.unharmonized`.\n\n**Examples:**\n* `?metadata.unharmonized.dcc_file_name=UTYE.fastq` - Filter files by file name\n\n",
               "title": "Metadata.Unharmonized.File Name"
             },
-            "description": "All unharmonized fields should be filterable in the same manner as harmonized fields:\n\n* Filtering on a singular field should include the `File` in the results if the query exactly matches the value of that field for the `File` (case-sensitive).\n* Filtering on field with multiple values should include the `File` in the results if the query exactly matches any of the values of the field for that `File` (case-sensitive).\n* Unlike harmonized fields, unharmonized fields must be prefixed with `metadata.unharmonized`.\n\n**Examples:**\n* `?metadata.unharmonized.file_name=UTYE.fastq` - Filter files by file_name\n\n"
+            "description": "All unharmonized fields should be filterable in the same manner as harmonized fields:\n\n* Filtering on a singular field should include the `File` in the results if the query exactly matches the value of that field for the `File` (case-sensitive).\n* Filtering on field with multiple values should include the `File` in the results if the query exactly matches any of the values of the field for that `File` (case-sensitive).\n* Unlike harmonized fields, unharmonized fields must be prefixed with `metadata.unharmonized`.\n\n**Examples:**\n* `?metadata.unharmonized.dcc_file_name=UTYE.fastq` - Filter files by file name\n\n"
           },
           {
-            "name": "metadata.unharmonized.data_category",
+            "name": "metadata.unharmonized.dcc_data_category",
             "in": "query",
             "required": false,
             "schema": {
@@ -2475,10 +2475,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Exact, case-sensitive match on any one data category of the file. `||` means any of.\n\n**Example:** `?metadata.unharmonized.data_category=Sequencing||Clinical`",
+              "description": "Exact, case-sensitive match on any one data category of the file. `||` means any of.\n\n**Example:** `?metadata.unharmonized.dcc_data_category=Sequencing||Clinical`",
               "title": "Metadata.Unharmonized.Data Category"
             },
-            "description": "Exact, case-sensitive match on any one data category of the file. `||` means any of.\n\n**Example:** `?metadata.unharmonized.data_category=Sequencing||Clinical`"
+            "description": "Exact, case-sensitive match on any one data category of the file. `||` means any of.\n\n**Example:** `?metadata.unharmonized.dcc_data_category=Sequencing||Clinical`"
           },
           {
             "name": "page",

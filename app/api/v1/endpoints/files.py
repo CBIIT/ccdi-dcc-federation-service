@@ -73,10 +73,11 @@ this, you can provide the field name as a [`String`]. Filtering follows the
 following rules:
 
 * For single-value metadata field, the file is included in the results if
-its value _exactly_ matches the query string. Matches are case-sensitive.
+its value _exactly_ matches the query string. Harmonized matches are case-sensitive.
 * For multiple-value metadata fields, the file is included in the results
 if any of its values for the field _exactly_ match the query string (a
-logical OR (`||`)). Matches are case-sensitive.
+logical OR (`||`)). Harmonized matches are case-sensitive.
+* Unharmonized filters (`metadata.unharmonized.*`) match case-insensitively.
 * When the metadata field is `null` (in the case of singular or
 multiple-valued metadata fields) or empty, the file is not included.
 * When multiple fields are provided as filters, a logical AND (`&&`) strings

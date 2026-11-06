@@ -1747,13 +1747,15 @@ paths:
 
         * For single-value metadata field, the file is included in the results if
 
-        its value _exactly_ matches the query string. Matches are case-sensitive.
+        its value _exactly_ matches the query string. Harmonized matches are case-sensitive.
 
         * For multiple-value metadata fields, the file is included in the results
 
         if any of its values for the field _exactly_ match the query string (a
 
-        logical OR (`||`)). Matches are case-sensitive.
+        logical OR (`||`)). Harmonized matches are case-sensitive.
+
+        * Unharmonized filters (`metadata.unharmonized.*`) match case-insensitively.
 
         * When the metadata field is `null` (in the case of singular or
 
@@ -1888,7 +1890,7 @@ paths:
 
 
             * Filtering on a singular field should include the `File` in the results
-            if the query exactly matches the value of that field for the `File` (case-sensitive).
+            if the query matches the value of that field for the `File` (case-insensitive).
 
             * Filtering on field with multiple values should include the `File` in
             the results if the query exactly matches any of the values of the field
@@ -1910,7 +1912,7 @@ paths:
 
 
           * Filtering on a singular field should include the `File` in the results
-          if the query exactly matches the value of that field for the `File` (case-sensitive).
+          if the query matches the value of that field for the `File` (case-insensitive).
 
           * Filtering on field with multiple values should include the `File` in the
           results if the query exactly matches any of the values of the field for
@@ -1932,13 +1934,13 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: 'Exact, case-sensitive match on any one data category of the
+          description: 'Case-insensitive match on any one data category of the
             file. `||` means any of.
 
 
             **Example:** `?metadata.unharmonized.dcc_data_category=Sequencing||Clinical`'
           title: Metadata.Unharmonized.Data Category
-        description: 'Exact, case-sensitive match on any one data category of the
+        description: 'Case-insensitive match on any one data category of the
           file. `||` means any of.
 
 

@@ -85,32 +85,33 @@ class FileRepository:
         """Cypher predicate for one allowlisted unharmonized filter.
 
         ``filter_name`` is the API name (dcc_data_category, dcc_file_name); it is mapped to
-        the file node property before it reaches Cypher. dcc_data_category matches each list
-        element exactly. A string-typed property is wrapped as a one-element list. The
-        predicate text must not contain ``st.``: get_files splits conditions on that
-        substring, and a study condition here would make the list query diverge from the
-        count query. A blank data_category value matches nothing (``false`` has no ``st.``).
-        Other fields keep equality / IN.
+        the file node property before it reaches Cypher. Matching is case-insensitive:
+        the query value is lowercased here and the property is compared with ``toLower``.
+        dcc_data_category matches each list element. A string-typed property is wrapped as
+        a one-element list. The predicate text must not contain ``st.``: get_files splits
+        conditions on that substring, and a study condition here would make the list query
+        diverge from the count query. A blank data_category value matches nothing
+        (``false`` has no ``st.``). Other fields keep equality / IN.
         """
         if filter_name == "dcc_data_category":
             items = value if isinstance(value, list) else str(value).split("||")
-            selected = [str(item).strip() for item in items if str(item).strip()]
+            selected = [str(item).strip().lower() for item in items if str(item).strip()]
             if not selected:
                 return "false"
             params[param_name] = selected
-            # valueType(...) has no "st.", so this stays a file condition.
+            # valueType(...) and toLower(dc) have no "st.", so this stays a file condition.
             return (
                 "ANY(dc IN CASE WHEN valueType(sf.data_category) = 'LIST' "
                 "THEN sf.data_category ELSE [coalesce(sf.data_category, '')] END "
-                f"WHERE dc IN ${param_name})"
+                f"WHERE toLower(dc) IN ${param_name})"
             )
         # Allowlisted names are validated before this call, so the lookup cannot miss.
         prop = FILE_UNHARMONIZED_FILTER_PROPERTIES[filter_name]
         if isinstance(value, list):
-            params[param_name] = value
-            return f"sf.{prop} IN ${param_name}"
-        params[param_name] = value
-        return f"sf.{prop} = ${param_name}"
+            params[param_name] = [str(item).lower() for item in value]
+            return f"toLower(sf.{prop}) IN ${param_name}"
+        params[param_name] = str(value).lower()
+        return f"toLower(sf.{prop}) = ${param_name}"
 
     async def get_files(
         self,

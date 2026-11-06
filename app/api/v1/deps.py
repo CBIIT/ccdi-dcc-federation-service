@@ -777,8 +777,8 @@ def get_file_filters(
         alias="metadata.unharmonized.dcc_file_name",
         description="""All unharmonized fields should be filterable in the same manner as harmonized fields:
 
-* Filtering on a singular field should include the `File` in the results if the query exactly matches the value of that field for the `File` (case-sensitive).
-* Filtering on field with multiple values should include the `File` in the results if the query exactly matches any of the values of the field for that `File` (case-sensitive).
+* Filtering on a singular field should include the `File` in the results if the query matches the value of that field for the `File` (case-insensitive).
+* Filtering on a field with multiple values should include the `File` in the results if the query matches any of the values of the field for that `File` (case-insensitive).
 * Unlike harmonized fields, unharmonized fields must be prefixed with `metadata.unharmonized`.
 
 **Examples:**
@@ -790,7 +790,7 @@ def get_file_filters(
         None,
         alias="metadata.unharmonized.dcc_data_category",
         description=(
-            "Exact, case-sensitive match on any one data category of the file. "
+            "Case-insensitive match on any one data category of the file. "
             "`||` means any of.\n\n"
             "**Example:** `?metadata.unharmonized.dcc_data_category=Sequencing||Clinical`"
         ),

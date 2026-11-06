@@ -318,13 +318,13 @@ class TestGetFilesCypherPatterns:
         repo, session = make_repo()
         session.run = AsyncMock(return_value=_empty_async_result())
         await repo.get_files(
-            {"metadata.unharmonized.dcc_file_name": ["a.bam", "b.bam"]},
+            {"metadata.unharmonized.dcc_file_name": ["A.BAM", "b.Bam"]},
             offset=0,
             limit=10,
         )
         cypher = session.run.call_args[0][0]
         params = session.run.call_args[0][1]
-        assert "sf.file_name IN" in cypher
+        assert "toLower(sf.file_name) IN" in cypher
         assert params.get("param_1") == ["a.bam", "b.bam"]
 
 
@@ -469,7 +469,7 @@ class TestCountFilesByFieldWithFilters:
 
         cypher = session.run.call_args_list[0][0][0]
         params = session.run.call_args_list[0][0][1]
-        assert "sf.file_name IN" in cypher
+        assert "toLower(sf.file_name) IN" in cypher
         assert ["a.bam", "b.bam"] in params.values()
 
     @pytest.mark.asyncio
@@ -485,7 +485,7 @@ class TestCountFilesByFieldWithFilters:
         )
 
         cypher = session.run.call_args_list[0][0][0]
-        assert "sf.file_name =" in cypher
+        assert "toLower(sf.file_name) =" in cypher
 
     @pytest.mark.asyncio
     async def test_type_count_null_raw_values_count_as_missing(self):
@@ -547,7 +547,7 @@ class TestBuildCountQueryEdgeCases:
         cypher, params = await repo._build_count_query(
             {"metadata.unharmonized.dcc_file_name": "only.bam"}
         )
-        assert "sf.file_name =" in cypher
+        assert "toLower(sf.file_name) =" in cypher
         assert "only.bam" in params.values()
 
     @pytest.mark.asyncio
@@ -569,7 +569,7 @@ class TestBuildCountQueryEdgeCases:
         cypher, params = await repo._build_count_query(
             {"metadata.unharmonized.dcc_file_name": ["a.bam", "b.bam"]}
         )
-        assert "sf.file_name IN" in cypher
+        assert "toLower(sf.file_name) IN" in cypher
         assert ["a.bam", "b.bam"] in params.values()
 
 
@@ -624,12 +624,14 @@ class TestGetFilesFilterEdgeCases:
         repo, session = make_repo()
         session.run = AsyncMock(return_value=_empty_async_result())
         await repo.get_files(
-            {"metadata.unharmonized.dcc_file_name": "x.bam"},
+            {"metadata.unharmonized.dcc_file_name": "X.BAM"},
             offset=0,
             limit=5,
         )
         cypher = session.run.call_args[0][0]
-        assert "sf.file_name =" in cypher
+        params = session.run.call_args[0][1]
+        assert "toLower(sf.file_name) =" in cypher
+        assert params["param_1"] == "x.bam"
 
     @pytest.mark.asyncio
     async def test_file_size_list_filter_in_get_files(self):
@@ -792,7 +794,7 @@ class TestCountFilesByDepositionsFilters:
 
         cypher = session.run.call_args_list[0][0][0]
         params = session.run.call_args_list[0][0][1]
-        assert "sf.file_name =" in cypher
+        assert "toLower(sf.file_name) =" in cypher
         assert params["param_1"] == "x.bam"
 
     @pytest.mark.asyncio
@@ -871,11 +873,13 @@ class TestFileRepositoryHelpers:
 def _category_predicate(cypher: str) -> str:
     """The shared data_category predicate, including its valueType guard.
 
-    The first ``)`` is inside ``valueType(...)``, so the predicate ends at the
-    ``WHERE dc IN $param`` close.
+    ``)`` also closes ``valueType(...)`` and ``toLower(dc)``, so the predicate ends
+    at the ``)`` after ``WHERE toLower(dc) IN $param``.
     """
     start = cypher.index("ANY(dc IN CASE")
-    end = cypher.index(")", cypher.index("WHERE dc IN $", start)) + 1
+    marker = "WHERE toLower(dc) IN $"
+    at = cypher.index(marker, start)
+    end = cypher.index(")", at + len(marker)) + 1
     return cypher[start:end]
 
 
@@ -913,11 +917,11 @@ class TestDataCategoryFilter:
         assert (
             "ANY(dc IN CASE WHEN valueType(sf.data_category) = 'LIST' "
             "THEN sf.data_category ELSE [coalesce(sf.data_category, '')] END "
-            "WHERE dc IN $param_1)"
+            "WHERE toLower(dc) IN $param_1)"
         ) == predicate
         # "st." would make get_files treat this as a study condition.
         assert "st." not in predicate
-        assert params["param_1"] == ["Clinical"]
+        assert params["param_1"] == ["clinical"]
         assert "Clinical" not in cypher
         # The predicate stays on the file, ahead of the study traversal.
         assert cypher.index(predicate) < cypher.index("OPTIONAL MATCH")
@@ -932,7 +936,7 @@ class TestDataCategoryFilter:
             limit=10,
         )
         params = session.run.call_args[0][1]
-        assert params["param_1"] == ["Sequencing", "Clinical"]
+        assert params["param_1"] == ["sequencing", "clinical"]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("blank", ["", "   ", "||", " || "])

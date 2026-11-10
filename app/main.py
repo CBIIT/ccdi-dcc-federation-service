@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import get_settings, Settings
+from app.core.request_timeout import RequestTimeoutMiddleware
 from app.core.logging import configure_logging, get_logger
 from app.core.cache import redis_lifespan
 from app.db.memgraph import memgraph_lifespan, DatabaseConnectionError
@@ -342,8 +343,16 @@ def _suggest_correct_path(path: str) -> str:
 
 
 def setup_middleware(app: FastAPI, settings) -> None:
-    """Set up application middleware."""
-    
+    """Set up application middleware.
+
+    Added first so CORS and GZip wrap it: a timeout response still gets those headers.
+    """
+    timeout_seconds = getattr(settings, "request_timeout_seconds", 100)
+    app.add_middleware(
+        RequestTimeoutMiddleware,
+        timeout_seconds=0 if timeout_seconds is None else timeout_seconds,
+    )
+
     # CORS middleware
     if settings.cors.enabled:
         app.add_middleware(

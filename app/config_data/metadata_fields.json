@@ -233,6 +233,31 @@
         }
       },
       {
+        "harmonized": false,
+        "path": "unharmonized.dcc_library_selection_method",
+        "wiki_url": null
+      },
+      {
+        "harmonized": false,
+        "path": "unharmonized.dcc_library_strategy",
+        "wiki_url": null
+      },
+      {
+        "harmonized": false,
+        "path": "unharmonized.dcc_preservation_method",
+        "wiki_url": null
+      },
+      {
+        "harmonized": false,
+        "path": "unharmonized.dcc_specimen_molecular_analyte_type",
+        "wiki_url": null
+      },
+      {
+        "harmonized": false,
+        "path": "unharmonized.dcc_disease_phase",
+        "wiki_url": null
+      },
+      {
         "harmonized": true,
         "path": "age_at_diagnosis",
         "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#age_at_diagnosis"

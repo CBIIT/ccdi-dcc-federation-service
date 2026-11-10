@@ -734,6 +734,80 @@ paths:
 
           **Note:** a logical OR (`||`) is performed across the values when determining
           whether the sample should be included in the results.'
+      - name: metadata.unharmonized.dcc_library_selection_method
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Case-insensitive match on the raw `library_selection` value.
+            `||` means any of.
+          title: Metadata.Unharmonized.Dcc Library Selection Method
+        description: Case-insensitive match on the raw `library_selection` value.
+          `||` means any of.
+      - name: metadata.unharmonized.dcc_library_strategy
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Case-insensitive match on the raw `library_strategy` value.
+            `||` means any of.
+          title: Metadata.Unharmonized.Dcc Library Strategy
+        description: Case-insensitive match on the raw `library_strategy` value. `||`
+          means any of.
+      - name: metadata.unharmonized.dcc_preservation_method
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Case-insensitive match on the raw `fixation_embedding_method`
+            value. `||` means any of.
+          title: Metadata.Unharmonized.Dcc Preservation Method
+        description: Case-insensitive match on the raw `fixation_embedding_method`
+          value. `||` means any of.
+      - name: metadata.unharmonized.dcc_specimen_molecular_analyte_type
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Case-insensitive match on the raw `library_source_molecule`
+            value. `||` means any of.
+          title: Metadata.Unharmonized.Dcc Specimen Molecular Analyte Type
+        description: Case-insensitive match on the raw `library_source_molecule` value.
+          `||` means any of.
+      - name: metadata.unharmonized.dcc_disease_phase
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Case-insensitive match on the raw `disease_phase` value. `||`
+            means any of.
+          title: Metadata.Unharmonized.Dcc Disease Phase
+        description: Case-insensitive match on the raw `disease_phase` value. `||`
+          means any of.
+      - name: metadata.unharmonized.dcc_diagnosis_category
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Case-insensitive match on any raw `diagnosis_category` token.
+            `dcc_diagnosis_category_<n>` matches the same way; `<n>` is not a position.
+            `||` means any of.
+          title: Metadata.Unharmonized.Dcc Diagnosis Category
+        description: Case-insensitive match on any raw `diagnosis_category` token.
+          `dcc_diagnosis_category_<n>` matches the same way; `<n>` is not a position.
+          `||` means any of.
       - name: page
         in: query
         required: false
@@ -786,7 +860,9 @@ paths:
                     name: TARGET-10-DCC001
                   metadata:
                     disease_phase:
-                      value: Initial Diagnosis
+                      value: Relapse
+                      ancestors:
+                      - unharmonized.dcc_disease_phase
                     diagnosis:
                       value: Neuroblastoma
                       comment: 'null'
@@ -795,6 +871,12 @@ paths:
                     unharmonized:
                       dcc_diagnosis_category_1:
                         value: Gliomas
+                      dcc_disease_phase:
+                        value: Recurrent Disease
+                        details:
+                          method: Mapped
+                          harmonizer: DomainExpert
+                          url: https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?disease_phase=Relapse
                     age_at_diagnosis:
                       value: 10
                     anatomical_sites:
@@ -818,6 +900,22 @@ paths:
                         name: TARGET-10-DCC001-03A-01R
                         server: https://dcc.ccdi.cancer.gov/api/v1/sample/CCDI-DCC/phs002430/TARGET-10-DCC001-03A-01R
                         type: Linked
+                gateways:
+                - name: CCDI DCC model
+                  kind: Open
+                  link:
+                    kind: Approximate
+                    url: https://github.com/CBIIT/ccdi-dcc-model
+                    instructions: The CCDI DCC model is a graph database schema. model-desc/ccdi-dcc-model.yml
+                      describes the model nodes. /ccdi-dcc-model-props.yml describes
+                      the node properties.
+                - name: Childhood Cancer Clinical Data Commons
+                  kind: Open
+                  link:
+                    kind: Approximate
+                    url: https://clinicalcommons.ccdi.cancer.gov/home
+                    instructions: The Explore Participants view enables browsing and
+                      filtering by study, participant, and sample attributes.
         '404':
           description: Not found.
           content:
@@ -941,12 +1039,23 @@ paths:
                   name: TARGET-10-DCC001
                 metadata:
                   disease_phase:
-                    value: Initial Diagnosis
+                    value: Relapse
+                    ancestors:
+                    - unharmonized.dcc_disease_phase
                   diagnosis:
                     value: Neuroblastoma
                     comment: 'null'
                   diagnosis_category:
                     value: Brain and Spinal Cord Tumors
+                  unharmonized:
+                    dcc_diagnosis_category_1:
+                      value: Gliomas
+                    dcc_disease_phase:
+                      value: Recurrent Disease
+                      details:
+                        method: Mapped
+                        harmonizer: DomainExpert
+                        url: https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?disease_phase=Relapse
                   age_at_diagnosis:
                     value: 10
                   anatomical_sites:
@@ -1281,6 +1390,80 @@ paths:
 
           **Note:** a logical OR (`||`) is performed across the values when determining
           whether the sample should be included in the results.'
+      - name: metadata.unharmonized.dcc_library_selection_method
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Case-insensitive match on the raw `library_selection` value.
+            `||` means any of.
+          title: Metadata.Unharmonized.Dcc Library Selection Method
+        description: Case-insensitive match on the raw `library_selection` value.
+          `||` means any of.
+      - name: metadata.unharmonized.dcc_library_strategy
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Case-insensitive match on the raw `library_strategy` value.
+            `||` means any of.
+          title: Metadata.Unharmonized.Dcc Library Strategy
+        description: Case-insensitive match on the raw `library_strategy` value. `||`
+          means any of.
+      - name: metadata.unharmonized.dcc_preservation_method
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Case-insensitive match on the raw `fixation_embedding_method`
+            value. `||` means any of.
+          title: Metadata.Unharmonized.Dcc Preservation Method
+        description: Case-insensitive match on the raw `fixation_embedding_method`
+          value. `||` means any of.
+      - name: metadata.unharmonized.dcc_specimen_molecular_analyte_type
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Case-insensitive match on the raw `library_source_molecule`
+            value. `||` means any of.
+          title: Metadata.Unharmonized.Dcc Specimen Molecular Analyte Type
+        description: Case-insensitive match on the raw `library_source_molecule` value.
+          `||` means any of.
+      - name: metadata.unharmonized.dcc_disease_phase
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Case-insensitive match on the raw `disease_phase` value. `||`
+            means any of.
+          title: Metadata.Unharmonized.Dcc Disease Phase
+        description: Case-insensitive match on the raw `disease_phase` value. `||`
+          means any of.
+      - name: metadata.unharmonized.dcc_diagnosis_category
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Case-insensitive match on any raw `diagnosis_category` token.
+            `dcc_diagnosis_category_<n>` matches the same way; `<n>` is not a position.
+            `||` means any of.
+          title: Metadata.Unharmonized.Dcc Diagnosis Category
+        description: Case-insensitive match on any raw `diagnosis_category` token.
+          `dcc_diagnosis_category_<n>` matches the same way; `<n>` is not a position.
+          `||` means any of.
       - name: page
         in: query
         required: false
@@ -1333,7 +1516,9 @@ paths:
                     name: TARGET-10-DCC001
                   metadata:
                     disease_phase:
-                      value: Initial Diagnosis
+                      value: Relapse
+                      ancestors:
+                      - unharmonized.dcc_disease_phase
                     diagnosis:
                     - value: Neuroblastoma
                       comment: 'null'
@@ -1342,6 +1527,12 @@ paths:
                     unharmonized:
                       dcc_diagnosis_category_1:
                         value: Gliomas
+                      dcc_disease_phase:
+                        value: Recurrent Disease
+                        details:
+                          method: Mapped
+                          harmonizer: DomainExpert
+                          url: https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?disease_phase=Relapse
                     age_at_diagnosis:
                       value: 10
                     age_at_collection:
@@ -1377,6 +1568,22 @@ paths:
                         name: TARGET-10-DCC001-03A-01R
                         server: https://dcc.ccdi.cancer.gov/api/v1/sample/CCDI-DCC/phs002430/TARGET-10-DCC001-03A-01R
                         type: Linked
+                gateways:
+                - name: CCDI DCC model
+                  kind: Open
+                  link:
+                    kind: Approximate
+                    url: https://github.com/CBIIT/ccdi-dcc-model
+                    instructions: The CCDI DCC model is a graph database schema. model-desc/ccdi-dcc-model.yml
+                      describes the model nodes. /ccdi-dcc-model-props.yml describes
+                      the node properties.
+                - name: Childhood Cancer Clinical Data Commons
+                  kind: Open
+                  link:
+                    kind: Approximate
+                    url: https://clinicalcommons.ccdi.cancer.gov/home
+                    instructions: The Explore Participants view enables browsing and
+                      filtering by study, participant, and sample attributes.
         '404':
           description: Not found.
           content:
@@ -1892,9 +2099,9 @@ paths:
             * Filtering on a singular field should include the `File` in the results
             if the query matches the value of that field for the `File` (case-insensitive).
 
-            * Filtering on field with multiple values should include the `File` in
-            the results if the query exactly matches any of the values of the field
-            for that `File` (case-sensitive).
+            * Filtering on a field with multiple values should include the `File`
+            in the results if the query matches any of the values of the field for
+            that `File` (case-insensitive).
 
             * Unlike harmonized fields, unharmonized fields must be prefixed with
             `metadata.unharmonized`.
@@ -1902,11 +2109,12 @@ paths:
 
             **Examples:**
 
-            * `?metadata.unharmonized.dcc_file_name=UTYE.fastq` - Filter files by file name
+            * `?metadata.unharmonized.dcc_file_name=UTYE.fastq` - Filter files by
+            file name
 
 
             '
-          title: Metadata.Unharmonized.File Name
+          title: Metadata.Unharmonized.Dcc File Name
         description: 'All unharmonized fields should be filterable in the same manner
           as harmonized fields:
 
@@ -1914,16 +2122,17 @@ paths:
           * Filtering on a singular field should include the `File` in the results
           if the query matches the value of that field for the `File` (case-insensitive).
 
-          * Filtering on field with multiple values should include the `File` in the
-          results if the query exactly matches any of the values of the field for
-          that `File` (case-sensitive).
+          * Filtering on a field with multiple values should include the `File` in
+          the results if the query matches any of the values of the field for that
+          `File` (case-insensitive).
 
           * Unlike harmonized fields, unharmonized fields must be prefixed with `metadata.unharmonized`.
 
 
           **Examples:**
 
-          * `?metadata.unharmonized.dcc_file_name=UTYE.fastq` - Filter files by file name
+          * `?metadata.unharmonized.dcc_file_name=UTYE.fastq` - Filter files by file
+          name
 
 
           '
@@ -1934,14 +2143,14 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: 'Case-insensitive match on any one data category of the
-            file. `||` means any of.
+          description: 'Case-insensitive match on any one data category of the file.
+            `||` means any of.
 
 
             **Example:** `?metadata.unharmonized.dcc_data_category=Sequencing||Clinical`'
-          title: Metadata.Unharmonized.Data Category
-        description: 'Case-insensitive match on any one data category of the
-          file. `||` means any of.
+          title: Metadata.Unharmonized.Dcc Data Category
+        description: 'Case-insensitive match on any one data category of the file.
+          `||` means any of.
 
 
           **Example:** `?metadata.unharmonized.dcc_data_category=Sequencing||Clinical`'
@@ -3303,6 +3512,15 @@ components:
           type: array
           title: Data
           description: List of samples with flexible structure
+        gateways:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/NamedGateway'
+            type: array
+          - type: 'null'
+          title: Gateways
+          description: Named gateways for this list response (non-empty sample lists
+            only)
       additionalProperties: true
       type: object
       required:
@@ -3504,14 +3722,30 @@ components:
     ValueField:
       properties:
         value:
-          type: string
+          anyOf:
+          - type: string
+          - type: 'null'
           title: Value
-          description: Field value
+          description: Field value (null when the file maps the raw value to null)
+        ancestors:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Ancestors
+          description: Present when this value was transformed from an unharmonized
+            field
       type: object
       required:
       - value
       title: ValueField
-      description: Simple field with value attribute.
+      description: 'Simple field with value attribute.
+
+
+        value is null only when the field carries ancestors and the unharmonized
+
+        file maps the raw value to null (e.g. library_selection_method cDNA).'
 tags:
 - name: Subject
   description: Subjects within the CCDI-DCC ecosystem.

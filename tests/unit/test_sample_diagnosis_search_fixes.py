@@ -198,7 +198,8 @@ class TestDiagnosisSearchQueryFixes:
         assert 'WITH sa, st, diagnoses, p, head(collect(DISTINCT pf0)) AS pf' in query
         
         assert 'OPTIONAL MATCH (sf0:sequencing_file)' in query
-        assert 'WITH sa, st, diagnoses, p, pf, head(collect(DISTINCT sf0)) AS sf' in query
+        assert "WITH sa, st, diagnoses, p, pf, reduce(picked = null, f IN" in query
+        assert "f.guid < picked.guid" in query
         
         # Verify they are NOT all in the same WITH clause (which would create cartesian product)
         # Should not have all three optional matches before a single WITH

@@ -5,12 +5,14 @@
       "source_property": "library_selection",
       "mappings": {
         "PolyA": "Poly-A Enriched Genomic Library",
-        "Not Applicable": "Not applicable"
+        "Not Applicable": "Not applicable",
+        "Other": "Unspecified"
       },
-      "null_mappings": [],
+      "null_mappings": ["cDNA"],
       "reverse_mappings": {
         "Poly-A Enriched Genomic Library": "PolyA",
-        "Not applicable": "Not Applicable"
+        "Not applicable": "Not Applicable",
+        "Unspecified": "Other"
       }
     },
     "library_source_material": {
@@ -49,11 +51,13 @@
       "description": "Maps database values to API values for library_strategy field",
       "source_property": "library_strategy",
       "mappings": {
-        "Archer Fusion": "Other"
+        "Archer Fusion": "Other",
+        "ATAC-seq": "ATAC-Seq"
       },
       "null_mappings": [],
       "reverse_mappings": {
-        "Other": "Archer Fusion"
+        "Other": "Archer Fusion",
+        "ATAC-Seq": "ATAC-seq"
       }
     }
   },

@@ -13,7 +13,17 @@ from app.core.field_mappings import (
     is_database_only_value,
     map_field_value
 )
-from app.repositories.sample_helpers import DIAGNOSIS_SEARCH_COMPATIBLE_FILTERS, SD_CAT_MARKER
+from app.repositories.sample_helpers import (
+    DIAGNOSIS_SEARCH_COMPATIBLE_FILTERS,
+    SD_CAT_MARKER,
+    sequencing_file_by_index,
+)
+from app.repositories.sample_unharmonized_filters import (
+    SEQUENCING_DCC_FILTERS,
+    canonical_dcc_filter_name,
+    dcc_filter_selected_values,
+    dcc_match_condition,
+)
 from app.repositories.subject_diagnosis_cypher import add_diagnosis_search_params, diagnosis_search_predicate
 from app.utils.cypher_builder import anatomic_site_member_predicate
 
@@ -41,6 +51,13 @@ class SampleSummary:
         # Work on a shallow copy so .pop("identifiers") / .pop("_diagnosis_search")
         # below cannot mutate the caller's filters dict.
         filters = filters.copy()
+
+        # A blank metadata.unharmonized.dcc_* value matches nothing on the list side
+        # (dcc_match_condition returns "false"). The summary must agree, even when it
+        # is the only filter, so return the zero total before any routing.
+        for key, value in filters.items():
+            if canonical_dcc_filter_name(key) and not dcc_filter_selected_values(value):
+                return {"counts": {"total": 0}}
 
         # IMPORTANT: Check routing BEFORE popping identifiers (identifiers is popped later for early filtering)
         # This ensures routing decisions include identifiers filter
@@ -196,10 +213,34 @@ class SampleSummary:
             diagnosis_search_term = filters.pop("_diagnosis_search")
             add_diagnosis_search_params(params, diagnosis_search_term)
 
+        # Raw-property predicates for metadata.unharmonized.dcc_* filters.
+        dcc_sf_conditions = []
+        dcc_pf_conditions = []
+        # dcc_disease_phase and dcc_diagnosis_category must match the SAME diagnosis node
+        # (as the /sample list query does in sample_query_cases Case 3).
+        dcc_diagnosis_node_parts = []
+
         # Add regular filters - map to correct nodes based on field
         for field, value in filters.items():
             param_counter += 1
             param_name = f"param_{param_counter}"
+
+            dcc_name = canonical_dcc_filter_name(field)
+            if dcc_name:
+                if dcc_name in SEQUENCING_DCC_FILTERS:
+                    dcc_sf_conditions.append(
+                        dcc_match_condition(dcc_name, "sf", value, param_name, params)
+                    )
+                elif dcc_name == "dcc_preservation_method":
+                    dcc_pf_conditions.append(
+                        dcc_match_condition(dcc_name, "pf", value, param_name, params)
+                    )
+                else:
+                    # dcc_disease_phase and dcc_diagnosis_category (diagnosis node "d")
+                    dcc_diagnosis_node_parts.append(
+                        dcc_match_condition(dcc_name, "d", value, param_name, params)
+                    )
+                continue
 
             # Map fields to their source nodes (same as get_samples)
             if field == "anatomical_sites":
@@ -529,12 +570,16 @@ class SampleSummary:
         needs_sf_collection = (specimen_molecular_analyte_type_list or specimen_molecular_analyte_type_single_param or
                               library_selection_method_param is not None or
                               library_strategy_param is not None or
-                              library_source_material_param is not None)
+                              library_source_material_param is not None or
+                              bool(dcc_sf_conditions))
         # Also need to collect all diagnoses if disease_phase or other diagnosis filters are present
         # Note: "diagnosis" filter is handled via optimized query path when alone, but we still need
         # to set needs_diag_collection correctly for the standard query path fallback
         has_diagnosis_filters = any(
             field in filters for field in ["disease_phase", "tumor_grade", "tumor_tissue_morphology", "age_at_diagnosis", "diagnosis"]
+        ) or any(
+            canonical_dcc_filter_name(field) in ("dcc_disease_phase", "dcc_diagnosis_category")
+            for field in filters
         )
         needs_diag_collection = diagnosis_search_term is not None or has_diagnosis_filters
 
@@ -695,8 +740,24 @@ RETURN count(*) AS total_count
 
         # When preservation_method filter is present, add pf IS NOT NULL to WHERE clause
         # (the filter value is applied in OPTIONAL MATCH WHERE clause via early filter optimization)
-        if preservation_method_param:
+        if preservation_method_param or dcc_pf_conditions:
             all_conditions.append("pf IS NOT NULL")
+        # dcc diagnosis predicates: one check on one diagnosis node. In search mode they join
+        # the search predicate on that node (has_matching_diagnosis) instead.
+        dcc_diagnosis_node_condition = (
+            " AND ".join(f"({part})" for part in dcc_diagnosis_node_parts)
+            if dcc_diagnosis_node_parts
+            else None
+        )
+        if dcc_diagnosis_node_condition:
+            if diagnosis_search_term is not None:
+                diagnosis_filter_parts_for_search.append(dcc_diagnosis_node_condition)
+            else:
+                all_conditions.append(
+                    "size([d IN all_diagnoses WHERE d IS NOT NULL AND ("
+                    + dcc_diagnosis_node_condition
+                    + ") | d ]) > 0"
+                )
 
         # Only add anatomical_sites to all_conditions if not already in early_where_conditions
         # (anatomical_sites is stored as a variable, not in regular_conditions, so we need to check early_where_conditions)
@@ -794,11 +855,11 @@ RETURN count(*) AS total_count
 
         needs_pathology_file = any(
             field in filters for field in ["preservation_method"]
-        ) or any("pf." in str(cond) for cond in all_conditions if isinstance(cond, str))
+        ) or any("pf." in str(cond) for cond in all_conditions if isinstance(cond, str)) or bool(dcc_pf_conditions)
 
         needs_sequencing_file = any(
             field in filters for field in ["library_selection_method", "library_strategy", "library_source_material", "specimen_molecular_analyte_type"]
-        ) or any("sf." in str(cond) for cond in all_conditions if isinstance(cond, str))
+        ) or any("sf." in str(cond) for cond in all_conditions if isinstance(cond, str)) or bool(dcc_sf_conditions)
 
         needs_study = any(
             field in filters for field in ["depositions"]
@@ -807,11 +868,15 @@ RETURN count(*) AS total_count
         # OPTIMIZATION: Apply preservation_method filter EARLY in OPTIONAL MATCH WHERE clause
         # This avoids collecting all pathology_files then filtering (10-20x faster)
         pf_optional_match_where_summary = None
+        pf_where_parts = []
         if preservation_method_param:
             if isinstance(params[preservation_method_param], list):
-                pf_optional_match_where_summary = f"WHERE pf.fixation_embedding_method IN ${preservation_method_param}"
+                pf_where_parts.append(f"pf.fixation_embedding_method IN ${preservation_method_param}")
             else:
-                pf_optional_match_where_summary = f"WHERE pf.fixation_embedding_method = ${preservation_method_param}"
+                pf_where_parts.append(f"pf.fixation_embedding_method = ${preservation_method_param}")
+        pf_where_parts.extend(dcc_pf_conditions)
+        if pf_where_parts:
+            pf_optional_match_where_summary = "WHERE " + " AND ".join(pf_where_parts)
 
         # Build OPTIONAL MATCH clauses
         optional_matches = []
@@ -852,7 +917,9 @@ RETURN count(*) AS total_count
             if needs_sf_collection:
                 with_collects.append("collect(DISTINCT sf) AS all_sfs")  # Collect all sequencing_files
             else:
-                with_collects.append("head(collect(DISTINCT sf)) AS sf")
+                with_collects.append(
+                    f"{sequencing_file_by_index('collect(DISTINCT sf)')} AS sf"
+                )
 
         # Always include study
         with_vars.append("st")
@@ -966,17 +1033,27 @@ RETURN count(*) AS total_count
                         # Use = for single value
                         sf_match_conditions.append(f"sf.library_source_material = ${library_source_material_param}")
 
-            # Combine all conditions with OR (if multiple fields) or use single condition
-            if len(sf_match_conditions) == 1:
-                has_matching_sf_expr = f"size([sf IN all_sfs WHERE sf IS NOT NULL AND {sf_match_conditions[0]}]) > 0"
+            # Harmonized sequencing-file filters stay OR'd together. A dcc filter ANDs with that.
+            if not dcc_sf_conditions:
+                if len(sf_match_conditions) == 1:
+                    has_matching_sf_expr = f"size([sf IN all_sfs WHERE sf IS NOT NULL AND {sf_match_conditions[0]}]) > 0"
+                else:
+                    combined_condition = " OR ".join([f"({cond})" for cond in sf_match_conditions])
+                    has_matching_sf_expr = f"size([sf IN all_sfs WHERE sf IS NOT NULL AND ({combined_condition})]) > 0"
             else:
-                # Multiple conditions - combine with OR
-                combined_condition = " OR ".join([f"({cond})" for cond in sf_match_conditions])
-                has_matching_sf_expr = f"size([sf IN all_sfs WHERE sf IS NOT NULL AND ({combined_condition})]) > 0"
+                if len(sf_match_conditions) == 1:
+                    harmonized_sf = sf_match_conditions[0]
+                elif sf_match_conditions:
+                    harmonized_sf = "(" + " OR ".join([f"({cond})" for cond in sf_match_conditions]) + ")"
+                else:
+                    harmonized_sf = None
+                sf_clauses = ([harmonized_sf] if harmonized_sf else []) + dcc_sf_conditions
+                combined_condition = " AND ".join([f"({cond})" for cond in sf_clauses])
+                has_matching_sf_expr = f"size([sf IN all_sfs WHERE sf IS NOT NULL AND {combined_condition}]) > 0"
 
             # SF collection is active, add SF-related variables
             second_with_vars.append(f"{has_matching_sf_expr} AS has_matching_sf")
-            second_with_vars.append("head([sf IN all_sfs WHERE sf IS NOT NULL | sf]) AS sf")
+            second_with_vars.append(f"{sequencing_file_by_index('all_sfs')} AS sf")
 
         # If we have diagnosis search or sf collection, finalize second_with_clause
         if needs_sf_collection or needs_diag_collection:
@@ -1274,7 +1351,7 @@ RETURN count(*) AS total_count
                 OPTIONAL MATCH (sa)-[:of_sample]->(p2:participant)-[:of_participant]->(:consent_group)-[:of_consent_group]->(st2:study)
                 WITH sa, p,
                      coalesce(st1, st2) AS st,
-                     head(collect(DISTINCT sf)) AS sf,
+                     {sequencing_file_by_index("collect(DISTINCT sf)")} AS sf,
                      head(collect(DISTINCT pf)) AS pf,
                      head(collect(DISTINCT d)) AS diagnoses
                 {where_clause}

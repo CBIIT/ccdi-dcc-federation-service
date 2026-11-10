@@ -293,8 +293,17 @@ class DiagnosisField(BaseModel):
 
 
 class ValueField(BaseModel):
-    """Simple field with value attribute."""
-    value: str = Field(..., description="Field value")
+    """Simple field with value attribute.
+
+    value is null only when the field carries ancestors and the unharmonized
+    file maps the raw value to null (e.g. library_selection_method cDNA).
+    """
+    value: Optional[str] = Field(..., description="Field value (null when the file maps the raw value to null)")
+    ancestors: Optional[List[str]] = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="Present when this value was transformed from an unharmonized field",
+    )
 
 class IntegerValueField(BaseModel):
     """Integer field with value attribute."""
@@ -580,21 +589,11 @@ class SamplesResponse(BaseModel):
         description="Summary information with counts"
     )
     data: List[Sample] = Field(..., description="List of samples with flexible structure")
-    # gateways: Optional[List[Any]] = Field(
-    #     default=None,
-    #     exclude=True,  # Exclude from serialization
-    #     description="Gateway access information (placeholder - excluded from responses)"
-    # )
-    # gateways: Optional[Dict[str, NamedGateway]] = Field(
-    #     None,
-    #     description="Named gateways referenced by samples (placeholder - excluded from responses)"
-    # )
-    
-    def model_dump(self, **kwargs):
-        """Override model_dump to exclude gateways from serialization."""
-        data = super().model_dump(**kwargs)
-        data.pop('gateways', None)
-        return data
+    gateways: Optional[List[NamedGateway]] = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="Named gateways for this list response (non-empty sample lists only)",
+    )
 
 
 class FilesResponse(BaseModel):

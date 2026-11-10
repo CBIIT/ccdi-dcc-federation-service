@@ -180,7 +180,7 @@ class TestDiagnosisSearch:
         # Uses chained WITH clauses to avoid cartesian products
         assert 'head(collect(DISTINCT p0))' in query or 'head(collect(DISTINCT p0))' in query.replace(' ', '')
         assert 'head(collect(DISTINCT pf0))' in query or 'head(collect(DISTINCT pf0))' in query.replace(' ', '')
-        assert 'head(collect(DISTINCT sf0))' in query or 'head(collect(DISTINCT sf0))' in query.replace(' ', '')
+        assert "f.guid < picked.guid" in query
         
         # Verify chained WITH clauses to avoid cross-products
         assert 'OPTIONAL MATCH (sa)-[:of_sample]->(p0:participant)' in query

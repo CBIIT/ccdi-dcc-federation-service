@@ -399,3 +399,104 @@ class TestSampleConverters:
         assert isinstance(result["age"], int)
         assert isinstance(result["is_active"], bool)
         assert isinstance(result["tags"], list)
+
+
+@pytest.mark.unit
+class TestSampleUnharmonizedFields:
+    """dcc_ entries and ancestors for the five sample unharmonized fields."""
+
+    @pytest.fixture
+    def converter(self):
+        class TestConverter(SampleConverters):
+            def __init__(self):
+                pass
+
+        return TestConverter()
+
+    def dump(self, converter, *, sf=None, pf=None, diagnoses=None, sa_extra=None):
+        sa = {"sample_id": "SAMP001"}
+        if sa_extra:
+            sa.update(sa_extra)
+        sample = converter._record_to_sample(
+            sa,
+            {"participant_id": "PART001"},
+            {"study_id": "phs002431"},
+            sf or {},
+            pf or {},
+            diagnoses,
+        )
+        return sample.model_dump(mode="json")["metadata"]
+
+    def test_transformed_field_gets_ancestors_and_entry(self, converter):
+        md = self.dump(converter, sf={"library_source_molecule": "Circulating cell-free DNA"})
+        assert md["specimen_molecular_analyte_type"] == {
+            "value": "DNA",
+            "ancestors": ["unharmonized.dcc_specimen_molecular_analyte_type"],
+        }
+        assert md["unharmonized"]["dcc_specimen_molecular_analyte_type"]["value"] == (
+            "Circulating cell-free DNA"
+        )
+
+    def test_disease_phase_from_head_diagnosis(self, converter):
+        md = self.dump(converter, diagnoses=[{"disease_phase": "Prior Primary"}])
+        assert md["disease_phase"] == {
+            "value": "Unknown",
+            "ancestors": ["unharmonized.dcc_disease_phase"],
+        }
+        assert md["unharmonized"]["dcc_disease_phase"]["details"]["url"].endswith(
+            "disease_phase=Unknown"
+        )
+
+    def test_null_mapped_value_gets_null_value_with_ancestors(self, converter):
+        # cDNA is in the file and maps to null: value is null, ancestors points at the entry.
+        md = self.dump(converter, sf={"library_selection": "cDNA"})
+        assert md["library_selection_method"] == {
+            "value": None,
+            "ancestors": ["unharmonized.dcc_library_selection_method"],
+        }
+        assert md["unharmonized"]["dcc_library_selection_method"] == {
+            "value": "cDNA",
+            "details": {
+                "harmonizer": "diagnosis_classification_system",
+                "url": "https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection=",
+            },
+        }
+
+    def test_pv_value_has_no_entry(self, converter):
+        md = self.dump(
+            converter,
+            sf={"library_selection": "5-Methylcytidine Antibody"},
+            pf={"fixation_embedding_method": "Fixation"},
+        )
+        assert md["library_selection_method"] == {"value": "5-Methylcytidine Antibody"}
+        assert md["preservation_method"] == {"value": "Fixation"}
+        assert md["unharmonized"] is None
+
+    def test_untransformed_fields_have_no_ancestors_key(self, converter):
+        md = self.dump(
+            converter,
+            sa_extra={"sample_tumor_status": "Tumor"},
+            diagnoses=[{"tumor_grade": "G1"}],
+        )
+        assert "ancestors" not in md["tissue_type"]
+        assert "ancestors" not in md["tumor_grade"]
+
+    def test_new_entries_merge_after_diagnosis_category_entries(self, converter):
+        md = self.dump(
+            converter,
+            diagnoses=[
+                {
+                    "diagnosis_category": "Medulloblastoma;Adenomas and adenocarcinomas",
+                    "disease_phase": "Recurrent Disease",
+                }
+            ],
+        )
+        assert list(md["unharmonized"]) == ["dcc_diagnosis_category_1", "dcc_disease_phase"]
+        assert md["unharmonized"]["dcc_diagnosis_category_1"] == {
+            "value": "Adenomas and adenocarcinomas"
+        }
+        assert md["diagnosis_category"] == {"value": "Medulloblastoma"}
+
+    def test_invalid_value_raw_gets_no_entry(self, converter):
+        md = self.dump(converter, sf={"library_strategy": "Invalid value"})
+        assert md["library_strategy"] is None and md["unharmonized"] is None

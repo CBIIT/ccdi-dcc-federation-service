@@ -35,6 +35,7 @@ from app.models.errors import ErrorDetail, ErrorsResponse, ErrorKind, InvalidPar
 from app.services.sample import SampleService
 from app.services.subject import SubjectService
 from app.core.gateways import get_gateways
+from app.repositories.sample_unharmonized_filters import canonical_dcc_filter_name
 from app.db.memgraph import DatabaseConnectionError, is_retryable_error
 
 logger = get_logger(__name__)
@@ -122,7 +123,10 @@ as a breaking change.""",
                                     "name": "TARGET-10-DCC001",
                                 },
                                 "metadata": {
-                                    "disease_phase": {"value": "Initial Diagnosis"},
+                                    "disease_phase": {
+                                        "value": "Relapse",
+                                        "ancestors": ["unharmonized.dcc_disease_phase"],
+                                    },
                                     "diagnosis": [
                                         {"value": "Neuroblastoma", "comment": "null"}
                                     ],
@@ -132,7 +136,15 @@ as a breaking change.""",
                                     "unharmonized": {
                                         "dcc_diagnosis_category_1": {
                                             "value": "Gliomas"
-                                        }
+                                        },
+                                        "dcc_disease_phase": {
+                                            "value": "Recurrent Disease",
+                                            "details": {
+                                                "method": "Mapped",
+                                                "harmonizer": "DomainExpert",
+                                                "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?disease_phase=Relapse",
+                                            },
+                                        },
                                     },
                                     "age_at_diagnosis": {"value": 10},
                                     "age_at_collection": {"value": 10},
@@ -166,6 +178,26 @@ as a breaking change.""",
                                     ]
                                 },
                             }
+                        ],
+                        "gateways": [
+                            {
+                                "name": "CCDI DCC model",
+                                "kind": "Open",
+                                "link": {
+                                    "kind": "Approximate",
+                                    "url": "https://github.com/CBIIT/ccdi-dcc-model",
+                                    "instructions": "The CCDI DCC model is a graph database schema. model-desc/ccdi-dcc-model.yml describes the model nodes. /ccdi-dcc-model-props.yml describes the node properties.",
+                                },
+                            },
+                            {
+                                "name": "Childhood Cancer Clinical Data Commons",
+                                "kind": "Open",
+                                "link": {
+                                    "kind": "Approximate",
+                                    "url": "https://clinicalcommons.ccdi.cancer.gov/home",
+                                    "instructions": "The Explore Participants view enables browsing and filtering by study, participant, and sample attributes.",
+                                },
+                            },
                         ],
                     }
                 }
@@ -222,8 +254,11 @@ async def search_samples_by_diagnosis(
         
         unknown_params = []
         for key in request.query_params.keys():
-            if key not in allowed_params:
-                unknown_params.append(key)
+            # Accept only the six sample dcc_ unharmonized filters (same names as /sample).
+            # Any other metadata.unharmonized.* key stays rejected here.
+            if key in allowed_params or canonical_dcc_filter_name(key) is not None:
+                continue
+            unknown_params.append(key)
         
         if unknown_params:
             raise InvalidParametersError(
@@ -272,7 +307,10 @@ async def search_samples_by_diagnosis(
                     "current": len(samples)
                 }
             },
-            data=samples_dicts
+            data=samples_dicts,
+            # /sample-diagnosis list responses now carry top-level gateways, the same
+            # as /sample (FEDERATION-768). This route is unstable.
+            gateways=(get_gateways("samples") or None) if samples else None,
         )
         
         logger.info(

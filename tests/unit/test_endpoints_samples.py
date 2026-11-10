@@ -118,6 +118,124 @@ class TestSampleEndpoints:
         assert result.summary["counts"]["all"] == 100
         mock_service.get_samples_summary.assert_not_called()
 
+    async def test_list_samples_rejects_unknown_unharmonized_key(
+        self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
+    ):
+        """Only the six dcc_ unharmonized names are accepted on /sample; any other key is a 400."""
+        from starlette.datastructures import QueryParams
+
+        mock_request.query_params = QueryParams({"metadata.unharmonized.batch_id": "x"})
+        with patch("app.api.v1.endpoints.samples.SampleService") as mock_service_class:
+            mock_service = Mock()
+            mock_service.get_samples = AsyncMock(return_value=([], 0))
+            mock_service_class.return_value = mock_service
+            with patch("app.api.v1.endpoints.samples.get_cache_service", return_value=None):
+                with patch("app.api.v1.endpoints.samples.check_rate_limit", return_value=None):
+                    with pytest.raises(HTTPException) as exc_info:
+                        await list_samples(
+                            request=mock_request,
+                            response=mock_response,
+                            filters={"metadata.unharmonized.batch_id": "x"},
+                            pagination=mock_pagination,
+                            session=mock_session,
+                            settings=mock_settings,
+                            allowlist=mock_allowlist,
+                            _rate_limit=None,
+                        )
+
+        assert exc_info.value.status_code == 400
+        mock_service.get_samples.assert_not_called()
+
+    async def test_list_samples_accepts_dcc_unharmonized_key(
+        self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
+    ):
+        """An allowlisted dcc_ key reaches the service."""
+        from starlette.datastructures import QueryParams
+
+        mock_request.query_params = QueryParams({"metadata.unharmonized.dcc_disease_phase": "Relapse"})
+        with patch("app.api.v1.endpoints.samples.SampleService") as mock_service_class:
+            mock_service = Mock()
+            mock_service.get_samples = AsyncMock(return_value=([], 0))
+            mock_service_class.return_value = mock_service
+            with patch("app.api.v1.endpoints.samples.get_cache_service", return_value=None):
+                with patch("app.api.v1.endpoints.samples.check_rate_limit", return_value=None):
+                    result = await list_samples(
+                        request=mock_request,
+                        response=mock_response,
+                        filters={"metadata.unharmonized.dcc_disease_phase": "Relapse"},
+                        pagination=mock_pagination,
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None,
+                    )
+
+        assert isinstance(result, SamplesResponse)
+        call_kwargs = mock_service.get_samples.await_args.kwargs
+        assert call_kwargs["filters"]["metadata.unharmonized.dcc_disease_phase"] == "Relapse"
+
+    async def test_list_samples_includes_gateways(
+        self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
+    ):
+        """Non-empty /sample lists carry the configured gateways after data."""
+
+        class MockSample:
+            def model_dump(self, exclude=None, exclude_none=None, exclude_unset=None):
+                return {
+                    "id": {
+                        "name": "sample1",
+                        "namespace": {"organization": "CCDI-DCC", "name": "phs002431"},
+                    },
+                    "metadata": {},
+                }
+
+        with patch("app.api.v1.endpoints.samples.SampleService") as mock_service_class:
+            mock_service = Mock()
+            mock_service.get_samples = AsyncMock(return_value=([MockSample()], 1))
+            mock_service_class.return_value = mock_service
+            with patch("app.api.v1.endpoints.samples.get_cache_service", return_value=None):
+                with patch("app.api.v1.endpoints.samples.check_rate_limit", return_value=None):
+                    result = await list_samples(
+                        request=mock_request,
+                        response=mock_response,
+                        filters={},
+                        pagination=mock_pagination,
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None,
+                    )
+
+        body = result.model_dump(mode="json")
+        assert [g["name"] for g in body["gateways"]] == [
+            "CCDI DCC model",
+            "Childhood Cancer Clinical Data Commons",
+        ]
+        assert list(body).index("data") < list(body).index("gateways")
+
+    async def test_empty_sample_list_omits_gateways(
+        self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
+    ):
+        """An empty /sample list omits gateways."""
+        with patch("app.api.v1.endpoints.samples.SampleService") as mock_service_class:
+            mock_service = Mock()
+            mock_service.get_samples = AsyncMock(return_value=([], 0))
+            mock_service_class.return_value = mock_service
+            with patch("app.api.v1.endpoints.samples.get_cache_service", return_value=None):
+                with patch("app.api.v1.endpoints.samples.check_rate_limit", return_value=None):
+                    result = await list_samples(
+                        request=mock_request,
+                        response=mock_response,
+                        filters={},
+                        pagination=mock_pagination,
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None,
+                    )
+
+        assert "gateways" not in result.model_dump(mode="json")
+
     async def test_list_samples_database_error(
         self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
     ):

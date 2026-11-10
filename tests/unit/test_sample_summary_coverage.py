@@ -1043,3 +1043,163 @@ class TestGetSamplesSummaryReverseQueryCoverage:
         
         with pytest.raises(Exception, match="Database error"):
             await repository._get_samples_summary_reverse_query({"library_source_material": "DNA"})
+
+
+def _fresh_summary_result(total=3):
+    """A new async result for each session.run call. The general summary path iterates it."""
+
+    def _result(*_args, **_kwargs):
+        async def async_gen():
+            yield {"total_count": total}
+
+        result = AsyncMock()
+        result.__aiter__ = Mock(return_value=async_gen())
+        result.consume = AsyncMock()
+        return result
+
+    return _result
+
+
+def _summary_query(session):
+    call = session.run.call_args
+    query = call.args[0] if call.args else ""
+    params = call.args[1] if len(call.args) > 1 else {}
+    return query, params
+
+
+@pytest.mark.unit
+class TestSummaryGeneralPathCoverage:
+    """Sequencing-file-only and diagnosis-only filters leave get_samples_summary before
+    the general builder. Pairing them with preservation_method stays on that builder,
+    which is where the reverse-mapping branches live."""
+
+    @pytest.fixture
+    def repository(self):
+        session = AsyncMock()
+        session.run = AsyncMock(side_effect=_fresh_summary_result())
+        allowlist = Mock(spec=FieldAllowlist)
+        allowlist.is_field_allowed = Mock(return_value=True)
+        return SampleRepository(session, allowlist, Mock(spec=Settings)), session
+
+    async def test_library_selection_reverse_maps_onto_library_selection(self, repository):
+        repo, session = repository
+        result = await repo.get_samples_summary(
+            {
+                "library_selection_method": "Poly-A Enriched Genomic Library",
+                "preservation_method": "OCT",
+            }
+        )
+        query, params = _summary_query(session)
+        assert result == {"counts": {"total": 3}}
+        assert "sf.library_selection = $" in query
+        assert "PolyA" in params.values()
+
+    async def test_library_strategy_database_only_returns_zero(self, repository):
+        repo, session = repository
+        result = await repo.get_samples_summary(
+            {"library_strategy": "Archer Fusion", "preservation_method": "OCT"}
+        )
+        assert result == {"counts": {"total": 0}}
+        session.run.assert_not_called()
+
+    async def test_library_strategy_other_matches_mapped_and_original(self, repository):
+        repo, session = repository
+        await repo.get_samples_summary(
+            {"library_strategy": "Other", "preservation_method": "OCT"}
+        )
+        query, params = _summary_query(session)
+        assert "Archer Fusion" in params.values()
+        assert "Other" in params.values()
+        assert "sf.library_strategy = $" in query
+        assert " OR " in query
+
+    async def test_library_strategy_without_reverse_mapping_uses_the_value(self, repository):
+        repo, session = repository
+        with patch(
+            "app.repositories.sample_summary.reverse_map_field_value",
+            side_effect=lambda field, value: None if field == "library_strategy" else value,
+        ):
+            await repo.get_samples_summary(
+                {"library_strategy": "WGS", "preservation_method": "OCT"}
+            )
+        query, params = _summary_query(session)
+        assert query.count("sf.library_strategy = $") == 1
+        assert "WGS" in params.values()
+
+    async def test_specimen_null_mapped_returns_zero(self, repository):
+        repo, session = repository
+        result = await repo.get_samples_summary(
+            {
+                "specimen_molecular_analyte_type": "Not Reported",
+                "preservation_method": "OCT",
+            }
+        )
+        assert result == {"counts": {"total": 0}}
+        session.run.assert_not_called()
+
+    async def test_specimen_scalar_mapping_uses_library_source_molecule(self, repository):
+        repo, session = repository
+        await repo.get_samples_summary(
+            {
+                "specimen_molecular_analyte_type": "Protein",
+                "preservation_method": "OCT",
+            }
+        )
+        query, params = _summary_query(session)
+        assert "sf.library_source_molecule = $" in query
+        assert "Protein" in params.values()
+
+    async def test_disease_phase_database_only_returns_zero(self, repository):
+        repo, session = repository
+        result = await repo.get_samples_summary(
+            {"disease_phase": "Recurrent Disease", "preservation_method": "OCT"}
+        )
+        assert result == {"counts": {"total": 0}}
+        session.run.assert_not_called()
+
+    async def test_disease_phase_unmapped_value_uses_equality(self, repository):
+        repo, session = repository
+        await repo.get_samples_summary(
+            {"disease_phase": "Initial Diagnosis", "preservation_method": "OCT"}
+        )
+        query, params = _summary_query(session)
+        assert "d.disease_phase = $" in query
+        assert "Initial Diagnosis" in params.values()
+
+    async def test_disease_phase_null_mapped_uses_equality(self, repository):
+        repo, session = repository
+        from app.repositories.sample_summary import is_null_mapped_value as real
+
+        def patched(field, value):
+            if field == "disease_phase":
+                return True
+            return real(field, value)
+
+        with patch("app.repositories.sample_summary.is_null_mapped_value", side_effect=patched):
+            await repo.get_samples_summary(
+                {"disease_phase": "Not Reported", "preservation_method": "OCT"}
+            )
+        query, params = _summary_query(session)
+        assert "d.disease_phase = $" in query
+        assert "Not Reported" in params.values()
+
+    async def test_tumor_classification_list_mapping_uses_in(self, repository):
+        repo, session = repository
+        await repo.get_samples_summary({"tumor_classification": "Primary"})
+        query, params = _summary_query(session)
+        assert "sa.tumor_spatial_extent IN $" in query
+        assert ["Local", "Locoregional", "Primary"] in params.values()
+
+    async def test_tumor_classification_scalar_mapping_uses_equality(self, repository):
+        repo, session = repository
+        await repo.get_samples_summary({"tumor_classification": "Metastatic"})
+        query, params = _summary_query(session)
+        assert "sa.tumor_spatial_extent = $" in query
+        assert "Metastatic" in params.values()
+
+    async def test_depositions_with_one_token_after_split_stays_scalar(self, repository):
+        repo, session = repository
+        await repo.get_samples_summary({"depositions": "phs0001 || "})
+        _query, params = _summary_query(session)
+        assert "phs0001" in params.values()
+        assert ["phs0001"] not in params.values()

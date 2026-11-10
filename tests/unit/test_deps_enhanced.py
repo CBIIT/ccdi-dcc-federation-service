@@ -53,6 +53,7 @@ class TestSampleFiltersEnhanced:
     def mock_request(self):
         request = Mock(spec=Request)
         request.query_params = Mock()
+        request.query_params.keys = Mock(return_value=[])
         request.query_params.items = Mock(return_value=[])
         request.query_params.getlist = Mock(return_value=[])  # Add getlist method
         return request

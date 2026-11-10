@@ -174,7 +174,7 @@
         "path": "library_selection_method",
         "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#library_selection_method",
         "standard": {
-          "name": "caDSR CDE 6347743 v1.00",
+          "name": "caDSR CDE 6347743 v2.00",
           "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=6347743%20and%20ver_nr=2.0"
         }
       },
@@ -197,7 +197,7 @@
         }
       },
       {
-        "harmonized": false,
+        "harmonized": true,
         "path": "tumor_grade",
         "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#tumor_grade",
         "standard": {
@@ -219,7 +219,7 @@
         "path": "diagnosis_category",
         "wiki_url": "https://github.com/CBIIT/ccdi-federation-api-spec/wiki/Sample-Metadata-Fields#diagnosis_category",
         "standard": {
-          "name": "caDSR CDE 16607972 1.00",
+          "name": "caDSR CDE 16607972 v1.0.0",
           "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=16607972%20and%20ver_nr=1"
         }
       },
@@ -235,27 +235,47 @@
       {
         "harmonized": false,
         "path": "unharmonized.dcc_library_selection_method",
-        "wiki_url": null
+        "wiki_url": null,
+        "standard": {
+          "name": "caDSR CDE 6347743 v2.0",
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=6347743%20and%20ver_nr=2"
+        }
       },
       {
         "harmonized": false,
         "path": "unharmonized.dcc_library_strategy",
-        "wiki_url": null
+        "wiki_url": null,
+        "standard": {
+          "name": "caDSR CDE 6273393 v2.0",
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=6273393%20and%20ver_nr=2"
+        }
       },
       {
         "harmonized": false,
         "path": "unharmonized.dcc_preservation_method",
-        "wiki_url": null
+        "wiki_url": null,
+        "standard": {
+          "name": "caDSR CDE 8028962 v3.0",
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=8028962%20and%20ver_nr=3"
+        }
       },
       {
         "harmonized": false,
         "path": "unharmonized.dcc_specimen_molecular_analyte_type",
-        "wiki_url": null
+        "wiki_url": null,
+        "standard": {
+          "name": "caDSR CDE 15063661 v1.0",
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=15063661%20and%20ver_nr=1"
+        }
       },
       {
         "harmonized": false,
         "path": "unharmonized.dcc_disease_phase",
-        "wiki_url": null
+        "wiki_url": null,
+        "standard": {
+          "name": "caDSR CDE 12217251 v2.0",
+          "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=12217251%20and%20ver_nr=2"
+        }
       },
       {
         "harmonized": true,

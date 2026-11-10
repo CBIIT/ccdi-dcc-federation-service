@@ -521,14 +521,20 @@ def test_sample_metadata_fields_list_dcc_entries():
     fields = json.load(config.open(encoding="utf-8"))["samples"]["fields"]
     paths = [field["path"] for field in fields]
     new = [
-        "unharmonized.dcc_library_selection_method",
-        "unharmonized.dcc_library_strategy",
-        "unharmonized.dcc_preservation_method",
-        "unharmonized.dcc_specimen_molecular_analyte_type",
-        "unharmonized.dcc_disease_phase",
+        ("unharmonized.dcc_library_selection_method", "6347743", "v2.0"),
+        ("unharmonized.dcc_library_strategy", "6273393", "v2.0"),
+        ("unharmonized.dcc_preservation_method", "8028962", "v3.0"),
+        ("unharmonized.dcc_specimen_molecular_analyte_type", "15063661", "v1.0"),
+        ("unharmonized.dcc_disease_phase", "12217251", "v2.0"),
     ]
     index = paths.index("unharmonized.dcc_diagnosis_category_<n>")
-    assert paths[index + 1 : index + 6] == new
-    for field in fields[index + 1 : index + 6]:
-        assert field == {"harmonized": False, "path": field["path"], "wiki_url": None}
+    listed = fields[index + 1 : index + 6]
+    assert [field["path"] for field in listed] == [path for path, _cde, _ver in new]
+    for field, (path, cde, version) in zip(listed, new):
+        assert field["harmonized"] is False
+        assert field["wiki_url"] is None
+        assert field["path"] == path
+        assert cde in field["standard"]["name"]
+        assert version in field["standard"]["name"]
+        assert cde in field["standard"]["url"]
 

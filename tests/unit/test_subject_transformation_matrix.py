@@ -9,7 +9,7 @@ from tests.unit.test_subject_diagnosis_category import (
     _make_repo,
 )
 
-SUBJECT_PREFIX = "dcc_associated_diagnosis_category"
+SUBJECT_PREFIX = "dcc_associated_diagnosis_categories"
 _ANCESTOR_SEX = ["unharmonized.dcc_sex_at_birth"]
 
 

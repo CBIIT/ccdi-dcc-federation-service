@@ -78,6 +78,21 @@ def is_memory_limit_error(error: Exception) -> bool:
     return "memory limit" in str(error).lower()
 
 
+def is_query_timeout_error(error: Exception) -> bool:
+    """
+    True when Memgraph aborted the query at its execution limit.
+
+    Observed on Memgraph 3.12 with ``query.timeout`` set (startup flag
+    ``--query-execution-timeout-sec``): TransientError,
+    "Transaction was asked to abort because of transaction timeout."
+
+    The phrase is specific on purpose. ``is_retryable_error`` treats any message
+    containing "timeout" as retryable, including a connection timeout, and those
+    should still be retried. A query-limit abort will fail the same way again.
+    """
+    return "transaction timeout" in str(error).lower()
+
+
 async def run_count_query_with_retry(
     session: AsyncSession,
     cypher: str,
@@ -96,9 +111,9 @@ async def run_count_query_with_retry(
     re-raises the last error after exhausting retries, or immediately on a
     non-retryable error, so the caller can apply its own fallback.
 
-    Memgraph "Memory limit exceeded" errors are NOT retried: they are deterministic
-    for a given query (retrying just OOMs again after multiplying latency), so they
-    raise immediately.
+    Memgraph "Memory limit exceeded" errors and query-execution timeouts
+    ("transaction timeout") are NOT retried: both fail the same way again, so they
+    raise immediately. A connection timeout is still retried.
 
     Returns the total_count (0 only if the query legitimately yields no count row).
     """
@@ -114,6 +129,7 @@ async def run_count_query_with_retry(
             if (
                 is_retryable_error(exc)
                 and not is_memory_limit_error(exc)
+                and not is_query_timeout_error(exc)
                 and attempt < max_retries
             ):
                 logger.warning(

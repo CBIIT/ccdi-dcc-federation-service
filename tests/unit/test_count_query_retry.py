@@ -102,3 +102,33 @@ async def test_memory_limit_error_not_retried():
     with pytest.raises(TransientError):
         await run_count_query_with_retry(session, "…", {}, max_retries=2, retry_delay=0.0)
     assert session.calls == 1  # no retry — retrying a too-heavy query just OOMs again
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_query_execution_timeout_not_retried():
+    """Memgraph query.timeout abort is deterministic → raise immediately, no retry."""
+    session = _Session(
+        rows=[{"total_count": 1}],
+        fail_times=99,
+        error=TransientError(
+            "{code: Memgraph.TransientError.MemgraphError.MemgraphError} "
+            "{message: Transaction was asked to abort because of transaction timeout.}"
+        ),
+    )
+    with pytest.raises(TransientError):
+        await run_count_query_with_retry(session, "…", {}, max_retries=2, retry_delay=0.0)
+    assert session.calls == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_connection_timeout_is_still_retried():
+    """A connection timeout is transient. Only Memgraph's transaction timeout is not."""
+    session = _Session(
+        rows=[{"total_count": 4}],
+        fail_times=1,
+        error=TransientError("connection timeout"),
+    )
+    assert await run_count_query_with_retry(session, "…", {}, retry_delay=0.0) == 4
+    assert session.calls == 2

@@ -68,6 +68,18 @@ def test_categorize_routes_the_six_fields_and_leaves_other_keys_alone():
 
 
 @pytest.mark.unit
+def test_diagnosis_category_filter_splits_semicolon_delimited_values():
+    params = {}
+    condition = dcc_match_condition(
+        "dcc_diagnosis_category", "d", "Gliomas", "param_1", params
+    )
+    assert "split(toString(token), ';')" in condition
+    assert "toLower(trim(part)) IN $param_1" in condition
+    assert "valueType(d.diagnosis_category) = 'LIST'" in condition
+    assert params["param_1"] == ["gliomas"]
+
+
+@pytest.mark.unit
 def test_match_is_case_insensitive_raw_property_and_blank_matches_nothing():
     params = {}
     condition = dcc_match_condition(

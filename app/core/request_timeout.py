@@ -93,6 +93,7 @@ class RequestTimeoutMiddleware:
             timed_out = True
             started = response_started
         if started:
+            # Headers are already out. Uvicorn closes the connection here.
             logger.warning(
                 "Request exceeded timeout after the response had started",
                 method=scope.get("method"),

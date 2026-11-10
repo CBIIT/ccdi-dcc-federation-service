@@ -158,6 +158,19 @@ class TestSubjectService:
         assert result == ([], 0)
         assert service.repository.get_subjects.call_count == 1  # deterministic -> no retry
 
+    async def test_get_subjects_query_timeout_returns_empty_without_retry(self, service):
+        """Memgraph query.timeout abort -> empty result, and not retried."""
+        from neo4j.exceptions import TransientError
+        service.repository.get_subjects = AsyncMock(
+            side_effect=TransientError(
+                "Transaction was asked to abort because of transaction timeout."
+            )
+        )
+
+        result = await service.get_subjects(filters={}, offset=0, limit=20, return_total=True)
+        assert result == ([], 0)
+        assert service.repository.get_subjects.call_count == 1
+
     async def test_get_subjects_transient_error_is_retried_and_recovers(self, service):
         """Regression: a genuinely transient failure (ServiceUnavailable) must be RETRIED, not
         turned into empty data on the first failure. Returning empty without retrying is how a

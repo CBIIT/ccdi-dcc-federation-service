@@ -233,7 +233,7 @@ class FileService:
         
         # Sequential per repo: shared session cannot handle concurrent queries.
         # Each call is individually timeout-bounded by the remaining budget.
-        query_timeout = self.settings.query_timeout or 60
+        query_timeout = self.settings.query_timeout or 100
         start_time = time.time()
         try:
             results = []

@@ -6,6 +6,8 @@ node property, case-insensitive, the same way ``/file`` matches
 
 ``dcc_diagnosis_category_<n>`` is the response key. ``<n>`` is not a position
 filter: every numbered key matches any raw ``diagnosis_category`` token.
+A scalar value, and any list element that still contains ``;``, is split
+the same way the sample response splits it.
 """
 
 from typing import Any
@@ -79,9 +81,12 @@ def dcc_match_condition(
     params[param_name] = selected
     prop = _SPECS[name][1]
     if name == "dcc_diagnosis_category":
+        # Match each token the response would show. List elements are already
+        # tokens except where one element still holds a ';' separated string.
         return (
             f"ANY(token IN CASE WHEN valueType({alias}.diagnosis_category) = 'LIST' "
             f"THEN {alias}.diagnosis_category ELSE [coalesce({alias}.diagnosis_category, '')] END "
-            f"WHERE toLower(trim(toString(token))) IN ${param_name})"
+            f"WHERE ANY(part IN split(toString(token), ';') "
+            f"WHERE toLower(trim(part)) IN ${param_name}))"
         )
     return f"toLower(trim(toString({alias}.{prop}))) IN ${param_name}"

@@ -223,7 +223,7 @@ class Settings(BaseSettings):
     cache_redis_port: Optional[int] = Field(default=6379, description="Redis port")
     cache_redis_db: Optional[int] = Field(default=0, description="Redis database")
     cache_redis_password: Optional[str] = Field(default="", description="Redis password")
-    query_timeout: Optional[int] = Field(default=60, description="Query timeout in seconds")
+    query_timeout: Optional[int] = Field(default=100, description="Query timeout in seconds")
     # Below the proxy idle limit so the app returns its own error before a 504.
     request_timeout_seconds: int = Field(
         default=100,

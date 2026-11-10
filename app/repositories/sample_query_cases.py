@@ -26,7 +26,12 @@ from app.repositories.subject_diagnosis_cypher import (
     diagnosis_search_predicate,
 )
 from app.core.diagnosis_category import diagnosis_category_filter_db_values
-from app.repositories.sample_helpers import SD_CAT_MARKER
+from app.repositories.sample_helpers import SD_CAT_MARKER, sequencing_file_by_index
+from app.repositories.sample_unharmonized_filters import (
+    SEQUENCING_DCC_FILTERS,
+    dcc_filter_values,
+    dcc_match_condition,
+)
 from app.utils.cypher_builder import anatomic_site_member_predicate
 
 logger = get_logger(__name__)
@@ -213,7 +218,7 @@ class SampleQueryCases:
         SKIP $offset
         LIMIT $limit
         
-        // OPTIONAL MATCH other nodes - pick 1 random each
+        // OPTIONAL MATCH other nodes. Sequencing file: smallest guid.
         OPTIONAL MATCH (d:diagnosis)-[:of_diagnosis]->(sa)
         OPTIONAL MATCH (pf:pathology_file)-[:of_pathology_file]->(sa)
         OPTIONAL MATCH (sf:sequencing_file)-[:of_sequencing_file]->(sa)
@@ -221,7 +226,7 @@ class SampleQueryCases:
         WITH sa, st,
              [d IN collect(DISTINCT d) WHERE d IS NOT NULL | {_DIAG_PROJ}] AS diagnoses,
              head(collect(DISTINCT pf)) AS pf,
-             head(collect(DISTINCT sf)) AS sf
+             {sequencing_file_by_index("collect(DISTINCT sf)")} AS sf
         
         // After pagination: OPTIONAL MATCH participant
         OPTIONAL MATCH (sa)-[:of_sample]->(p:participant)
@@ -456,6 +461,14 @@ class SampleQueryCases:
                     continue
                 if field == SD_CAT_MARKER:
                     continue
+                if field in ("dcc_disease_phase", "dcc_diagnosis_category"):
+                    for one in dcc_filter_values(value):
+                        param_counter += 1
+                        param_name = f"param_{param_counter}"
+                        diagnosis_conditions.append(
+                            dcc_match_condition(field, "d", one, param_name, params)
+                        )
+                    continue
 
                 param_counter += 1
                 param_name = f"param_{param_counter}"
@@ -560,7 +573,13 @@ class SampleQueryCases:
             for field, value in categorized["sequencing_file"].items():
                 param_counter += 1
                 param_name = f"param_{param_counter}"
-                
+
+                if field in SEQUENCING_DCC_FILTERS:
+                    sf_conditions.append(
+                        dcc_match_condition(field, "sf", value, param_name, params)
+                    )
+                    continue
+
                 if field == "library_selection_method":
                     # Check if value is a database-only value
                     if is_database_only_value("library_selection_method", value):
@@ -643,6 +662,7 @@ class SampleQueryCases:
         pf_optional_match_where = None
         has_pf_filters = len(categorized["pathology_file"]) > 0
         if has_pf_filters:
+            pf_parts = []
             if "preservation_method" in categorized["pathology_file"]:
                 preservation_value = categorized["pathology_file"]["preservation_method"]
                 # Reject DB-only spellings (e.g. Cytospin Slide, Other); "Unknown" is
@@ -661,9 +681,23 @@ class SampleQueryCases:
                 reverse_mapped = reverse_map_field_value("preservation_method", preservation_value)
                 params[pf_param] = reverse_mapped if reverse_mapped else preservation_value
                 if isinstance(params[pf_param], list):
-                    pf_optional_match_where = f"WHERE pf.fixation_embedding_method IN ${pf_param}"
+                    pf_parts.append(f"pf.fixation_embedding_method IN ${pf_param}")
                 else:
-                    pf_optional_match_where = f"WHERE pf.fixation_embedding_method = ${pf_param}"
+                    pf_parts.append(f"pf.fixation_embedding_method = ${pf_param}")
+            if "dcc_preservation_method" in categorized["pathology_file"]:
+                param_counter += 1
+                dcc_pf_param = f"param_{param_counter}"
+                pf_parts.append(
+                    dcc_match_condition(
+                        "dcc_preservation_method",
+                        "pf",
+                        categorized["pathology_file"]["dcc_preservation_method"],
+                        dcc_pf_param,
+                        params,
+                    )
+                )
+            if pf_parts:
+                pf_optional_match_where = "WHERE " + " AND ".join(pf_parts)
 
         # Step 5.5: pre-UNWIND sf block — when combined_sf_condition is set, matching sf nodes
         # are collected per sample before study collection, avoiding the full samples × studies
@@ -721,7 +755,9 @@ class SampleQueryCases:
             # Fallback: combined_sf_condition is None despite sf filters (unrecognised sf field).
             with_collects.append("collect(DISTINCT sf) AS all_sfs")
         else:
-            with_collects.append("head(collect(DISTINCT sf)) AS sf")
+            with_collects.append(
+                f"{sequencing_file_by_index('collect(DISTINCT sf)')} AS sf"
+            )
 
         with_clause = f"WITH sa, {', '.join(with_collects)}"
         
@@ -863,9 +899,9 @@ class SampleQueryCases:
             pick_clause_parts.append("pf")
         
         if combined_sf_condition is not None:
-            pick_clause_parts.append("head([sf IN all_sf WHERE sf IS NOT NULL | sf]) AS sf")
+            pick_clause_parts.append(f"{sequencing_file_by_index('all_sf')} AS sf")
         elif has_sf_filters:
-            pick_clause_parts.append("head([sf IN all_sfs WHERE sf IS NOT NULL | sf]) AS sf")
+            pick_clause_parts.append(f"{sequencing_file_by_index('all_sfs')} AS sf")
         else:
             pick_clause_parts.append("sf")
 

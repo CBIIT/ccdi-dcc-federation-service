@@ -865,3 +865,23 @@ class TestEarlyPagination:
         with_st_clauses = [line for line in query_lines if 'WITH' in line and 'st' in line]
         assert len(with_st_clauses) > 0, "st should be carried through WITH clauses"
 
+
+    async def test_no_filters_paginates_before_node_matches(self, repository, mock_session):
+        """Unfiltered /sample must page (sample, study) pairs before the diagnosis/file
+        OPTIONAL MATCHes; otherwise every sample's files are aggregated before LIMIT."""
+        mock_result = AsyncMock()
+        mock_result.__aiter__.return_value = []
+        mock_result.consume = AsyncMock()
+        mock_session.run = AsyncMock(return_value=mock_result)
+
+        await repository.get_samples(filters={}, offset=0, limit=20)
+
+        query = mock_session.run.call_args[0][0]
+        assert "LIMIT $limit" in query
+        limit_pos = query.index("LIMIT $limit")
+        for node_match in (
+            "OPTIONAL MATCH (d:diagnosis)",
+            "OPTIONAL MATCH (pf:pathology_file)",
+            "OPTIONAL MATCH (sf:sequencing_file)",
+        ):
+            assert query.index(node_match) > limit_pos, f"{node_match} must follow LIMIT"

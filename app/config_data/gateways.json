@@ -38,5 +38,25 @@
         "instructions": "The Explore Participants view enables browsing and filtering by study, participant, and sample attributes. The Explore File focuses on file based attributes."
       }
     }
+  ],
+  "samples": [
+    {
+      "link": {
+        "url": "https://github.com/CBIIT/ccdi-dcc-model",
+        "kind": "Approximate",
+        "instructions": "The CCDI DCC model is a graph database schema. model-desc/ccdi-dcc-model.yml describes the model nodes. /ccdi-dcc-model-props.yml describes the node properties."
+      },
+      "kind": "Open",
+      "name": "CCDI DCC model"
+    },
+    {
+      "link": {
+        "url": "https://clinicalcommons.ccdi.cancer.gov/home",
+        "kind": "Approximate",
+        "instructions": "The Explore Participants view enables browsing and filtering by study, participant, and sample attributes."
+      },
+      "kind": "Open",
+      "name": "Childhood Cancer Clinical Data Commons"
+    }
   ]
 }

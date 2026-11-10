@@ -1,0 +1,544 @@
+{"library_selection_method": 
+{
+  "5-Methylcytidine Antibody": {
+    "value": "5-Methylcytidine Antibody",
+    "details": {
+      "method": "Mapped",
+      "harmonizer":"diagnosis_classification_system",
+      "url": "https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection=Bulk%20Cells"
+    }
+  },
+  "Affinity Enrichment": {
+    "value": "Affinity Enrichment",
+    "details": {
+      "method": null,
+      "harmonizer":"diagnosis_classification_system",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection="
+    }
+  },
+  "CAGE": {
+    "value": "CAGE",
+    "details": {
+      "method": null,
+      "harmonizer":"diagnosis_classification_system",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection="
+    }
+  },
+  "cDNA": {
+    "value": "cDNA",
+    "details": {
+      "method": null,
+      "harmonizer":"diagnosis_classification_system",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection="
+    }
+  },
+  "cDNA Oligo dT": {
+    "value": "cDNA Oligo dT",
+    "details": {
+      "method": null,
+      "harmonizer":"diagnosis_classification_system",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection="
+    }
+  },
+  "cDNA Random Priming": {
+    "value": "cDNA Random Priming",
+    "details": {
+      "method": null,
+      "harmonizer":"diagnosis_classification_system",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection="
+    }
+  },
+  "CF-M": {
+    "value": "CF-M",
+    "details": {
+      "method": null,
+      "harmonizer":"diagnosis_classification_system",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection="
+    }
+  },
+  "CF-H": {
+    "value": "CF-H",
+    "details": {
+      "method": null,
+      "harmonizer":"diagnosis_classification_system",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection="
+    }
+  },
+  "CF-S": {
+    "value": "CF-S",
+    "details": {
+      "method": null,
+      "harmonizer":"diagnosis_classification_system",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection="
+    }
+  },
+  "CF-T": {
+    "value": "CF-T",
+    "details": {
+      "method": null,
+      "harmonizer":"diagnosis_classification_system",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection="
+    }
+  },
+  "ChIP": {
+    "value": "ChIP",
+    "details": {
+      "method": null,
+      "harmonizer":"diagnosis_classification_system",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection="
+    }
+  },
+  "DNAse": {
+    "value": "DNAse",
+    "details": {
+      "method": null,
+      "harmonizer":"diagnosis_classification_system",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection="
+    }
+  },
+  "HMPR": {
+    "value": "HMPR",
+    "details": {
+      "method": null,
+      "harmonizer":"diagnosis_classification_system",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection="
+    }
+  },
+  "Inverse rRNA": {
+    "value": "Inverse rRNA",
+    "details": {
+      "method": null,
+      "harmonizer":"diagnosis_classification_system",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection="
+    }
+  },
+  "MBD2 Protein Methyl-CpG Binding Domain": {
+    "value": "MBD2 Protein Methyl-CpG Binding Domain",
+    "details": {
+      "method": null,
+      "harmonizer":"diagnosis_classification_system",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection="
+    }
+  },
+  "MDA": {
+    "value": "MDA",
+    "details": {
+      "method": null,
+      "harmonizer":"diagnosis_classification_system",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection="
+    }
+  },
+  "MF": {
+    "value": "MF",
+    "details": {
+      "method": null,
+      "harmonizer":"diagnosis_classification_system",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection="
+    }
+  },
+  "miRNA Size Fractionation": {
+    "value": "miRNA Size Fractionation",
+    "details": {
+      "method": null,
+      "harmonizer":"diagnosis_classification_system",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection="
+    }
+  },
+  "MNase": {
+    "value": "MNase",
+    "details": {
+      "method": null,
+      "harmonizer":"diagnosis_classification_system",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection="
+    }
+  },
+  "MSLL": {
+    "value": "MSLL",
+    "details": {
+      "method": null,
+      "harmonizer":"diagnosis_classification_system",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection="
+    }
+  },
+  "Not Applicable": {
+    "value": "Not Applicable",
+    "details": {
+      "method": null,
+      "harmonizer":"diagnosis_classification_system",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection="
+    }
+  },
+  "Other": {
+    "value": "Other",
+    "details": {
+      "method": null,
+      "harmonizer":"diagnosis_classification_system",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection="
+    }
+  },
+  "Padlock Probes Capture Method": {
+    "value": "Padlock Probes Capture Method",
+    "details": {
+      "method": null,
+      "harmonizer":"diagnosis_classification_system",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection="
+    }
+  },
+  "PolyA": {
+    "value": "PolyA",
+    "details": {
+      "method": null,
+      "harmonizer":"diagnosis_classification_system",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection="
+    }
+  },
+  "RACE": {
+    "value": "RACE",
+    "details": {
+      "method": null,
+      "harmonizer":"diagnosis_classification_system",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection="
+    }
+  },
+  "Random PCR": {
+    "value": "Random PCR",
+    "details": {
+      "method": null,
+      "harmonizer":"diagnosis_classification_system",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection="
+    }
+  },
+  "Reduced Representation": {
+    "value": "Reduced Representation",
+    "details": {
+      "method": null,
+      "harmonizer":"diagnosis_classification_system",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection="
+    }
+  },
+  "Repeat Fractionation": {
+    "value": "Repeat Fractionation",
+    "details": {
+      "method": null,
+      "harmonizer":"diagnosis_classification_system",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection="
+    }
+  },
+  "Restriction Digest": {
+    "value": "Restriction Digest",
+    "details": {
+      "method": null,
+      "harmonizer":"diagnosis_classification_system",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection="
+    }
+  },
+  "RT-PCR": {
+    "value": "RT-PCR",
+    "details": {
+      "method": null,
+      "harmonizer":"diagnosis_classification_system",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection="
+    }
+  },
+  "Size Fractionation": {
+    "value": "Size Fractionation",
+    "details": {
+      "method": null,
+      "harmonizer":"diagnosis_classification_system",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_selection="
+    }
+  }
+},
+"library_strategy":
+{
+  "Archer Fusion": {
+    "value": "Archer Fusion",
+    "details": {
+      "method": null,
+      "harmonizer": "DomainExpert",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_strategy="
+    }
+  },
+  "Bulk RNA-Seq": {
+    "value": "Bulk RNA-Seq",
+    "details": {
+      "method": null,
+      "harmonizer": "DomainExpert",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_strategy="
+    }
+  },
+  "CITE-Seq": {
+    "value": "CITE-Seq",
+    "details": {
+      "method": null,
+      "harmonizer": "DomainExpert",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_strategy="
+    }
+  },
+  "mRNA-Seq": {
+    "value": "mRNA-Seq",
+    "details": {
+      "method": null,
+      "harmonizer": "DomainExpert",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_strategy="
+    }
+  },
+  "scDNA-Seq": {
+    "value": "scDNA-Seq",
+    "details": {
+      "method": null,
+      "harmonizer": "DomainExpert",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_strategy="
+    }
+  },
+  "scMultiome": {
+    "value": "scMultiome",
+    "details": {
+      "method": null,
+      "harmonizer": "DomainExpert",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_strategy="
+    }
+  },
+  "scRNA-Seq": {
+    "value": "scRNA-Seq",
+    "details": {
+      "method": null,
+      "harmonizer": "DomainExpert",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_strategy="
+    }
+  },
+  "snATAC-Seq": {
+    "value": "snATAC-Seq",
+    "details": {
+      "method": null,
+      "harmonizer": "DomainExpert",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_strategy="
+    }
+  },
+  "Spatial-tx": {
+    "value": "Spatial-tx",
+    "details": {
+      "method": null,
+      "harmonizer": "DomainExpert",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_strategy="
+    }
+  }
+},
+"preservation_method":
+{
+  "Cytospin Slide": {
+    "value": "Cytospin Slide",
+    "details": {
+      "method": "Mapped",
+      "harmonizer": "DomainExpert",
+      "url":""
+    }
+  },
+  "Cryopreservation in dry ice (dead tissue)": {
+    "value": "Cryopreservation in dry ice (dead tissue)",
+    "details": {
+      "method": "Mapped",
+      "harmonizer": "DomainExpert",
+      "url":""
+    }
+  },
+  "Cryopreservation in liquid nitrogen (dead tissue)": {
+    "value": "Cryopreservation in liquid nitrogen (dead tissue)",
+    "details": {
+      "method": "Mapped",
+      "harmonizer": "DomainExpert",
+      "url":""
+    }
+  },
+  "Cryopreservation of live cells in liquid nitrogen": {
+    "value": "Cryopreservation of live cells in liquid nitrogen",
+    "details": {
+      "method": "Mapped",
+      "harmonizer": "DomainExpert",
+      "url":""
+    }
+  },
+  "Fixation": {
+    "value": "Fixation",
+    "details": {
+      "method": "Mapped",
+      "harmonizer": "DomainExpert",
+      "url":""
+    }
+  },
+  "Formalin fixed - buffered": {
+    "value": "Formalin fixed - buffered",
+    "details": {
+      "method": "Mapped",
+      "harmonizer": "DomainExpert",
+      "url":""
+    }
+  },
+  "Formalin fixed - unbuffered": {
+    "value": "Formalin fixed - unbuffered",
+    "details": {
+      "method": "Mapped",
+      "harmonizer": "DomainExpert",
+      "url":""
+    }
+  },
+  "Formalin fixed paraffin embedded (FFPE)": {
+    "value": "Formalin fixed paraffin embedded (FFPE)",
+    "details": {
+      "method": "Mapped",
+      "harmonizer": "DomainExpert",
+      "url":""
+    }
+  },
+  "Fresh dissociated": {
+    "value": "Fresh dissociated",
+    "details": {
+      "method": "Mapped",
+      "harmonizer": "DomainExpert",
+      "url":""
+    }
+  },
+  "Fresh dissociated and single cell sorted": {
+    "value": "Fresh dissociated and single cell sorted",
+    "details": {
+      "method": "Mapped",
+      "harmonizer": "DomainExpert",
+      "url":""
+    }
+  },
+  "Fresh dissociated and single cell sorted into plates": {
+    "value": "Fresh dissociated and single cell sorted into plates",
+    "details": {
+      "method": "Mapped",
+      "harmonizer": "DomainExpert",
+      "url":""
+    }
+  },
+  "Liquid nitrogen": {
+    "value": "Liquid nitrogen",
+    "details": {
+      "method": "Mapped",
+      "harmonizer": "DomainExpert",
+      "url":""
+    }
+  },
+  "Not Applicable": {
+    "value": "Not Applicable",
+    "details": {
+      "method": null,
+      "harmonizer": "DomainExpert",
+      "url":""
+    }
+  },
+  "Other": {
+    "value": "Other",
+    "details": {
+      "method": null,
+      "harmonizer": "DomainExpert",
+      "url":""
+    }
+  },
+  "Refrigerated": {
+    "value": "Refrigerated",
+    "details": {
+      "method": null,
+      "harmonizer": "DomainExpert",
+      "url":""
+    }
+  },
+  "Refrigerated Vacuum Chamber": {
+    "value": "Refrigerated Vacuum Chamber",
+    "details": {
+      "method": null,
+      "harmonizer": "DomainExpert",
+      "url":""
+    }
+  }
+},
+"specimen_molecular_analyte_type":
+{
+  "Circulating cell-free DNA": {
+    "value": "Circulating cell-free DNA",
+    "details": {
+      "method": "Mapped",
+      "harmonizer": "DomainExpert",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_source_molecule=DNA"
+    }
+  },
+  "Circulating Tumor-Derived DNA": {
+    "value": "Circulating Tumor-Derived DNA",
+    "details": {
+      "method": "Mapped",
+      "harmonizer": "DomainExpert",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_source_molecule="
+    }
+  },
+  "MicroRNA": {
+    "value": "MicroRNA",
+    "details": {
+      "method": "Mapped",
+      "harmonizer": "DomainExpert",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_source_molecule="
+    }
+  },
+  "Messenger RNA": {
+    "value": "Messenger RNA",
+    "details": {
+      "method": "Mapped",
+      "harmonizer": "DomainExpert",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_source_molecule="
+    }
+  },
+  "Nucleic RNA Sample": {
+    "value": "Nucleic RNA Sample",
+    "details": {
+      "method": "Mapped",
+      "harmonizer": "DomainExpert",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_source_molecule="
+    }
+  },
+  "RNA Specimen": {
+    "value": "RNA Specimen",
+    "details": {
+      "method": "Mapped",
+      "harmonizer": "DomainExpert",
+      "url":"https://clinicalcommons.ccdi.cancer.gov/exploreFiles?library_source_molecule="
+    }
+  }
+}, 
+"disease_phase": 
+{
+  "Prior Primary": {
+    "value": "Prior Primary",
+    "details": {
+      "method": "Mapped",
+      "harmonizer": "DomainExpert",
+      "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?disease_phase=Prior+Primary"
+    }
+  },
+  "Recurrent Disease": {
+    "value": "Recurrent Disease",
+    "details": {
+      "method": "Mapped",
+      "harmonizer": "DomainExpert",
+      "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?disease_phase="
+    }
+  },
+  "Synchronous": {
+    "value": "Synchronous",
+    "details": {
+      "method": "Mapped",
+      "harmonizer": "DomainExpert",
+      "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?disease_phase="
+    }
+  },
+  "Not Applicable": {
+    "value": "Not Applicable",
+    "details": {
+      "method": "Mapped",
+      "harmonizer": "DomainExpert",
+      "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?disease_phase="
+    }
+  }
+}
+}

@@ -18,6 +18,7 @@ from app.db.memgraph import get_session
 from app.lib.field_allowlist import get_field_allowlist, FieldAllowlist
 from app.models.errors import create_pagination_error, InvalidParametersError
 from app.repositories.sample_helpers import SD_CAT_MARKER
+from app.repositories.sample_unharmonized_filters import canonical_dcc_filter_name
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -538,6 +539,40 @@ def get_sample_filters(
         None,
         description="Matches any sample where the `sample_id` field matches the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the sample should be included in the results."
     ),
+    metadata_unharmonized_dcc_library_selection_method: Optional[str] = Query(
+        None,
+        alias="metadata.unharmonized.dcc_library_selection_method",
+        description="Case-insensitive match on the raw `library_selection` value. `||` means any of.",
+    ),
+    metadata_unharmonized_dcc_library_strategy: Optional[str] = Query(
+        None,
+        alias="metadata.unharmonized.dcc_library_strategy",
+        description="Case-insensitive match on the raw `library_strategy` value. `||` means any of.",
+    ),
+    metadata_unharmonized_dcc_preservation_method: Optional[str] = Query(
+        None,
+        alias="metadata.unharmonized.dcc_preservation_method",
+        description="Case-insensitive match on the raw `fixation_embedding_method` value. `||` means any of.",
+    ),
+    metadata_unharmonized_dcc_specimen_molecular_analyte_type: Optional[str] = Query(
+        None,
+        alias="metadata.unharmonized.dcc_specimen_molecular_analyte_type",
+        description="Case-insensitive match on the raw `library_source_molecule` value. `||` means any of.",
+    ),
+    metadata_unharmonized_dcc_disease_phase: Optional[str] = Query(
+        None,
+        alias="metadata.unharmonized.dcc_disease_phase",
+        description="Case-insensitive match on the raw `disease_phase` value. `||` means any of.",
+    ),
+    metadata_unharmonized_dcc_diagnosis_category: Optional[str] = Query(
+        None,
+        alias="metadata.unharmonized.dcc_diagnosis_category",
+        description=(
+            "Case-insensitive match on any raw `diagnosis_category` token. "
+            "`dcc_diagnosis_category_<n>` matches the same way; `<n>` is not a position. "
+            "`||` means any of."
+        ),
+    ),
     request: Request = None
 ) -> Dict[str, Any]:
     """Get sample filter parameters."""
@@ -557,6 +592,15 @@ def get_sample_filters(
             param_values = request.query_params.getlist(param)
             if len(param_values) > 1:
                 duplicate_params.append(param)
+        # dcc_* keys: a repeated key would keep only the last value, so reject it like the
+        # harmonized keys above. Several different dcc keys (AND) are still allowed.
+        for key in request.query_params.keys():
+            if (
+                canonical_dcc_filter_name(key) is not None
+                and len(request.query_params.getlist(key)) > 1
+                and key not in duplicate_params
+            ):
+                duplicate_params.append(key)
         
         if duplicate_params:
             raise InvalidParametersError(
@@ -1017,6 +1061,40 @@ def get_sample_diagnosis_filters(
     identifiers: Optional[str] = Query(
         None,
         description="Matches any sample where the `sample_id` field matches the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the sample should be included in the results."
+    ),
+    metadata_unharmonized_dcc_library_selection_method: Optional[str] = Query(
+        None,
+        alias="metadata.unharmonized.dcc_library_selection_method",
+        description="Case-insensitive match on the raw `library_selection` value. `||` means any of.",
+    ),
+    metadata_unharmonized_dcc_library_strategy: Optional[str] = Query(
+        None,
+        alias="metadata.unharmonized.dcc_library_strategy",
+        description="Case-insensitive match on the raw `library_strategy` value. `||` means any of.",
+    ),
+    metadata_unharmonized_dcc_preservation_method: Optional[str] = Query(
+        None,
+        alias="metadata.unharmonized.dcc_preservation_method",
+        description="Case-insensitive match on the raw `fixation_embedding_method` value. `||` means any of.",
+    ),
+    metadata_unharmonized_dcc_specimen_molecular_analyte_type: Optional[str] = Query(
+        None,
+        alias="metadata.unharmonized.dcc_specimen_molecular_analyte_type",
+        description="Case-insensitive match on the raw `library_source_molecule` value. `||` means any of.",
+    ),
+    metadata_unharmonized_dcc_disease_phase: Optional[str] = Query(
+        None,
+        alias="metadata.unharmonized.dcc_disease_phase",
+        description="Case-insensitive match on the raw `disease_phase` value. `||` means any of.",
+    ),
+    metadata_unharmonized_dcc_diagnosis_category: Optional[str] = Query(
+        None,
+        alias="metadata.unharmonized.dcc_diagnosis_category",
+        description=(
+            "Case-insensitive match on any raw `diagnosis_category` token. "
+            "`dcc_diagnosis_category_<n>` matches the same way; `<n>` is not a position. "
+            "`||` means any of."
+        ),
     ),
     request: Request = None
 ) -> Dict[str, Any]:

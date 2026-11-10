@@ -1960,3 +1960,58 @@ class TestGetSamplesSummaryReverseQueryInSample:
         finally:
             ss.is_database_only_value = original_is_db_only
             ss.reverse_map_field_value = original_reverse_map
+
+
+@pytest.mark.unit
+class TestSampleReverseQueryCoverage:
+    """Branches in the sequencing-file and pathology-file reverse queries."""
+
+    @pytest.fixture
+    def repository(self):
+        session = AsyncMock()
+        allowlist = Mock(spec=FieldAllowlist)
+        allowlist.is_field_allowed = Mock(return_value=True)
+        return SampleRepository(session, allowlist), session
+
+    async def test_library_source_material_not_reported_uses_in_list(self, repository):
+        repo, session = repository
+
+        async def async_gen():
+            if False:
+                yield None
+
+        result = AsyncMock()
+        result.__aiter__ = Mock(return_value=async_gen())
+        result.consume = AsyncMock()
+        session.run = AsyncMock(return_value=result)
+
+        await repo.get_samples(
+            {"library_source_material": "Not Reported"}, return_total=False
+        )
+        query = session.run.call_args.args[0]
+        params = session.run.call_args.args[1]
+        assert "sf.library_source_material IN $" in query
+        assert ["Other", "Not Reported"] in params.values()
+
+    async def test_pathology_reverse_query_skips_a_record_that_cannot_convert(self, repository):
+        repo, session = repository
+
+        async def async_gen():
+            yield {
+                "sa": {"sample_id": "S1"},
+                "p": None,
+                "st": object(),
+                "sf": None,
+                "pf": None,
+                "diagnoses": None,
+            }
+
+        result = AsyncMock()
+        result.__aiter__ = Mock(return_value=async_gen())
+        result.consume = AsyncMock()
+        session.run = AsyncMock(return_value=result)
+
+        samples = await repo.get_samples(
+            {"preservation_method": "OCT"}, return_total=False
+        )
+        assert samples == []

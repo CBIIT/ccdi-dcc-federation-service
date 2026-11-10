@@ -14,6 +14,7 @@ from app.core.field_mappings import (
 from app.core.logging import get_logger
 from app.models.dto import Sample
 from app.repositories.sample_converters import node_to_dict
+from app.repositories.sample_helpers import sequencing_file_by_index
 from app.repositories.subject_diagnosis_cypher import (
     diagnosis_category_contains_predicate,
     add_diagnosis_search_params,
@@ -293,7 +294,8 @@ class SampleDiagnosisSearch:
         LIMIT $limit
         
         // avoid cross-product by aggregating each optional block separately
-        // Note: For participant/pathology_file/sequencing_file, we collect only ONE per sample (using head)
+        // Note: participant and pathology_file keep head(). Sequencing file keeps the
+        // one with the smallest guid.
         // This is different from diagnoses, where we collect ALL matching diagnoses per (sample_id, study_id) pair
         OPTIONAL MATCH (sa)-[:of_sample]->(p0:participant)
         WITH sa, st, diagnoses, head(collect(DISTINCT p0)) AS p
@@ -302,7 +304,7 @@ class SampleDiagnosisSearch:
         WITH sa, st, diagnoses, p, head(collect(DISTINCT pf0)) AS pf
         
         OPTIONAL MATCH (sf0:sequencing_file)-[:of_sequencing_file]->(sa)
-        WITH sa, st, diagnoses, p, pf, head(collect(DISTINCT sf0)) AS sf
+        WITH sa, st, diagnoses, p, pf, {sequencing_file_by_index("collect(DISTINCT sf0)")} AS sf
         
         RETURN sa, p, st, pf, sf, diagnoses
         """.strip()

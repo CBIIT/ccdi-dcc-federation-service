@@ -473,7 +473,7 @@ class TestCase3FilterBranches:
 
     @pytest.mark.asyncio
     async def test_pathology_only_enrichment_without_node_filters(self, repository):
-        """Only pathology filter: diagnosis enrichment projection, head(sf) pick."""
+        """Only pathology filter: diagnosis enrichment projection, index-order sf pick."""
         repository.session.run = AsyncMock(return_value=_empty_result())
         cat = _categorized(pathology_file={"preservation_method": "FFPE"})
         await repository._get_samples_case3_with_node_filters(
@@ -481,7 +481,7 @@ class TestCase3FilterBranches:
         )
         query = repository.session.run.call_args[0][0]
         assert "OPTIONAL MATCH (d:diagnosis)" in query
-        assert "head(collect(DISTINCT sf)) AS sf" in query
+        assert "f.guid < picked.guid" in query
         assert "diagnoses" in query
 
     @pytest.mark.asyncio
@@ -739,12 +739,150 @@ class TestCase3FilterBranches:
 
     @pytest.mark.asyncio
     async def test_diagnosis_only_pick_uses_head_sf(self, repository):
-        """Diagnosis-only filter without sf filters uses bare sf in pick clause."""
+        """Diagnosis-only filter picks the sequencing file with the smallest guid."""
         repository.session.run = AsyncMock(return_value=_empty_result())
         cat = _categorized(diagnosis={"tumor_grade": "G3"})
         await repository._get_samples_case3_with_node_filters(
             {}, cat, offset=0, limit=20, base_url=None, return_total=False
         )
         query = repository.session.run.call_args[0][0]
-        assert "head([sf IN all_sf" not in query
-        assert "head(collect(DISTINCT sf)) AS sf" in query or ", sf" in query.split("pick")[0]
+        assert "f.guid < picked.guid" in query
+        assert "all_sf" not in query
+
+    @pytest.mark.asyncio
+    async def test_case1_tumor_classification_database_only_returns_empty(self, repository):
+        for return_total, expected in ((False, []), (True, ([], 0))):
+            result = await repository._get_samples_case1_sample_only(
+                {"tumor_classification": "Local"},
+                offset=0,
+                limit=20,
+                base_url=None,
+                return_total=return_total,
+            )
+            assert result == expected
+        repository.session.run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_case1_tumor_classification_list_mapping_uses_in(self, repository):
+        repository.session.run = AsyncMock(return_value=_empty_result())
+        await repository._get_samples_case1_sample_only(
+            {"tumor_classification": "Primary"},
+            offset=0,
+            limit=20,
+            base_url=None,
+            return_total=False,
+        )
+        query = repository.session.run.call_args[0][0]
+        params = repository.session.run.call_args[0][1]
+        assert "sa.tumor_spatial_extent IN $" in query
+        assert ["Local", "Locoregional", "Primary"] in params.values()
+
+    @pytest.mark.asyncio
+    async def test_case3_invalid_tissue_without_total_returns_empty_list(self, repository):
+        result = await repository._get_samples_case3_with_node_filters(
+            {},
+            _categorized(sample={"tissue_type": "NotARealTissue"}),
+            offset=0,
+            limit=20,
+            base_url=None,
+            return_total=False,
+        )
+        assert result == []
+        repository.session.run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_case3_tumor_classification_database_only_returns_empty(self, repository):
+        for return_total, expected in ((False, []), (True, ([], 0))):
+            result = await repository._get_samples_case3_with_node_filters(
+                {},
+                _categorized(sample={"tumor_classification": "Local"}),
+                offset=0,
+                limit=20,
+                base_url=None,
+                return_total=return_total,
+            )
+            assert result == expected
+        repository.session.run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_case3_tumor_classification_scalar_and_list(self, repository):
+        repository.session.run = AsyncMock(return_value=_empty_result())
+        await repository._get_samples_case3_with_node_filters(
+            {},
+            _categorized(sample={"tumor_classification": "Metastatic"}),
+            offset=0,
+            limit=20,
+            base_url=None,
+            return_total=False,
+        )
+        query = repository.session.run.call_args[0][0]
+        assert "sa.tumor_spatial_extent = $" in query
+
+        repository.session.run = AsyncMock(return_value=_empty_result())
+        await repository._get_samples_case3_with_node_filters(
+            {},
+            _categorized(sample={"tumor_classification": "Primary"}),
+            offset=0,
+            limit=20,
+            base_url=None,
+            return_total=False,
+        )
+        query = repository.session.run.call_args[0][0]
+        params = repository.session.run.call_args[0][1]
+        assert "sa.tumor_spatial_extent IN $" in query
+        assert ["Local", "Locoregional", "Primary"] in params.values()
+
+    @pytest.mark.asyncio
+    async def test_case3_disease_phase_list_with_search_filters_the_collection(self, repository):
+        repository.session.run = AsyncMock(return_value=_empty_result())
+        await repository._get_samples_case3_with_node_filters(
+            {},
+            _categorized(
+                diagnosis={"_diagnosis_search": "glioma", "disease_phase": "Relapse"}
+            ),
+            offset=0,
+            limit=20,
+            base_url=None,
+            return_total=False,
+        )
+        query = repository.session.run.call_args[0][0]
+        params = repository.session.run.call_args[0][1]
+        assert "d.disease_phase IN $" in query
+        assert ["Recurrent Disease", "Relapse"] in params.values()
+
+    @pytest.mark.asyncio
+    async def test_case3_null_mapped_disease_phase_without_search_uses_equality(self, repository):
+        repository.session.run = AsyncMock(return_value=_empty_result())
+
+        def only_phase(field, value):
+            return field == "disease_phase"
+
+        with patch(
+            "app.repositories.sample_query_cases.is_null_mapped_value",
+            side_effect=only_phase,
+        ):
+            await repository._get_samples_case3_with_node_filters(
+                {},
+                _categorized(diagnosis={"disease_phase": "Not Reported"}),
+                offset=0,
+                limit=20,
+                base_url=None,
+                return_total=False,
+            )
+        query = repository.session.run.call_args[0][0]
+        params = repository.session.run.call_args[0][1]
+        assert "d.disease_phase = $" in query
+        assert "Not Reported" in params.values()
+
+    @pytest.mark.asyncio
+    async def test_case3_library_selection_database_only_returns_empty_list(self, repository):
+        result = await repository._get_samples_case3_with_node_filters(
+            {},
+            _categorized(sequencing_file={"library_selection_method": "PolyA"}),
+            offset=0,
+            limit=20,
+            base_url=None,
+            return_total=False,
+        )
+        assert result == []
+        repository.session.run.assert_not_called()

@@ -17,7 +17,12 @@ from app.lib.field_allowlist import FieldAllowlist
 from app.models.dto import Subject, SubjectResponse, CountResponse, SummaryResponse, SummaryCounts
 from app.models.errors import NotFoundError, ValidationError
 from app.repositories.subject import SubjectRepository
-from app.db.memgraph import DatabaseConnectionError, is_memory_limit_error, is_retryable_error
+from app.db.memgraph import (
+    DatabaseConnectionError,
+    is_memory_limit_error,
+    is_query_timeout_error,
+    is_retryable_error,
+)
 from neo4j.exceptions import ServiceUnavailable, TransientError, SessionExpired
 
 logger = get_logger(__name__)
@@ -129,7 +134,11 @@ class SubjectService:
                 # NOTE: catch ConnectionError/TimeoutError, NOT bare OSError — OSError would also
                 # swallow FileNotFoundError/PermissionError (e.g. a missing field_mappings.json)
                 # as "no data" instead of surfacing the misconfiguration.
-                if not is_memory_limit_error(e) and attempt < max_retries:
+                if (
+                    not is_memory_limit_error(e)
+                    and not is_query_timeout_error(e)
+                    and attempt < max_retries
+                ):
                     logger.warning(
                         "Transient database error, retrying",
                         attempt=attempt + 1,
@@ -157,7 +166,7 @@ class SubjectService:
             except Exception as e:
                 is_transient = is_retryable_error(e)
                 
-                if is_transient and attempt < max_retries:
+                if is_transient and not is_query_timeout_error(e) and attempt < max_retries:
                     logger.warning(
                         "Transient error detected, retrying",
                         attempt=attempt + 1,
@@ -372,7 +381,7 @@ class SubjectService:
             except Exception as e:
                 is_transient = is_retryable_error(e)
                 
-                if is_transient and attempt < max_retries:
+                if is_transient and not is_query_timeout_error(e) and attempt < max_retries:
                     logger.warning(
                         "Transient error detected in get_subjects_summary, retrying",
                         attempt=attempt + 1,

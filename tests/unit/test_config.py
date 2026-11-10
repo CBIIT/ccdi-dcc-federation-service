@@ -310,3 +310,13 @@ class TestGetSettings:
         settings = get_settings()
         assert isinstance(settings, Settings)
 
+
+
+@pytest.mark.unit
+def test_timeout_defaults_are_100_seconds():
+    """Request timeout and the /file count query budget both default to 100s."""
+    from app.core.request_timeout import RequestTimeoutMiddleware
+
+    assert Settings.model_fields["request_timeout_seconds"].default == 100
+    assert Settings.model_fields["query_timeout"].default == 100
+    assert RequestTimeoutMiddleware(app=None).timeout_seconds == 100

@@ -84,7 +84,7 @@
         }
       },
       {
-        "path": "unharmonized.dcc_associated_diagnosis_category_<n>",
+        "path": "unharmonized.dcc_associated_diagnosis_categories_<n>",
         "harmonized": false,
         "wiki_url": null,
         "standard": {
@@ -231,6 +231,31 @@
           "url": "https://cadsr.cancer.gov/onedata/dmdirect/NIH/NCI/CO/CDEDD?filter=CDEDD.ITEM_ID=6161017%20and%20ver_nr=1",
           "name": "caDSR CDE 6161017 v1.0 ICD-O Disease Diagnosis Category"
         }
+      },
+      {
+        "harmonized": false,
+        "path": "unharmonized.dcc_library_selection_method",
+        "wiki_url": null
+      },
+      {
+        "harmonized": false,
+        "path": "unharmonized.dcc_library_strategy",
+        "wiki_url": null
+      },
+      {
+        "harmonized": false,
+        "path": "unharmonized.dcc_preservation_method",
+        "wiki_url": null
+      },
+      {
+        "harmonized": false,
+        "path": "unharmonized.dcc_specimen_molecular_analyte_type",
+        "wiki_url": null
+      },
+      {
+        "harmonized": false,
+        "path": "unharmonized.dcc_disease_phase",
+        "wiki_url": null
       },
       {
         "harmonized": true,

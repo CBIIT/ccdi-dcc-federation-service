@@ -14,6 +14,10 @@ from app.core.field_mappings import (
     load_sequencing_file_enum,
     load_sample_enum
 )
+from app.repositories.sample_unharmonized_filters import (
+    canonical_dcc_filter_name,
+    dcc_filter_category,
+)
 
 logger = get_logger(__name__)
 
@@ -22,6 +26,23 @@ logger = get_logger(__name__)
 # Routing guards must check this marker — not bare "diagnosis_category" — to
 # preserve /sample token semantics on non-diagnosis endpoints.
 SD_CAT_MARKER = "_sample_diagnosis_category_substring"
+
+
+def sequencing_file_by_index(files_expr: str) -> str:
+    """Cypher expression for the sequencing file with the smallest guid.
+
+    ``files_expr`` is a Cypher list (a ``collect(...)`` or a list variable).
+    Null nodes are ignored. An empty list yields null. guid is part of the
+    loaded data and is unique per sequencing file, so the same sample keeps
+    the same file across reloads. Filters still match any sequencing file;
+    this only chooses which file supplies library_selection, library_strategy,
+    library_source_material, and library_source_molecule.
+    """
+    return (
+        "reduce(picked = null, f IN "
+        f"[n IN ({files_expr}) WHERE n IS NOT NULL | n] | "
+        "CASE WHEN picked IS NULL OR f.guid < picked.guid THEN f ELSE picked END)"
+    )
 
 # Filters compatible with the internal diagnosis reverse-query helpers.
 # The summary path still routes to `_get_samples_summary_diagnosis_search`;
@@ -84,6 +105,18 @@ class SampleHelpers:
         }
         
         for key, value in filters.items():
+            dcc_name = canonical_dcc_filter_name(key)
+            if dcc_name:
+                bucket = categorized[dcc_filter_category(dcc_name)]
+                if dcc_name in bucket:
+                    current = bucket[dcc_name]
+                    if isinstance(current, list):
+                        current.append(value)
+                    else:
+                        bucket[dcc_name] = [current, value]
+                else:
+                    bucket[dcc_name] = value
+                continue
             if key in sample_filters:
                 categorized["sample"][key] = value
             elif key in study_filters:

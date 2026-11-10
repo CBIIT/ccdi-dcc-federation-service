@@ -119,6 +119,70 @@ class TestExperimentalEndpoints:
         assert result.summary["counts"]["current"] == 1
         mock_service.get_samples_for_diagnosis_endpoint.assert_awaited_once()
 
+    async def test_list_samples_includes_gateways(
+        self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
+    ):
+        """Non-empty /sample-diagnosis lists carry the same gateways as /sample."""
+
+        class MockSample:
+            def model_dump(self, exclude=None, exclude_none=None, exclude_unset=None):
+                return {
+                    "id": {
+                        "name": "sample1",
+                        "namespace": {"organization": "CCDI-DCC", "name": "phs002431"},
+                    },
+                    "metadata": {},
+                }
+
+        with patch("app.api.v1.endpoints.experimental.SampleService") as mock_service_class:
+            mock_service = Mock()
+            mock_service.get_samples_for_diagnosis_endpoint = AsyncMock(
+                return_value=([MockSample()], 1)
+            )
+            mock_service_class.return_value = mock_service
+            with patch("app.api.v1.endpoints.experimental.get_cache_service", return_value=None):
+                with patch("app.api.v1.endpoints.experimental.check_rate_limit", return_value=None):
+                    result = await search_samples_by_diagnosis(
+                        request=mock_request,
+                        response=mock_response,
+                        filters={"search": "cancer"},
+                        pagination=mock_pagination,
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None,
+                    )
+
+        body = result.model_dump(mode="json")
+        assert [g["name"] for g in body["gateways"]] == [
+            "CCDI DCC model",
+            "Childhood Cancer Clinical Data Commons",
+        ]
+        assert list(body).index("data") < list(body).index("gateways")
+
+    async def test_empty_sample_list_omits_gateways(
+        self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
+    ):
+        """An empty /sample-diagnosis list omits gateways."""
+        with patch("app.api.v1.endpoints.experimental.SampleService") as mock_service_class:
+            mock_service = Mock()
+            mock_service.get_samples_for_diagnosis_endpoint = AsyncMock(return_value=([], 0))
+            mock_service_class.return_value = mock_service
+            with patch("app.api.v1.endpoints.experimental.get_cache_service", return_value=None):
+                with patch("app.api.v1.endpoints.experimental.check_rate_limit", return_value=None):
+                    result = await search_samples_by_diagnosis(
+                        request=mock_request,
+                        response=mock_response,
+                        filters={"search": "cancer"},
+                        pagination=mock_pagination,
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None,
+                    )
+
+        assert "gateways" not in result.model_dump(mode="json")
+
     async def test_search_samples_by_diagnosis_invalid_params(
         self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response, mock_pagination
     ):
@@ -258,6 +322,74 @@ class TestExperimentalEndpoints:
         assert call_kwargs["filters"]["age_at_collection"] == "1461"
         assert call_kwargs["offset"] == 0
         assert call_kwargs["limit"] == 50
+
+    async def test_search_samples_by_diagnosis_accepts_dcc_unharmonized_filters(
+        self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response
+    ):
+        """dcc_ unharmonized filters pass the query-param check; other metadata.unharmonized.* keys stay rejected."""
+        from app.core.pagination import PaginationParams
+
+        class QueryParams:
+            def __init__(self, params):
+                self._params = params
+
+            def keys(self):
+                return self._params.keys()
+
+            def __iter__(self):
+                return iter(self._params.items())
+
+            def __getitem__(self, key):
+                return self._params[key]
+
+        pagination = PaginationParams(page=1, per_page=50)
+        mock_request.query_params = QueryParams({
+            "metadata.unharmonized.dcc_disease_phase": "Relapse",
+            "page": "1",
+            "per_page": "50",
+        })
+
+        with patch("app.api.v1.endpoints.experimental.SampleService") as mock_service_class:
+            mock_service = Mock()
+            mock_service.get_samples_for_diagnosis_endpoint = AsyncMock(return_value=([], 0))
+            mock_service_class.return_value = mock_service
+
+            with patch("app.api.v1.endpoints.experimental.get_cache_service", return_value=None):
+                with patch("app.api.v1.endpoints.experimental.check_rate_limit", return_value=None):
+                    result = await search_samples_by_diagnosis(
+                        request=mock_request,
+                        response=mock_response,
+                        filters={"metadata.unharmonized.dcc_disease_phase": "Relapse"},
+                        pagination=pagination,
+                        session=mock_session,
+                        settings=mock_settings,
+                        allowlist=mock_allowlist,
+                        _rate_limit=None,
+                    )
+
+        assert isinstance(result, SamplesResponse)
+        call_kwargs = mock_service.get_samples_for_diagnosis_endpoint.await_args.kwargs
+        assert call_kwargs["filters"]["metadata.unharmonized.dcc_disease_phase"] == "Relapse"
+
+        # Unknown unharmonized keys are still rejected on this endpoint.
+        mock_request.query_params = QueryParams({
+            "metadata.unharmonized.batch_id": "x",
+            "page": "1",
+            "per_page": "50",
+        })
+        with patch("app.api.v1.endpoints.experimental.check_rate_limit", return_value=None):
+            with pytest.raises(HTTPException) as exc_info:
+                await search_samples_by_diagnosis(
+                    request=mock_request,
+                    response=mock_response,
+                    filters={"metadata.unharmonized.batch_id": "x"},
+                    pagination=pagination,
+                    session=mock_session,
+                    settings=mock_settings,
+                    allowlist=mock_allowlist,
+                    _rate_limit=None,
+                )
+        assert exc_info.value.status_code == 400
 
     async def test_search_samples_by_diagnosis_diagnosis_category_only_sets_substring_marker(
         self, mock_session, mock_settings, mock_allowlist, mock_request, mock_response

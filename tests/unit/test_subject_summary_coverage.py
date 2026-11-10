@@ -700,3 +700,30 @@ async def test_diagnosis_endpoint_session_error_is_logged_and_raised(
         await repository.get_subjects_summary_for_diagnosis_endpoint(
             {"_diagnosis_search": "leukemia"}
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_summary_race_list_is_normalized_before_matching(repository, mock_session):
+    """A list of race values is stripped and sent as the race token parameter."""
+    mock_session.run.return_value = make_async_result([_count_record(2)])
+
+    result = await repository.get_subjects_summary({"race": [" Asian ", "White", ""]})
+
+    assert result.get("total_count") == 2
+    query = mock_session.run.call_args.args[0]
+    params = mock_session.run.call_args.args[1]
+    assert "race_tokens" in query
+    assert ["Asian", "White"] in params.values()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_summary_sex_unknown_excludes_female_and_male(repository, mock_session):
+    mock_session.run.return_value = make_async_result([_count_record(1)])
+
+    result = await repository.get_subjects_summary({"sex": "U"})
+
+    assert result.get("total_count") == 1
+    query = mock_session.run.call_args.args[0]
+    assert "NOT (toString(p.sex_at_birth) IN ['Female', 'Male'])" in query

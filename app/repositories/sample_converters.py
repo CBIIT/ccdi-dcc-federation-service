@@ -12,6 +12,10 @@ from app.core.diagnosis_category import (
     iter_diagnosis_category_raw_tokens,
 )
 from app.core.field_mappings import map_field_value, reverse_map_field_value
+from app.core.sample_unharmonized import (
+    SAMPLE_UNHARMONIZED_FIELDS,
+    build_sample_unharmonized_entry,
+)
 from app.core.serialization import convert_date_time_to_string
 from app.models.dto import DiagnosisField, Sample, SampleDiagnosisCategoryField
 
@@ -254,7 +258,7 @@ class SampleConverters:
         )
 
         # Helper function to wrap value in ValueField if not None and not empty
-        def _wrap_value(value):
+        def _wrap_value(value, ancestors: Optional[List[str]] = None):
             """Wrap value in ValueField if not None and not empty, otherwise return None."""
             if value is None:
                 return None
@@ -263,7 +267,14 @@ class SampleConverters:
             if not str_value:
                 return None
             from app.models.dto import ValueField
-            return ValueField(value=str_value)
+            return ValueField(value=str_value, ancestors=ancestors)
+
+        def _wrap_harmonized(value, ancestors: Optional[List[str]]):
+            """Like _wrap_value, but keep {value: null, ancestors} when the file maps to null."""
+            if value is None and ancestors:
+                from app.models.dto import ValueField
+                return ValueField(value=None, ancestors=ancestors)
+            return _wrap_value(value, ancestors)
 
         def _wrap_list_value(value_list):
             """Wrap list of values in list of ValueField objects if not None and not empty, otherwise return None."""
@@ -273,13 +284,6 @@ class SampleConverters:
             # Filter out empty strings and create ValueField for each valid value
             wrapped = [ValueField(value=str(v).strip()) for v in value_list if v is not None and str(v).strip()]
             return wrapped if wrapped else None
-
-        def _map_library_selection_method(db_value):
-            """Map database value to API value for library_selection_method.
-
-            Uses centralized field mappings from config_data/field_mappings.json.
-            """
-            return map_field_value("library_selection_method", db_value)
 
         def _reverse_map_library_selection_method(api_value):
             """Reverse map API value to database value for library_selection_method.
@@ -404,16 +408,53 @@ class SampleConverters:
         # diagnosis_category_field / unharmonized_field built by _build_diagnosis_result
         # (singular SampleDiagnosisCategoryField + dcc_diagnosis_category_* map).
 
+        # Harmonize each of the five fields once. An entry is attached only when
+        # the received-file gate says the raw value was transformed.
+        raw_for_unharmonized = {
+            "library_selection_method": _null_if_invalid(library_selection_value),
+            "library_strategy": _null_if_invalid(library_strategy_value),
+            "preservation_method": _null_if_invalid(preservation_method_value),
+            "specimen_molecular_analyte_type": _null_if_invalid(specimen_molecular_analyte_type_value),
+            "disease_phase": _null_if_invalid(disease_phase_value),
+        }
+        harmonized_for: Dict[str, Optional[str]] = {}
+        new_unharmonized: Dict[str, Any] = {}
+        for field in SAMPLE_UNHARMONIZED_FIELDS:
+            raw = raw_for_unharmonized[field]
+            harmonized = map_field_value(field, raw)
+            harmonized_for[field] = harmonized
+            entry = build_sample_unharmonized_entry(field, raw, harmonized)
+            if entry is not None:
+                new_unharmonized[f"dcc_{field}"] = entry
+
+        merged_unharmonized = dict(unharmonized_field or {})
+        merged_unharmonized.update(new_unharmonized)
+
         # Build metadata with field mappings applied
         metadata = SampleMetadata(
-            disease_phase=_wrap_value(map_field_value("disease_phase", _null_if_invalid(disease_phase_value))),
+            disease_phase=_wrap_harmonized(
+                harmonized_for["disease_phase"],
+                ["unharmonized.dcc_disease_phase"] if "dcc_disease_phase" in new_unharmonized else None,
+            ),
             anatomical_sites=_wrap_list_value(_process_anatomical_sites(anatomical_sites_value)),
-            library_selection_method=_wrap_value(_map_library_selection_method(_null_if_invalid(library_selection_value))),
-            library_strategy=_wrap_value(map_field_value("library_strategy", _null_if_invalid(library_strategy_value))),
+            library_selection_method=_wrap_harmonized(
+                harmonized_for["library_selection_method"],
+                ["unharmonized.dcc_library_selection_method"] if "dcc_library_selection_method" in new_unharmonized else None,
+            ),
+            library_strategy=_wrap_harmonized(
+                harmonized_for["library_strategy"],
+                ["unharmonized.dcc_library_strategy"] if "dcc_library_strategy" in new_unharmonized else None,
+            ),
             library_source_material=_wrap_value(map_field_value("library_source_material", _null_if_invalid(library_source_material_value))),
-            preservation_method=_wrap_value(map_field_value("preservation_method", _null_if_invalid(preservation_method_value))),
+            preservation_method=_wrap_harmonized(
+                harmonized_for["preservation_method"],
+                ["unharmonized.dcc_preservation_method"] if "dcc_preservation_method" in new_unharmonized else None,
+            ),
             tumor_grade=_wrap_value(_null_if_invalid(tumor_grade_value)),
-            specimen_molecular_analyte_type=_wrap_value(map_field_value("specimen_molecular_analyte_type", _null_if_invalid(specimen_molecular_analyte_type_value))),
+            specimen_molecular_analyte_type=_wrap_harmonized(
+                harmonized_for["specimen_molecular_analyte_type"],
+                ["unharmonized.dcc_specimen_molecular_analyte_type"] if "dcc_specimen_molecular_analyte_type" in new_unharmonized else None,
+            ),
             tissue_type=_wrap_value(_null_if_invalid(tissue_type_value)),
             tumor_classification=_wrap_value(map_field_value("tumor_classification", _null_if_invalid(tumor_classification_value))),
             age_at_diagnosis=_wrap_integer_value(_null_if_neg999(age_at_diagnosis_value)),
@@ -423,7 +464,7 @@ class SampleConverters:
             diagnosis=diagnosis_field,
             identifiers=identifiers,
             diagnosis_category=diagnosis_category_field,
-            unharmonized=unharmonized_field,
+            unharmonized=merged_unharmonized or None,
         )
 
         # Create Sample object

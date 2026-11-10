@@ -86,17 +86,19 @@ class TestModelDumpOverrides:
         assert "gateways" not in result
         assert "files" in result
 
-    def test_samples_response_model_dump_excludes_gateways(self):
-        """Test SamplesResponse.model_dump excludes gateways field (lines 556-558)."""
-        from app.models.dto import SamplesResponse, SummaryCounts
-        
-        response = SamplesResponse(data=[], counts=SummaryCounts(total=0))
-        object.__setattr__(response, 'gateways', {"gateway1": Mock()})
-        
-        result = response.model_dump()
-        
-        # Gateways should be excluded (lines 556-558)
-        assert "gateways" not in result
+    def test_samples_response_model_dump_gateways(self):
+        """SamplesResponse omits gateways when unset and keeps them when set."""
+        from app.models.dto import GatewayKind, NamedGateway, SamplesResponse, SummaryCounts
+
+        empty = SamplesResponse(data=[], counts=SummaryCounts(total=0))
+        assert "gateways" not in empty.model_dump()
+
+        listed = SamplesResponse(
+            data=[],
+            gateways=[NamedGateway(name="CCDC", kind=GatewayKind.CLOSED)],
+        )
+        result = listed.model_dump()
+        assert result["gateways"][0]["name"] == "CCDC"
         assert "data" in result
 
     def test_files_response_model_dump_excludes_gateways(self):

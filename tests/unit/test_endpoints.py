@@ -512,3 +512,23 @@ class TestOrganizationsEndpoints:
         
         assert result.identifier == "CCDI-DCC"
 
+
+def test_sample_metadata_fields_list_dcc_entries():
+    """The five sample dcc_ fields are listed right after diagnosis category."""
+    config = (
+        Path(__file__).resolve().parents[2] / "app" / "config_data" / "metadata_fields.json"
+    )
+    fields = json.load(config.open(encoding="utf-8"))["samples"]["fields"]
+    paths = [field["path"] for field in fields]
+    new = [
+        "unharmonized.dcc_library_selection_method",
+        "unharmonized.dcc_library_strategy",
+        "unharmonized.dcc_preservation_method",
+        "unharmonized.dcc_specimen_molecular_analyte_type",
+        "unharmonized.dcc_disease_phase",
+    ]
+    index = paths.index("unharmonized.dcc_diagnosis_category_<n>")
+    assert paths[index + 1 : index + 6] == new
+    for field in fields[index + 1 : index + 6]:
+        assert field == {"harmonized": False, "path": field["path"], "wiki_url": None}
+

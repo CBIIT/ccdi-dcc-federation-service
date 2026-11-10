@@ -29,6 +29,22 @@ def test_unknown_entity_returns_empty():
     assert get_gateways("nope") == []
 
 
+def test_sample_gateways_loaded_in_order():
+    gws = get_gateways("samples")
+    assert [g["name"] for g in gws] == [
+        "CCDI DCC model",
+        "Childhood Cancer Clinical Data Commons",
+    ]
+    assert gws[0]["link"]["instructions"] == (
+        "The CCDI DCC model is a graph database schema. model-desc/ccdi-dcc-model.yml describes "
+        "the model nodes. /ccdi-dcc-model-props.yml describes the node properties."
+    )
+    assert gws[1]["link"]["instructions"] == (
+        "The Explore Participants view enables browsing and filtering by study, participant, "
+        "and sample attributes."
+    )
+
+
 def test_file_gateways_loaded_in_order():
     gws = get_gateways("files")
     assert [g["name"] for g in gws] == [

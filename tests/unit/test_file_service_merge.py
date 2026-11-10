@@ -204,10 +204,14 @@ class TestFileServiceMerge:
         maf_repo = AsyncMock()
         sf_repo = AsyncMock()
 
+        def wait_for_times_out(coro, timeout=None):
+            coro.close()
+            raise asyncio.TimeoutError()
+
         with patch.object(svc, "_repos", [maf_repo, sf_repo]):
             with patch(
                 "app.services.file.asyncio.wait_for",
-                side_effect=asyncio.TimeoutError(),
+                side_effect=wait_for_times_out,
             ):
                 with pytest.raises(ValidationError, match="timeout"):
                     await svc.count_files_by_field("type", {})

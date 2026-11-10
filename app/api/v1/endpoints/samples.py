@@ -21,8 +21,10 @@ from app.api.v1.deps import (
 from app.core.config import Settings
 from app.core.pagination import PaginationParams, PaginationInfo, build_link_header
 from app.core.cache import get_cache_service
+from app.core.gateways import get_gateways
 from app.core.logging import get_logger
 from app.lib.field_allowlist import FieldAllowlist
+from app.repositories.sample_unharmonized_filters import canonical_dcc_filter_name
 from app.models.dto import (
     Sample,
     SampleResponse,
@@ -110,7 +112,10 @@ in the `responses::Samples` schema.""",
                                     "name": "TARGET-10-DCC001"
                                 },
                                 "metadata": {
-                                    "disease_phase": {"value": "Initial Diagnosis"},
+                                    "disease_phase": {
+                                        "value": "Relapse",
+                                        "ancestors": ["unharmonized.dcc_disease_phase"],
+                                    },
                                     "diagnosis": {"value": "Neuroblastoma","comment": "null" },
                                     "diagnosis_category": {
                                         "value": "Brain and Spinal Cord Tumors"
@@ -118,7 +123,15 @@ in the `responses::Samples` schema.""",
                                     "unharmonized": {
                                         "dcc_diagnosis_category_1": {
                                             "value": "Gliomas"
-                                        }
+                                        },
+                                        "dcc_disease_phase": {
+                                            "value": "Recurrent Disease",
+                                            "details": {
+                                                "method": "Mapped",
+                                                "harmonizer": "DomainExpert",
+                                                "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?disease_phase=Relapse",
+                                            },
+                                        },
                                     },
                                     "age_at_diagnosis": {"value": 10},
                                     "anatomical_sites": [
@@ -149,7 +162,27 @@ in the `responses::Samples` schema.""",
                                     ]
                                 }
                             }
-                        ]
+                        ],
+                        "gateways": [
+                            {
+                                "name": "CCDI DCC model",
+                                "kind": "Open",
+                                "link": {
+                                    "kind": "Approximate",
+                                    "url": "https://github.com/CBIIT/ccdi-dcc-model",
+                                    "instructions": "The CCDI DCC model is a graph database schema. model-desc/ccdi-dcc-model.yml describes the model nodes. /ccdi-dcc-model-props.yml describes the node properties.",
+                                },
+                            },
+                            {
+                                "name": "Childhood Cancer Clinical Data Commons",
+                                "kind": "Open",
+                                "link": {
+                                    "kind": "Approximate",
+                                    "url": "https://clinicalcommons.ccdi.cancer.gov/home",
+                                    "instructions": "The Explore Participants view enables browsing and filtering by study, participant, and sample attributes.",
+                                },
+                            },
+                        ],
                     }
                 }
             }
@@ -200,13 +233,13 @@ async def list_samples(
                          "specimen_molecular_analyte_type", "tissue_type", "tumor_classification",
                          "age_at_diagnosis", "age_at_collection", "tumor_tissue_morphology",
                          "depositions", "diagnosis", "identifiers", "diagnosis_category", "page", "per_page"}
-        # Add support for metadata.unharmonized.* fields
-        allowed_params.update({k for k in request.query_params.keys() if k.startswith("metadata.unharmonized.")})
-        
+        # metadata.unharmonized.* is accepted only for the six allowlisted dcc_ names.
+        # Any other key is rejected, not ignored (same rule as /sample-diagnosis and /file).
         unknown_params = []
         for key in request.query_params.keys():
-            if key not in allowed_params and not key.startswith("metadata.unharmonized."):
-                unknown_params.append(key)
+            if key in allowed_params or canonical_dcc_filter_name(key) is not None:
+                continue
+            unknown_params.append(key)
         
         if unknown_params:
             raise InvalidParametersError(
@@ -281,7 +314,8 @@ async def list_samples(
                     "current": current_count  # Items in current page
                 }
             },
-            data=samples_dicts
+            data=samples_dicts,
+            gateways=(get_gateways("samples") or None) if samples else None,
         )
         
         return result
@@ -537,10 +571,26 @@ async def count_samples_by_field(
                             "name": "TARGET-10-DCC001"
                         },
                         "metadata": {
-                            "disease_phase": {"value": "Initial Diagnosis"},
+                            "disease_phase": {
+                                "value": "Relapse",
+                                "ancestors": ["unharmonized.dcc_disease_phase"],
+                            },
                             "diagnosis": {"value": "Neuroblastoma","comment": "null" },
                             "diagnosis_category": {
                                 "value": "Brain and Spinal Cord Tumors"
+                            },
+                            "unharmonized": {
+                                "dcc_diagnosis_category_1": {
+                                    "value": "Gliomas"
+                                },
+                                "dcc_disease_phase": {
+                                    "value": "Recurrent Disease",
+                                    "details": {
+                                        "method": "Mapped",
+                                        "harmonizer": "DomainExpert",
+                                        "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?disease_phase=Relapse",
+                                    },
+                                },
                             },
                             "age_at_diagnosis": {"value": 10},
                             "anatomical_sites": [

@@ -308,7 +308,7 @@
                               "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?sex_at_birth=Female"
                             }
                           },
-                          "dcc_associated_diagnosis_category_1": {
+                          "dcc_associated_diagnosis_categories_1": {
                             "value": "Gliomas",
                             "details": {
                               "method": "Mapped",
@@ -591,7 +591,7 @@
                           "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?sex_at_birth=Male"
                         }
                       },
-                      "dcc_associated_diagnosis_category_1": {
+                      "dcc_associated_diagnosis_categories_1": {
                         "value": "Gliomas",
                         "details": {
                           "method": "Mapped",
@@ -687,7 +687,7 @@
           "Sample"
         ],
         "summary": "Gets the samples known by this server.",
-        "description": "Gets the samples known by this server.\n\n### Pagination\n\nThis endpoint is paginated. Users may override the default pagination\nparameters by providing one or more of the pagination-related query\nparameters below.\n\n### Filtering\n\nAll harmonized (top-level) and unharmonized (nested under the\n`metadata.unharmonized` key) metadata fields are filterable. To achieve\nthis, you can provide the field name as a [`String`]. Filtering follows the\nfollowing rules:\n\n* For single-value metadata field, the sample is included in the results if\nits value _exactly_ matches the query string. Matches are case-sensitive.\n* For multiple-value metadata fields, the sample is included in the results\nif any of its values for the field _exactly_ match the query string (a\nlogical OR (`||`)). Matches are case-sensitive.\n* When the metadata field is `null` (in the case of singular or\nmultiple-valued metadata fields) or empty, the sample is not included.\n* When multiple fields are provided as filters, a logical AND (`&&`) strings\ntogether the predicates. In other words, all filters must match for a\nsample to be returned. Note that this means that servers do not natively\nsupport logical OR (`||`) across multiple fields: that must be done by\ncalling this endpoint with each of your desired queries and performing a\nset union of those samples out of band.\n\n### Ordering\n\nThis endpoint has default ordering requirements\u2014those details are documented\nin the `responses::Samples` schema.",
+        "description": "Gets the samples known by this server.\n\n### Pagination\n\nThis endpoint is paginated. Users may override the default pagination\nparameters by providing one or more of the pagination-related query\nparameters below.\n\n### Filtering\n\nAll harmonized (top-level) and unharmonized (nested under the\n`metadata.unharmonized` key) metadata fields are filterable. To achieve\nthis, you can provide the field name as a [`String`]. Filtering follows the\nfollowing rules:\n\n* For single-value metadata field, the sample is included in the results if\nits value _exactly_ matches the query string. Matches are case-sensitive.\n* For multiple-value metadata fields, the sample is included in the results\nif any of its values for the field _exactly_ match the query string (a\nlogical OR (`||`)). Matches are case-sensitive.\n* When the metadata field is `null` (in the case of singular or\nmultiple-valued metadata fields) or empty, the sample is not included.\n* When multiple fields are provided as filters, a logical AND (`&&`) strings\ntogether the predicates. In other words, all filters must match for a\nsample to be returned. Note that this means that servers do not natively\nsupport logical OR (`||`) across multiple fields: that must be done by\ncalling this endpoint with each of your desired queries and performing a\nset union of those samples out of band.\n\n### Ordering\n\nThis endpoint has default ordering requirements—those details are documented\nin the `responses::Samples` schema.",
         "operationId": "sample_index",
         "parameters": [
           {
@@ -997,6 +997,114 @@
             "description": "Matches any sample where the `sample_id` field matches the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the sample should be included in the results."
           },
           {
+            "name": "metadata.unharmonized.dcc_library_selection_method",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Case-insensitive match on the raw `library_selection` value. `||` means any of.",
+              "title": "Metadata.Unharmonized.Dcc Library Selection Method"
+            },
+            "description": "Case-insensitive match on the raw `library_selection` value. `||` means any of."
+          },
+          {
+            "name": "metadata.unharmonized.dcc_library_strategy",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Case-insensitive match on the raw `library_strategy` value. `||` means any of.",
+              "title": "Metadata.Unharmonized.Dcc Library Strategy"
+            },
+            "description": "Case-insensitive match on the raw `library_strategy` value. `||` means any of."
+          },
+          {
+            "name": "metadata.unharmonized.dcc_preservation_method",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Case-insensitive match on the raw `fixation_embedding_method` value. `||` means any of.",
+              "title": "Metadata.Unharmonized.Dcc Preservation Method"
+            },
+            "description": "Case-insensitive match on the raw `fixation_embedding_method` value. `||` means any of."
+          },
+          {
+            "name": "metadata.unharmonized.dcc_specimen_molecular_analyte_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Case-insensitive match on the raw `library_source_molecule` value. `||` means any of.",
+              "title": "Metadata.Unharmonized.Dcc Specimen Molecular Analyte Type"
+            },
+            "description": "Case-insensitive match on the raw `library_source_molecule` value. `||` means any of."
+          },
+          {
+            "name": "metadata.unharmonized.dcc_disease_phase",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Case-insensitive match on the raw `disease_phase` value. `||` means any of.",
+              "title": "Metadata.Unharmonized.Dcc Disease Phase"
+            },
+            "description": "Case-insensitive match on the raw `disease_phase` value. `||` means any of."
+          },
+          {
+            "name": "metadata.unharmonized.dcc_diagnosis_category",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Case-insensitive match on any raw `diagnosis_category` token. `dcc_diagnosis_category_<n>` matches the same way; `<n>` is not a position. `||` means any of.",
+              "title": "Metadata.Unharmonized.Dcc Diagnosis Category"
+            },
+            "description": "Case-insensitive match on any raw `diagnosis_category` token. `dcc_diagnosis_category_<n>` matches the same way; `<n>` is not a position. `||` means any of."
+          },
+          {
             "name": "page",
             "in": "query",
             "required": false,
@@ -1069,7 +1177,10 @@
                       },
                       "metadata": {
                         "disease_phase": {
-                          "value": "Initial Diagnosis"
+                          "value": "Relapse",
+                          "ancestors": [
+                            "unharmonized.dcc_disease_phase"
+                          ]
                         },
                         "diagnosis": {
                           "value": "Neuroblastoma",
@@ -1081,6 +1192,14 @@
                         "unharmonized": {
                           "dcc_diagnosis_category_1": {
                             "value": "Gliomas"
+                          },
+                          "dcc_disease_phase": {
+                            "value": "Recurrent Disease",
+                            "details": {
+                              "method": "Mapped",
+                              "harmonizer": "DomainExpert",
+                              "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?disease_phase=Relapse"
+                            }
                           }
                         },
                         "age_at_diagnosis": {
@@ -1122,6 +1241,26 @@
                             }
                           }
                         ]
+                      }
+                    }
+                  ],
+                  "gateways": [
+                    {
+                      "name": "CCDI DCC model",
+                      "kind": "Open",
+                      "link": {
+                        "kind": "Approximate",
+                        "url": "https://github.com/CBIIT/ccdi-dcc-model",
+                        "instructions": "The CCDI DCC model is a graph database schema. model-desc/ccdi-dcc-model.yml describes the model nodes. /ccdi-dcc-model-props.yml describes the node properties."
+                      }
+                    },
+                    {
+                      "name": "Childhood Cancer Clinical Data Commons",
+                      "kind": "Open",
+                      "link": {
+                        "kind": "Approximate",
+                        "url": "https://clinicalcommons.ccdi.cancer.gov/home",
+                        "instructions": "The Explore Participants view enables browsing and filtering by study, participant, and sample attributes."
                       }
                     }
                   ]
@@ -1306,7 +1445,10 @@
                   },
                   "metadata": {
                     "disease_phase": {
-                      "value": "Initial Diagnosis"
+                      "value": "Relapse",
+                      "ancestors": [
+                        "unharmonized.dcc_disease_phase"
+                      ]
                     },
                     "diagnosis": {
                       "value": "Neuroblastoma",
@@ -1314,6 +1456,19 @@
                     },
                     "diagnosis_category": {
                       "value": "Brain and Spinal Cord Tumors"
+                    },
+                    "unharmonized": {
+                      "dcc_diagnosis_category_1": {
+                        "value": "Gliomas"
+                      },
+                      "dcc_disease_phase": {
+                        "value": "Recurrent Disease",
+                        "details": {
+                          "method": "Mapped",
+                          "harmonizer": "DomainExpert",
+                          "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?disease_phase=Relapse"
+                        }
+                      }
                     },
                     "age_at_diagnosis": {
                       "value": 10
@@ -1435,7 +1590,7 @@
           "Experimental"
         ],
         "summary": "Experimental: Filter the samples known by this server by free-text diagnosis search.",
-        "description": "Experimental: Filter the samples known by this server by free-text diagnosis search.\n\n### Diagnosis Filtering\n\nThis endpoint supports the experimental `search` parameter: case-insensitive substring on\n`diagnosis` from diagnosis nodes, or on `diagnosis_comment` when `diagnosis` is\n`see diagnosis_comment`.\n\nThe `diagnosis_category` query parameter matches the **full** `diagnosis_category` string\nwith a case-insensitive **substring**. With `search`, both apply as **AND** on the same\ndiagnosis node.\n\n### Pagination\n\nThis endpoint is paginated. Users may override the default pagination\nparameters by providing one or more of the pagination-related query\nparameters below.\n\n### Additional Filtering\n\nAll harmonized (top-level) and unharmonized (nested under the\n`metadata.unharmonized` key) metadata fields are filterable. To achieve\nthis, you can provide the field name as a [`String`]. Filtering follows the\nfollowing rules:\n\n* For single-value metadata field, the sample is included in the results if\nits value _exactly_ matches the query string. Matches are case-sensitive.\n* For multiple-value metadata fields, the sample is included in the results\nif any of its values for the field _exactly_ match the query string (a\nlogical OR [`||`]). Matches are case-sensitive.\n* When the metadata field is `null` (in the case of singular or\nmultiple-valued metadata fields) or empty, the sample is not included.\n* When multiple fields are provided as filters, a logical AND (`&&`) strings\ntogether the predicates. In other words, all filters must match for a\nsample to be returned. Note that this means that servers do not natively\nsupport logical OR (`||`) across multiple fields: that must be done by\ncalling this endpoint with each of your desired queries and performing a\nset union of those samples out of band.\n\n### Ordering\n\nThis endpoint has default ordering requirements\u2014those details are documented\nin the `responses::Samples` schema.\n\nNote: This API is experimental and is subject to change without being considered\nas a breaking change.",
+        "description": "Experimental: Filter the samples known by this server by free-text diagnosis search.\n\n### Diagnosis Filtering\n\nThis endpoint supports the experimental `search` parameter: case-insensitive substring on\n`diagnosis` from diagnosis nodes, or on `diagnosis_comment` when `diagnosis` is\n`see diagnosis_comment`.\n\nThe `diagnosis_category` query parameter matches the **full** `diagnosis_category` string\nwith a case-insensitive **substring**. With `search`, both apply as **AND** on the same\ndiagnosis node.\n\n### Pagination\n\nThis endpoint is paginated. Users may override the default pagination\nparameters by providing one or more of the pagination-related query\nparameters below.\n\n### Additional Filtering\n\nAll harmonized (top-level) and unharmonized (nested under the\n`metadata.unharmonized` key) metadata fields are filterable. To achieve\nthis, you can provide the field name as a [`String`]. Filtering follows the\nfollowing rules:\n\n* For single-value metadata field, the sample is included in the results if\nits value _exactly_ matches the query string. Matches are case-sensitive.\n* For multiple-value metadata fields, the sample is included in the results\nif any of its values for the field _exactly_ match the query string (a\nlogical OR [`||`]). Matches are case-sensitive.\n* When the metadata field is `null` (in the case of singular or\nmultiple-valued metadata fields) or empty, the sample is not included.\n* When multiple fields are provided as filters, a logical AND (`&&`) strings\ntogether the predicates. In other words, all filters must match for a\nsample to be returned. Note that this means that servers do not natively\nsupport logical OR (`||`) across multiple fields: that must be done by\ncalling this endpoint with each of your desired queries and performing a\nset union of those samples out of band.\n\n### Ordering\n\nThis endpoint has default ordering requirements—those details are documented\nin the `responses::Samples` schema.\n\nNote: This API is experimental and is subject to change without being considered\nas a breaking change.",
         "operationId": "sample_diagnosis_search",
         "parameters": [
           {
@@ -1745,6 +1900,114 @@
             "description": "Matches any sample where the `sample_id` field matches the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the sample should be included in the results."
           },
           {
+            "name": "metadata.unharmonized.dcc_library_selection_method",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Case-insensitive match on the raw `library_selection` value. `||` means any of.",
+              "title": "Metadata.Unharmonized.Dcc Library Selection Method"
+            },
+            "description": "Case-insensitive match on the raw `library_selection` value. `||` means any of."
+          },
+          {
+            "name": "metadata.unharmonized.dcc_library_strategy",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Case-insensitive match on the raw `library_strategy` value. `||` means any of.",
+              "title": "Metadata.Unharmonized.Dcc Library Strategy"
+            },
+            "description": "Case-insensitive match on the raw `library_strategy` value. `||` means any of."
+          },
+          {
+            "name": "metadata.unharmonized.dcc_preservation_method",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Case-insensitive match on the raw `fixation_embedding_method` value. `||` means any of.",
+              "title": "Metadata.Unharmonized.Dcc Preservation Method"
+            },
+            "description": "Case-insensitive match on the raw `fixation_embedding_method` value. `||` means any of."
+          },
+          {
+            "name": "metadata.unharmonized.dcc_specimen_molecular_analyte_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Case-insensitive match on the raw `library_source_molecule` value. `||` means any of.",
+              "title": "Metadata.Unharmonized.Dcc Specimen Molecular Analyte Type"
+            },
+            "description": "Case-insensitive match on the raw `library_source_molecule` value. `||` means any of."
+          },
+          {
+            "name": "metadata.unharmonized.dcc_disease_phase",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Case-insensitive match on the raw `disease_phase` value. `||` means any of.",
+              "title": "Metadata.Unharmonized.Dcc Disease Phase"
+            },
+            "description": "Case-insensitive match on the raw `disease_phase` value. `||` means any of."
+          },
+          {
+            "name": "metadata.unharmonized.dcc_diagnosis_category",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Case-insensitive match on any raw `diagnosis_category` token. `dcc_diagnosis_category_<n>` matches the same way; `<n>` is not a position. `||` means any of.",
+              "title": "Metadata.Unharmonized.Dcc Diagnosis Category"
+            },
+            "description": "Case-insensitive match on any raw `diagnosis_category` token. `dcc_diagnosis_category_<n>` matches the same way; `<n>` is not a position. `||` means any of."
+          },
+          {
             "name": "page",
             "in": "query",
             "required": false,
@@ -1817,7 +2080,10 @@
                       },
                       "metadata": {
                         "disease_phase": {
-                          "value": "Initial Diagnosis"
+                          "value": "Relapse",
+                          "ancestors": [
+                            "unharmonized.dcc_disease_phase"
+                          ]
                         },
                         "diagnosis": [
                           {
@@ -1831,6 +2097,14 @@
                         "unharmonized": {
                           "dcc_diagnosis_category_1": {
                             "value": "Gliomas"
+                          },
+                          "dcc_disease_phase": {
+                            "value": "Recurrent Disease",
+                            "details": {
+                              "method": "Mapped",
+                              "harmonizer": "DomainExpert",
+                              "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?disease_phase=Relapse"
+                            }
                           }
                         },
                         "age_at_diagnosis": {
@@ -1892,6 +2166,26 @@
                         ]
                       }
                     }
+                  ],
+                  "gateways": [
+                    {
+                      "name": "CCDI DCC model",
+                      "kind": "Open",
+                      "link": {
+                        "kind": "Approximate",
+                        "url": "https://github.com/CBIIT/ccdi-dcc-model",
+                        "instructions": "The CCDI DCC model is a graph database schema. model-desc/ccdi-dcc-model.yml describes the model nodes. /ccdi-dcc-model-props.yml describes the node properties."
+                      }
+                    },
+                    {
+                      "name": "Childhood Cancer Clinical Data Commons",
+                      "kind": "Open",
+                      "link": {
+                        "kind": "Approximate",
+                        "url": "https://clinicalcommons.ccdi.cancer.gov/home",
+                        "instructions": "The Explore Participants view enables browsing and filtering by study, participant, and sample attributes."
+                      }
+                    }
                   ]
                 }
               }
@@ -1946,7 +2240,7 @@
           "Experimental"
         ],
         "summary": "Experimental: Filter the subjects known by this server by free-text diagnosis search.",
-        "description": "Experimental: filter subjects using diagnosis nodes (`diagnosis`, `diagnosis_category`)\nalongside the usual `GET /subject` query parameters. Supports harmonized and unharmonized\ndiagnosis category values at the data node, in line with the\n[CCDI Federation API aggregation](https://cbiit.github.io/ccdi-federation-api-aggregation/) subject model (v1.3+).\n\n`search`: case-insensitive substring on `diagnosis` (or `diagnosis_comment` when diagnosis is `see diagnosis_comment`).\n`associated_diagnosis_categories`: substring on the full `diagnosis_category` on diagnosis node. Both together apply as AND on one diagnosis node.\n\nPaginated. Experimental\u2014may change.",
+        "description": "Experimental: filter subjects using diagnosis nodes (`diagnosis`, `diagnosis_category`)\nalongside the usual `GET /subject` query parameters. Supports harmonized and unharmonized\ndiagnosis category values at the data node, in line with the\n[CCDI Federation API aggregation](https://cbiit.github.io/ccdi-federation-api-aggregation/) subject model (v1.3+).\n\n`search`: case-insensitive substring on `diagnosis` (or `diagnosis_comment` when diagnosis is `see diagnosis_comment`).\n`associated_diagnosis_categories`: substring on the full `diagnosis_category` on diagnosis node. Both together apply as AND on one diagnosis node.\n\nPaginated. Experimental—may change.",
         "operationId": "subject_diagnosis_search",
         "parameters": [
           {
@@ -2260,7 +2554,7 @@
                               "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?sex_at_birth=Female"
                             }
                           },
-                          "dcc_associated_diagnosis_category_1": {
+                          "dcc_associated_diagnosis_categories_1": {
                             "value": "Gliomas",
                             "details": {
                               "method": "Mapped",
@@ -2457,10 +2751,10 @@
                   "type": "null"
                 }
               ],
-              "description": "All unharmonized fields should be filterable in the same manner as harmonized fields:\n\n* Filtering on a singular field should include the `File` in the results if the query matches the value of that field for the `File` (case-insensitive).\n* Filtering on field with multiple values should include the `File` in the results if the query matches any of the values of the field for that `File` (case-insensitive).\n* Unlike harmonized fields, unharmonized fields must be prefixed with `metadata.unharmonized`.\n\n**Examples:**\n* `?metadata.unharmonized.dcc_file_name=UTYE.fastq` - Filter files by file name\n\n",
-              "title": "Metadata.Unharmonized.File Name"
+              "description": "All unharmonized fields should be filterable in the same manner as harmonized fields:\n\n* Filtering on a singular field should include the `File` in the results if the query matches the value of that field for the `File` (case-insensitive).\n* Filtering on a field with multiple values should include the `File` in the results if the query matches any of the values of the field for that `File` (case-insensitive).\n* Unlike harmonized fields, unharmonized fields must be prefixed with `metadata.unharmonized`.\n\n**Examples:**\n* `?metadata.unharmonized.dcc_file_name=UTYE.fastq` - Filter files by file name\n\n",
+              "title": "Metadata.Unharmonized.Dcc File Name"
             },
-            "description": "All unharmonized fields should be filterable in the same manner as harmonized fields:\n\n* Filtering on a singular field should include the `File` in the results if the query matches the value of that field for the `File` (case-insensitive).\n* Filtering on field with multiple values should include the `File` in the results if the query matches any of the values of the field for that `File` (case-insensitive).\n* Unlike harmonized fields, unharmonized fields must be prefixed with `metadata.unharmonized`.\n\n**Examples:**\n* `?metadata.unharmonized.dcc_file_name=UTYE.fastq` - Filter files by file name\n\n"
+            "description": "All unharmonized fields should be filterable in the same manner as harmonized fields:\n\n* Filtering on a singular field should include the `File` in the results if the query matches the value of that field for the `File` (case-insensitive).\n* Filtering on a field with multiple values should include the `File` in the results if the query matches any of the values of the field for that `File` (case-insensitive).\n* Unlike harmonized fields, unharmonized fields must be prefixed with `metadata.unharmonized`.\n\n**Examples:**\n* `?metadata.unharmonized.dcc_file_name=UTYE.fastq` - Filter files by file name\n\n"
           },
           {
             "name": "metadata.unharmonized.dcc_data_category",
@@ -2476,7 +2770,7 @@
                 }
               ],
               "description": "Case-insensitive match on any one data category of the file. `||` means any of.\n\n**Example:** `?metadata.unharmonized.dcc_data_category=Sequencing||Clinical`",
-              "title": "Metadata.Unharmonized.Data Category"
+              "title": "Metadata.Unharmonized.Dcc Data Category"
             },
             "description": "Case-insensitive match on any one data category of the file. `||` means any of.\n\n**Example:** `?metadata.unharmonized.dcc_data_category=Sequencing||Clinical`"
           },
@@ -3399,7 +3693,7 @@
               }
             ],
             "title": "Ancestors",
-            "description": "Present only when value was promoted from a field_mappings alias; paths like unharmonized.dcc_associated_diagnosis_category_1."
+            "description": "Present only when value was promoted from a field_mappings alias; paths like unharmonized.dcc_associated_diagnosis_categories_1."
           }
         },
         "type": "object",
@@ -3407,7 +3701,7 @@
           "value"
         ],
         "title": "AssociatedDiagnosisCategoryField",
-        "description": "Associated diagnosis categories field \u2014 one harmonized PV value."
+        "description": "Associated diagnosis categories field — one harmonized PV value."
       },
       "AssociatedDiagnosisField": {
         "properties": {
@@ -4557,6 +4851,21 @@
             "type": "array",
             "title": "Data",
             "description": "List of samples with flexible structure"
+          },
+          "gateways": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/NamedGateway"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gateways",
+            "description": "Named gateways for this list response (non-empty sample lists only)"
           }
         },
         "additionalProperties": true,
@@ -4893,9 +5202,31 @@
       "ValueField": {
         "properties": {
           "value": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Value",
-            "description": "Field value"
+            "description": "Field value (null when the file maps the raw value to null)"
+          },
+          "ancestors": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ancestors",
+            "description": "Present when this value was transformed from an unharmonized field"
           }
         },
         "type": "object",
@@ -4903,7 +5234,7 @@
           "value"
         ],
         "title": "ValueField",
-        "description": "Simple field with value attribute."
+        "description": "Simple field with value attribute.\n\nvalue is null only when the field carries ancestors and the unharmonized\nfile maps the raw value to null (e.g. library_selection_method cDNA)."
       }
     }
   },

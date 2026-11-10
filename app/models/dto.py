@@ -331,7 +331,7 @@ class AssociatedDiagnosisCategoryField(BaseModel):
         exclude_if=lambda v: v is None,
         description=(
             "Present only when value was promoted from a field_mappings alias; "
-            "paths like unharmonized.dcc_associated_diagnosis_category_1."
+            "paths like unharmonized.dcc_associated_diagnosis_categories_1."
         ),
     )
 

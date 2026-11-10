@@ -100,6 +100,6 @@ def test_subject_record_diagnosis_wires_details_on_unharmonized():
     record = _base_record([_make_diag_node(diagnosis_category="Gliomas")])
     record["sex"] = "F"
     unh = _make_repo()._record_to_subject(record).model_dump()["metadata"]["unharmonized"]
-    entry = unh["dcc_associated_diagnosis_category_1"]
+    entry = unh["dcc_associated_diagnosis_categories_1"]
     assert entry["value"] == "Gliomas"
     assert entry["details"]["harmonizer"] == "diagnosis_classification_system"

@@ -236,7 +236,7 @@ paths:
                           method: Mapped
                           harmonizer: DomainExpert
                           url: https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?sex_at_birth=Female
-                      dcc_associated_diagnosis_category_1:
+                      dcc_associated_diagnosis_categories_1:
                         value: Gliomas
                         details:
                           method: Mapped
@@ -426,7 +426,7 @@ paths:
                         method: Mapped
                         harmonizer: DomainExpert
                         url: https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?sex_at_birth=Male
-                    dcc_associated_diagnosis_category_1:
+                    dcc_associated_diagnosis_categories_1:
                       value: Gliomas
                       details:
                         method: Mapped
@@ -1866,7 +1866,7 @@ paths:
                           method: Mapped
                           harmonizer: DomainExpert
                           url: https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?sex_at_birth=Female
-                      dcc_associated_diagnosis_category_1:
+                      dcc_associated_diagnosis_categories_1:
                         value: Gliomas
                         details:
                           method: Mapped
@@ -2790,7 +2790,7 @@ components:
           - type: 'null'
           title: Ancestors
           description: Present only when value was promoted from a field_mappings
-            alias; paths like unharmonized.dcc_associated_diagnosis_category_1.
+            alias; paths like unharmonized.dcc_associated_diagnosis_categories_1.
       type: object
       required:
       - value

@@ -2174,7 +2174,7 @@ WITH {carry},
             associated_diagnoses_raw = extracted_diagnoses
         associated_diagnosis_categories, category_unharmonized = build_diagnosis_category_fields(
             category_tokens,
-            "dcc_associated_diagnosis_category",
+            "dcc_associated_diagnosis_categories",
         )
 
         # Apply field mapping to vital_status (e.g., "Not Reported" -> "Not reported")

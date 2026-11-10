@@ -75,9 +75,9 @@ def test_case_normalized_diagnosis_category_keeps_raw_token():
     s = _make_repo()._record_to_subject(record).model_dump()
     assert s["metadata"]["associated_diagnosis_categories"] == {
         "value": "Medulloblastoma",
-        "ancestors": ["unharmonized.dcc_associated_diagnosis_category_1"],
+        "ancestors": ["unharmonized.dcc_associated_diagnosis_categories_1"],
     }
-    assert s["metadata"]["unharmonized"]["dcc_associated_diagnosis_category_1"]["value"] == (
+    assert s["metadata"]["unharmonized"]["dcc_associated_diagnosis_categories_1"]["value"] == (
         "medulloblastoma"
     )
 
@@ -87,7 +87,7 @@ def test_two_natives_first_kept_second_unharmonized():
     record["sex"] = "F"
     s = _make_repo()._record_to_subject(record).model_dump()
     assert s["metadata"]["associated_diagnosis_categories"] == {"value": "Medulloblastoma"}
-    entry = s["metadata"]["unharmonized"]["dcc_associated_diagnosis_category_1"]
+    entry = s["metadata"]["unharmonized"]["dcc_associated_diagnosis_categories_1"]
     assert entry["value"] == "Renal Tumors"
     assert entry["details"]["harmonizer"] == "diagnosis_classification_system"
 
@@ -98,7 +98,7 @@ def test_alias_promoted_with_ancestors():
     s = _make_repo()._record_to_subject(record).model_dump()
     assert s["metadata"]["associated_diagnosis_categories"] == {
         "value": "Myeloid Leukemia",
-        "ancestors": ["unharmonized.dcc_associated_diagnosis_category_1"],
+        "ancestors": ["unharmonized.dcc_associated_diagnosis_categories_1"],
     }
 
 
@@ -114,11 +114,11 @@ def test_multiple_diagnosis_nodes_dedupe_and_number():
     assert s["metadata"]["associated_diagnosis_categories"] == {"value": "Medulloblastoma"}
     unh = s["metadata"]["unharmonized"]
     assert set(unh) >= {
-        "dcc_associated_diagnosis_category_1",
-        "dcc_associated_diagnosis_category_2",
+        "dcc_associated_diagnosis_categories_1",
+        "dcc_associated_diagnosis_categories_2",
     }
-    assert unh["dcc_associated_diagnosis_category_1"]["value"] == "Gliomas"
-    assert unh["dcc_associated_diagnosis_category_2"]["value"] == "Other X"
+    assert unh["dcc_associated_diagnosis_categories_1"]["value"] == "Gliomas"
+    assert unh["dcc_associated_diagnosis_categories_2"]["value"] == "Other X"
 
 
 def test_race_ethnicity_vital_status_have_no_ancestors_key():

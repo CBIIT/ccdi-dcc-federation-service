@@ -198,7 +198,7 @@ def test_lowest_guid_wins_harmonized_slot():
     medullo = _make_diag_node(diagnosis_category="Medulloblastoma", guid="guid-a")
     harmonized, unharmonized = _category_view([renal, medullo])
     assert harmonized == {"value": "Medulloblastoma"}
-    assert unharmonized["dcc_associated_diagnosis_category_1"]["value"] == "Renal Tumors"
+    assert unharmonized["dcc_associated_diagnosis_categories_1"]["value"] == "Renal Tumors"
 
 
 def test_nodes_without_guid_fall_back_to_text_order():

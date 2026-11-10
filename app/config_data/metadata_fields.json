@@ -84,7 +84,7 @@
         }
       },
       {
-        "path": "unharmonized.dcc_associated_diagnosis_category_<n>",
+        "path": "unharmonized.dcc_associated_diagnosis_categories_<n>",
         "harmonized": false,
         "wiki_url": null,
         "standard": {

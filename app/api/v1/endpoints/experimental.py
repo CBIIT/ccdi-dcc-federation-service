@@ -424,7 +424,7 @@ Paginated. Experimental—may change.""",
                                                 "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?sex_at_birth=Female",
                                             },
                                         },
-                                        "dcc_associated_diagnosis_category_1": {
+                                        "dcc_associated_diagnosis_categories_1": {
                                             "value": "Gliomas",
                                             "details": {
                                                 "method": "Mapped",

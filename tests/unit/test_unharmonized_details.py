@@ -33,7 +33,7 @@ def _config():
                     },
                 },
                 {
-                    "path": "unharmonized.dcc_associated_diagnosis_category_<n>",
+                    "path": "unharmonized.dcc_associated_diagnosis_categories_<n>",
                     "harmonized": False,
                     "details": {
                         "method": "Mapped",
@@ -77,13 +77,13 @@ def test_details_for_plain_key():
 
 
 def test_numbered_key_uses_n_entry():
-    d = build_unharmonized_details("subjects", "dcc_associated_diagnosis_category_3", "Gliomas")
+    d = build_unharmonized_details("subjects", "dcc_associated_diagnosis_categories_3", "Gliomas")
     assert d["url"].endswith("diagnosis_category=Gliomas")
 
 
 def test_url_value_is_percent_encoded():
     d = build_unharmonized_details(
-        "subjects", "dcc_associated_diagnosis_category_1", "Glioblastoma, NOS & A/B"
+        "subjects", "dcc_associated_diagnosis_categories_1", "Glioblastoma, NOS & A/B"
     )
     assert d["url"].endswith("diagnosis_category=Glioblastoma%2C%20NOS%20%26%20A%2FB")
 
@@ -114,14 +114,14 @@ def test_attach_preserves_existing_entry_keys():
     out = attach_unharmonized_details(
         "subjects",
         {
-            "dcc_associated_diagnosis_category_1": {
+            "dcc_associated_diagnosis_categories_1": {
                 "value": "Myeloid leukemias",
                 "comment": "Myeloid Leukemia",
                 "owned": True,
             }
         },
     )
-    entry = out["dcc_associated_diagnosis_category_1"]
+    entry = out["dcc_associated_diagnosis_categories_1"]
     assert entry["comment"] == "Myeloid Leukemia"
     assert entry["owned"] is True
     assert "details" in entry

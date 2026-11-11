@@ -234,7 +234,7 @@
       },
       {
         "harmonized": false,
-        "path": "unharmonized.dcc_library_selection_method",
+        "path": "unharmonized.dcc_library_selection",
         "wiki_url": null,
         "standard": {
           "name": "caDSR CDE 6347743 v2.0",
@@ -252,7 +252,7 @@
       },
       {
         "harmonized": false,
-        "path": "unharmonized.dcc_preservation_method",
+        "path": "unharmonized.dcc_fixation_embedding_method",
         "wiki_url": null,
         "standard": {
           "name": "caDSR CDE 8028962 v3.0",
@@ -261,7 +261,7 @@
       },
       {
         "harmonized": false,
-        "path": "unharmonized.dcc_specimen_molecular_analyte_type",
+        "path": "unharmonized.dcc_library_source_molecule",
         "wiki_url": null,
         "standard": {
           "name": "caDSR CDE 15063661 v1.0",

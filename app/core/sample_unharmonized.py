@@ -21,6 +21,15 @@ SAMPLE_UNHARMONIZED_FIELDS: tuple[str, ...] = (
     "disease_phase",
 )
 
+# Response key per field: the raw DB column name, prefixed with dcc_.
+SAMPLE_UNHARMONIZED_KEYS: dict[str, str] = {
+    "library_selection_method": "dcc_library_selection",
+    "library_strategy": "dcc_library_strategy",
+    "preservation_method": "dcc_fixation_embedding_method",
+    "specimen_molecular_analyte_type": "dcc_library_source_molecule",
+    "disease_phase": "dcc_disease_phase",
+}
+
 _CONFIG_PATH = (
     Path(__file__).resolve().parents[1]
     / "config_data"

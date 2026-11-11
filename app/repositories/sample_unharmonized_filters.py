@@ -16,13 +16,13 @@ _PREFIX = "metadata.unharmonized."
 
 # Canonical name -> (categorize bucket, node property).
 _SPECS: dict[str, tuple[str, str]] = {
-    "dcc_library_selection_method": ("sequencing_file", "library_selection"),
+    "dcc_library_selection": ("sequencing_file", "library_selection"),
     "dcc_library_strategy": ("sequencing_file", "library_strategy"),
-    "dcc_specimen_molecular_analyte_type": (
+    "dcc_library_source_molecule": (
         "sequencing_file",
         "library_source_molecule",
     ),
-    "dcc_preservation_method": ("pathology_file", "fixation_embedding_method"),
+    "dcc_fixation_embedding_method": ("pathology_file", "fixation_embedding_method"),
     "dcc_disease_phase": ("diagnosis", "disease_phase"),
     "dcc_diagnosis_category": ("diagnosis", "diagnosis_category"),
 }

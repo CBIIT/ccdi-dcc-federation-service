@@ -521,10 +521,10 @@ def test_sample_metadata_fields_list_dcc_entries():
     fields = json.load(config.open(encoding="utf-8"))["samples"]["fields"]
     paths = [field["path"] for field in fields]
     new = [
-        ("unharmonized.dcc_library_selection_method", "6347743", "v2.0"),
+        ("unharmonized.dcc_library_selection", "6347743", "v2.0"),
         ("unharmonized.dcc_library_strategy", "6273393", "v2.0"),
-        ("unharmonized.dcc_preservation_method", "8028962", "v3.0"),
-        ("unharmonized.dcc_specimen_molecular_analyte_type", "15063661", "v1.0"),
+        ("unharmonized.dcc_fixation_embedding_method", "8028962", "v3.0"),
+        ("unharmonized.dcc_library_source_molecule", "15063661", "v1.0"),
         ("unharmonized.dcc_disease_phase", "12217251", "v2.0"),
     ]
     index = paths.index("unharmonized.dcc_diagnosis_category_<n>")

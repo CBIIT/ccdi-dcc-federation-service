@@ -742,10 +742,8 @@ paths:
           - type: string
           - type: 'null'
           description: Case-insensitive match on the raw `library_selection` value.
-            `||` means any of.
           title: Metadata.Unharmonized.Dcc Library Selection
         description: Case-insensitive match on the raw `library_selection` value.
-          `||` means any of.
       - name: metadata.unharmonized.dcc_library_strategy
         in: query
         required: false
@@ -754,10 +752,8 @@ paths:
           - type: string
           - type: 'null'
           description: Case-insensitive match on the raw `library_strategy` value.
-            `||` means any of.
           title: Metadata.Unharmonized.Dcc Library Strategy
-        description: Case-insensitive match on the raw `library_strategy` value. `||`
-          means any of.
+        description: Case-insensitive match on the raw `library_strategy` value.
       - name: metadata.unharmonized.dcc_fixation_embedding_method
         in: query
         required: false
@@ -766,10 +762,10 @@ paths:
           - type: string
           - type: 'null'
           description: Case-insensitive match on the raw `fixation_embedding_method`
-            value. `||` means any of.
+            value.
           title: Metadata.Unharmonized.Dcc Fixation Embedding Method
         description: Case-insensitive match on the raw `fixation_embedding_method`
-          value. `||` means any of.
+          value.
       - name: metadata.unharmonized.dcc_library_source_molecule
         in: query
         required: false
@@ -778,10 +774,9 @@ paths:
           - type: string
           - type: 'null'
           description: Case-insensitive match on the raw `library_source_molecule`
-            value. `||` means any of.
+            value.
           title: Metadata.Unharmonized.Dcc Library Source Molecule
         description: Case-insensitive match on the raw `library_source_molecule` value.
-          `||` means any of.
       - name: metadata.unharmonized.dcc_disease_phase
         in: query
         required: false
@@ -789,11 +784,9 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: Case-insensitive match on the raw `disease_phase` value. `||`
-            means any of.
+          description: Case-insensitive match on the raw `disease_phase` value.
           title: Metadata.Unharmonized.Dcc Disease Phase
-        description: Case-insensitive match on the raw `disease_phase` value. `||`
-          means any of.
+        description: Case-insensitive match on the raw `disease_phase` value.
       - name: metadata.unharmonized.dcc_diagnosis_category
         in: query
         required: false
@@ -803,11 +796,9 @@ paths:
           - type: 'null'
           description: Case-insensitive match on any raw `diagnosis_category` token.
             `dcc_diagnosis_category_<n>` matches the same way; `<n>` is not a position.
-            `||` means any of.
           title: Metadata.Unharmonized.Dcc Diagnosis Category
         description: Case-insensitive match on any raw `diagnosis_category` token.
           `dcc_diagnosis_category_<n>` matches the same way; `<n>` is not a position.
-          `||` means any of.
       - name: page
         in: query
         required: false
@@ -1398,10 +1389,8 @@ paths:
           - type: string
           - type: 'null'
           description: Case-insensitive match on the raw `library_selection` value.
-            `||` means any of.
           title: Metadata.Unharmonized.Dcc Library Selection
         description: Case-insensitive match on the raw `library_selection` value.
-          `||` means any of.
       - name: metadata.unharmonized.dcc_library_strategy
         in: query
         required: false
@@ -1410,10 +1399,8 @@ paths:
           - type: string
           - type: 'null'
           description: Case-insensitive match on the raw `library_strategy` value.
-            `||` means any of.
           title: Metadata.Unharmonized.Dcc Library Strategy
-        description: Case-insensitive match on the raw `library_strategy` value. `||`
-          means any of.
+        description: Case-insensitive match on the raw `library_strategy` value.
       - name: metadata.unharmonized.dcc_fixation_embedding_method
         in: query
         required: false
@@ -1422,10 +1409,10 @@ paths:
           - type: string
           - type: 'null'
           description: Case-insensitive match on the raw `fixation_embedding_method`
-            value. `||` means any of.
+            value.
           title: Metadata.Unharmonized.Dcc Fixation Embedding Method
         description: Case-insensitive match on the raw `fixation_embedding_method`
-          value. `||` means any of.
+          value.
       - name: metadata.unharmonized.dcc_library_source_molecule
         in: query
         required: false
@@ -1434,10 +1421,9 @@ paths:
           - type: string
           - type: 'null'
           description: Case-insensitive match on the raw `library_source_molecule`
-            value. `||` means any of.
+            value.
           title: Metadata.Unharmonized.Dcc Library Source Molecule
         description: Case-insensitive match on the raw `library_source_molecule` value.
-          `||` means any of.
       - name: metadata.unharmonized.dcc_disease_phase
         in: query
         required: false
@@ -1445,11 +1431,9 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: Case-insensitive match on the raw `disease_phase` value. `||`
-            means any of.
+          description: Case-insensitive match on the raw `disease_phase` value.
           title: Metadata.Unharmonized.Dcc Disease Phase
-        description: Case-insensitive match on the raw `disease_phase` value. `||`
-          means any of.
+        description: Case-insensitive match on the raw `disease_phase` value.
       - name: metadata.unharmonized.dcc_diagnosis_category
         in: query
         required: false
@@ -1459,11 +1443,9 @@ paths:
           - type: 'null'
           description: Case-insensitive match on any raw `diagnosis_category` token.
             `dcc_diagnosis_category_<n>` matches the same way; `<n>` is not a position.
-            `||` means any of.
           title: Metadata.Unharmonized.Dcc Diagnosis Category
         description: Case-insensitive match on any raw `diagnosis_category` token.
           `dcc_diagnosis_category_<n>` matches the same way; `<n>` is not a position.
-          `||` means any of.
       - name: page
         in: query
         required: false
@@ -2144,13 +2126,11 @@ paths:
           - type: string
           - type: 'null'
           description: 'Case-insensitive match on any one data category of the file.
-            `||` means any of.
 
 
             **Example:** `?metadata.unharmonized.dcc_data_category=Sequencing||Clinical`'
           title: Metadata.Unharmonized.Dcc Data Category
         description: 'Case-insensitive match on any one data category of the file.
-          `||` means any of.
 
 
           **Example:** `?metadata.unharmonized.dcc_data_category=Sequencing||Clinical`'

@@ -1009,10 +1009,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Case-insensitive match on the raw `library_selection` value. `||` means any of.",
+              "description": "Case-insensitive match on the raw `library_selection` value.",
               "title": "Metadata.Unharmonized.Dcc Library Selection"
             },
-            "description": "Case-insensitive match on the raw `library_selection` value. `||` means any of."
+            "description": "Case-insensitive match on the raw `library_selection` value."
           },
           {
             "name": "metadata.unharmonized.dcc_library_strategy",
@@ -1027,10 +1027,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Case-insensitive match on the raw `library_strategy` value. `||` means any of.",
+              "description": "Case-insensitive match on the raw `library_strategy` value.",
               "title": "Metadata.Unharmonized.Dcc Library Strategy"
             },
-            "description": "Case-insensitive match on the raw `library_strategy` value. `||` means any of."
+            "description": "Case-insensitive match on the raw `library_strategy` value."
           },
           {
             "name": "metadata.unharmonized.dcc_fixation_embedding_method",
@@ -1045,10 +1045,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Case-insensitive match on the raw `fixation_embedding_method` value. `||` means any of.",
+              "description": "Case-insensitive match on the raw `fixation_embedding_method` value.",
               "title": "Metadata.Unharmonized.Dcc Fixation Embedding Method"
             },
-            "description": "Case-insensitive match on the raw `fixation_embedding_method` value. `||` means any of."
+            "description": "Case-insensitive match on the raw `fixation_embedding_method` value."
           },
           {
             "name": "metadata.unharmonized.dcc_library_source_molecule",
@@ -1063,10 +1063,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Case-insensitive match on the raw `library_source_molecule` value. `||` means any of.",
+              "description": "Case-insensitive match on the raw `library_source_molecule` value.",
               "title": "Metadata.Unharmonized.Dcc Library Source Molecule"
             },
-            "description": "Case-insensitive match on the raw `library_source_molecule` value. `||` means any of."
+            "description": "Case-insensitive match on the raw `library_source_molecule` value."
           },
           {
             "name": "metadata.unharmonized.dcc_disease_phase",
@@ -1081,10 +1081,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Case-insensitive match on the raw `disease_phase` value. `||` means any of.",
+              "description": "Case-insensitive match on the raw `disease_phase` value.",
               "title": "Metadata.Unharmonized.Dcc Disease Phase"
             },
-            "description": "Case-insensitive match on the raw `disease_phase` value. `||` means any of."
+            "description": "Case-insensitive match on the raw `disease_phase` value."
           },
           {
             "name": "metadata.unharmonized.dcc_diagnosis_category",
@@ -1099,10 +1099,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Case-insensitive match on any raw `diagnosis_category` token. `dcc_diagnosis_category_<n>` matches the same way; `<n>` is not a position. `||` means any of.",
+              "description": "Case-insensitive match on any raw `diagnosis_category` token. `dcc_diagnosis_category_<n>` matches the same way; `<n>` is not a position.",
               "title": "Metadata.Unharmonized.Dcc Diagnosis Category"
             },
-            "description": "Case-insensitive match on any raw `diagnosis_category` token. `dcc_diagnosis_category_<n>` matches the same way; `<n>` is not a position. `||` means any of."
+            "description": "Case-insensitive match on any raw `diagnosis_category` token. `dcc_diagnosis_category_<n>` matches the same way; `<n>` is not a position."
           },
           {
             "name": "page",
@@ -1912,10 +1912,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Case-insensitive match on the raw `library_selection` value. `||` means any of.",
+              "description": "Case-insensitive match on the raw `library_selection` value.",
               "title": "Metadata.Unharmonized.Dcc Library Selection"
             },
-            "description": "Case-insensitive match on the raw `library_selection` value. `||` means any of."
+            "description": "Case-insensitive match on the raw `library_selection` value."
           },
           {
             "name": "metadata.unharmonized.dcc_library_strategy",
@@ -1930,10 +1930,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Case-insensitive match on the raw `library_strategy` value. `||` means any of.",
+              "description": "Case-insensitive match on the raw `library_strategy` value.",
               "title": "Metadata.Unharmonized.Dcc Library Strategy"
             },
-            "description": "Case-insensitive match on the raw `library_strategy` value. `||` means any of."
+            "description": "Case-insensitive match on the raw `library_strategy` value."
           },
           {
             "name": "metadata.unharmonized.dcc_fixation_embedding_method",
@@ -1948,10 +1948,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Case-insensitive match on the raw `fixation_embedding_method` value. `||` means any of.",
+              "description": "Case-insensitive match on the raw `fixation_embedding_method` value.",
               "title": "Metadata.Unharmonized.Dcc Fixation Embedding Method"
             },
-            "description": "Case-insensitive match on the raw `fixation_embedding_method` value. `||` means any of."
+            "description": "Case-insensitive match on the raw `fixation_embedding_method` value."
           },
           {
             "name": "metadata.unharmonized.dcc_library_source_molecule",
@@ -1966,10 +1966,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Case-insensitive match on the raw `library_source_molecule` value. `||` means any of.",
+              "description": "Case-insensitive match on the raw `library_source_molecule` value.",
               "title": "Metadata.Unharmonized.Dcc Library Source Molecule"
             },
-            "description": "Case-insensitive match on the raw `library_source_molecule` value. `||` means any of."
+            "description": "Case-insensitive match on the raw `library_source_molecule` value."
           },
           {
             "name": "metadata.unharmonized.dcc_disease_phase",
@@ -1984,10 +1984,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Case-insensitive match on the raw `disease_phase` value. `||` means any of.",
+              "description": "Case-insensitive match on the raw `disease_phase` value.",
               "title": "Metadata.Unharmonized.Dcc Disease Phase"
             },
-            "description": "Case-insensitive match on the raw `disease_phase` value. `||` means any of."
+            "description": "Case-insensitive match on the raw `disease_phase` value."
           },
           {
             "name": "metadata.unharmonized.dcc_diagnosis_category",
@@ -2002,10 +2002,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Case-insensitive match on any raw `diagnosis_category` token. `dcc_diagnosis_category_<n>` matches the same way; `<n>` is not a position. `||` means any of.",
+              "description": "Case-insensitive match on any raw `diagnosis_category` token. `dcc_diagnosis_category_<n>` matches the same way; `<n>` is not a position.",
               "title": "Metadata.Unharmonized.Dcc Diagnosis Category"
             },
-            "description": "Case-insensitive match on any raw `diagnosis_category` token. `dcc_diagnosis_category_<n>` matches the same way; `<n>` is not a position. `||` means any of."
+            "description": "Case-insensitive match on any raw `diagnosis_category` token. `dcc_diagnosis_category_<n>` matches the same way; `<n>` is not a position."
           },
           {
             "name": "page",
@@ -2769,10 +2769,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Case-insensitive match on any one data category of the file. `||` means any of.\n\n**Example:** `?metadata.unharmonized.dcc_data_category=Sequencing||Clinical`",
+              "description": "Case-insensitive match on any one data category of the file.\n\n**Example:** `?metadata.unharmonized.dcc_data_category=Sequencing||Clinical`",
               "title": "Metadata.Unharmonized.Dcc Data Category"
             },
-            "description": "Case-insensitive match on any one data category of the file. `||` means any of.\n\n**Example:** `?metadata.unharmonized.dcc_data_category=Sequencing||Clinical`"
+            "description": "Case-insensitive match on any one data category of the file.\n\n**Example:** `?metadata.unharmonized.dcc_data_category=Sequencing||Clinical`"
           },
           {
             "name": "page",

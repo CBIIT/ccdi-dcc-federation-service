@@ -431,9 +431,9 @@ class TestSampleUnharmonizedFields:
         md = self.dump(converter, sf={"library_source_molecule": "Circulating cell-free DNA"})
         assert md["specimen_molecular_analyte_type"] == {
             "value": "DNA",
-            "ancestors": ["unharmonized.dcc_specimen_molecular_analyte_type"],
+            "ancestors": ["unharmonized.dcc_library_source_molecule"],
         }
-        assert md["unharmonized"]["dcc_specimen_molecular_analyte_type"]["value"] == (
+        assert md["unharmonized"]["dcc_library_source_molecule"]["value"] == (
             "Circulating cell-free DNA"
         )
 
@@ -452,9 +452,9 @@ class TestSampleUnharmonizedFields:
         md = self.dump(converter, sf={"library_selection": "cDNA"})
         assert md["library_selection_method"] == {
             "value": None,
-            "ancestors": ["unharmonized.dcc_library_selection_method"],
+            "ancestors": ["unharmonized.dcc_library_selection"],
         }
-        assert md["unharmonized"]["dcc_library_selection_method"] == {
+        assert md["unharmonized"]["dcc_library_selection"] == {
             "value": "cDNA",
             "details": {
                 "harmonizer": "diagnosis_classification_system",

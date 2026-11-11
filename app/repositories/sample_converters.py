@@ -14,6 +14,7 @@ from app.core.diagnosis_category import (
 from app.core.field_mappings import map_field_value, reverse_map_field_value
 from app.core.sample_unharmonized import (
     SAMPLE_UNHARMONIZED_FIELDS,
+    SAMPLE_UNHARMONIZED_KEYS,
     build_sample_unharmonized_entry,
 )
 from app.core.serialization import convert_date_time_to_string
@@ -425,7 +426,7 @@ class SampleConverters:
             harmonized_for[field] = harmonized
             entry = build_sample_unharmonized_entry(field, raw, harmonized)
             if entry is not None:
-                new_unharmonized[f"dcc_{field}"] = entry
+                new_unharmonized[SAMPLE_UNHARMONIZED_KEYS[field]] = entry
 
         merged_unharmonized = dict(unharmonized_field or {})
         merged_unharmonized.update(new_unharmonized)
@@ -439,7 +440,7 @@ class SampleConverters:
             anatomical_sites=_wrap_list_value(_process_anatomical_sites(anatomical_sites_value)),
             library_selection_method=_wrap_harmonized(
                 harmonized_for["library_selection_method"],
-                ["unharmonized.dcc_library_selection_method"] if "dcc_library_selection_method" in new_unharmonized else None,
+                ["unharmonized.dcc_library_selection"] if "dcc_library_selection" in new_unharmonized else None,
             ),
             library_strategy=_wrap_harmonized(
                 harmonized_for["library_strategy"],
@@ -448,12 +449,12 @@ class SampleConverters:
             library_source_material=_wrap_value(map_field_value("library_source_material", _null_if_invalid(library_source_material_value))),
             preservation_method=_wrap_harmonized(
                 harmonized_for["preservation_method"],
-                ["unharmonized.dcc_preservation_method"] if "dcc_preservation_method" in new_unharmonized else None,
+                ["unharmonized.dcc_fixation_embedding_method"] if "dcc_fixation_embedding_method" in new_unharmonized else None,
             ),
             tumor_grade=_wrap_value(_null_if_invalid(tumor_grade_value)),
             specimen_molecular_analyte_type=_wrap_harmonized(
                 harmonized_for["specimen_molecular_analyte_type"],
-                ["unharmonized.dcc_specimen_molecular_analyte_type"] if "dcc_specimen_molecular_analyte_type" in new_unharmonized else None,
+                ["unharmonized.dcc_library_source_molecule"] if "dcc_library_source_molecule" in new_unharmonized else None,
             ),
             tissue_type=_wrap_value(_null_if_invalid(tissue_type_value)),
             tumor_classification=_wrap_value(map_field_value("tumor_classification", _null_if_invalid(tumor_classification_value))),

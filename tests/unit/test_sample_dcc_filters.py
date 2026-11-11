@@ -54,14 +54,14 @@ def test_categorize_routes_the_six_fields_and_leaves_other_keys_alone():
     categorized = SampleHelpers._categorize_filters(
         {
             "metadata.unharmonized.dcc_library_strategy": "Archer Fusion",
-            "metadata.unharmonized.dcc_preservation_method": "Cytospin Slide",
+            "metadata.unharmonized.dcc_fixation_embedding_method": "Cytospin Slide",
             "metadata.unharmonized.dcc_disease_phase": "Prior Primary",
             "metadata.unharmonized.dcc_diagnosis_category_1": "Adenomas",
             "metadata.unharmonized.batch_id": "x",
         }
     )
     assert categorized["sequencing_file"]["dcc_library_strategy"] == "Archer Fusion"
-    assert categorized["pathology_file"]["dcc_preservation_method"] == "Cytospin Slide"
+    assert categorized["pathology_file"]["dcc_fixation_embedding_method"] == "Cytospin Slide"
     assert categorized["diagnosis"]["dcc_disease_phase"] == "Prior Primary"
     assert categorized["diagnosis"]["dcc_diagnosis_category"] == "Adenomas"
     assert categorized["sample"] == {}
@@ -229,10 +229,10 @@ def _lines_with(query, *fragments):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_preservation_only_filter_uses_the_raw_pathology_property():
-    """dcc_preservation_method alone takes the pathology-file-first path."""
+    """dcc_fixation_embedding_method alone takes the pathology-file-first path."""
     repository, session = _repository()
     await repository.get_samples(
-        {"metadata.unharmonized.dcc_preservation_method": "Cytospin Slide"},
+        {"metadata.unharmonized.dcc_fixation_embedding_method": "Cytospin Slide"},
         return_total=False,
     )
     query = _query(session)
@@ -266,7 +266,7 @@ async def test_case3_preservation_dcc_filter_is_on_the_pathology_match():
     repository, session = _repository()
     await repository.get_samples(
         {
-            "metadata.unharmonized.dcc_preservation_method": "Cytospin Slide",
+            "metadata.unharmonized.dcc_fixation_embedding_method": "Cytospin Slide",
             "metadata.unharmonized.dcc_disease_phase": "Relapse",
         },
         return_total=False,
@@ -318,7 +318,7 @@ async def test_two_diagnosis_category_keys_each_get_their_own_predicate():
 async def test_summary_fallback_applies_preservation_dcc_filter():
     repository, session = _repository()
     await repository.get_samples_summary(
-        {"metadata.unharmonized.dcc_preservation_method": "Cytospin Slide"}
+        {"metadata.unharmonized.dcc_fixation_embedding_method": "Cytospin Slide"}
     )
     query = _query(session)
     pf_param = _param_holding(_params(session), "Cytospin Slide")

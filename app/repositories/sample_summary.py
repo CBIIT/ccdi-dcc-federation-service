@@ -231,7 +231,7 @@ class SampleSummary:
                     dcc_sf_conditions.append(
                         dcc_match_condition(dcc_name, "sf", value, param_name, params)
                     )
-                elif dcc_name == "dcc_preservation_method":
+                elif dcc_name == "dcc_fixation_embedding_method":
                     dcc_pf_conditions.append(
                         dcc_match_condition(dcc_name, "pf", value, param_name, params)
                     )

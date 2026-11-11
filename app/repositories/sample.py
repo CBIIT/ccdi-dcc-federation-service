@@ -674,7 +674,7 @@ class SampleRepository(SampleDiagnosisSearch, SampleQueryCases, SampleHelpers, S
             param_counter += 1
             param_name = f"param_{param_counter}"
 
-            if field == "dcc_preservation_method":
+            if field == "dcc_fixation_embedding_method":
                 where_conditions.append(
                     dcc_match_condition(field, "pf", value, param_name, params)
                 )

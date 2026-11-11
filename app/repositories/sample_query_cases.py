@@ -684,14 +684,14 @@ class SampleQueryCases:
                     pf_parts.append(f"pf.fixation_embedding_method IN ${pf_param}")
                 else:
                     pf_parts.append(f"pf.fixation_embedding_method = ${pf_param}")
-            if "dcc_preservation_method" in categorized["pathology_file"]:
+            if "dcc_fixation_embedding_method" in categorized["pathology_file"]:
                 param_counter += 1
                 dcc_pf_param = f"param_{param_counter}"
                 pf_parts.append(
                     dcc_match_condition(
-                        "dcc_preservation_method",
+                        "dcc_fixation_embedding_method",
                         "pf",
-                        categorized["pathology_file"]["dcc_preservation_method"],
+                        categorized["pathology_file"]["dcc_fixation_embedding_method"],
                         dcc_pf_param,
                         params,
                     )

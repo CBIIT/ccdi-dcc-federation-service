@@ -539,9 +539,9 @@ def get_sample_filters(
         None,
         description="Matches any sample where the `sample_id` field matches the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the sample should be included in the results."
     ),
-    metadata_unharmonized_dcc_library_selection_method: Optional[str] = Query(
+    metadata_unharmonized_dcc_library_selection: Optional[str] = Query(
         None,
-        alias="metadata.unharmonized.dcc_library_selection_method",
+        alias="metadata.unharmonized.dcc_library_selection",
         description="Case-insensitive match on the raw `library_selection` value. `||` means any of.",
     ),
     metadata_unharmonized_dcc_library_strategy: Optional[str] = Query(
@@ -549,14 +549,14 @@ def get_sample_filters(
         alias="metadata.unharmonized.dcc_library_strategy",
         description="Case-insensitive match on the raw `library_strategy` value. `||` means any of.",
     ),
-    metadata_unharmonized_dcc_preservation_method: Optional[str] = Query(
+    metadata_unharmonized_dcc_fixation_embedding_method: Optional[str] = Query(
         None,
-        alias="metadata.unharmonized.dcc_preservation_method",
+        alias="metadata.unharmonized.dcc_fixation_embedding_method",
         description="Case-insensitive match on the raw `fixation_embedding_method` value. `||` means any of.",
     ),
-    metadata_unharmonized_dcc_specimen_molecular_analyte_type: Optional[str] = Query(
+    metadata_unharmonized_dcc_library_source_molecule: Optional[str] = Query(
         None,
-        alias="metadata.unharmonized.dcc_specimen_molecular_analyte_type",
+        alias="metadata.unharmonized.dcc_library_source_molecule",
         description="Case-insensitive match on the raw `library_source_molecule` value. `||` means any of.",
     ),
     metadata_unharmonized_dcc_disease_phase: Optional[str] = Query(
@@ -1062,9 +1062,9 @@ def get_sample_diagnosis_filters(
         None,
         description="Matches any sample where the `sample_id` field matches the string provided.\n\n**Note:** a logical OR (`||`) is performed across the values when determining whether the sample should be included in the results."
     ),
-    metadata_unharmonized_dcc_library_selection_method: Optional[str] = Query(
+    metadata_unharmonized_dcc_library_selection: Optional[str] = Query(
         None,
-        alias="metadata.unharmonized.dcc_library_selection_method",
+        alias="metadata.unharmonized.dcc_library_selection",
         description="Case-insensitive match on the raw `library_selection` value. `||` means any of.",
     ),
     metadata_unharmonized_dcc_library_strategy: Optional[str] = Query(
@@ -1072,14 +1072,14 @@ def get_sample_diagnosis_filters(
         alias="metadata.unharmonized.dcc_library_strategy",
         description="Case-insensitive match on the raw `library_strategy` value. `||` means any of.",
     ),
-    metadata_unharmonized_dcc_preservation_method: Optional[str] = Query(
+    metadata_unharmonized_dcc_fixation_embedding_method: Optional[str] = Query(
         None,
-        alias="metadata.unharmonized.dcc_preservation_method",
+        alias="metadata.unharmonized.dcc_fixation_embedding_method",
         description="Case-insensitive match on the raw `fixation_embedding_method` value. `||` means any of.",
     ),
-    metadata_unharmonized_dcc_specimen_molecular_analyte_type: Optional[str] = Query(
+    metadata_unharmonized_dcc_library_source_molecule: Optional[str] = Query(
         None,
-        alias="metadata.unharmonized.dcc_specimen_molecular_analyte_type",
+        alias="metadata.unharmonized.dcc_library_source_molecule",
         description="Case-insensitive match on the raw `library_source_molecule` value. `||` means any of.",
     ),
     metadata_unharmonized_dcc_disease_phase: Optional[str] = Query(

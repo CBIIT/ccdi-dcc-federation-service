@@ -734,7 +734,7 @@ paths:
 
           **Note:** a logical OR (`||`) is performed across the values when determining
           whether the sample should be included in the results.'
-      - name: metadata.unharmonized.dcc_library_selection_method
+      - name: metadata.unharmonized.dcc_library_selection
         in: query
         required: false
         schema:
@@ -743,7 +743,7 @@ paths:
           - type: 'null'
           description: Case-insensitive match on the raw `library_selection` value.
             `||` means any of.
-          title: Metadata.Unharmonized.Dcc Library Selection Method
+          title: Metadata.Unharmonized.Dcc Library Selection
         description: Case-insensitive match on the raw `library_selection` value.
           `||` means any of.
       - name: metadata.unharmonized.dcc_library_strategy
@@ -758,7 +758,7 @@ paths:
           title: Metadata.Unharmonized.Dcc Library Strategy
         description: Case-insensitive match on the raw `library_strategy` value. `||`
           means any of.
-      - name: metadata.unharmonized.dcc_preservation_method
+      - name: metadata.unharmonized.dcc_fixation_embedding_method
         in: query
         required: false
         schema:
@@ -767,10 +767,10 @@ paths:
           - type: 'null'
           description: Case-insensitive match on the raw `fixation_embedding_method`
             value. `||` means any of.
-          title: Metadata.Unharmonized.Dcc Preservation Method
+          title: Metadata.Unharmonized.Dcc Fixation Embedding Method
         description: Case-insensitive match on the raw `fixation_embedding_method`
           value. `||` means any of.
-      - name: metadata.unharmonized.dcc_specimen_molecular_analyte_type
+      - name: metadata.unharmonized.dcc_library_source_molecule
         in: query
         required: false
         schema:
@@ -779,7 +779,7 @@ paths:
           - type: 'null'
           description: Case-insensitive match on the raw `library_source_molecule`
             value. `||` means any of.
-          title: Metadata.Unharmonized.Dcc Specimen Molecular Analyte Type
+          title: Metadata.Unharmonized.Dcc Library Source Molecule
         description: Case-insensitive match on the raw `library_source_molecule` value.
           `||` means any of.
       - name: metadata.unharmonized.dcc_disease_phase
@@ -1390,7 +1390,7 @@ paths:
 
           **Note:** a logical OR (`||`) is performed across the values when determining
           whether the sample should be included in the results.'
-      - name: metadata.unharmonized.dcc_library_selection_method
+      - name: metadata.unharmonized.dcc_library_selection
         in: query
         required: false
         schema:
@@ -1399,7 +1399,7 @@ paths:
           - type: 'null'
           description: Case-insensitive match on the raw `library_selection` value.
             `||` means any of.
-          title: Metadata.Unharmonized.Dcc Library Selection Method
+          title: Metadata.Unharmonized.Dcc Library Selection
         description: Case-insensitive match on the raw `library_selection` value.
           `||` means any of.
       - name: metadata.unharmonized.dcc_library_strategy
@@ -1414,7 +1414,7 @@ paths:
           title: Metadata.Unharmonized.Dcc Library Strategy
         description: Case-insensitive match on the raw `library_strategy` value. `||`
           means any of.
-      - name: metadata.unharmonized.dcc_preservation_method
+      - name: metadata.unharmonized.dcc_fixation_embedding_method
         in: query
         required: false
         schema:
@@ -1423,10 +1423,10 @@ paths:
           - type: 'null'
           description: Case-insensitive match on the raw `fixation_embedding_method`
             value. `||` means any of.
-          title: Metadata.Unharmonized.Dcc Preservation Method
+          title: Metadata.Unharmonized.Dcc Fixation Embedding Method
         description: Case-insensitive match on the raw `fixation_embedding_method`
           value. `||` means any of.
-      - name: metadata.unharmonized.dcc_specimen_molecular_analyte_type
+      - name: metadata.unharmonized.dcc_library_source_molecule
         in: query
         required: false
         schema:
@@ -1435,7 +1435,7 @@ paths:
           - type: 'null'
           description: Case-insensitive match on the raw `library_source_molecule`
             value. `||` means any of.
-          title: Metadata.Unharmonized.Dcc Specimen Molecular Analyte Type
+          title: Metadata.Unharmonized.Dcc Library Source Molecule
         description: Case-insensitive match on the raw `library_source_molecule` value.
           `||` means any of.
       - name: metadata.unharmonized.dcc_disease_phase

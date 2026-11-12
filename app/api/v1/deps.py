@@ -542,35 +542,34 @@ def get_sample_filters(
     metadata_unharmonized_dcc_library_selection: Optional[str] = Query(
         None,
         alias="metadata.unharmonized.dcc_library_selection",
-        description="Case-insensitive match on the raw `library_selection` value. `||` means any of.",
+        description="Case-insensitive match on the raw `library_selection` value.",
     ),
     metadata_unharmonized_dcc_library_strategy: Optional[str] = Query(
         None,
         alias="metadata.unharmonized.dcc_library_strategy",
-        description="Case-insensitive match on the raw `library_strategy` value. `||` means any of.",
+        description="Case-insensitive match on the raw `library_strategy` value.",
     ),
     metadata_unharmonized_dcc_fixation_embedding_method: Optional[str] = Query(
         None,
         alias="metadata.unharmonized.dcc_fixation_embedding_method",
-        description="Case-insensitive match on the raw `fixation_embedding_method` value. `||` means any of.",
+        description="Case-insensitive match on the raw `fixation_embedding_method` value.",
     ),
     metadata_unharmonized_dcc_library_source_molecule: Optional[str] = Query(
         None,
         alias="metadata.unharmonized.dcc_library_source_molecule",
-        description="Case-insensitive match on the raw `library_source_molecule` value. `||` means any of.",
+        description="Case-insensitive match on the raw `library_source_molecule` value.",
     ),
     metadata_unharmonized_dcc_disease_phase: Optional[str] = Query(
         None,
         alias="metadata.unharmonized.dcc_disease_phase",
-        description="Case-insensitive match on the raw `disease_phase` value. `||` means any of.",
+        description="Case-insensitive match on the raw `disease_phase` value.",
     ),
     metadata_unharmonized_dcc_diagnosis_category: Optional[str] = Query(
         None,
         alias="metadata.unharmonized.dcc_diagnosis_category",
         description=(
             "Case-insensitive match on any raw `diagnosis_category` token. "
-            "`dcc_diagnosis_category_<n>` matches the same way; `<n>` is not a position. "
-            "`||` means any of."
+            "`dcc_diagnosis_category_<n>` matches the same way; `<n>` is not a position."
         ),
     ),
     request: Request = None
@@ -834,8 +833,7 @@ def get_file_filters(
         None,
         alias="metadata.unharmonized.dcc_data_category",
         description=(
-            "Case-insensitive match on any one data category of the file. "
-            "`||` means any of.\n\n"
+            "Case-insensitive match on any one data category of the file.\n\n"
             "**Example:** `?metadata.unharmonized.dcc_data_category=Sequencing||Clinical`"
         ),
     ),
@@ -1065,35 +1063,34 @@ def get_sample_diagnosis_filters(
     metadata_unharmonized_dcc_library_selection: Optional[str] = Query(
         None,
         alias="metadata.unharmonized.dcc_library_selection",
-        description="Case-insensitive match on the raw `library_selection` value. `||` means any of.",
+        description="Case-insensitive match on the raw `library_selection` value.",
     ),
     metadata_unharmonized_dcc_library_strategy: Optional[str] = Query(
         None,
         alias="metadata.unharmonized.dcc_library_strategy",
-        description="Case-insensitive match on the raw `library_strategy` value. `||` means any of.",
+        description="Case-insensitive match on the raw `library_strategy` value.",
     ),
     metadata_unharmonized_dcc_fixation_embedding_method: Optional[str] = Query(
         None,
         alias="metadata.unharmonized.dcc_fixation_embedding_method",
-        description="Case-insensitive match on the raw `fixation_embedding_method` value. `||` means any of.",
+        description="Case-insensitive match on the raw `fixation_embedding_method` value.",
     ),
     metadata_unharmonized_dcc_library_source_molecule: Optional[str] = Query(
         None,
         alias="metadata.unharmonized.dcc_library_source_molecule",
-        description="Case-insensitive match on the raw `library_source_molecule` value. `||` means any of.",
+        description="Case-insensitive match on the raw `library_source_molecule` value.",
     ),
     metadata_unharmonized_dcc_disease_phase: Optional[str] = Query(
         None,
         alias="metadata.unharmonized.dcc_disease_phase",
-        description="Case-insensitive match on the raw `disease_phase` value. `||` means any of.",
+        description="Case-insensitive match on the raw `disease_phase` value.",
     ),
     metadata_unharmonized_dcc_diagnosis_category: Optional[str] = Query(
         None,
         alias="metadata.unharmonized.dcc_diagnosis_category",
         description=(
             "Case-insensitive match on any raw `diagnosis_category` token. "
-            "`dcc_diagnosis_category_<n>` matches the same way; `<n>` is not a position. "
-            "`||` means any of."
+            "`dcc_diagnosis_category_<n>` matches the same way; `<n>` is not a position."
         ),
     ),
     request: Request = None

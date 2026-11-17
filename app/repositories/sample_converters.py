@@ -17,6 +17,7 @@ from app.core.sample_unharmonized import (
     SAMPLE_UNHARMONIZED_KEYS,
     build_sample_unharmonized_entry,
 )
+from app.core.unharmonized_details import attach_unharmonized_details
 from app.core.serialization import convert_date_time_to_string
 from app.models.dto import DiagnosisField, Sample, SampleDiagnosisCategoryField
 
@@ -60,6 +61,22 @@ def node_to_dict(node):
             return {k: convert_date_time_to_string(v) for k, v in node_dict.items()}
         else:
             return {}
+
+
+def _clear_untransformed_category_methods(unharmonized: Dict[str, Any]) -> None:
+    """Keep details.method "Mapped" only where a diagnosis_category token was transformed.
+
+    An alias entry carries ``comment`` (its harmonized PV). A token with no harmonized
+    part has no comment, so its details drop ``method``; harmonizer and url stay.
+    """
+    for key, entry in unharmonized.items():
+        if not key.startswith("dcc_diagnosis_category_") or not isinstance(entry, dict):
+            continue
+        if "comment" in entry:
+            continue
+        details = entry.get("details")
+        if isinstance(details, dict):
+            details.pop("method", None)
 
 
 def _build_diagnosis_result(
@@ -430,6 +447,11 @@ class SampleConverters:
 
         merged_unharmonized = dict(unharmonized_field or {})
         merged_unharmonized.update(new_unharmonized)
+        if merged_unharmonized:
+            merged_unharmonized = attach_unharmonized_details(
+                "samples", merged_unharmonized
+            )
+            _clear_untransformed_category_methods(merged_unharmonized)
 
         # Build metadata with field mappings applied
         metadata = SampleMetadata(

@@ -949,8 +949,20 @@ class TestSampleRepositoryRecordToSample:
         assert sample.metadata.diagnosis_category.value == "Medulloblastoma"
         assert sample.metadata.diagnosis_category.ancestors is None
         assert sample.metadata.unharmonized == {
-            "dcc_diagnosis_category_1": {"value": "Gliomas"},
-            "dcc_diagnosis_category_2": {"value": "Custom Category"},
+            "dcc_diagnosis_category_1": {
+                "value": "Gliomas",
+                "details": {
+                    "harmonizer": "diagnosis_classification_system",
+                    "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?diagnosis_category=Gliomas",
+                },
+            },
+            "dcc_diagnosis_category_2": {
+                "value": "Custom Category",
+                "details": {
+                    "harmonizer": "diagnosis_classification_system",
+                    "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?diagnosis_category=Custom%20Category",
+                },
+            },
         }
 
 

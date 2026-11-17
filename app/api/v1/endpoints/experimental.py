@@ -135,7 +135,11 @@ as a breaking change.""",
                                     },
                                     "unharmonized": {
                                         "dcc_diagnosis_category_1": {
-                                            "value": "Gliomas"
+                                            "value": "Gliomas",
+                                            "details": {
+                                                "harmonizer": "diagnosis_classification_system",
+                                                "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?diagnosis_category=Gliomas",
+                                            },
                                         },
                                         "dcc_disease_phase": {
                                             "value": "Recurrent Disease",
@@ -427,7 +431,6 @@ Paginated. Experimental—may change.""",
                                         "dcc_associated_diagnosis_categories_1": {
                                             "value": "Gliomas",
                                             "details": {
-                                                "method": "Mapped",
                                                 "harmonizer": "diagnosis_classification_system",
                                                 "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?diagnosis_category=Gliomas",
                                             },

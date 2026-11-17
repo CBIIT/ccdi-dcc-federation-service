@@ -4,7 +4,27 @@ Mirrors subject coverage where applicable, but sample uses singular
 SampleDiagnosisCategoryField + dcc_diagnosis_category_* unharmonized keys.
 """
 
+from urllib.parse import quote
+
 from app.models.dto import SampleDiagnosisCategoryField, SampleMetadata
+
+_DIAGNOSIS_CATEGORY_URL = (
+    "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?diagnosis_category="
+)
+
+
+def _with_category_details(entry: dict) -> dict:
+    """Expected dcc_diagnosis_category entry after response details are attached.
+
+    method "Mapped" only for a transformed token (alias: has comment); otherwise absent.
+    """
+    details = {
+        "harmonizer": "diagnosis_classification_system",
+        "url": _DIAGNOSIS_CATEGORY_URL + quote(str(entry["value"]), safe=""),
+    }
+    if "comment" in entry:
+        details = {"method": "Mapped", **details}
+    return {**entry, "details": details}
 
 
 def test_sample_metadata_has_singular_diagnosis_category_field():
@@ -116,7 +136,9 @@ def test_semicolon_delimited_splits_native_and_other():
     assert sample.metadata.diagnosis_category.value == "Medulloblastoma"
     assert sample.metadata.diagnosis_category.ancestors is None
     assert sample.metadata.unharmonized == {
-        "dcc_diagnosis_category_1": {"value": "Adenomas and adenocarcinomas"}
+        "dcc_diagnosis_category_1": _with_category_details(
+            {"value": "Adenomas and adenocarcinomas"}
+        )
     }
 
 
@@ -128,8 +150,8 @@ def test_extra_native_goes_to_dcc_canonical():
     )
     assert sample.metadata.diagnosis_category.value == "Medulloblastoma"
     assert sample.metadata.unharmonized == {
-        "dcc_diagnosis_category_1": {"value": "Renal Tumors"},
-        "dcc_diagnosis_category_2": {"value": "Gliomas"},
+        "dcc_diagnosis_category_1": _with_category_details({"value": "Renal Tumors"}),
+        "dcc_diagnosis_category_2": _with_category_details({"value": "Gliomas"}),
     }
 
 
@@ -144,12 +166,12 @@ def test_alias_only_promotes_with_ancestors_and_comment():
         "unharmonized.dcc_diagnosis_category_1"
     ]
     assert sample.metadata.unharmonized == {
-        "dcc_diagnosis_category_1": {
+        "dcc_diagnosis_category_1": _with_category_details({
             "value": "Low-grade Gliomas",
             "comment": "Low-Grade Gliomas",
             "owned": True,
-        },
-        "dcc_diagnosis_category_2": {"value": "Gliomas"},
+        }),
+        "dcc_diagnosis_category_2": _with_category_details({"value": "Gliomas"}),
     }
 
 
@@ -165,16 +187,16 @@ def test_two_aliases_no_native_promotes_first_keeps_second_in_dcc():
         "unharmonized.dcc_diagnosis_category_1"
     ]
     assert sample.metadata.unharmonized == {
-        "dcc_diagnosis_category_1": {
+        "dcc_diagnosis_category_1": _with_category_details({
             "value": "Low-grade Gliomas",
             "comment": "Low-Grade Gliomas",
             "owned": True,
-        },
-        "dcc_diagnosis_category_2": {
+        }),
+        "dcc_diagnosis_category_2": _with_category_details({
             "value": "Myeloid leukemias",
             "comment": "Myeloid Leukemia",
             "owned": True,
-        },
+        }),
     }
 
 
@@ -187,11 +209,11 @@ def test_alias_with_native_keeps_raw_in_dcc_not_promoted():
     assert sample.metadata.diagnosis_category.value == "Medulloblastoma"
     assert sample.metadata.diagnosis_category.ancestors is None
     assert sample.metadata.unharmonized == {
-        "dcc_diagnosis_category_1": {
+        "dcc_diagnosis_category_1": _with_category_details({
             "value": "Low-grade Gliomas",
             "comment": "Low-Grade Gliomas",
             "owned": True,
-        }
+        })
     }
 
 

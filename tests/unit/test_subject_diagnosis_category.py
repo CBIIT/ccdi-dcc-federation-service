@@ -122,9 +122,9 @@ def test_out_of_spec_value_goes_to_unharmonized():
     assert subject.metadata.associated_diagnosis_categories is None
     assert subject.metadata.unharmonized is not None
     assert "dcc_associated_diagnosis_categories_1" in subject.metadata.unharmonized
-    assert subject.metadata.unharmonized["dcc_associated_diagnosis_categories_1"]["value"] == (
-        "Adenomas and adenocarcinomas"
-    )
+    entry = subject.metadata.unharmonized["dcc_associated_diagnosis_categories_1"]
+    assert entry["value"] == "Adenomas and adenocarcinomas"
+    assert "method" not in entry["details"]
 
 
 def test_mixed_values_split_correctly():

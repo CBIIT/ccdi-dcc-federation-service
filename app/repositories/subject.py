@@ -2050,6 +2050,27 @@ WITH {carry},
         subjects, total_count = result
         return subjects, total_count
 
+    @staticmethod
+    def _clear_untransformed_associated_category_methods(
+        unharmonized: Optional[Dict[str, Any]],
+    ) -> None:
+        """Keep details.method "Mapped" only on a transformed diagnosis category.
+
+        An alias entry carries ``comment`` (its harmonized PV). A token with no
+        harmonized part has no comment, so its details drop ``method``. Sex and
+        other unharmonized keys are left as configured.
+        """
+        if not unharmonized:
+            return
+        for key, entry in unharmonized.items():
+            if not key.startswith("dcc_associated_diagnosis_categories_"):
+                continue
+            if not isinstance(entry, dict) or "comment" in entry:
+                continue
+            details = entry.get("details")
+            if isinstance(details, dict):
+                details.pop("method", None)
+
     def _record_to_subject(self, record: Dict[str, Any], base_url: Optional[str] = None) -> Subject:
         """
         Convert a database record to a Subject object with nested CCDI-DCC format.
@@ -2286,6 +2307,7 @@ WITH {carry},
             if unharmonized_payload
             else None
         )
+        self._clear_untransformed_associated_category_methods(unharmonized_final)
 
         # Build nested subject structure
         # Row mode: namespace must come from this row's study_id

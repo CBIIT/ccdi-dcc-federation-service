@@ -90,6 +90,7 @@ def test_two_natives_first_kept_second_unharmonized():
     entry = s["metadata"]["unharmonized"]["dcc_associated_diagnosis_categories_1"]
     assert entry["value"] == "Renal Tumors"
     assert entry["details"]["harmonizer"] == "diagnosis_classification_system"
+    assert "method" not in entry["details"]
 
 
 def test_alias_promoted_with_ancestors():
@@ -100,6 +101,9 @@ def test_alias_promoted_with_ancestors():
         "value": "Myeloid Leukemia",
         "ancestors": ["unharmonized.dcc_associated_diagnosis_categories_1"],
     }
+    entry = s["metadata"]["unharmonized"]["dcc_associated_diagnosis_categories_1"]
+    assert entry["comment"] == "Myeloid Leukemia"
+    assert entry["details"]["method"] == "Mapped"
 
 
 def test_multiple_diagnosis_nodes_dedupe_and_number():

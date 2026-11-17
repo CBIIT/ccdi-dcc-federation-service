@@ -141,7 +141,6 @@ def prepare_subjects_for_response(subjects: List[Subject]) -> List[Dict[str, Any
                                         "dcc_associated_diagnosis_categories_1": {
                                             "value": "Gliomas",
                                             "details": {
-                                                "method": "Mapped",
                                                 "harmonizer": "diagnosis_classification_system",
                                                 "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?diagnosis_category=Gliomas",
                                             },
@@ -653,7 +652,6 @@ async def count_subjects_by_field(
                                 "dcc_associated_diagnosis_categories_1": {
                                     "value": "Gliomas",
                                     "details": {
-                                        "method": "Mapped",
                                         "harmonizer": "diagnosis_classification_system",
                                         "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?diagnosis_category=Gliomas",
                                     },

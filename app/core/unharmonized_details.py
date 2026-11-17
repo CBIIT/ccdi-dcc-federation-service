@@ -3,6 +3,7 @@
 import json
 import logging
 import re
+from collections.abc import Collection
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, cast
@@ -104,8 +105,65 @@ def attach_unharmonized_details(
             attached[key] = entry
             continue
         updated = dict(entry)
-        details = build_unharmonized_details(entity, key, entry.get("value"))
+        details = build_unharmonized_details(entity, key, _link_value(entry))
         if details is not None:
             updated["details"] = details
         attached[key] = updated
     return attached
+
+
+def _link_value(entry: dict[str, Any]) -> Any:
+    """Value used to build the link: the harmonized PV for an alias entry, else the raw value.
+
+    An alias entry (``owned`` with a ``comment``) holds the raw DB spelling in ``value``
+    and the harmonized permissible value in ``comment``. Clinical Commons only knows
+    the permissible value, so the link uses that.
+    """
+    comment = entry.get("comment")
+    if entry.get("owned") is True and isinstance(comment, str) and comment:
+        return comment
+    return entry.get("value")
+
+
+def clear_untransformed_category_methods(
+    unharmonized: dict[str, Any] | None,
+    key_prefix: str,
+    transformed_keys: Collection[str] = (),
+) -> None:
+    """Keep details.method only on a diagnosis category token that was transformed.
+
+    metadata_fields.json declares ``method: "Mapped"`` for every numbered category
+    entry. A token counts as transformed when it is an alias (it carries ``comment``,
+    its harmonized PV) or when it is named in ``transformed_keys`` (a case-only token
+    the harmonized field points to through ``ancestors``). Every other entry keeps
+    ``harmonizer`` and ``url`` but loses ``method``. Only keys that start with
+    ``key_prefix`` are touched, so sex and other unharmonized keys keep their method.
+    """
+    if not unharmonized:
+        return
+    for key, entry in unharmonized.items():
+        if not key.startswith(key_prefix) or not isinstance(entry, dict):
+            continue
+        if "comment" in entry or key in transformed_keys:
+            continue
+        details = entry.get("details")
+        if isinstance(details, dict):
+            details.pop("method", None)
+
+
+def strip_category_ownership_fields(
+    unharmonized: dict[str, Any] | None,
+    key_prefix: str,
+) -> None:
+    """Remove ``comment`` and ``owned`` from numbered diagnosis-category entries.
+
+    Call only after ``attach_unharmonized_details`` and
+    ``clear_untransformed_category_methods``, which still need those fields to
+    choose the link target and keep ``method: "Mapped"`` on aliases.
+    """
+    if not unharmonized:
+        return
+    for key, entry in unharmonized.items():
+        if key.startswith(key_prefix) and isinstance(entry, dict):
+            entry.pop("comment", None)
+            entry.pop("owned", None)

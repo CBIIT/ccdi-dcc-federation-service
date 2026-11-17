@@ -54,6 +54,10 @@ router = APIRouter(tags=["Experimental"],  include_in_schema=True)
     summary="Experimental: Filter the samples known by this server by free-text diagnosis search.",
     description="""Experimental: Filter the samples known by this server by free-text diagnosis search.
 
+Unstable response note (1.3.0): `metadata.unharmonized.dcc_diagnosis_category_<n>`
+includes a `details` block (`harmonizer`, `url`; `method: "Mapped"` only on
+alias/transformed tokens). Sample category entries omit `comment` and `owned`.
+
 ### Diagnosis Filtering
 
 This endpoint supports the experimental `search` parameter: case-insensitive substring on
@@ -365,7 +369,13 @@ diagnosis category values at the data node, in line with the
 `search`: case-insensitive substring on `diagnosis` (or `diagnosis_comment` when diagnosis is `see diagnosis_comment`).
 `associated_diagnosis_categories`: substring on the full `diagnosis_category` on diagnosis node. Both together apply as AND on one diagnosis node.
 
-Paginated. Experimental—may change.""",
+Paginated. Experimental—may change.
+
+Unstable response note (1.3.0): `metadata.unharmonized.dcc_associated_diagnosis_categories_<n>`
+keeps `details.harmonizer`/`url` on every entry, but `details.method` is `"Mapped"`
+only for a transformed token (alias, or a case-only token linked via `ancestors`).
+Exact PV / out-of-spec entries omit `method`. Category entries omit `comment` and
+`owned`. `dcc_sex_at_birth` is unchanged.""",
     operation_id="subject_diagnosis_search",
     responses={
         200: {

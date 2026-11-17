@@ -20,7 +20,11 @@ from app.core.diagnosis_category import (
     iter_diagnosis_category_raw_tokens,
 )
 from app.core.field_mappings import map_field_value, reverse_map_field_value, is_database_only_value, build_case_mapping_statement
-from app.core.unharmonized_details import attach_unharmonized_details
+from app.core.unharmonized_details import (
+    attach_unharmonized_details,
+    clear_untransformed_category_methods,
+    strip_category_ownership_fields,
+)
 from app.lib.field_allowlist import FieldAllowlist
 from app.lib.url_builder import build_identifier_server_url
 from app.models.dto import Subject
@@ -2050,27 +2054,6 @@ WITH {carry},
         subjects, total_count = result
         return subjects, total_count
 
-    @staticmethod
-    def _clear_untransformed_associated_category_methods(
-        unharmonized: Optional[Dict[str, Any]],
-    ) -> None:
-        """Keep details.method "Mapped" only on a transformed diagnosis category.
-
-        An alias entry carries ``comment`` (its harmonized PV). A token with no
-        harmonized part has no comment, so its details drop ``method``. Sex and
-        other unharmonized keys are left as configured.
-        """
-        if not unharmonized:
-            return
-        for key, entry in unharmonized.items():
-            if not key.startswith("dcc_associated_diagnosis_categories_"):
-                continue
-            if not isinstance(entry, dict) or "comment" in entry:
-                continue
-            details = entry.get("details")
-            if isinstance(details, dict):
-                details.pop("method", None)
-
     def _record_to_subject(self, record: Dict[str, Any], base_url: Optional[str] = None) -> Subject:
         """
         Convert a database record to a Subject object with nested CCDI-DCC format.
@@ -2307,7 +2290,22 @@ WITH {carry},
             if unharmonized_payload
             else None
         )
-        self._clear_untransformed_associated_category_methods(unharmonized_final)
+        # /subject and /subject-diagnosis: details.method "Mapped" only on a transformed
+        # category (alias, or the case-only token the harmonized field points to via
+        # ancestors). Other entries keep harmonizer/url without method. dcc_sex_at_birth
+        # is not touched.
+        promoted_keys = {
+            str(path).removeprefix("unharmonized.")
+            for path in (associated_diagnosis_categories or {}).get("ancestors") or []
+        }
+        clear_untransformed_category_methods(
+            unharmonized_final,
+            "dcc_associated_diagnosis_categories_",
+            promoted_keys,
+        )
+        strip_category_ownership_fields(
+            unharmonized_final, "dcc_associated_diagnosis_categories_"
+        )
 
         # Build nested subject structure
         # Row mode: namespace must come from this row's study_id

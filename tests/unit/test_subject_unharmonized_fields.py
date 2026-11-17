@@ -77,9 +77,14 @@ def test_case_normalized_diagnosis_category_keeps_raw_token():
         "value": "Medulloblastoma",
         "ancestors": ["unharmonized.dcc_associated_diagnosis_categories_1"],
     }
-    assert s["metadata"]["unharmonized"]["dcc_associated_diagnosis_categories_1"]["value"] == (
-        "medulloblastoma"
-    )
+    entry = s["metadata"]["unharmonized"]["dcc_associated_diagnosis_categories_1"]
+    assert entry["value"] == "medulloblastoma"
+    # Case-only promotion still counts as a transformation: keep method "Mapped".
+    assert entry["details"] == {
+        "method": "Mapped",
+        "harmonizer": "diagnosis_classification_system",
+        "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?diagnosis_category=medulloblastoma",
+    }
 
 
 def test_two_natives_first_kept_second_unharmonized():
@@ -102,8 +107,10 @@ def test_alias_promoted_with_ancestors():
         "ancestors": ["unharmonized.dcc_associated_diagnosis_categories_1"],
     }
     entry = s["metadata"]["unharmonized"]["dcc_associated_diagnosis_categories_1"]
-    assert entry["comment"] == "Myeloid Leukemia"
+    assert "comment" not in entry
+    assert "owned" not in entry
     assert entry["details"]["method"] == "Mapped"
+    assert entry["details"]["url"].endswith("diagnosis_category=Myeloid%20Leukemia")
 
 
 def test_multiple_diagnosis_nodes_dedupe_and_number():

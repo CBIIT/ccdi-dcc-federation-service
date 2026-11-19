@@ -122,7 +122,11 @@ in the `responses::Samples` schema.""",
                                     },
                                     "unharmonized": {
                                         "dcc_diagnosis_category_1": {
-                                            "value": "Gliomas"
+                                            "value": "Gliomas",
+                                            "details": {
+                                                "harmonizer": "diagnosis_classification_system",
+                                                "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?diagnosis_category=Gliomas",
+                                            },
                                         },
                                         "dcc_disease_phase": {
                                             "value": "Recurrent Disease",
@@ -581,7 +585,11 @@ async def count_samples_by_field(
                             },
                             "unharmonized": {
                                 "dcc_diagnosis_category_1": {
-                                    "value": "Gliomas"
+                                    "value": "Gliomas",
+                                    "details": {
+                                        "harmonizer": "diagnosis_classification_system",
+                                        "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?diagnosis_category=Gliomas",
+                                    },
                                 },
                                 "dcc_disease_phase": {
                                     "value": "Recurrent Disease",

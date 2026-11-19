@@ -287,8 +287,20 @@ class TestSampleConverters:
         assert sample.metadata.diagnosis_category.value == "Medulloblastoma"
         assert sample.metadata.diagnosis_category.ancestors is None
         assert sample.metadata.unharmonized == {
-            "dcc_diagnosis_category_1": {"value": "Gliomas"},
-            "dcc_diagnosis_category_2": {"value": "Custom Category"},
+            "dcc_diagnosis_category_1": {
+                "value": "Gliomas",
+                "details": {
+                    "harmonizer": "diagnosis_classification_system",
+                    "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?diagnosis_category=Gliomas",
+                },
+            },
+            "dcc_diagnosis_category_2": {
+                "value": "Custom Category",
+                "details": {
+                    "harmonizer": "diagnosis_classification_system",
+                    "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?diagnosis_category=Custom%20Category",
+                },
+            },
         }
     
     def test_record_to_sample_with_sequencing_file_data(self, converter):
@@ -493,7 +505,14 @@ class TestSampleUnharmonizedFields:
         )
         assert list(md["unharmonized"]) == ["dcc_diagnosis_category_1", "dcc_disease_phase"]
         assert md["unharmonized"]["dcc_diagnosis_category_1"] == {
-            "value": "Adenomas and adenocarcinomas"
+            "value": "Adenomas and adenocarcinomas",
+            "details": {
+                "harmonizer": "diagnosis_classification_system",
+                "url": (
+                    "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants"
+                    "?diagnosis_category=Adenomas%20and%20adenocarcinomas"
+                ),
+            },
         }
         assert md["diagnosis_category"] == {"value": "Medulloblastoma"}
 

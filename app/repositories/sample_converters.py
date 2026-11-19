@@ -17,6 +17,11 @@ from app.core.sample_unharmonized import (
     SAMPLE_UNHARMONIZED_KEYS,
     build_sample_unharmonized_entry,
 )
+from app.core.unharmonized_details import (
+    attach_unharmonized_details,
+    clear_untransformed_category_methods,
+    strip_category_ownership_fields,
+)
 from app.core.serialization import convert_date_time_to_string
 from app.models.dto import DiagnosisField, Sample, SampleDiagnosisCategoryField
 
@@ -430,6 +435,17 @@ class SampleConverters:
 
         merged_unharmonized = dict(unharmonized_field or {})
         merged_unharmonized.update(new_unharmonized)
+        if merged_unharmonized:
+            merged_unharmonized = attach_unharmonized_details(
+                "samples", merged_unharmonized
+            )
+            # /sample and /sample-diagnosis: details.method "Mapped" only on alias entries.
+            clear_untransformed_category_methods(
+                merged_unharmonized, "dcc_diagnosis_category_"
+            )
+            strip_category_ownership_fields(
+                merged_unharmonized, "dcc_diagnosis_category_"
+            )
 
         # Build metadata with field mappings applied
         metadata = SampleMetadata(

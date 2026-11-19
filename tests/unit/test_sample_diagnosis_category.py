@@ -6,6 +6,11 @@ SampleDiagnosisCategoryField + dcc_diagnosis_category_* unharmonized keys.
 
 from app.models.dto import SampleDiagnosisCategoryField, SampleMetadata
 
+# Expected values below are written out in full on purpose. They must not be derived
+# from the rule under test: an alias keeps method "Mapped" and links to its harmonized
+# PV; any other entry has no method and links to its own value. Sample category
+# entries expose value + details only (no comment/owned).
+
 
 def test_sample_metadata_has_singular_diagnosis_category_field():
     meta = SampleMetadata(
@@ -116,7 +121,13 @@ def test_semicolon_delimited_splits_native_and_other():
     assert sample.metadata.diagnosis_category.value == "Medulloblastoma"
     assert sample.metadata.diagnosis_category.ancestors is None
     assert sample.metadata.unharmonized == {
-        "dcc_diagnosis_category_1": {"value": "Adenomas and adenocarcinomas"}
+        "dcc_diagnosis_category_1": {
+            "value": "Adenomas and adenocarcinomas",
+            "details": {
+                "harmonizer": "diagnosis_classification_system",
+                "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?diagnosis_category=Adenomas%20and%20adenocarcinomas",
+            },
+        }
     }
 
 
@@ -128,12 +139,24 @@ def test_extra_native_goes_to_dcc_canonical():
     )
     assert sample.metadata.diagnosis_category.value == "Medulloblastoma"
     assert sample.metadata.unharmonized == {
-        "dcc_diagnosis_category_1": {"value": "Renal Tumors"},
-        "dcc_diagnosis_category_2": {"value": "Gliomas"},
+        "dcc_diagnosis_category_1": {
+            "value": "Renal Tumors",
+            "details": {
+                "harmonizer": "diagnosis_classification_system",
+                "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?diagnosis_category=Renal%20Tumors",
+            },
+        },
+        "dcc_diagnosis_category_2": {
+            "value": "Gliomas",
+            "details": {
+                "harmonizer": "diagnosis_classification_system",
+                "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?diagnosis_category=Gliomas",
+            },
+        },
     }
 
 
-def test_alias_only_promotes_with_ancestors_and_comment():
+def test_alias_only_promotes_with_ancestors_and_mapped_details():
     repo = _make_repo()
     sample = repo._record_to_sample(
         _min_sa(), None, _min_st(), None, None,
@@ -146,10 +169,19 @@ def test_alias_only_promotes_with_ancestors_and_comment():
     assert sample.metadata.unharmonized == {
         "dcc_diagnosis_category_1": {
             "value": "Low-grade Gliomas",
-            "comment": "Low-Grade Gliomas",
-            "owned": True,
+            "details": {
+                "method": "Mapped",
+                "harmonizer": "diagnosis_classification_system",
+                "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?diagnosis_category=Low-Grade%20Gliomas",
+            },
         },
-        "dcc_diagnosis_category_2": {"value": "Gliomas"},
+        "dcc_diagnosis_category_2": {
+            "value": "Gliomas",
+            "details": {
+                "harmonizer": "diagnosis_classification_system",
+                "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?diagnosis_category=Gliomas",
+            },
+        },
     }
 
 
@@ -167,13 +199,19 @@ def test_two_aliases_no_native_promotes_first_keeps_second_in_dcc():
     assert sample.metadata.unharmonized == {
         "dcc_diagnosis_category_1": {
             "value": "Low-grade Gliomas",
-            "comment": "Low-Grade Gliomas",
-            "owned": True,
+            "details": {
+                "method": "Mapped",
+                "harmonizer": "diagnosis_classification_system",
+                "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?diagnosis_category=Low-Grade%20Gliomas",
+            },
         },
         "dcc_diagnosis_category_2": {
             "value": "Myeloid leukemias",
-            "comment": "Myeloid Leukemia",
-            "owned": True,
+            "details": {
+                "method": "Mapped",
+                "harmonizer": "diagnosis_classification_system",
+                "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?diagnosis_category=Myeloid%20Leukemia",
+            },
         },
     }
 
@@ -189,8 +227,11 @@ def test_alias_with_native_keeps_raw_in_dcc_not_promoted():
     assert sample.metadata.unharmonized == {
         "dcc_diagnosis_category_1": {
             "value": "Low-grade Gliomas",
-            "comment": "Low-Grade Gliomas",
-            "owned": True,
+            "details": {
+                "method": "Mapped",
+                "harmonizer": "diagnosis_classification_system",
+                "url": "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?diagnosis_category=Low-Grade%20Gliomas",
+            },
         }
     }
 

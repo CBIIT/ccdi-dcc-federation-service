@@ -20,7 +20,11 @@ from app.core.diagnosis_category import (
     iter_diagnosis_category_raw_tokens,
 )
 from app.core.field_mappings import map_field_value, reverse_map_field_value, is_database_only_value, build_case_mapping_statement
-from app.core.unharmonized_details import attach_unharmonized_details
+from app.core.unharmonized_details import (
+    attach_unharmonized_details,
+    clear_untransformed_category_methods,
+    strip_category_ownership_fields,
+)
 from app.lib.field_allowlist import FieldAllowlist
 from app.lib.url_builder import build_identifier_server_url
 from app.models.dto import Subject
@@ -2285,6 +2289,22 @@ WITH {carry},
             attach_unharmonized_details("subjects", unharmonized_payload)
             if unharmonized_payload
             else None
+        )
+        # /subject and /subject-diagnosis: details.method "Mapped" only on a transformed
+        # category (alias, or the case-only token the harmonized field points to via
+        # ancestors). Other entries keep harmonizer/url without method. dcc_sex_at_birth
+        # is not touched.
+        promoted_keys = {
+            str(path).removeprefix("unharmonized.")
+            for path in (associated_diagnosis_categories or {}).get("ancestors") or []
+        }
+        clear_untransformed_category_methods(
+            unharmonized_final,
+            "dcc_associated_diagnosis_categories_",
+            promoted_keys,
+        )
+        strip_category_ownership_fields(
+            unharmonized_final, "dcc_associated_diagnosis_categories_"
         )
 
         # Build nested subject structure

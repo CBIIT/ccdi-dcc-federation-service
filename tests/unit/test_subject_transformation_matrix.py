@@ -103,3 +103,4 @@ def test_subject_record_diagnosis_wires_details_on_unharmonized():
     entry = unh["dcc_associated_diagnosis_categories_1"]
     assert entry["value"] == "Gliomas"
     assert entry["details"]["harmonizer"] == "diagnosis_classification_system"
+    assert "method" not in entry["details"]

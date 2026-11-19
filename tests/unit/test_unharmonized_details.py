@@ -8,6 +8,8 @@ from app.core.unharmonized_details import (
     _load_metadata_fields,
     attach_unharmonized_details,
     build_unharmonized_details,
+    clear_untransformed_category_methods,
+    strip_category_ownership_fields,
 )
 
 _SEX_URL = "https://clinicalcommons.ccdi.cancer.gov/exploreParticipants?sex_at_birth={value}"
@@ -124,7 +126,71 @@ def test_attach_preserves_existing_entry_keys():
     entry = out["dcc_associated_diagnosis_categories_1"]
     assert entry["comment"] == "Myeloid Leukemia"
     assert entry["owned"] is True
-    assert "details" in entry
+    assert entry["details"]["method"] == "Mapped"
+    # Alias link uses the harmonized PV (comment), not the raw DB spelling.
+    assert entry["details"]["url"].endswith("diagnosis_category=Myeloid%20Leukemia")
+
+
+def test_clear_keeps_method_on_alias_and_promoted_case_only():
+    payload = {
+        "dcc_associated_diagnosis_categories_1": {
+            "value": "medulloblastoma",
+            "details": {
+                "method": "Mapped",
+                "harmonizer": "diagnosis_classification_system",
+                "url": "https://example/medulloblastoma",
+            },
+        },
+        "dcc_associated_diagnosis_categories_2": {
+            "value": "Custom Category",
+            "details": {
+                "method": "Mapped",
+                "harmonizer": "diagnosis_classification_system",
+                "url": "https://example/Custom%20Category",
+            },
+        },
+        "dcc_associated_diagnosis_categories_3": {
+            "value": "Myeloid leukemias",
+            "comment": "Myeloid Leukemia",
+            "owned": True,
+            "details": {
+                "method": "Mapped",
+                "harmonizer": "diagnosis_classification_system",
+                "url": "https://example/Myeloid%20Leukemia",
+            },
+        },
+        "dcc_sex_at_birth": {
+            "value": "Female",
+            "details": {"method": "Mapped", "harmonizer": "DomainExpert"},
+        },
+    }
+    clear_untransformed_category_methods(
+        payload,
+        "dcc_associated_diagnosis_categories_",
+        {"dcc_associated_diagnosis_categories_1"},
+    )
+    assert payload["dcc_associated_diagnosis_categories_1"]["details"]["method"] == "Mapped"
+    assert "method" not in payload["dcc_associated_diagnosis_categories_2"]["details"]
+    assert payload["dcc_associated_diagnosis_categories_2"]["details"]["harmonizer"]
+    assert payload["dcc_associated_diagnosis_categories_3"]["details"]["method"] == "Mapped"
+    assert payload["dcc_sex_at_birth"]["details"]["method"] == "Mapped"
+
+
+def test_strip_category_ownership_fields_leaves_sex_alone():
+    payload = {
+        "dcc_associated_diagnosis_categories_1": {
+            "value": "Myeloid leukemias",
+            "comment": "Myeloid Leukemia",
+            "owned": True,
+            "details": {"method": "Mapped"},
+        },
+        "dcc_sex_at_birth": {"value": "Female", "comment": "keep-me"},
+    }
+    strip_category_ownership_fields(payload, "dcc_associated_diagnosis_categories_")
+    assert "comment" not in payload["dcc_associated_diagnosis_categories_1"]
+    assert "owned" not in payload["dcc_associated_diagnosis_categories_1"]
+    assert payload["dcc_associated_diagnosis_categories_1"]["details"]["method"] == "Mapped"
+    assert payload["dcc_sex_at_birth"]["comment"] == "keep-me"
 
 
 def test_malformed_entity_section_does_not_raise(monkeypatch):
